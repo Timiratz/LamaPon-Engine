@@ -7,29 +7,27 @@
 
 namespace LamaPon
 {
-    // ICOへ格納する1画像。32bit BGRA、上から下の行順で保持します。
+    // ICOに格納する上から下の行順の32bit BGRA画像。
     struct IconImage final
     {
+        // 画像の幅・1から256ピクセル
         std::uint32_t width{};
+        // 画像の高さ・1から256ピクセル
         std::uint32_t height{};
+        // 上から下へ並ぶ32bit BGRA画素
         std::vector<std::byte> bgraPixels;
     };
 
-    // IconImage列から.icoファイル全体のバイト列を組み立てます。
-    // 画像はICO内へ32bit DIB（BITMAPINFOHEADER＋ANDマスク）として
-    // 格納します。1～256ピクセル以外のサイズは受け付けません。
+    // 画像数は16bitに収まる範囲とし、各辺は1～256ピクセル、画素数は幅×高さ×4バイトを要求する。
+    // BGRA画像を32bit DIBとANDマスクとしてICO文書にまとめる(images: 1枚以上のBGRA画像一覧)。
     [[nodiscard]] std::vector<std::byte> BuildIcoFileBytes(
         const std::vector<IconImage>& images);
 
-    // 画像ファイルから.icoバイト列を作ります。.icoはヘッダー検証の上
-    // そのまま返し、PNG/JPG/BMP等はWICでデコードして標準サイズ
-    // （16/24/32/48/256）へ縮小したマルチサイズICOへ変換します。
+    // ICOは位置情報を検証して返し他の画像はWICで標準寸法のICOへ変換する(imagePath: 読込・変換する画像のパス)。
     [[nodiscard]] std::vector<std::byte> BuildIcoFromImageFile(
         const std::filesystem::path& imagePath);
 
-    // 実行ファイルのアイコングループ（IDI_LAMAPON_ENGINE）を
-    // .icoバイト列の内容へ差し替えます。グループが無い実行ファイルには
-    // 新規に埋め込みます。実行中でないファイルにのみ使用できます。
+    // 停止中のexeの固定アイコングループを検証済みICOへ置換し不在なら追加する(executablePath: 実行中でないexeのパス, icoBytes: ICO文書の全バイト)。
     void ReplaceExecutableIcon(
         const std::filesystem::path& executablePath,
         const std::vector<std::byte>& icoBytes);

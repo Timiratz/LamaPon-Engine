@@ -24,11 +24,11 @@ namespace
 
     struct CgltfReadContext final
     {
+        // コールバック中に借りる取得元
         LamaPon::AssetManager* assets{};
     };
 
-    // アーカイブ配布でも読めるよう、cgltfのファイル読み込みを
-    // AssetManager経由にします（GltfImporterと同じ流儀）。
+    // アーカイブ対応の入力を確保し、例外を結果コードに変換する(fileOptions: 読み取り設定, path: UTF8パス, size: 読取バイト数の任意出力, data: malloc領域の出力)。
     cgltf_result CgltfFileRead(
         const cgltf_memory_options*,
         const cgltf_file_options* fileOptions,
@@ -36,12 +36,15 @@ namespace
         cgltf_size* size,
         void** data)
     {
+        // cgltfの読み取り委譲先
         auto* context = static_cast<CgltfReadContext*>(
             fileOptions->user_data);
         try
         {
+            // アセットから取得した全バイト
             auto bytes = context->assets->ReadFileBytes(
                 LamaPon::PathFromUtf8(path));
+            // cgltfへ所有権を渡す入力領域
             void* memory = std::malloc(
                 bytes.empty() ? 1 : bytes.size());
             if (memory == nullptr)
@@ -68,6 +71,7 @@ namespace
         }
     }
 
+    // cgltfへ渡した入力領域を解放する(data: mallocで確保した領域)。
     void CgltfFileRelease(
         const cgltf_memory_options*,
         const cgltf_file_options*,
@@ -77,6 +81,7 @@ namespace
         std::free(data);
     }
 
+    // 三角形の位置をノード変換して配列へ追記する(primitive: 元プリミティブ, worldMatrix: ノードからワールド変換, vertices: 頂点の追記先, indices: 索引の追記先)。
     void AppendGltfPrimitive(
         const cgltf_primitive& primitive,
         const DirectX::XMMATRIX worldMatrix,
@@ -88,7 +93,9 @@ namespace
         {
             return;
         }
+        // 位置属性のアクセサー
         const cgltf_accessor* positions{};
+        // 位置属性を探す属性番号
         for (cgltf_size attribute = 0;
             attribute < primitive.attributes_count;
             ++attribute)
@@ -107,12 +114,15 @@ namespace
             return;
         }
 
+        // 追記するメッシュの頂点開始番号
         const auto baseVertex =
             static_cast<std::uint32_t>(vertices.size());
+        // 読み込む頂点・索引の番号
         for (cgltf_size index = 0;
             index < positions->count;
             ++index)
         {
+            // アクセサーから読んだXYZ位置
             cgltf_float raw[3]{};
             if (!cgltf_accessor_read_float(
                     positions,
@@ -123,6 +133,7 @@ namespace
                 throw std::runtime_error(
                     "Failed to read glTF positions for collision.");
             }
+            // ノード変換を適用した頂点位置
             const auto transformed =
                 DirectX::XMVector3TransformCoord(
                     DirectX::XMVectorSet(
@@ -131,6 +142,7 @@ namespace
                         raw[2],
                         1.0f),
                     worldMatrix);
+            // 衝突形状へ追加する頂点
             XMFLOAT3 vertex{};
             DirectX::XMStoreFloat3(
                 &vertex,
@@ -140,6 +152,7 @@ namespace
 
         if (primitive.indices != nullptr)
         {
+            // 読み込む頂点・索引の番号
             for (cgltf_size index = 0;
                 index < primitive.indices->count;
                 ++index)
@@ -154,6 +167,7 @@ namespace
         }
         else
         {
+            // 読み込む頂点・索引の番号
             for (cgltf_size index = 0;
                 index < positions->count;
                 ++index)
@@ -165,19 +179,24 @@ namespace
         }
     }
 
+    // 外部バッファーも読み全ノードから三角形を集める(assets: ファイルの取得元, path: glTFのパス, vertices: 頂点の追記先, indices: 索引の追記先)。
     void LoadGltf(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
         std::vector<XMFLOAT3>& vertices,
         std::vector<std::uint32_t>& indices)
     {
+        // 外部ライブラリー用UTF8パス
         const std::string utf8Path =
             LamaPon::PathToUtf8(path);
+        // cgltfの取得元を保持する設定
         CgltfReadContext readContext{ &assets };
+        // アーカイブ対応のglTF読取設定
         cgltf_options options{};
         options.file.read = &CgltfFileRead;
         options.file.release = &CgltfFileRelease;
         options.file.user_data = &readContext;
+        // cgltfが返した解析結果
         cgltf_data* rawData{};
         if (cgltf_parse_file(
                 &options,
@@ -188,6 +207,7 @@ namespace
             throw std::runtime_error(
                 "Failed to parse glTF for collision mesh.");
         }
+        // glTF解析結果の解放付き所有参照
         const std::unique_ptr<
             cgltf_data,
             decltype(&cgltf_free)>
@@ -202,29 +222,35 @@ namespace
                 "Failed to load glTF buffers for collision mesh.");
         }
 
+        // 三角形を抽出するノード番号
         for (cgltf_size nodeIndex = 0;
             nodeIndex < data->nodes_count;
             ++nodeIndex)
         {
+            // メッシュを持つ対象ノード
             const auto& node = data->nodes[nodeIndex];
             if (node.mesh == nullptr)
             {
                 continue;
             }
+            // glTFの列優先ワールド行列
             cgltf_float rawMatrix[16]{};
             cgltf_node_transform_world(
                 &node,
                 rawMatrix);
-            // glTFの列優先行列は、行ベクトル規約のDirectXMathでは
-            // そのまま16要素を読み込めば同じ変換になります。
+
+            // DirectX行列へそのまま写す16値
             DirectX::XMFLOAT4X4 worldMatrixValues{};
+            // glTFの列優先値は、DirectXの行ベクトル規約では転置せずに同じ変換として読める。
             std::memcpy(
                 &worldMatrixValues,
                 rawMatrix,
                 sizeof(rawMatrix));
+            // ノードからワールドへの変換
             const auto worldMatrix =
                 DirectX::XMLoadFloat4x4(
                     &worldMatrixValues);
+            // 抽出するプリミティブ番号
             for (cgltf_size primitiveIndex = 0;
                 primitiveIndex
                     < node.mesh->primitives_count;
@@ -240,12 +266,14 @@ namespace
         }
     }
 
+    // 描画と同じ空間設定でFBXを読み三角形を集める(assets: ファイルの取得元, path: FBXのパス, vertices: 頂点の追記先, indices: 索引の追記先)。
     void LoadFbx(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
         std::vector<XMFLOAT3>& vertices,
         std::vector<std::uint32_t>& indices)
     {
+        // アセットから取得した全バイト
         const auto bytes = assets.ReadFileBytes(path);
         if (bytes.empty())
         {
@@ -253,9 +281,11 @@ namespace
                 "FBX file is empty (collision mesh).");
         }
 
+        // 外部ライブラリー用UTF8パス
         const std::string utf8Path =
             LamaPon::PathToUtf8(path);
-        // FbxImporterと同じ空間変換で読み込み、描画と一致させます。
+
+        // 描画と同じ右手Y軸・メートル設定
         ufbx_load_opts options{};
         options.filename = {
             utf8Path.data(),
@@ -273,7 +303,9 @@ namespace
             UFBX_PIVOT_HANDLING_ADJUST_TO_PIVOT;
         options.node_depth_limit = 512;
 
+        // FBXの解析失敗情報
         ufbx_error error{};
+        // ufbxが返した解析結果
         ufbx_scene* rawScene = ufbx_load_memory(
             bytes.data(),
             bytes.size(),
@@ -284,16 +316,20 @@ namespace
             throw std::runtime_error(
                 "Failed to load FBX for collision mesh.");
         }
+        // FBX解析結果の解放付き所有参照
         const std::unique_ptr<
             ufbx_scene,
             decltype(&ufbx_free_scene)>
             scene(rawScene, &ufbx_free_scene);
 
+        // 三角形化した面のコーナー番号
         std::vector<std::uint32_t> triangleCorners;
+        // 三角形を抽出するノード番号
         for (std::size_t nodeIndex = 0;
             nodeIndex < scene->nodes.count;
             ++nodeIndex)
         {
+            // メッシュを持つ対象ノード
             const ufbx_node* node =
                 scene->nodes.data[nodeIndex];
             if (node == nullptr
@@ -301,18 +337,22 @@ namespace
             {
                 continue;
             }
+            // 変換元メッシュ・衝突形状
             const ufbx_mesh& mesh = *node->mesh;
             triangleCorners.resize(
                 std::max<std::size_t>(
                     mesh.max_face_triangles * 3,
                     3));
+            // 追記するメッシュの頂点開始番号
             const auto baseVertex =
                 static_cast<std::uint32_t>(
                     vertices.size());
+            // 変換するFBX頂点の番号
             for (std::size_t vertexIndex = 0;
                 vertexIndex < mesh.num_vertices;
                 ++vertexIndex)
             {
+                // ノード変換済みのFBX位置
                 const auto position =
                     ufbx_transform_position(
                         &node->geometry_to_world,
@@ -322,24 +362,29 @@ namespace
                     static_cast<float>(position.y),
                     static_cast<float>(position.z) });
             }
+            // 三角形化するFBX面の番号
             for (std::size_t faceIndex = 0;
                 faceIndex < mesh.faces.count;
                 ++faceIndex)
             {
+                // 三角形化するFBX面
                 const auto face =
                     mesh.faces.data[faceIndex];
+                // 面から得られた三角形数
                 const std::uint32_t triangleCount =
                     ufbx_triangulate_face(
                         triangleCorners.data(),
                         triangleCorners.size(),
                         &mesh,
                         face);
+                // 三角形のコーナー走査位置
                 for (std::size_t corner = 0;
                     corner
                         < static_cast<std::size_t>(
                             triangleCount) * 3;
                     ++corner)
                 {
+                    // 元メッシュ内のコーナー番号
                     const auto cornerIndex =
                         triangleCorners[corner];
                     if (cornerIndex
@@ -356,6 +401,7 @@ namespace
         }
     }
 
+    // 直列操作するパス別共有索引
     std::unordered_map<
         std::wstring,
         std::shared_ptr<const LamaPon::CollisionMesh>>
@@ -368,16 +414,21 @@ namespace LamaPon::CollisionMeshImporter
         AssetManager& assets,
         const std::filesystem::path& path)
     {
+        // 取得元が解決したモデルのパス
         const auto resolved = assets.ResolvePath(path);
+        // 解決済みパスのキャッシュキー
         const std::wstring key = resolved.wstring();
+        // 同じパスの共有衝突形状
         if (const auto found = g_cache.find(key);
             found != g_cache.end())
         {
             return found->second;
         }
 
+        // 形式判定用の拡張子
         std::wstring extension =
             resolved.extension().wstring();
+        // 拡張子を小文字にする(character: 変換する文字)。
         std::transform(
             extension.begin(),
             extension.end(),
@@ -388,7 +439,9 @@ namespace LamaPon::CollisionMeshImporter
                     std::towlower(character));
             });
 
+        // 変換済み位置の頂点配列
         std::vector<XMFLOAT3> vertices;
+        // 各三角形の頂点索引
         std::vector<std::uint32_t> indices;
         if (extension == L".gltf"
             || extension == L".glb")
@@ -406,6 +459,7 @@ namespace LamaPon::CollisionMeshImporter
                 + PathToUtf8(resolved));
         }
 
+        // 変換元メッシュ・衝突形状
         auto mesh = std::make_shared<CollisionMesh>();
         mesh->Build(
             std::move(vertices),

@@ -10,26 +10,33 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // documentをpathへ整形JSONで保存します。
+    // WriteJson(path: 出力先, document: JSON文書)
     void WriteJson(
         const std::filesystem::path& path,
         const nlohmann::json& document)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // JSON文書を書き込むバイナリ出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
         output << document.dump(2) << '\n';
+        // JSON書き込み失敗を呼び出し元へ通知
         if (!output)
         {
             throw std::runtime_error(
@@ -38,10 +45,13 @@ namespace
     }
 }
 
+// 旧形式のシーン・設定・セーブを移行します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
+        // entitiesと旧asset名を含むv0シーン
         nlohmann::json legacyScene{
             { "format", "LamaPonScene" },
             { "version", 0 },
@@ -71,6 +81,7 @@ int main()
                 })
             }
         };
+        // legacySceneの移行結果
         const auto sceneMigration =
             LamaPon::MigrateSerializedDocument(
                 legacyScene,
@@ -85,6 +96,7 @@ int main()
 
         LamaPon::RefreshSerializedAssetManifest(
             legacyScene);
+        // 移行シーンから抽出した資産パス
         const auto assetPaths =
             LamaPon::CollectSerializedAssetPaths(
                 legacyScene);
@@ -94,6 +106,7 @@ int main()
                     == 2,
             "Scene asset manifest was not deduplicated.");
 
+        // entitiesを持つv0 prefab
         nlohmann::json legacyPrefab{
             { "format", "LamaPonPrefab" },
             { "version", 0 },
@@ -109,15 +122,18 @@ int main()
                 && legacyPrefab["version"] == 1,
             "Legacy prefab migration failed.");
 
+        // 移行データの出力ルート
         const auto outputRoot =
             std::filesystem::current_path()
             / "test-output"
             / "document-migration";
+        // 出力削除時のエラー状態
         std::error_code error;
         std::filesystem::remove_all(
             outputRoot,
             error);
 
+        // 旧形式プロジェクトの入力ファイル
         const auto projectPath =
             outputRoot / "project.json";
         WriteJson(
@@ -133,6 +149,7 @@ int main()
                     "scenes/legacy.scene.json"
                 }
             });
+        // 移行して読み込んだプロジェクト設定
         const auto project =
             LamaPon::LoadProjectSettings(projectPath);
         Require(
@@ -141,6 +158,7 @@ int main()
                 && project.windowHeight == 540,
             "Legacy project settings migration failed.");
 
+        // 旧形式PlayerPrefsの入力ファイル
         const auto preferencesPath =
             outputRoot / "PlayerPrefs.json";
         WriteJson(
@@ -157,6 +175,7 @@ int main()
                     }
                 }
             });
+        // 移行後のPlayerPrefs
         LamaPon::PlayerPrefs preferences(
             preferencesPath);
         preferences.Load();
@@ -167,6 +186,7 @@ int main()
                     == "Legacy",
             "Legacy PlayerPrefs migration failed.");
 
+        // 旧形式SaveDataの格納先
         const auto saveDirectory =
             outputRoot / "Saves";
         WriteJson(
@@ -182,7 +202,9 @@ int main()
                     }
                 }
             });
+        // 旧形式SaveDataの読込サービス
         LamaPon::SaveDataStore saves(saveDirectory);
+        // 移行後のセーブJSON
         const auto save = saves.LoadJson("legacy");
         Require(
             save.has_value()
@@ -190,9 +212,12 @@ int main()
                     .at("level") == 7,
             "Legacy save-data migration failed.");
 
+        // 将来version拒否の確認結果
         bool futureVersionRejected{};
+        // 現行readerが対応しない将来version文書
         try
         {
+            // 移行対象にしてはいけない将来version
             nlohmann::json future{
                 { "format", "LamaPonScene" },
                 { "version", 999 }
@@ -202,6 +227,7 @@ int main()
                     future,
                     LamaPon::SerializedDocumentKind::Scene));
         }
+        // 未対応versionエラーを拒否状態へ変換
         catch (const std::runtime_error&)
         {
             futureVersionRejected = true;
@@ -217,6 +243,7 @@ int main()
             << "Document migration tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

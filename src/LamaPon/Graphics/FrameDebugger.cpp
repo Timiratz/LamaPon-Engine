@@ -11,8 +11,7 @@ namespace LamaPon
             return;
         }
         m_enabled = enabled;
-        // 途中から有効にしたフレームは区間の入れ子が不完全なので、
-        // 次のEndFrameまでの記録は捨てられる前提で空から始めます。
+        // 切替時は空から記録し、途中有効化では最初のフレームの区間経路が不完全になり得る。
         m_sections.clear();
         m_droppedSections = 0;
         m_currentFrame.clear();
@@ -31,7 +30,9 @@ namespace LamaPon
 
     std::string FrameDebugger::CurrentSectionPath() const
     {
+        // 返却するGPU区間の経路
         std::string path;
+        // 経路へ加えるGPU区間名
         for (const auto& section : m_sections)
         {
             if (!path.empty())
@@ -55,10 +56,13 @@ namespace LamaPon
         {
             return true;
         }
+        // 記録前に消費するイベント番号
         const auto index = m_nextIndex++;
+        // 設定上限内で描画する有無
         const bool draw = !m_limit || index <= *m_limit;
         try
         {
+            // 登録する描画イベント
             FrameDebugEvent event;
             event.index = index;
             event.kind = kind;
@@ -73,8 +77,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // 記録できなくてもゲームの描画は続けます。番号がずれないよう、
-            // 以降のイベントも上限の判定だけは同じ規則で行います。
+            // 記録失敗でもイベント番号と描画上限の判定は維持する。
         }
         return draw;
     }
@@ -117,8 +120,7 @@ namespace LamaPon
             --m_droppedSections;
             return;
         }
-        // 有効化の前に始まった区間の終了は、対応する開始が無いので
-        // 無視します。
+        // 対応する開始がない区間の終了は無視する。
         if (!m_sections.empty())
         {
             m_sections.pop_back();

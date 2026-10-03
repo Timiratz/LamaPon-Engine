@@ -15,142 +15,145 @@ namespace LamaPon
 {
     enum class ViewportNavigationPreset
     {
+        // 視点を自由に移動
         Fly,
+        // 注視点を中心に回転
         Orbit
     };
 
     struct ViewportSettings final
     {
+        // 視点操作の方式
         ViewportNavigationPreset navigationPreset{
             ViewportNavigationPreset::Fly
         };
+        // 回転操作の感度
         float orbitSensitivity{ 1.0f };
+        // 平行移動操作の感度
         float panSensitivity{ 1.0f };
+        // 拡縮操作の感度
         float zoomSensitivity{ 1.0f };
+        // 上下操作の反転有無
         bool invertY{};
     };
 
+    // 視点操作方式の保存名を返します(preset: 視点操作方式)。
     [[nodiscard]] std::string_view ViewportNavigationPresetName(
         ViewportNavigationPreset preset) noexcept;
+    // 保存名から視点操作方式を求めます(name: 保存名)。
+    // Orbitと旧名Unity以外はFlyになります。
     [[nodiscard]] ViewportNavigationPreset
         ViewportNavigationPresetFromName(
             std::string_view name) noexcept;
 
     enum class ProjectSettingsFileType
     {
+        // 編集用の設定形式
         Project,
+        // 配布用の設定形式
         GamePackage
     };
 
-    // Discord Rich Presenceの公開設定です。Discordアカウント連携
-    // （OnlineProjectSettings::enabled）とは独立していて、片方だけを
-    // 有効にできます。Application IDはDiscord Developer Portalが
-    // ゲームごとに発行する公開IDで、秘密情報ではありません。
-    // client_secretやtokenはここへ入れません。
+    // Rich Presenceはアカウント連携と独立して有効化でき、秘密鍵やトークンは保存しません。
     struct DiscordPresenceProjectSettings final
     {
+        // Rich Presenceの有効化
         bool enabled{};
+        // Discordの公開アプリID
         std::string applicationId;
-        // Activity側で指定しなかったときに補う既定の大画像です。
+        // 既定の大画像キー
         std::string defaultLargeImageKey;
+        // 既定の大画像の説明
         std::string defaultLargeImageText;
     };
 
-    // プロジェクトへ保存してよいオンライン接続設定です。
-    // Discordのclient_secretやaccess/refresh tokenはゲームへ置かず、
-    // serviceBaseUrlで指定したLamaPon用バックエンドだけが保持します。
+    // 認証の秘密鍵とトークンはバックエンドだけが保持し、プロジェクトへ保存しません。
     struct OnlineProjectSettings final
     {
+        // アカウント連携の有効化
         bool enabled{};
+        // バックエンドの基底URL
         std::string serviceBaseUrl;
+        // ゲームの名前空間ID
         std::string gameId;
+        // 接続環境の識別子
         std::string environmentId{ "production" };
-        // ローカル開発用です。配布用GamePackageでは有効なオンライン
-        // 設定と一緒に保存できません。
+        // 開発用HTTP接続の許可
         bool allowInsecureLoopback{};
+        // 認証ブラウザーの起動有無
         bool openAuthorizationBrowser{ true };
-        // ABIを保つため末尾へ追加します。アカウント連携が無効でも
-        // Rich Presenceだけを有効にできます。
+        // Rich Presence設定
         DiscordPresenceProjectSettings discordPresence;
     };
 
+    // Game ModuleのABIを保つため、新しいフィールドは末尾へ追加します。
+    // アイコンはassets相対、外部エディターはPC上の絶対パスで、空なら各既定値を使います。
+    // inspectorDecimalsは表示だけを丸め、入力値を変更せず配布設定へ保存しません。
+    // シェーダーソースを除く配布では、実行時の再コンパイルに頼らず全バリアントを事前生成します。
+    // タグ一覧が空なら未登録タグを検査せず、ネットワーク接続は明示操作で開始します。
     struct ProjectSettings final
     {
+        // ゲームの表示名
         std::string gameName{ "LamaPon Game" };
+        // 初期ウィンドウ幅の画素数
         std::uint32_t windowWidth{ 1280 };
+        // 初期ウィンドウ高さの画素数
         std::uint32_t windowHeight{ 720 };
+        // 起動シーンのアセットパス
         std::filesystem::path startupScene{
             L"scenes/sandbox.scene.json"
         };
-        // Export時に実行ファイルへ埋め込むアイコン画像
-        // （assetsからの相対パス、.png/.jpg/.ico等）。
-        // 空ならLamaPon標準アイコンのままにします。
+        // 埋め込むアイコンのパス
         std::filesystem::path gameIcon;
-        // スクリプト（.cpp）をアセットブラウザーから開く際に使う
-        // 外部エディターの実行ファイル（このPC上の絶対パス）。
-        // 空ならWindowsのファイル関連付け（システムの既定）を使います。
+        // 外部スクリプト編集器のパス
         std::filesystem::path scriptEditorPath;
-        // trueなら、assets内の.cpp/.hを保存した数秒後にGame Moduleを
-        // 自動ビルドします。保存後に変更を反映する設定です。ビルド済みDLLの
-        // 差し替えはGameModuleHostが
-        // 自動で拾います。手動ビルドだけにしたい場合はfalseにします。
+        // 保存後の自動ビルド有無
         bool autoBuildGameModuleOnSave{ true };
-        // Inspectorで数値を表示する小数点以下の桁数。
-        // 既定の1は「0.0」表示で、位置や角度をざっと確認するのに
-        // 読みやすい桁数です。細かく詰めたいときだけ増やします
-        // （0〜6）。編集中は桁数に関係なく入力した値がそのまま入り、
-        // 表示だけが丸められます。エディターの表示設定なので、
-        // 配布用のLamaPonGame.jsonには含めません。
+        // 数値表示の小数桁数
         std::uint32_t inspectorDecimals{ 1 };
+        // 描画品質と描画方式
         GraphicsSettings graphics;
+        // 編集時の視点操作設定
         ViewportSettings viewport;
+        // 入力アクションの割り当て
         std::vector<InputActionDefinition> inputActions{
             DefaultInputActions()
         };
-        // プロジェクトで使用するGameObjectタグの一覧。
-        // Inspectorのドロップダウン候補になり、Scene読み込み時に
-        // 未登録タグへ警告を出します。空なら検査しません。
+        // 登録済みオブジェクトタグ
         std::vector<std::string> tags;
-        // 書き出したゲームからHLSLソースを外し、配布物にはバイトコードだけを
-        // 入れます。末尾に
-        // 足しています（途中へ入れると構造体のレイアウトがずれ、
-        // 作り直していないGame Module DLLが壊れます）。
-        //
-        // 入れると、事前コンパイルは全バリアントを焼きます。
-        // shader_featureのストリップと同時にやると、取りこぼした
-        // 組み合わせを実行時に作り直せず（ソースが無いので）
-        // 標準Litへ落ちてしまうためです。
-        //
-        // 既定はオンです。配布物へHLSLを平文で置く理由が無く、
-        // 外しても全バリアントを焼くので実行時の挙動は変わりません
-        // （既に保存済みのプロジェクトは、保存された値のままです）。
+        // 配布時のHLSL除外有無
         bool stripShaderSourceOnExport{ true };
-        // 物理・当たり判定の調整値。末尾へ足しています
-        // （途中へ入れると構造体のレイアウトがずれ、作り直して
-        // いないGame Module DLLが壊れます）。
+        // 物理計算と衝突の設定
         PhysicsSettings physics;
-        // 最初のシーンを読み込んでいる間、LamaPonのロゴを表示します。
+        // 起動ロゴの表示有無
         bool splashScreenEnabled{ true };
-        // ABIを保つため、新しい設定は必ず末尾へ追加します。
+        // オンライン接続の設定
         OnlineProjectSettings online;
-        // 部屋の作成・参加は明示操作で開始し、自動接続は行いません。
+        // 通信セッションの設定
         NetworkConfiguration network;
-        // 標準の読み込み画面の文言・色・背景画像などです。
+        // 読み込み画面の設定
         SceneLoadingScreenSettings loadingScreen;
     };
 
+    // 値とパスの制約を検証します(settings: 検証する設定)。
+    // 制約違反はinvalid_argumentです。
     void ValidateProjectSettings(
         const ProjectSettings& settings);
 
-    // 保存先固有の制約も検証します。GamePackageでは、オンラインを
-    // 有効にしたままHTTP loopback許可を配布することを拒否します。
+    // 保存形式を含めて設定を検証します(settings: 検証する設定, fileType: 保存形式)。
+    // 配布用のオンライン有効設定にHTTP loopback許可を含めるとinvalid_argumentです。
     void ValidateProjectSettings(
         const ProjectSettings& settings,
         ProjectSettingsFileType fileType);
 
+    // 設定を読み込み移行・検証します(path: 設定ファイル)。
+    // 省略項目は既定値を使い、読み込み・形式・値の不備は例外です。
     [[nodiscard]] ProjectSettings LoadProjectSettings(
         const std::filesystem::path& path);
 
+    // 検証した設定を保存します(path: 保存ファイル, settings: 保存する設定, fileType: 保存形式)。
+    // 未知の既存キーを保ちますが旧sceneTransitionは除き、既存JSONが壊れていても保存を続けます。
+    // 保存は直接上書きで、失敗時は例外です。
     void SaveProjectSettings(
         const std::filesystem::path& path,
         const ProjectSettings& settings,

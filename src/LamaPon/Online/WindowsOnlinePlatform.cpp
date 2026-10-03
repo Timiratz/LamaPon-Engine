@@ -26,26 +26,35 @@
 
 namespace
 {
+    // 更新用tokenの最大バイト数
     constexpr std::size_t MaximumRefreshTokenBytes = 8192;
+    // 暗号化blobの最大バイト数
     constexpr std::size_t MaximumProtectedBlobBytes = 64 * 1024;
+    // token包絡ヘッダーのバイト数
     constexpr std::size_t EnvelopeHeaderBytes = 16;
+    // 暗号化ファイルの識別子
     constexpr std::array<std::uint8_t, 8> FileMagic{
         'L', 'P', 'O', 'N', 'A', 'U', 'T', 'H'
     };
+    // 復号したtoken包絡の識別子
     constexpr std::array<std::uint8_t, 8> PlaintextMagic{
         'L', 'P', 'O', 'N', 'R', 'T', 'K', 'N'
     };
+    // 暗号化補助値の用途と版
     constexpr std::string_view EntropyLabel =
         "LamaPon.Online.RefreshToken/v1";
+    // 次の該当保存処理だけの失敗指定
     std::atomic<LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint>
         CredentialSaveFailPoint{
             LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint::None
         };
+    // 資格情報の置換直前のテスト処理
     std::atomic<LamaPon::Detail::WindowsRefreshTokenSaveTestHook>
         CredentialSaveBeforeReplaceHook{};
+    // 置換直前テストへ渡す借用状態
     std::atomic<void*> CredentialSaveBeforeReplaceContext{};
-    // パス名の疑似匿名化とWindows名のalias回避に使う固定鍵です。
-    // 秘密鍵ではなく、HMAC入力の用途を将来も固定するための定数です。
+    // 資格情報パスのHMAC入力を固定する公開定数で、秘匿用の鍵ではありません。
+    // パス名用HMACの固定入力鍵
     constexpr LamaPon::Crypto::AesKey CredentialPathHashKey{
         'L', 'a', 'm', 'a', 'P', 'o', 'n', '.',
         'O', 'n', 'l', 'i', 'n', 'e', '.', 'P',
@@ -55,13 +64,16 @@ namespace
 
     struct HandleGuard final
     {
+        // ファイルまたはロックの所有ハンドル
         HANDLE value{ INVALID_HANDLE_VALUE };
 
+        // 所有するファイルまたはロックのハンドルを解放する。
         ~HandleGuard()
         {
             Reset();
         }
 
+        // 有効な所有ハンドルを解放して無効値にする。
         void Reset() noexcept
         {
             if (value != nullptr && value != INVALID_HANDLE_VALUE)
@@ -71,16 +83,19 @@ namespace
             value = INVALID_HANDLE_VALUE;
         }
 
+        // 解放せず所有ハンドルを呼出し側へ渡す。
         [[nodiscard]] HANDLE Release() noexcept
         {
             return std::exchange(value, INVALID_HANDLE_VALUE);
         }
     };
 
+    // 該当する失敗注入を一度だけ消費する(expected: 今回到達した保存の段階)。
     [[nodiscard]] bool ConsumeCredentialSaveFailPoint(
         const LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint
             expected) noexcept
     {
+        // 失敗指定を消費する比較交換の値
         auto current = expected;
         return CredentialSaveFailPoint.compare_exchange_strong(
             current,
@@ -91,8 +106,10 @@ namespace
 
     struct KnownFolderGuard final
     {
+        // CoTaskMemFreeする保存先の文字列
         PWSTR value{};
 
+        // KnownFolder APIが確保した文字列を解放する。
         ~KnownFolderGuard()
         {
             CoTaskMemFree(value);
@@ -101,13 +118,20 @@ namespace
 
     struct RestrictedSecurity final
     {
+        // 現プロセスtokenの所有先
         HandleGuard processToken;
+        // ユーザーSIDを保持する領域
         std::vector<std::uint8_t> tokenUser;
+        // 解放するSYSTEMのSID
         PSID systemSid{};
+        // LocalFreeするアクセス許可一覧
         PACL acl{};
+        // 作成するセキュリティ記述子
         SECURITY_DESCRIPTOR descriptor{};
+        // 作成時ACLまたは取得した属性情報
         SECURITY_ATTRIBUTES attributes{};
 
+        // 確保したACLとSYSTEM SIDを解放する。
         ~RestrictedSecurity()
         {
             if (acl != nullptr)
@@ -120,6 +144,7 @@ namespace
             }
         }
 
+        // 現ユーザーとSYSTEMだけに全権限を許可するACLを作る(inheritance: 子オブジェクトへの継承フラグ)。
         [[nodiscard]] bool Initialize(const DWORD inheritance)
         {
             if (OpenProcessToken(
@@ -130,6 +155,7 @@ namespace
                 return false;
             }
 
+            // TokenUser取得用のバイト数
             DWORD tokenUserBytes{};
             GetTokenInformation(
                 processToken.value,
@@ -153,6 +179,7 @@ namespace
                 return false;
             }
 
+            // SYSTEM SIDのNT権限識別子
             SID_IDENTIFIER_AUTHORITY ntAuthority =
                 SECURITY_NT_AUTHORITY;
             if (AllocateAndInitializeSid(
@@ -171,9 +198,12 @@ namespace
                 return false;
             }
 
+            // 取得したWindowsユーザー情報
             auto* currentUser = reinterpret_cast<TOKEN_USER*>(
                 tokenUser.data());
+            // 現ユーザーとSYSTEMの許可ACE
             EXPLICIT_ACCESSW entries[2]{};
+            // 継承条件を設定する許可ACE
             for (auto& entry : entries)
             {
                 entry.grfAccessPermissions = FILE_ALL_ACCESS;
@@ -215,6 +245,7 @@ namespace
             return true;
         }
 
+        // 保持するTokenUser領域から現ユーザーのSIDを借用する。
         [[nodiscard]] PSID CurrentUserSid() const noexcept
         {
             return tokenUser.empty()
@@ -231,18 +262,23 @@ namespace
         Unavailable
     };
 
+    // 全祖先を開き通常ディレクトリ以外を拒否する(filePath: 資格情報ファイル)。
     [[nodiscard]] ParentDirectoryState InspectCredentialParent(
         const std::filesystem::path& filePath) noexcept
     {
         try
         {
+            // 正規化した資格情報の親保存先
             const auto parent = std::filesystem::absolute(
                 filePath.parent_path().empty()
                     ? std::filesystem::current_path()
                     : filePath.parent_path()).lexically_normal();
+            // 順に検証する祖先のパス
             auto current = parent.root_path();
+            // 開いた祖先が通常ディレクトリかを返す(path: 検査する保存先)。
             const auto inspectComponent = [](const auto& path)
             {
+                // 属性検証用のディレクトリハンドル
                 HandleGuard directory;
                 directory.value = CreateFileW(
                     path.c_str(),
@@ -255,12 +291,14 @@ namespace
                     nullptr);
                 if (directory.value == INVALID_HANDLE_VALUE)
                 {
+                    // Windows APIの失敗コード
                     const auto error = GetLastError();
                     return error == ERROR_FILE_NOT_FOUND
                             || error == ERROR_PATH_NOT_FOUND
                         ? ParentDirectoryState::Missing
                         : ParentDirectoryState::Unavailable;
                 }
+                // 作成時ACLまたは取得した属性情報
                 FILE_ATTRIBUTE_TAG_INFO attributes{};
                 if (GetFileInformationByHandleEx(
                         directory.value,
@@ -276,11 +314,13 @@ namespace
                 }
                 return ParentDirectoryState::Exists;
             };
+            // 親ディレクトリの検査結果
             auto state = inspectComponent(current);
             if (state != ParentDirectoryState::Exists)
             {
                 return state;
             }
+            // 検証する祖先のパス構成要素
             for (const auto& component : parent.relative_path())
             {
                 current /= component;
@@ -298,10 +338,13 @@ namespace
         }
     }
 
+    // 開いた対象がreparse pointでも複数リンクでもない通常ファイルかを返す(file: 検証するハンドル)。
     [[nodiscard]] bool IsPlainSingleLinkFile(
         const HANDLE file) noexcept
     {
+        // 作成時ACLまたは取得した属性情報
         FILE_ATTRIBUTE_TAG_INFO attributes{};
+        // ファイル長とリンク数の情報
         FILE_STANDARD_INFO standard{};
         return GetFileInformationByHandleEx(
                 file,
@@ -320,6 +363,7 @@ namespace
             && standard.NumberOfLinks == 1u;
     }
 
+    // 通常ファイルを検証し継承を遮断したACLを適用する(file: 対象ハンドル, security: 現ユーザーとSYSTEM限定のACL)。
     [[nodiscard]] bool ProtectPlainFileHandle(
         const HANDLE file,
         const RestrictedSecurity& security) noexcept
@@ -336,9 +380,11 @@ namespace
                 nullptr) == ERROR_SUCCESS;
     }
 
+    // 開いた書き込み残骸の属性を検証して削除する(path: 書き込み用のパス)。
     [[nodiscard]] bool RemoveSafeCredentialTemporary(
         const std::filesystem::path& path) noexcept
     {
+        // 検証と読み書き用の所有ハンドル
         HandleGuard file;
         file.value = CreateFileW(
             path.c_str(),
@@ -350,6 +396,7 @@ namespace
             nullptr);
         if (file.value == INVALID_HANDLE_VALUE)
         {
+            // Windows APIの失敗コード
             const auto error = GetLastError();
             return error == ERROR_FILE_NOT_FOUND
                 || error == ERROR_PATH_NOT_FOUND;
@@ -358,6 +405,7 @@ namespace
         {
             return false;
         }
+        // 削除を要求するファイル処理情報
         FILE_DISPOSITION_INFO disposition{};
         disposition.DeleteFile = TRUE;
         return SetFileInformationByHandle(
@@ -367,6 +415,7 @@ namespace
             sizeof(disposition)) != FALSE;
     }
 
+    // 共有なしの通常ファイルを開いて制限ACLのロックを得る(filePath: 資格情報ファイル, suffix: ロック用接尾辞, lock: 取得するハンドルの所有先)。
     [[nodiscard]] bool AcquireCredentialExclusiveLock(
         const std::filesystem::path& filePath,
         const wchar_t* const suffix,
@@ -374,11 +423,13 @@ namespace
     {
         try
         {
+            // 現ユーザーとSYSTEM限定のACL
             RestrictedSecurity security;
             if (!security.Initialize(NO_INHERITANCE))
             {
                 return false;
             }
+            // 接尾辞付きの資格情報ロック先
             auto lockPath = filePath;
             lockPath += suffix;
             lock.value = CreateFileW(
@@ -411,6 +462,7 @@ namespace
         }
     }
 
+    // 読取・保存・削除の一回の操作を排他する(filePath: 資格情報ファイル, lock: ロックの所有先)。
     [[nodiscard]] bool AcquireCredentialOperationLock(
         const std::filesystem::path& filePath,
         HandleGuard& lock) noexcept
@@ -421,6 +473,7 @@ namespace
             lock);
     }
 
+    // 資格情報の同時利用をセッションの寿命中排他する(filePath: 資格情報ファイル, lock: ロックの所有先)。
     [[nodiscard]] bool AcquireCredentialUsageLock(
         const std::filesystem::path& filePath,
         HandleGuard& lock) noexcept
@@ -431,11 +484,13 @@ namespace
             lock);
     }
 
+    // 秘密値を含まない操作成功を返す。
     [[nodiscard]] LamaPon::Detail::OnlinePlatformResult Success()
     {
         return { true, {}, {} };
     }
 
+    // エンジン定義の失敗を返す(code: 固定エラー識別子, message: 秘密値を含まない診断)。
     [[nodiscard]] LamaPon::Detail::OnlinePlatformResult Failure(
         std::string code,
         std::string message)
@@ -447,11 +502,13 @@ namespace
         };
     }
 
+    // tokenを含まない読取失敗を作る(status: 不在・利用不可・破損の種別, code: 固定エラー識別子, message: 固定診断)。
     [[nodiscard]] LamaPon::Detail::RefreshTokenLoadResult LoadFailure(
         const LamaPon::Detail::RefreshTokenLoadStatus status,
         std::string code,
         std::string message)
     {
+        // 固定診断だけを持つ読取失敗
         LamaPon::Detail::RefreshTokenLoadResult result;
         result.status = status;
         result.errorCode = std::move(code);
@@ -459,10 +516,12 @@ namespace
         return result;
     }
 
+    // 長さと名前空間で許可するASCII文字を検証する(value: 識別子, maximumBytes: 最大バイト数)。
     [[nodiscard]] bool IsSafeIdentifier(
         const std::string_view value,
         const std::size_t maximumBytes)
     {
+        // 名前空間で許可するASCII文字を検証する(character: 検証する1文字)。
         return !value.empty()
             && value.size() <= maximumBytes
             && std::ranges::all_of(
@@ -478,9 +537,11 @@ namespace
                 });
     }
 
+    // 更新用tokenの長さと制御文字・空白の不在を検証する(value: 検証するtoken)。
     [[nodiscard]] bool IsSafeRefreshToken(
         const std::string_view value)
     {
+        // 制御文字と空白を検出する(character: 検証するtokenの1文字)。
         return !value.empty()
             && value.size() <= MaximumRefreshTokenBytes
             && std::ranges::none_of(
@@ -491,6 +552,7 @@ namespace
                 });
     }
 
+    // 16ビット値を下位バイトから追記する(bytes: 追記先, value: 追加する整数)。
     void AppendU16(
         std::vector<std::uint8_t>& bytes,
         const std::uint16_t value)
@@ -499,10 +561,12 @@ namespace
         bytes.push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
     }
 
+    // 32ビット値を下位バイトから追記する(bytes: 追記先, value: 追加する整数)。
     void AppendU32(
         std::vector<std::uint8_t>& bytes,
         const std::uint32_t value)
     {
+        // 整数を処理するビット位置
         for (unsigned shift = 0; shift < 32; shift += 8)
         {
             bytes.push_back(static_cast<std::uint8_t>(
@@ -510,6 +574,7 @@ namespace
         }
     }
 
+    // 2バイトから下位バイト順の整数を復元する(bytes: 2バイト以上の入力の借用)。
     [[nodiscard]] std::uint16_t ReadU16(
         const std::uint8_t* bytes) noexcept
     {
@@ -517,10 +582,13 @@ namespace
             | static_cast<std::uint16_t>(bytes[1] << 8u);
     }
 
+    // 4バイトから下位バイト順の整数を復元する(bytes: 4バイト以上の入力の借用)。
     [[nodiscard]] std::uint32_t ReadU32(
         const std::uint8_t* bytes) noexcept
     {
+        // 復元中の32ビット整数
         std::uint32_t value{};
+        // 整数を処理するビット位置
         for (unsigned shift = 0; shift < 32; shift += 8)
         {
             value |= static_cast<std::uint32_t>(
@@ -529,6 +597,7 @@ namespace
         return value;
     }
 
+    // ゲームと環境を検証し長さ付きの暗号化補助値を作る(gameId: ゲームの名前空間ID, environmentId: 環境の名前空間ID)。
     [[nodiscard]] std::vector<std::uint8_t> BuildEntropy(
         const std::string_view gameId,
         const std::string_view environmentId)
@@ -539,6 +608,7 @@ namespace
             throw std::invalid_argument(
                 "Online credential identifiers must contain only ASCII letters, digits, '.', '_' or '-'.");
         }
+        // ゲームと環境を結合した暗号化補助値
         std::vector<std::uint8_t> entropy;
         entropy.reserve(
             EntropyLabel.size() + gameId.size()
@@ -561,15 +631,20 @@ namespace
         return entropy;
     }
 
+    // 補助値をHMACでパス名用の小文字16進表記にする(entropy: ゲームと環境の補助値)。
     [[nodiscard]] std::string CredentialPathHash(
         const std::vector<std::uint8_t>& entropy)
     {
+        // 資格情報パス用のHMAC値
         const auto digest = LamaPon::Crypto::Hmac(
             CredentialPathHashKey,
             entropy.data(),
             entropy.size());
+        // 小文字の16進数字一覧
         constexpr char HexDigits[] = "0123456789abcdef";
+        // 資格情報のパス用HMACの16進表記
         std::string result(digest.size() * 2, '0');
+        // HMACの変換バイト位置
         for (std::size_t index = 0; index < digest.size(); ++index)
         {
             result[index * 2] = HexDigits[digest[index] >> 4u];
@@ -578,11 +653,14 @@ namespace
         return result;
     }
 
+    // 継承を遮断し現ユーザーとSYSTEMだけを許可する(path: 対象の保存先, directory: 子への継承が必要か)。
     [[nodiscard]] bool ApplyRestrictedAcl(
         const std::filesystem::path& path,
         const bool directory)
     {
+        // 現ユーザーとSYSTEM限定のACL
         RestrictedSecurity security;
+        // ディレクトリ用の継承設定
         const DWORD inheritance = directory
             ? CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
             : NO_INHERITANCE;
@@ -601,16 +679,20 @@ namespace
             nullptr) == ERROR_SUCCESS;
     }
 
+    // 全バイトの書き込みを試し途中の失敗をfalseとする(file: 書き込み先ハンドル, bytes: 書き込む内容)。
     [[nodiscard]] bool WriteAll(
         const HANDLE file,
         const std::vector<std::uint8_t>& bytes)
     {
+        // 読み書き済みのバイト位置
         std::size_t offset{};
         while (offset < bytes.size())
         {
+            // 今回読み書きする残りバイト数
             const auto remaining = std::min<std::size_t>(
                 bytes.size() - offset,
                 std::numeric_limits<DWORD>::max());
+            // 今回書き込んだバイト数
             DWORD written{};
             if (WriteFile(
                     file,
@@ -627,16 +709,20 @@ namespace
         return true;
     }
 
+    // 確保済み領域全体を読み込み途中の失敗をfalseとする(file: 読み取り先ハンドル, bytes: 読む長さを確保済みの出力)。
     [[nodiscard]] bool ReadAll(
         const HANDLE file,
         std::vector<std::uint8_t>& bytes)
     {
+        // 読み書き済みのバイト位置
         std::size_t offset{};
         while (offset < bytes.size())
         {
+            // 今回読み書きする残りバイト数
             const auto remaining = std::min<std::size_t>(
                 bytes.size() - offset,
                 std::numeric_limits<DWORD>::max());
+            // 今回読み取ったバイト数
             DWORD read{};
             if (ReadFile(
                     file,
@@ -653,10 +739,12 @@ namespace
         return true;
     }
 
+    // LocalAppDataに名前空間別の保存先を導出する(gameId: ゲームの名前空間ID, environmentId: 環境の名前空間ID)。
     [[nodiscard]] std::filesystem::path LocalCredentialPath(
         const std::string_view gameId,
         const std::string_view environmentId)
     {
+        // LocalAppData保存先の所有領域
         KnownFolderGuard localAppData;
         if (FAILED(SHGetKnownFolderPath(
                 FOLDERID_LocalAppData,
@@ -668,7 +756,9 @@ namespace
         {
             return {};
         }
+        // ゲームと環境を結合した暗号化補助値
         auto entropy = BuildEntropy(gameId, environmentId);
+        // 匿名化した資格情報の保存先キー
         const auto pathHash = CredentialPathHash(entropy);
         // entropyには生のIDが入るため、パスを組み立てた時点で消します。
         LamaPon::Crypto::SecureErase(entropy);
@@ -679,6 +769,7 @@ namespace
             / L"session.bin";
     }
 
+    // ファイルを削除し不在も成功とする(path: 削除する保存先)。
     [[nodiscard]] bool DeleteIfPresent(
         const std::filesystem::path& path) noexcept
     {
@@ -686,15 +777,19 @@ namespace
         {
             return true;
         }
+        // Windows APIの失敗コード
         const DWORD error = GetLastError();
         return error == ERROR_FILE_NOT_FOUND
             || error == ERROR_PATH_NOT_FOUND;
     }
 
+    // localhostとIPv4・IPv6のループバック表記かを返す(host: 比較するホスト名)。
     [[nodiscard]] bool IsLoopbackHost(
         const std::wstring_view host)
     {
+        // 小文字で比較する接続先のホスト名
         std::wstring lower(host);
+        // ホスト名を小文字で比較する(character: ホスト名の1文字)。
         std::ranges::transform(
             lower,
             lower.begin(),
@@ -708,11 +803,13 @@ namespace
             || lower == L"[::1]";
     }
 
+    // URL構文を検証しHTTPSまたは許可したローカルHTTPに限定する(url: 認証URL, allowInsecureLoopback: ローカルHTTPを許可するか, wide: UTF-16の出力)。
     [[nodiscard]] bool IsSafeAuthorizationUrl(
         const std::string_view url,
         const bool allowInsecureLoopback,
         std::wstring& wide)
     {
+        // URLをshellへ安全に渡せるか検証する(character: URLの1文字)。
         if (url.empty()
             || url.size() > 2048
             || std::ranges::any_of(
@@ -728,14 +825,17 @@ namespace
         {
             return false;
         }
+        // URLの方式と接続先の区切り位置
         const auto schemeMarker = url.find("://");
         if (schemeMarker == std::string_view::npos)
         {
             return false;
         }
+        // URLの接続先が終わる位置
         const auto authorityEnd = url.find_first_of(
             "/?#",
             schemeMarker + 3);
+        // URLのホストとポートの借用
         const auto authority = url.substr(
             schemeMarker + 3,
             authorityEnd == std::string_view::npos
@@ -752,6 +852,7 @@ namespace
         {
             return false;
         }
+        // WinHTTPで解析するURLの項目
         URL_COMPONENTS components{};
         components.dwStructSize = sizeof(components);
         components.dwSchemeLength = static_cast<DWORD>(-1);
@@ -771,6 +872,7 @@ namespace
         {
             return false;
         }
+        // WinHTTPで解析したホスト名の借用
         const std::wstring_view host(
             components.lpszHostName,
             components.dwHostNameLength);
@@ -834,6 +936,7 @@ namespace LamaPon::Detail
                 "Secure credential storage is unavailable.");
         }
 
+        // 利用ロック取得前の親保存先の状態
         const auto initialParentState =
             InspectCredentialParent(m_filePath);
         if (initialParentState == ParentDirectoryState::Unavailable)
@@ -842,6 +945,7 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 親ディレクトリ作成の失敗理由
         std::error_code directoryError;
         if (!EnsureDirectoryExists(
                 m_filePath.parent_path(),
@@ -857,6 +961,7 @@ namespace LamaPon::Detail
                 "Secure credential storage is unavailable.");
         }
 
+        // 同時利用を排他するロックの所有先
         HandleGuard usageLease;
         if (!AcquireCredentialUsageLock(m_filePath, usageLease))
         {
@@ -870,6 +975,7 @@ namespace LamaPon::Detail
 
     void WindowsRefreshTokenStore::ReleaseUsageLease() noexcept
     {
+        // 解放する資格情報利用のハンドル
         const auto lease = std::exchange(
             m_usageLeaseHandle,
             nullptr);
@@ -889,9 +995,11 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 資格情報の親保存先の検査結果
         const auto parentState = InspectCredentialParent(m_filePath);
         if (parentState == ParentDirectoryState::Missing)
         {
+            // 更新用tokenの読み込み結果
             RefreshTokenLoadResult result;
             result.status = RefreshTokenLoadStatus::NotFound;
             return result;
@@ -903,6 +1011,7 @@ namespace LamaPon::Detail
                 "credential_read_unavailable",
                 "The saved online session could not be read.");
         }
+        // 資格情報の操作中の排他ロック
         HandleGuard operationLock;
         if (!AcquireCredentialOperationLock(
                 m_filePath,
@@ -914,6 +1023,7 @@ namespace LamaPon::Detail
                 "The saved online session could not be read.");
         }
 
+        // 検証と読み書き用の所有ハンドル
         HandleGuard file;
         file.value = CreateFileW(
             m_filePath.c_str(),
@@ -925,10 +1035,12 @@ namespace LamaPon::Detail
             nullptr);
         if (file.value == INVALID_HANDLE_VALUE)
         {
+            // Windows APIの失敗コード
             const DWORD error = GetLastError();
             if (error == ERROR_FILE_NOT_FOUND
                 || error == ERROR_PATH_NOT_FOUND)
             {
+                // 更新用tokenの読み込み結果
                 RefreshTokenLoadResult result;
                 result.status = RefreshTokenLoadStatus::NotFound;
                 return result;
@@ -946,6 +1058,7 @@ namespace LamaPon::Detail
                 "The saved online session could not be read.");
         }
 
+        // 暗号化ファイルのバイト数
         LARGE_INTEGER size{};
         if (GetFileSizeEx(file.value, &size) == FALSE)
         {
@@ -964,6 +1077,7 @@ namespace LamaPon::Detail
                 "The saved online session is invalid.");
         }
 
+        // 暗号化ファイル全体の読み取り領域
         std::vector<std::uint8_t> fileBytes(
             static_cast<std::size_t>(size.QuadPart));
         if (!ReadAll(file.value, fileBytes))
@@ -976,12 +1090,14 @@ namespace LamaPon::Detail
         }
         file.Reset();
 
+        // 暗号化ファイルの版と識別子が正しいか
         const bool validEnvelope = std::equal(
                 FileMagic.begin(),
                 FileMagic.end(),
                 fileBytes.begin())
             && ReadU16(fileBytes.data() + 8) == 1
             && ReadU16(fileBytes.data() + 10) == 0;
+        // 暗号化blobの記録済みバイト数
         const auto protectedSize = ReadU32(fileBytes.data() + 12);
         if (!validEnvelope
             || protectedSize == 0
@@ -995,6 +1111,7 @@ namespace LamaPon::Detail
                 "The saved online session is invalid.");
         }
 
+        // 現Windowsユーザーによる復号結果
         auto unprotected = Crypto::UnprotectForCurrentUser(
             fileBytes.data() + EnvelopeHeaderBytes,
             protectedSize,
@@ -1003,6 +1120,7 @@ namespace LamaPon::Detail
         Crypto::SecureErase(fileBytes);
         if (!unprotected.Succeeded())
         {
+            // 復号失敗に対応する読み込み結果
             const auto status = unprotected.status
                     == Crypto::CurrentUserProtectionStatus::InvalidData
                 ? RefreshTokenLoadStatus::Corrupt
@@ -1018,7 +1136,9 @@ namespace LamaPon::Detail
                     : "Secure credential storage is unavailable.");
         }
 
+        // 復号後または暗号化前の包絡内容
         auto& plaintext = unprotected.data;
+        // 復号した包絡の版と識別子が正しいか
         const bool validPlaintext = plaintext.size()
                 >= EnvelopeHeaderBytes
             && std::equal(
@@ -1027,6 +1147,7 @@ namespace LamaPon::Detail
                 plaintext.begin())
             && ReadU16(plaintext.data() + 8) == 1
             && ReadU16(plaintext.data() + 10) == 0;
+        // 復号したtokenの記録済みバイト数
         const auto tokenSize = validPlaintext
             ? ReadU32(plaintext.data() + 12)
             : 0;
@@ -1042,6 +1163,7 @@ namespace LamaPon::Detail
                 "The saved online session is invalid.");
         }
 
+        // 検証して呼出し側へ渡す更新用token
         std::string refreshToken(
             reinterpret_cast<const char*>(
                 plaintext.data() + EnvelopeHeaderBytes),
@@ -1057,6 +1179,7 @@ namespace LamaPon::Detail
         }
         Crypto::SecureErase(plaintext);
 
+        // 更新用tokenの読み込み結果
         RefreshTokenLoadResult result;
         result.status = RefreshTokenLoadStatus::Loaded;
         result.refreshToken = std::move(refreshToken);
@@ -1079,6 +1202,7 @@ namespace LamaPon::Detail
                 "Secure credential storage is unavailable.");
         }
 
+        // 復号後または暗号化前の包絡内容
         std::vector<std::uint8_t> plaintext;
         plaintext.reserve(EnvelopeHeaderBytes + refreshToken.size());
         plaintext.insert(
@@ -1102,6 +1226,7 @@ namespace LamaPon::Detail
                 "credential_protection_unavailable",
                 "The online session could not be protected.");
         }
+        // 現Windowsユーザーによる暗号化結果
         auto protectedData = Crypto::ProtectForCurrentUser(
             plaintext.data(),
             plaintext.size(),
@@ -1118,6 +1243,7 @@ namespace LamaPon::Detail
                 "The online session could not be protected.");
         }
 
+        // 暗号化blobとファイルヘッダー
         std::vector<std::uint8_t> fileBytes;
         fileBytes.reserve(
             EnvelopeHeaderBytes + protectedData.data.size());
@@ -1136,6 +1262,7 @@ namespace LamaPon::Detail
             protectedData.data.end());
         Crypto::SecureErase(protectedData.data);
 
+        // 親ディレクトリ作成の失敗理由
         std::error_code directoryError;
         if (!EnsureDirectoryExists(
                 m_filePath.parent_path(),
@@ -1151,6 +1278,7 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 資格情報の操作中の排他ロック
         HandleGuard operationLock;
         if (!AcquireCredentialOperationLock(
                 m_filePath,
@@ -1162,6 +1290,7 @@ namespace LamaPon::Detail
                 "Secure credential storage is unavailable.");
         }
 
+        // 資格情報ファイルに適用するACL
         RestrictedSecurity fileSecurity;
         if (!fileSecurity.Initialize(NO_INHERITANCE))
         {
@@ -1170,6 +1299,7 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 確定値を保つ書き込み先のパス
         auto temporary = m_filePath;
         temporary += L".tmp";
         if (ConsumeCredentialSaveFailPoint(
@@ -1187,6 +1317,7 @@ namespace LamaPon::Detail
                 "credential_write_failed",
                 "The online session could not be saved.");
         }
+        // 検証と読み書き用の所有ハンドル
         HandleGuard file;
         file.value = CreateFileW(
             temporary.c_str(),
@@ -1230,6 +1361,7 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 置換前に実行するテスト処理
         if (const auto hook =
                 CredentialSaveBeforeReplaceHook.load(
                     std::memory_order_acquire))
@@ -1269,6 +1401,7 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        // 資格情報の親保存先の検査結果
         const auto parentState = InspectCredentialParent(m_filePath);
         if (parentState == ParentDirectoryState::Missing)
         {
@@ -1280,6 +1413,7 @@ namespace LamaPon::Detail
                 "credential_delete_failed",
                 "The saved online session could not be deleted.");
         }
+        // 資格情報の操作中の排他ロック
         HandleGuard operationLock;
         if (!AcquireCredentialOperationLock(
                 m_filePath,
@@ -1289,11 +1423,13 @@ namespace LamaPon::Detail
                 "credential_delete_failed",
                 "The saved online session could not be deleted.");
         }
+        // 確定値を保つ書き込み先のパス
         auto temporary = m_filePath;
         temporary += L".tmp";
-        // 片方が失敗してももう片方を必ず試します。finalを消せても
-        // tmpを消せなかった場合は、残骸があることを隠さず失敗です。
+        // 片方の削除が失敗しても両方を試し、書き込み残骸を消せなければ失敗とします。
+        // 確定値の削除または不在を確認したか
         const bool finalDeleted = DeleteIfPresent(m_filePath);
+        // 安全な書き込み残骸を削除したか
         const bool temporaryDeleted =
             RemoveSafeCredentialTemporary(temporary);
         if (finalDeleted && temporaryDeleted)
@@ -1313,6 +1449,7 @@ namespace LamaPon::Detail
     {
         if (!m_shellOpen)
         {
+            // shellへ起動を渡す(owner: 所有window, operation: shellの動詞, file: URL, parameters: 起動引数, directory: 作業ディレクトリ, showCommand: 表示方法)。
             m_shellOpen = [](
                 void* owner,
                 const wchar_t* operation,
@@ -1337,6 +1474,7 @@ namespace LamaPon::Detail
         const std::string_view authorizationUrl,
         const bool allowInsecureLoopback)
     {
+        // 検証した認証URLのUTF-16表記
         std::wstring wide;
         if (!IsSafeAuthorizationUrl(
                 authorizationUrl,
@@ -1347,6 +1485,7 @@ namespace LamaPon::Detail
                 "authorization_url_invalid",
                 "The authorization URL is invalid.");
         }
+        // shell起動の成否を示す戻り値
         const auto result = m_shellOpen(
             m_ownerWindow,
             L"open",
@@ -1368,6 +1507,7 @@ namespace LamaPon::Detail
         std::string gameId,
         std::string environmentId)
     {
+        // 名前空間別の資格情報保存先
         const auto filePath = LocalCredentialPath(
             gameId,
             environmentId);

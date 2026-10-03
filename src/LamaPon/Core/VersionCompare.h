@@ -6,16 +6,14 @@
 
 namespace LamaPon
 {
-    // "v2026.7.31" 形式のバージョン文字列を数値列へ分解します。
-    // 先頭の v/V は無視し、数値とドット以外を含む場合や空の場合は
-    // 空を返します。
+    // バージョンを数値列へ分解します(version: ドット区切りのバージョン文字列)。
+    // 先頭のv/Vは無視し、空成分・数字以外・32ビット整数の範囲外を含む場合は空を返します。
     [[nodiscard]] std::vector<std::uint32_t>
         ParseVersionNumbers(std::string_view version);
 
-    // latestがcurrentより新しいバージョンかを返します。
-    // 数値成分の辞書順比較で、桁数が違う場合は不足分を0として
-    // 扱います（2026.7.31 < 2026.7.31.1）。どちらかが解釈できない
-    // 場合はfalseです。
+    // 更新版の方が新しいかを返します(current: 現行バージョン, latest: 更新候補のバージョン)。
+    // 数値成分の辞書順で比較し、不足する成分は0として扱います。
+    // どちらかが解釈できない場合はfalseです。
     [[nodiscard]] bool IsNewerVersion(
         std::string_view current,
         std::string_view latest);

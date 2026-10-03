@@ -17,7 +17,9 @@
 
 namespace
 {
+    // スロットファイルの拡張子
     constexpr std::string_view SaveSuffix = ".save.json";
+    // 保存先キーの用途と形式の識別列
     constexpr std::array<std::uint8_t, 29> ProfileHashDomain{
         'L', 'a', 'm', 'a', 'P', 'o', 'n', '.',
         'P', 'e', 'r', 's', 'i', 's', 't', 'e', 'n', 'c', 'e', '.',
@@ -27,6 +29,7 @@ namespace
     class AlgorithmHandle final
     {
     public:
+        // CNGアルゴリズムのハンドルを閉じます。
         ~AlgorithmHandle()
         {
             if (value != nullptr)
@@ -35,12 +38,14 @@ namespace
             }
         }
 
+        // 所有するCNGアルゴリズム
         BCRYPT_ALG_HANDLE value{};
     };
 
     class HashHandle final
     {
     public:
+        // SHA-256の計算状態を破棄します。
         ~HashHandle()
         {
             if (value != nullptr)
@@ -49,9 +54,11 @@ namespace
             }
         }
 
+        // 所有するハッシュ計算状態
         BCRYPT_HASH_HANDLE value{};
     };
 
+    // CNGの失敗を例外へ変換します(status: NTSTATUSの結果, operation: 診断に付ける操作名)。
     void RequireNtSuccess(
         const NTSTATUS status,
         const char* operation)
@@ -63,11 +70,15 @@ namespace
         }
     }
 
+    // 長さを8バイトのビッグエンディアンへ変換します(length: 入力のバイト数)。
     std::array<std::uint8_t, 8> EncodeLength(
         const std::size_t length)
     {
+        // 長さを格納する8バイト列
         std::array<std::uint8_t, 8> bytes{};
+        // 下位バイトから取り出す長さ値
         auto value = static_cast<std::uint64_t>(length);
+        // 低位から取り出すバイト番号
         for (std::size_t index = 0; index < bytes.size(); ++index)
         {
             bytes[bytes.size() - index - 1] =
@@ -77,6 +88,7 @@ namespace
         return bytes;
     }
 
+    // バイト列をハッシュ計算へ追加します(hash: 計算状態, data: 入力先頭, size: 入力バイト数)。
     void AppendHashData(
         const BCRYPT_HASH_HANDLE hash,
         const std::uint8_t* data,
@@ -99,6 +111,7 @@ namespace
             "BCryptHashData(profile id)");
     }
 
+    // 識別子のUTF-8と長さを検証します(value: 識別子, maximumBytes: 上限バイト数, message: 不正時の例外本文)。
     void ValidateOpaqueId(
         const std::string_view value,
         const std::size_t maximumBytes,
@@ -112,10 +125,12 @@ namespace
         }
     }
 
+    // バイト数と文字列をハッシュ計算へ追加します(hash: 計算状態, value: UTF-8の識別子)。
     void AppendLengthTagged(
         const BCRYPT_HASH_HANDLE hash,
         const std::string_view value)
     {
+        // 8バイトへ符号化した識別子長
         const auto length = EncodeLength(value.size());
         AppendHashData(hash, length.data(), length.size());
         AppendHashData(
@@ -124,13 +139,16 @@ namespace
             value.size());
     }
 
+    // 保存スロットの拡張子かを返します(path: 照合するパス)。
     bool HasSaveSuffix(const std::filesystem::path& path)
     {
+        // 照合するファイル名のUTF-8表記
         const auto name = LamaPon::PathToUtf8(path.filename());
         return name.size() >= SaveSuffix.size()
             && name.ends_with(SaveSuffix);
     }
 
+    // インポート失敗の結果を構築します(message: 固定文言の失敗理由)。
     LamaPon::GuestPersistenceImportResult FailedImport(
         std::string message)
     {
@@ -140,8 +158,10 @@ namespace
         };
     }
 
+    // ステージ固有の乱数を小文字16進32桁で生成します。
     std::string RandomStageId()
     {
+        // ステージを識別する乱数16バイト
         std::array<std::uint8_t, 16> random{};
         RequireNtSuccess(
             BCryptGenRandom(
@@ -151,9 +171,12 @@ namespace
                 BCRYPT_USE_SYSTEM_PREFERRED_RNG),
             "BCryptGenRandom(persistence import)");
 
+        // 小文字16進表記の文字一覧
         constexpr char Hex[] = "0123456789abcdef";
+        // 16進表記の識別文字列
         std::string encoded;
         encoded.reserve(random.size() * 2);
+        // 16進表記へ変換する乱数バイト
         for (const auto byte : random)
         {
             encoded.push_back(Hex[byte >> 4]);
@@ -215,6 +238,7 @@ namespace LamaPon
             1024,
             "Persistence player id must be valid UTF-8 text with 1 to 1024 bytes.");
 
+        // SHA-256アルゴリズムの所有者
         AlgorithmHandle algorithm;
         RequireNtSuccess(
             BCryptOpenAlgorithmProvider(
@@ -223,6 +247,7 @@ namespace LamaPon
                 nullptr,
                 0),
             "BCryptOpenAlgorithmProvider(profile id)");
+        // 保存先キーのハッシュ計算状態
         HashHandle hash;
         RequireNtSuccess(
             BCryptCreateHash(
@@ -243,6 +268,7 @@ namespace LamaPon
         AppendLengthTagged(hash.value, m_environmentId);
         AppendLengthTagged(hash.value, playerId);
 
+        // 保存先を識別するSHA-256値
         std::array<std::uint8_t, 32> digest{};
         RequireNtSuccess(
             BCryptFinishHash(
@@ -252,9 +278,12 @@ namespace LamaPon
                 0),
             "BCryptFinishHash(profile id)");
 
+        // 小文字16進表記の文字一覧
         constexpr char Hex[] = "0123456789abcdef";
+        // 16進表記の識別文字列
         std::string encoded;
         encoded.reserve(digest.size() * 2);
+        // 16進表記へ変換するハッシュ値
         for (const auto byte : digest)
         {
             encoded.push_back(Hex[byte >> 4]);
@@ -267,7 +296,9 @@ namespace LamaPon
     PersistenceProfilePaths PersistenceProfiles::Account(
         const std::string_view playerId) const
     {
+        // アカウントの保存先識別キー
         auto key = AccountStorageKey(playerId);
+        // ハッシュ名で分離する保存ルート
         const auto root =
             m_userDataDirectory.parent_path()
             / L"OnlineProfiles"
@@ -292,13 +323,12 @@ namespace LamaPon
             throw std::logic_error(
                 "Persistence binding is owned by online persistence.");
         }
-        // pathのコピーで起こり得るallocation failureを、PlayerPrefsの
-        // state交換より前にすべて済ませます。
+        // 状態交換の後で割り当てに失敗しないよう、両パスの複製を先に作ります。
+        // 切り替える設定ファイルのパス
         auto preferencesPath = profile.playerPrefsFile;
+        // 切り替えるスロットの保存領域
         auto savesDirectory = profile.saveDataDirectory;
-        // Rebind(PlayerPrefs)は読み込みを完了してから状態を交換し、
-        // Rebind(SaveDataStore)はnoexceptです。この順なら2オブジェクト
-        // の切り替えも強い例外安全性を持ちます。
+        // 設定の読込を先に完了し、失敗しないスロット保存先の交換を最後に行います。
         preferences.Rebind(std::move(preferencesPath));
         saves.Rebind(std::move(savesDirectory));
     }
@@ -324,10 +354,15 @@ namespace LamaPon
             SaveDataStore& activeSaves,
             const std::string_view playerId) const
     {
+        // コピー元のゲスト保存先
         PersistenceProfilePaths guest;
+        // 公開するアカウント保存先
         PersistenceProfilePaths account;
+        // コピーと検証に使う固有ステージ
         std::filesystem::path staging;
+        // 自身が作成したステージがあるか
         bool ownsStaging{};
+        // 正式保存先への公開を試みたか
         bool attemptedFinalRename{};
         try
         {
@@ -364,12 +399,13 @@ namespace LamaPon
 
             if (activePreferences.IsDirty())
             {
-                // snapshotが確定しない限り、account側のdirectoryすら
-                // 作りません。Save失敗時もdirty状態は維持されます。
+                // アカウント側を作成する前にゲストの未保存設定を確定します。
                 activePreferences.Save();
             }
 
+            // ゲスト設定ファイルをコピーするか
             bool copyPreferences{};
+            // リンクを追わない設定ファイル種別
             const auto preferencesStatus =
                 std::filesystem::symlink_status(
                     guest.playerPrefsFile);
@@ -384,9 +420,11 @@ namespace LamaPon
                 copyPreferences = true;
             }
 
+            // コピー元ファイルとスロット名の組
             std::vector<std::pair<
                 std::filesystem::path,
                 std::string>> saveFiles;
+            // リンクを追わない保存領域の種別
             const auto savesStatus =
                 std::filesystem::symlink_status(
                     guest.saveDataDirectory);
@@ -397,6 +435,7 @@ namespace LamaPon
                     return FailedImport(
                         "Guest save data is not a regular directory.");
                 }
+                // ゲストの保存領域の各項目
                 for (const auto& entry :
                     std::filesystem::directory_iterator(
                         guest.saveDataDirectory))
@@ -405,14 +444,17 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // リンクを追わない保存項目の種別
                     const auto status = entry.symlink_status();
                     if (!std::filesystem::is_regular_file(status))
                     {
                         return FailedImport(
                             "Guest save data contains an unsafe entry.");
                     }
+                    // スロットの拡張子付きファイル名
                     const auto fileName =
                         entry.path().filename().wstring();
+                    // UTF-16表記のスロット拡張子
                     constexpr std::wstring_view wideSuffix =
                         L".save.json";
                     saveFiles.emplace_back(
@@ -433,16 +475,18 @@ namespace LamaPon
                 };
             }
 
-            // コピー先を一切作る前に、実際の永続化loaderで全文書を
-            // 読みます。JSON破損・未知format・未来version・不正slotは
-            // ここで失敗し、正式accountにもstagingにも触れません。
+            // コピー先を作成する前に、保存文書を各ローダーで全て検証します。
             if (copyPreferences)
             {
+                // ゲスト設定を検証する読取管理
                 PlayerPrefs validation(guest.playerPrefsFile);
                 validation.Load();
             }
+            // ゲストスロットを検証する読取管理
             SaveDataStore saveValidation(
                 guest.saveDataDirectory);
+            // source: コピー元の保存ファイル
+            // slot: UTF-8のスロット名
             for (const auto& [source, slot] : saveFiles)
             {
                 static_cast<void>(source);
@@ -456,11 +500,11 @@ namespace LamaPon
             std::filesystem::create_directories(
                 account.rootDirectory.parent_path());
 
-            // 他プロセスや以前のstageには触れません。暗号学的乱数を
-            // 含む、自分だけのstageを作成します。万一名前が既存でも
-            // 新しい乱数で再試行します。
+            // 既存のステージには触れず、名前が衝突した場合は新しい乱数で再試行します。
+            // 固有ステージ名の作成試行回数
             for (int attempt = 0; attempt < 4; ++attempt)
             {
+                // 作成を試す固有ステージパス
                 auto candidate = account.rootDirectory;
                 candidate += L".importing.";
                 candidate += PathFromUtf8(RandomStageId());
@@ -485,8 +529,11 @@ namespace LamaPon
             }
             if (!saveFiles.empty())
             {
+                // ステージ内のスロット保存領域
                 const auto stagingSaves = staging / L"Saves";
                 std::filesystem::create_directory(stagingSaves);
+                // source: コピー元の保存ファイル
+                // slot: UTF-8のスロット名
                 for (const auto& [source, slot] : saveFiles)
                 {
                     static_cast<void>(slot);
@@ -496,15 +543,16 @@ namespace LamaPon
                 }
             }
 
-            // 検証後にコピー元が変更された場合も、不完全・破損内容を
-            // 正式accountとして公開しないようstageを再検証します。
-            // このinstanceをfinal rename後にactiveへnoexcept swapする
-            // ため、公開後にもう一度loadが失敗する窓もありません。
+            // コピー中の変更も検出するためステージを再検証し、公開後へ引き継ぐ状態も準備します。
+            // 公開後へ引き継ぐ検証済み設定
             PlayerPrefs preparedPreferences(
                 staging / L"PlayerPrefs.json");
             preparedPreferences.Load();
+            // ステージのスロットを検証する管理
             SaveDataStore stagedSaveValidation(
                 staging / L"Saves");
+            // source: コピー元の保存ファイル
+            // slot: UTF-8のスロット名
             for (const auto& [source, slot] : saveFiles)
             {
                 static_cast<void>(source);
@@ -515,24 +563,22 @@ namespace LamaPon
                 }
             }
 
-            // final rename後に行う処理が例外を投げないよう、pathの
-            // allocationと状態loadをすべて先に完了させます。
+            // 正式公開後の割り当てを避けるため、最終パスの複製を先に完了します。
+            // 正式公開後の設定ファイルのパス
             auto finalPreferencesPath = account.playerPrefsFile;
+            // 正式公開後のスロット保存領域
             auto finalSavesDirectory = account.saveDataDirectory;
             preparedPreferences.RelocateBinding(
                 std::move(finalPreferencesPath));
 
-            // 同じ親ディレクトリ内なので、不完全なステージを経由せず
-            // 完成済みディレクトリを一度に公開します。
+            // 検証済みのディレクトリを同じ親の中で正式な保存先へ公開します。
             attemptedFinalRename = true;
             std::filesystem::rename(
                 staging,
                 account.rootDirectory);
             ownsStaging = false;
 
-            // ここからreturnまではnoexceptです。同じPlayerPrefs/
-            // SaveDataStoreオブジェクトのため、ScriptやEditorの参照も
-            // 有効なまま、import snapshotを直ちに読めます。
+            // 公開後は例外を送出せずに状態を交換し、外部が持つ管理オブジェクトへの参照を保ちます。
             activePreferences.SwapLoadedState(preparedPreferences);
             activeSaves.Rebind(std::move(finalSavesDirectory));
             return {
@@ -544,6 +590,7 @@ namespace LamaPon
         {
             if (ownsStaging)
             {
+                // 自身のステージを除去した結果
                 std::error_code rollbackError;
                 std::filesystem::remove_all(
                     staging,
@@ -556,7 +603,9 @@ namespace LamaPon
             }
             if (attemptedFinalRename)
             {
+                // 公開先の存在確認エラー
                 std::error_code targetError;
+                // 他の処理が保存先を公開したか
                 const bool targetExists =
                     std::filesystem::exists(
                         account.rootDirectory,

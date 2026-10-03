@@ -12,15 +12,20 @@ namespace
     using LamaPon::SceneTransitionEasing;
     using LamaPon::SceneTransitionSettings;
 
+    // 円周率
     constexpr float Pi = 3.14159265358979f;
 
     template <typename Enum>
     struct NamedValue final
     {
+        // 名前に対応する列挙値
         Enum value;
+        // 保存に使う列挙値の名前
+        // 読み込んだ曲線の保存名
         std::string_view name;
     };
 
+    // 曲線と保存名の対応表
     constexpr std::array EasingNames{
         NamedValue<SceneTransitionEasing>{
             SceneTransitionEasing::Linear, "linear" },
@@ -43,11 +48,11 @@ namespace
         EasingNames.size()
         == static_cast<std::size_t>(SceneTransitionEasing::Count));
 
-    // PathUtils.hはWindows.hに依存するため、同じ変換をここで行います
-    // （保存形式はPathToUtf8と同じgeneric形式のUTF-8です）。
+    // パスをgeneric形式のUTF-8文字列へ変換します(path: 変換するパス)。
     [[nodiscard]] std::string PathToUtf8String(
         const std::filesystem::path& path)
     {
+        // generic形式のUTF-8パス
         const std::u8string utf8 = path.generic_u8string();
         return {
             reinterpret_cast<const char*>(utf8.data()),
@@ -55,6 +60,7 @@ namespace
         };
     }
 
+    // UTF-8文字列からパスを復元します(value: UTF-8で表すパス)。
     [[nodiscard]] std::filesystem::path PathFromUtf8String(
         const std::string& value)
     {
@@ -65,11 +71,13 @@ namespace
                     value.data() + value.size())));
     }
 
+    // 列挙値の名前を返し未知の値なら先頭の名前を返します(names: 空でない対応表, value: 検索する列挙値)。
     template <typename Enum, std::size_t Size>
     [[nodiscard]] std::string_view NameOf(
         const std::array<NamedValue<Enum>, Size>& names,
         const Enum value) noexcept
     {
+        // 照合する列挙値と名前
         for (const auto& entry : names)
         {
             if (entry.value == value)
@@ -80,12 +88,14 @@ namespace
         return names.front().name;
     }
 
+    // 名前に対応する列挙値を返します(names: 名前の対応表, name: 検索する名前, fallback: 未発見時の値)。
     template <typename Enum, std::size_t Size>
     [[nodiscard]] Enum ValueOf(
         const std::array<NamedValue<Enum>, Size>& names,
         const std::string_view name,
         const Enum fallback) noexcept
     {
+        // 照合する列挙値と名前
         for (const auto& entry : names)
         {
             if (entry.name == name)
@@ -96,6 +106,7 @@ namespace
         return fallback;
     }
 
+    // 有限な値ならそのまま返します(value: 検査する値, fallback: 非有限値の代替値)。
     [[nodiscard]] float FiniteOr(
         const float value,
         const float fallback) noexcept
@@ -103,11 +114,13 @@ namespace
         return std::isfinite(value) ? value : fallback;
     }
 
+    // 0〜1へ制限し非有限値なら0を返します(value: 制限する値)。
     [[nodiscard]] float Saturate(const float value) noexcept
     {
         return std::clamp(FiniteOr(value, 0.0f), 0.0f, 1.0f);
     }
 
+    // RGBAの各成分を0〜1へ制限し非有限成分は0へ戻します(color: 補正する色)。
     [[nodiscard]] DirectX::XMFLOAT4 SaturateColor(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -119,17 +132,21 @@ namespace
         };
     }
 
-    // イージングは単調増加なので、二分探索で逆関数を求めます。
-    // 途中から覆い直す・開き直すときに見た目を連続させるためです。
+    // 単調な曲線を24回の二分探索で逆算します(easing: 変化曲線, value: 逆算する覆い具合)。
     [[nodiscard]] float InverseEasing(
         const SceneTransitionEasing easing,
         const float value) noexcept
     {
+        // 0〜1に制限した逆算目標
         const float target = Saturate(value);
+        // 二分探索区間の下端
         float low = 0.0f;
+        // 二分探索区間の上端
         float high = 1.0f;
+        // 二分探索の反復回数
         for (int iteration{}; iteration < 24; ++iteration)
         {
+            // 二分探索区間の中央
             const float middle = (low + high) * 0.5f;
             if (LamaPon::EvaluateSceneTransitionEasing(
                     easing,
@@ -146,34 +163,41 @@ namespace
         return (low + high) * 0.5f;
     }
 
+    // 有限な数値を取得します(value: 設定JSON, key: 項目名, fallback: 欠落・型違い・非有限値の代替値)。
     [[nodiscard]] float ReadNumber(
         const nlohmann::json& value,
         const char* key,
         const float fallback)
     {
+        // 読み込むJSON項目の位置
         const auto found = value.find(key);
         return found != value.end() && found->is_number()
             ? FiniteOr(found->get<float>(), fallback)
             : fallback;
     }
 
+    // 真偽値を取得します(value: 設定JSON, key: 項目名, fallback: 欠落や型違いの代替値)。
     [[nodiscard]] bool ReadBoolean(
         const nlohmann::json& value,
         const char* key,
         const bool fallback)
     {
+        // 読み込むJSON項目の位置
         const auto found = value.find(key);
         return found != value.end() && found->is_boolean()
             ? found->get<bool>()
             : fallback;
     }
 
+    // 四成分の色を取得します(value: 設定JSON, key: 項目名, fallback: 不正な配列や非有限成分の代替値)。
     [[nodiscard]] DirectX::XMFLOAT4 ReadColor(
         const nlohmann::json& value,
         const char* key,
         const DirectX::XMFLOAT4& fallback)
     {
+        // 読み込むJSON項目の位置
         const auto found = value.find(key);
+        // 各色成分が数値であるか調べます(item: 配列の色成分)。
         if (found == value.end()
             || !found->is_array()
             || found->size() != 4
@@ -195,10 +219,12 @@ namespace
         };
     }
 
+    // 文字列を取得し欠落や型違いなら空を返します(value: 設定JSON, key: 項目名)。
     [[nodiscard]] std::string ReadString(
         const nlohmann::json& value,
         const char* key)
     {
+        // 読み込むJSON項目の位置
         const auto found = value.find(key);
         return found != value.end() && found->is_string()
             ? found->get<std::string>()
@@ -213,6 +239,7 @@ namespace LamaPon
         const float holdSeconds,
         const SceneTransitionEasing easing)
     {
+        // 作成または読み込む設定
         SceneTransitionSettings settings;
         settings.easing = easing;
         settings.coverDuration = durationSeconds;
@@ -233,12 +260,15 @@ namespace LamaPon
     SceneTransitionSettings SanitizeSceneTransition(
         const SceneTransitionSettings& settings)
     {
+        // 補正に使う既定設定
         const SceneTransitionSettings defaults;
+        // 補正後の遷移設定
         SceneTransitionSettings result = settings;
         if (result.easing >= SceneTransitionEasing::Count)
         {
             result.easing = defaults.easing;
         }
+        // 遷移の一段階の上限秒数
         constexpr float MaximumSeconds = 30.0f;
         result.coverDuration = std::clamp(
             FiniteOr(result.coverDuration, defaults.coverDuration),
@@ -259,6 +289,7 @@ namespace LamaPon
         const SceneTransitionEasing easing,
         const float t) noexcept
     {
+        // 0〜1に制限した進捗率
         const float x = Saturate(t);
         switch (easing)
         {
@@ -301,9 +332,11 @@ namespace LamaPon
             SceneTransitionEasing::EaseInOutCubic);
     }
 
+    // 補正した設定をJSONへ変換します(source: 保存する遷移設定)。
     nlohmann::json SceneTransitionToJson(
         const SceneTransitionSettings& source)
     {
+        // 作成または読み込む設定
         const auto settings = SanitizeSceneTransition(source);
         return nlohmann::json{
             {
@@ -327,7 +360,9 @@ namespace LamaPon
         {
             return SanitizeSceneTransition(fallback);
         }
+        // 作成または読み込む設定
         SceneTransitionSettings settings = fallback;
+        // 読み込んだ曲線の保存名
         if (const auto name = ReadString(value, "easing");
             !name.empty())
         {
@@ -354,6 +389,7 @@ namespace LamaPon
     nlohmann::json SceneLoadingScreenToJson(
         const SceneLoadingScreenSettings& settings)
     {
+        // RGBAを四成分のJSON配列へ変換します(value: 保存する色)。
         const auto color = [](const DirectX::XMFLOAT4& value)
         {
             return nlohmann::json::array(
@@ -392,9 +428,11 @@ namespace LamaPon
         {
             return fallback;
         }
+        // 作成または読み込む設定
         SceneLoadingScreenSettings settings = fallback;
         settings.enabled =
             ReadBoolean(value, "enabled", fallback.enabled);
+        // 読み込むJSON項目の位置
         if (const auto found = value.find("message");
             found != value.end() && found->is_string())
         {
@@ -410,11 +448,13 @@ namespace LamaPon
             value, "textColor", fallback.textColor));
         settings.showPercentage = ReadBoolean(
             value, "showPercentage", fallback.showPercentage);
+        // 読み込むJSON項目の位置
         if (const auto found = value.find("hint");
             found != value.end() && found->is_string())
         {
             settings.hint = found->get<std::string>();
         }
+        // 読み込むJSON項目の位置
         if (const auto found = value.find("backgroundTexture");
             found != value.end() && found->is_string())
         {
@@ -435,7 +475,9 @@ namespace LamaPon
     void SceneTransitionTimeline::Start(
         const SceneTransitionSettings& settings)
     {
+        // 切り替える直前の覆い具合
         const float currentCoverage = Coverage();
+        // 再開する前の遷移段階
         const auto previousPhase = m_phase;
         m_settings = SanitizeSceneTransition(settings);
         m_heldSeconds = 0.0f;
@@ -455,9 +497,10 @@ namespace LamaPon
         float deltaSeconds,
         const bool readyToReveal) noexcept
     {
+        // 今回発生した段階の通知
         SceneTransitionTimelineEvents events;
         deltaSeconds = std::max(FiniteOr(deltaSeconds, 0.0f), 0.0f);
-        // 時間が0の段階は、1回の呼び出しでそのまま次へ進みます。
+        // 段階の時間が0なら即座に完了させます(duration: 現在の段階の所要秒数)。
         const auto advance = [this, deltaSeconds](
                 const float duration) noexcept
             {
@@ -484,9 +527,8 @@ namespace LamaPon
             m_readyFrames = readyToReveal
                 ? std::min(m_readyFrames + 1, 1000u)
                 : 0u;
-            // 有効化した直後の新シーンは、Startの呼び出しや大きな
-            // テクスチャの転送で最初の数フレームが不安定になりやすいため、
-            // 時間のある遷移では準備完了から2フレーム覆ったまま待ちます。
+            // 時間のある遷移は準備完了後も2回の呼び出しを待ちます。
+            // 準備完了を待つ呼び出し回数
             const std::uint32_t requiredFrames =
                 IsInstantSceneTransition(m_settings) ? 1u : 2u;
             if (m_readyFrames >= requiredFrames
@@ -520,6 +562,7 @@ namespace LamaPon
         {
             return;
         }
+        // 切り替える直前の覆い具合
         const float currentCoverage = Coverage();
         m_phase = SceneTransitionPhase::Revealing;
         m_progress = InverseEasing(

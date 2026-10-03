@@ -15,8 +15,10 @@ namespace LamaPon
             {
                 return;
             }
+            // 実行の目印を保存するフォルダー
             const auto directory =
                 projectRoot / L".lamapon";
+            // 目印フォルダー作成時のエラー
             std::error_code createError;
             std::filesystem::create_directories(
                 directory,
@@ -27,6 +29,7 @@ namespace LamaPon
                 std::filesystem::is_regular_file(
                     m_sentinelPath);
 
+            // 実行中の目印を書き込むファイル
             std::ofstream output(
                 m_sentinelPath,
                 std::ios::binary | std::ios::trunc);
@@ -54,6 +57,7 @@ namespace LamaPon
         {
             return;
         }
+        // 目印削除時のエラー
         std::error_code removeError;
         std::filesystem::remove(
             m_sentinelPath,

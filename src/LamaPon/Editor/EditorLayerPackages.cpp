@@ -11,7 +11,7 @@
 
 #include <imgui.h>
 
-// ファイル選択ダイアログ（GetOpenFileNameW）に必要。
+
 #include <commdlg.h>
 
 #include <algorithm>
@@ -27,12 +27,14 @@ namespace LamaPon
 {
     namespace
     {
-        // パッケージにC++スクリプトが含まれるか
-        // （含まれる場合はGame Moduleの自動ビルドを起動します）。
+
+        // パッケージ内に拡張子が小文字cppの通常ファイルがあるか調べます(packageDirectory: 調べるパッケージのパス)。
         bool PackageContainsScripts(
             const std::filesystem::path& packageDirectory)
         {
+            // パッケージ操作の失敗理由
             std::error_code error;
+            // パッケージ内の再帰走査位置
             for (auto iterator =
                     std::filesystem::
                         recursive_directory_iterator(
@@ -53,6 +55,7 @@ namespace LamaPon
             return false;
         }
 
+        // 1024基準のKBかMBへ切り上げ、ゼロなら未指定表示を返します(bytes: ZIPのサイズ・byte)。
         std::string FormatPackageSize(
             const std::uint64_t bytes)
         {
@@ -70,6 +73,7 @@ namespace LamaPon
                 / (1024ull * 1024ull)) + " MB";
         }
 
+        // 再起動が必要な反映時期の操作案内を返します(activation: パッケージの反映時期)。
         std::string RestartNotice(
             const PackageActivation activation)
         {
@@ -86,6 +90,7 @@ namespace LamaPon
                 "再起動してください";
         }
 
+        // 描画APIの表示名を返します(api: プロジェクトの描画API)。
         const char* RenderingApiDisplayName(
             const RenderingApi api) noexcept
         {
@@ -102,6 +107,7 @@ namespace LamaPon
         }
     }
 
+    // 動作中または未回収のパッケージworkerの完了を待ちます。
     void EditorLayer::JoinPackageWorker()
     {
         if (m_packageWorker.joinable())
@@ -110,11 +116,14 @@ namespace LamaPon
         }
     }
 
+    // 配布一覧にあるパッケージの配置済み版数を更新します。
     void EditorLayer::RefreshInstalledPackageVersions()
     {
         m_installedPackageVersions.clear();
+        // パッケージ保存先のassets
         const auto assetRoot =
             m_graphics.Assets().AssetRoot();
+        // 操作または表示するパッケージ
         for (const auto& package : m_packages)
         {
             m_installedPackageVersions[package.name] =
@@ -124,17 +133,22 @@ namespace LamaPon
         }
     }
 
+    // 前のworkerを待ち、配布一覧の取得をバックグラウンドで開始します。
     void EditorLayer::StartPackageIndexFetch()
     {
         JoinPackageWorker();
         m_packageBusy = true;
         m_packageListState = PackageListState::Loading;
         m_packagePanelError.clear();
+        // バックグラウンドで処理し、完了結果をmutexで保護して渡します。
         m_packageWorker = std::thread(
             [this]
             {
+                // パッケージ操作の失敗理由
                 std::string error;
+                // 解析した配布一覧の取得結果
                 std::vector<PackageInfo> index;
+                // 取得した配布一覧JSONの全文
                 const auto body = HttpGetText(
                     PackageIndexHost,
                     PackageIndexPath);
@@ -150,6 +164,7 @@ namespace LamaPon
                     {
                         index = ParsePackageIndex(body);
                     }
+                    // 操作失敗を表示へ渡します(exception: 失敗理由)。
                     catch (const std::exception& exception)
                     {
                         error = std::string(
@@ -158,6 +173,7 @@ namespace LamaPon
                     }
                 }
 
+                // 完了結果の書込を保護するロック
                 std::scoped_lock lock(m_packageResultMutex);
                 m_packageWorkerResult = {};
                 m_packageWorkerResult.ready = true;
@@ -168,20 +184,27 @@ namespace LamaPon
             });
     }
 
+    // 前のworkerを待ち、ZIP取得と検証・配置をバックグラウンドで開始します(package: コピーして保持する配布情報)。
     void EditorLayer::StartPackageInstall(
         const PackageInfo& package)
     {
         JoinPackageWorker();
         m_packageBusy = true;
         m_packagePanelError.clear();
+        // パッケージ保存先のassets
         const auto assetRoot =
             m_graphics.Assets().AssetRoot();
+        // バックグラウンドで処理し、完了結果をmutexで保護して渡します。
         m_packageWorker = std::thread(
             [this, package, assetRoot]
             {
+                // パッケージ操作の失敗理由
                 std::string error;
+                // 導入パッケージにcppがあるか
                 bool hasScripts = false;
+                // ZIP取得先のホスト名
                 std::wstring host;
+                // ZIP取得先のパス
                 std::wstring path;
                 if (!SplitHttpsUrl(
                         package.downloadUrl,
@@ -192,6 +215,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 取得したZIPのバイト列
                     const auto bytes = HttpGetBytes(
                         host,
                         path);
@@ -215,6 +239,7 @@ namespace LamaPon
                                         assetRoot,
                                         package.name));
                         }
+                        // 導入処理の失敗を記録します(exception: 失敗理由)。
                         catch (
                             const std::exception& exception)
                         {
@@ -223,6 +248,7 @@ namespace LamaPon
                     }
                 }
 
+                // 完了結果の書込を保護するロック
                 std::scoped_lock lock(m_packageResultMutex);
                 m_packageWorkerResult = {};
                 m_packageWorkerResult.ready = true;
@@ -242,10 +268,13 @@ namespace LamaPon
             });
     }
 
+    // UIスレッドで完了結果を回収し、表示・資産一覧・必要なビルドを更新します。
     void EditorLayer::ConsumePackageWorkerResult()
     {
+        // 回収したworkerの完了結果
         PackageWorkerResult result;
         {
+            // 完了結果の回収を保護するロック
             std::scoped_lock lock(m_packageResultMutex);
             if (!m_packageWorkerResult.ready)
             {
@@ -270,8 +299,7 @@ namespace LamaPon
                 RefreshAssets();
                 if (result.installedHasScripts)
                 {
-                    // C++スクリプト入りならGame Moduleを
-                    // 自動ビルドして、そのまま使える状態にします。
+                    // C++スクリプト入りならGame Moduleを自動ビルドして、そのまま使える状態にします。
                     static_cast<void>(BuildGameModule());
                 }
             }
@@ -299,6 +327,7 @@ namespace LamaPon
                         != m_packageTargetFilter)
                 {
                     m_selectedPackageIndex = -1;
+                    // 配布一覧の項目添字
                     for (std::size_t index = 0;
                         index < m_packages.size(); ++index)
                     {
@@ -322,10 +351,11 @@ namespace LamaPon
         RefreshInstalledPackageVersions();
     }
 
+    // 配置済みパッケージから公式一覧に無いものを表示して削除操作を提供します。
     void EditorLayer::DrawInstalledPackagesSection()
     {
-        // assets/packages/ を直接見て、公式一覧に載っていない
-        // パッケージ（自作・受け取り物）を分けて表示します。
+
+        // 配置済みパッケージの親パス
         const auto packagesRoot =
             m_graphics.Assets().AssetRoot() / L"packages";
         if (!std::filesystem::is_directory(packagesRoot))
@@ -333,9 +363,12 @@ namespace LamaPon
             return;
         }
 
+        // 公式一覧に無い名前と版数の一覧
         std::vector<std::pair<std::string, std::string>>
             others;
+        // パッケージ操作の失敗理由
         std::error_code error;
+        // 配置済みパッケージのフォルダー
         for (const auto& entry :
             std::filesystem::directory_iterator(
                 packagesRoot,
@@ -345,8 +378,10 @@ namespace LamaPon
             {
                 continue;
             }
+            // 配置済みパッケージの名前
             const auto name =
                 PathToUtf8(entry.path().filename());
+            // 公式一覧に同名のパッケージがあるか(package: 比較する配布情報)。
             const bool official = std::ranges::any_of(
                 m_packages,
                 [&name](const PackageInfo& package)
@@ -370,6 +405,7 @@ namespace LamaPon
 
         ImGui::SeparatorText(
             "このプロジェクトのパッケージ（公式一覧外）");
+        // 公式一覧外のパッケージ名と配置済み版数
         for (const auto& [name, version] : others)
         {
             ImGui::BulletText(
@@ -384,6 +420,7 @@ namespace LamaPon
             {
                 try
                 {
+                    // 削除後の反映タイミング
                     const auto activation =
                         InstalledPackageActivation(
                             m_graphics.Assets().AssetRoot(),
@@ -396,6 +433,7 @@ namespace LamaPon
                         "パッケージを削除しました: " + name
                         + RestartNotice(activation));
                 }
+                // 操作失敗を表示へ渡します(exception: 失敗理由)。
                 catch (const std::exception& exception)
                 {
                     SetStatus(exception.what(), true);
@@ -407,6 +445,7 @@ namespace LamaPon
         ImGui::Spacing();
     }
 
+    // 再生中以外に手元のZIPを選んで配置し、cppを含む場合はビルドを要求します。
     void EditorLayer::ImportPackageFromZipDialog()
     {
         if (m_playing)
@@ -414,10 +453,13 @@ namespace LamaPon
             return;
         }
 
+        // 選択したZIPのパス出力領域
         std::array<wchar_t, 32768> filename{};
+        // ZIP選択のファイル種別指定
         constexpr wchar_t filter[] =
             L"LamaPonパッケージ (*.zip)\0*.zip\0\0";
 
+        // WindowsのZIP選択情報
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -438,6 +480,7 @@ namespace LamaPon
 
         try
         {
+            // ZIPから導入したパッケージ情報
             const auto installed = InstallPackageFromFile(
                 m_graphics.Assets().AssetRoot(),
                 std::filesystem::path{ filename.data() });
@@ -449,8 +492,7 @@ namespace LamaPon
                 + " v"
                 + installed.version
                 + RestartNotice(installed.activation));
-            // C++スクリプトを含む場合はそのまま使えるように
-            // Game Moduleをビルドします。
+            // C++スクリプトを含む場合はそのまま使えるようにGame Moduleをビルドします。
             if (PackageContainsScripts(
                 PackageInstallDirectory(
                     m_graphics.Assets().AssetRoot(),
@@ -459,12 +501,14 @@ namespace LamaPon
                 static_cast<void>(BuildGameModule());
             }
         }
+        // 導入失敗を表示へ渡します(exception: 失敗理由)。
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 作成用入力と前回結果を初期化してダイアログ表示を要求します。
     void EditorLayer::OpenPackageBuildDialog()
     {
         m_packageBuildNameBuffer.fill('\0');
@@ -482,8 +526,10 @@ namespace LamaPon
         m_packageBuildDialogRequested = true;
     }
 
+    // 配布情報を入力してZIPを作り、配布一覧用のJSONを表示します。
     void EditorLayer::DrawPackageBuildDialog()
     {
+        // 作成ダイアログの識別名
         constexpr const char* popupName =
             "パッケージを作成##PackageBuild";
         if (m_packageBuildDialogRequested)
@@ -580,6 +626,7 @@ namespace LamaPon
         {
             try
             {
+                // 入力したパッケージ配布情報
                 PackageInfo package;
                 package.name =
                     m_packageBuildNameBuffer.data();
@@ -594,11 +641,13 @@ namespace LamaPon
                 package.minimumEngineVersion =
                     std::string(LamaPon::VersionString);
 
+                // 配布ZIPの保存先
                 const auto outputDirectory =
                     m_graphics.Assets().AssetRoot()
                         .parent_path()
                     / L"dist"
                     / L"packages";
+                // 作成したZIPと配布一覧用JSON
                 const auto built = BuildPackage(
                     m_graphics.Assets().AssetRoot(),
                     package,
@@ -615,6 +664,7 @@ namespace LamaPon
                     + std::to_string(built.fileCount)
                     + "ファイル）");
             }
+            // 作成失敗を表示へ渡します(exception: 失敗理由)。
             catch (const std::exception& exception)
             {
                 m_packageBuildError = exception.what();
@@ -628,6 +678,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // 配布一覧と導入状態を表示し、エンジン互換性を確認して操作を提供します(open: パネルの表示状態)。
     void EditorLayer::DrawPackagesPanel(bool& open)
     {
         if (!open)
@@ -674,6 +725,7 @@ namespace LamaPon
                 static_cast<int>(m_packages.size()));
         }
 
+        // D3D12パッケージの配置パス
         const auto d3d12PackageDirectory =
             PackageInstallDirectory(
                 m_graphics.Assets().AssetRoot(),
@@ -734,11 +786,13 @@ namespace LamaPon
 
         ImGui::SeparatorText("公式パッケージ");
 
+        // 追加先の分類を切り替えて最初の一致項目を選びます(target: 選択する追加先の分類)。
         const auto selectFirstOfTarget = [this](
             const PackageTarget target)
         {
             m_packageTargetFilter = target;
             m_selectedPackageIndex = -1;
+            // 配布一覧の項目添字
             for (std::size_t index = 0;
                 index < m_packages.size(); ++index)
             {
@@ -774,6 +828,7 @@ namespace LamaPon
             "PackageList",
             ImVec2{ 240.0f, 0.0f },
             true);
+        // 選択した分類の配布項目が無いか判定します(package: 比較する配布情報)。
         if (std::ranges::none_of(
                 m_packages,
                 [this](const PackageInfo& package)
@@ -785,22 +840,27 @@ namespace LamaPon
             ImGui::TextWrapped(
                 "この分類の公式パッケージはまだありません。");
         }
+        // 配布一覧の項目添字
         for (std::size_t index = 0;
             index < m_packages.size();
             ++index)
         {
+            // 操作または表示するパッケージ
             const auto& package = m_packages[index];
             if (package.target != m_packageTargetFilter)
             {
                 continue;
             }
+            // 導入済みバージョンの検索結果
             const auto installedIterator =
                 m_installedPackageVersions.find(
                     package.name);
+            // 導入済みのバージョンがあるか
             const bool installed =
                 installedIterator
                     != m_installedPackageVersions.end()
                 && !installedIterator->second.empty();
+            // 配布一覧の項目表示名
             std::string label = package.displayName;
             if (installed)
             {
@@ -828,22 +888,27 @@ namespace LamaPon
                 m_selectedPackageIndex)].target
                 == m_packageTargetFilter)
         {
+            // 操作または表示するパッケージ
             const auto& package = m_packages[
                 static_cast<std::size_t>(
                     m_selectedPackageIndex)];
+            // 配置済みパッケージの版数
             const std::string installedVersion =
                 m_installedPackageVersions.count(
                     package.name) != 0
                     ? m_installedPackageVersions.at(
                         package.name)
                     : std::string{};
+            // 導入済みのバージョンがあるか
             const bool installed =
                 !installedVersion.empty();
+            // 新しい配布版があるか
             const bool updateAvailable = installed
                 && IsNewerVersion(
                     installedVersion,
                     package.version);
-            // エンジンが古い場合はインストールさせず、更新を促します。
+
+            // 必要エンジン版数を満たさないか
             const bool engineTooOld =
                 !package.minimumEngineVersion.empty()
                 && IsNewerVersion(
@@ -930,6 +995,7 @@ namespace LamaPon
 
             ImGui::BeginDisabled(
                 m_packageBusy || engineTooOld);
+            // 導入状況に応じた操作表示名
             const char* installLabel = !installed
                 ? "インストール"
                 : (updateAvailable
@@ -960,6 +1026,7 @@ namespace LamaPon
                             + RestartNotice(package.activation));
                         RefreshAssets();
                     }
+                    // 操作失敗を表示へ渡します(exception: 失敗理由)。
                     catch (const std::exception& exception)
                     {
                         SetStatus(

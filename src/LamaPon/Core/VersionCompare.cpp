@@ -18,9 +18,13 @@ namespace LamaPon
             return {};
         }
 
+        // 分解したバージョンの数値列
         std::vector<std::uint32_t> numbers;
+        // 読み取り中の数値成分
         std::uint64_t current = 0;
+        // 現在の成分に数字があるか
         bool hasDigit = false;
+        // 読み取り中の文字
         for (const char character : version)
         {
             if (character >= '0' && character <= '9')
@@ -63,8 +67,10 @@ namespace LamaPon
         const std::string_view current,
         const std::string_view latest)
     {
+        // 現行バージョンの数値列
         const auto currentNumbers =
             ParseVersionNumbers(current);
+        // 更新候補の数値列
         const auto latestNumbers =
             ParseVersionNumbers(latest);
         if (currentNumbers.empty() || latestNumbers.empty())
@@ -72,15 +78,19 @@ namespace LamaPon
             return false;
         }
 
+        // 比較する数値成分の個数
         const std::size_t count = std::max(
             currentNumbers.size(),
             latestNumbers.size());
+        // 比較する成分の位置
         for (std::size_t index = 0; index < count; ++index)
         {
+            // 現行版の成分値
             const std::uint32_t currentValue =
                 index < currentNumbers.size()
                     ? currentNumbers[index]
                     : 0;
+            // 更新候補の成分値
             const std::uint32_t latestValue =
                 index < latestNumbers.size()
                     ? latestNumbers[index]

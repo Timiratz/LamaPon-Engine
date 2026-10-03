@@ -7,16 +7,19 @@
 
 namespace
 {
+    // Require(condition: 検証条件, message: 失敗理由)は不成立時に例外を送出する。
     void Require(
         const bool condition,
         const char* message)
     {
+        // 条件違反を検出する
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // Contains(text: 検索対象, needle: 検索語)は部分一致を返す。
     [[nodiscard]] bool Contains(
         const std::string& text,
         const std::string_view needle)
@@ -24,10 +27,14 @@ namespace
         return text.find(needle) != std::string::npos;
     }
 
+    // Pixel ShaderとTextureを使うSprite用HLSL
     constexpr std::string_view SpriteShader = R"(
+// SpriteTexture: Sprite画像
 Texture2D SpriteTexture : register(t0);
+// SpriteSampler: Sprite画像のSampler
 SamplerState SpriteSampler : register(s0);
 
+// PSMain(color: 頂点色, uv: UV座標, position: クリップ座標)はSprite色を出力する。
 float4 PSMain(
     float4 color : COLOR0,
     float2 uv : TEXCOORD0,
@@ -37,53 +44,80 @@ float4 PSMain(
 }
 )";
 
+    // 出力Textureへ書き込むCompute Shader
     constexpr std::string_view ComputeShader = R"(
+// Output: Compute結果の出力先
 RWTexture2D<float4> Output : register(u0);
 
 [numthreads(8, 8, 1)]
+// CSMain(id: Dispatch座標)は出力Textureを初期化する。
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     Output[id.xy] = float4(1, 0, 0, 1);
 }
 )";
 
-    // 雛形にある説明文。コメントを取り除かないと、ここに書かれた
-    // 「VSMain and PSMain (...)」を入口として数えてしまいます。
+    // EntryPoint名をコメント内から誤検出しないためのテスト入力
     constexpr std::string_view CommentOnlyMentions = R"(
 // Entry points must remain VSMain and PSMain (Shader Model 5.0).
 /* GSMain and HSMain (geometry/tessellation) are optional. */
 [numthreads(8, 8, 1)]
+// id: Dispatch内のスレッド座標
 void CSMain(uint3 id : SV_DispatchThreadID) {}
 )";
 
-    // 3D用としては正しく書けている（が、スキニング用の入口は無い）。
+    // 3D Material用VSMainとPSMainを含むHLSL
     constexpr std::string_view MaterialShader = R"(
-struct PixelInput { float4 position : SV_Position; };
+struct PixelInput {
+    // position: クリップ空間の頂点位置
+    float4 position : SV_Position;
+};
+// VSMain(position: 入力頂点座標)はPixelInputへ位置を渡す。
 PixelInput VSMain(float3 position : SV_Position)
 {
+    // output: Pixel Shaderへ渡す頂点出力
     PixelInput output;
     output.position = float4(position, 1);
     return output;
 }
+// PSMain(input: 補間済みピクセル入力)は単色を出力する。
 float4 PSMain(PixelInput input) : SV_Target { return 1; }
 )";
 
+    // Tessellationを含む5段階のGraphics Shader
     constexpr std::string_view TessellatedShader = R"(
-struct Patch { float4 p : SV_Position; };
-Patch VSMain(float3 position : SV_Position) { Patch o; o.p = float4(position, 1); return o; }
+struct Patch {
+    // p: クリップ空間のPatch位置
+    float4 p : SV_Position;
+};
+// VSMain(position: 入力頂点座標)はPatchの初期値を作る。
+Patch VSMain(float3 position : SV_Position)
+{
+    // o: Domain Shaderへ渡すPatch
+    Patch o;
+    o.p = float4(position, 1);
+    return o;
+}
+// Geometry Shader段階を表すEntryPoint
 void GSMain() {}
+// Hull Shader段階を表すEntryPoint
 void HSMain() {}
+// Domain Shader段階を表すEntryPoint
 void DSMain() {}
+// PSMain(input: Tessellation後のPatch)は単色を出力する。
 float4 PSMain(Patch input) : SV_Target { return 1; }
 )";
 }
 
+// Shader EntryPointと診断位置の説明を検証する
 int main()
 {
+    // テスト失敗を終了コードに変換する
     try
     {
-        // 入口の読み取り。
+        // Shader種別ごとのEntryPointを検証する。
         {
+            // Sprite Shaderから解析したEntryPoint
             const auto sprite =
                 LamaPon::ParseShaderEntryPoints(SpriteShader);
             Require(
@@ -91,6 +125,7 @@ int main()
                     && !sprite.compute,
                 "a sprite shader has PSMain only");
 
+            // Compute Shaderから解析したEntryPoint
             const auto compute =
                 LamaPon::ParseShaderEntryPoints(ComputeShader);
             Require(
@@ -98,6 +133,7 @@ int main()
                     && !compute.vertex,
                 "a compute shader has CSMain only");
 
+            // Tessellated Shaderから解析したEntryPoint
             const auto tessellated =
                 LamaPon::ParseShaderEntryPoints(
                     TessellatedShader);
@@ -108,9 +144,9 @@ int main()
                 "a tessellated shader has all five graphics stages");
         }
 
-        // コメントの中の名前を数えないこと。数えると、雛形の説明文
-        // だけで「3Dマテリアル用」と誤って案内してしまいます。
+        // HLSLコメント内のEntryPoint名を誤検出しないこと。
         {
+            // コメントを除いて解析したEntryPoint
             const auto parsed =
                 LamaPon::ParseShaderEntryPoints(
                     CommentOnlyMentions);
@@ -123,8 +159,9 @@ int main()
                 "the real entry point outside comments counts");
         }
 
-        // 2D用を3Dマテリアルへ割り当てた場合。
+        // Sprite Shaderを3D Materialに割り当てた場合の診断
         {
+            // 2D Shaderに対する診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3501: 'VSMain': entrypoint not found",
                 SpriteShader,
@@ -135,14 +172,15 @@ int main()
             Require(
                 Contains(message, "VSMain"),
                 "the hint must name what is required");
-            // 元のメッセージは必ず残します（行番号が要る場面がある）。
+            // 行番号の用途のため元のエラー文を保つ
             Require(
                 Contains(message, "X3501"),
                 "the original compiler message must be kept");
         }
 
-        // Compute Shaderを3Dマテリアルへ割り当てた場合。
+        // Compute ShaderをMaterialへ割り当てた場合の診断
         {
+            // Compute Shaderに対する診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3501: 'VSMain': entrypoint not found",
                 ComputeShader,
@@ -152,8 +190,9 @@ int main()
                 "the hint must recognize a compute shader");
         }
 
-        // include不足はソースを読み取れない場合も診断できること。
+        // HLSL Includeを読み取れない場合の診断
         {
+            // Include欠落に対する診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X1507: failed to open source file:"
                 " 'LamaPonScreenDepth.hlsli'",
@@ -164,10 +203,9 @@ int main()
                 "a missing include must be explained");
         }
 
-        // 3D用として正しく書けているShaderを、スキニングモデルへ
-        // 割り当てた場合。ここを一般論で済ませると「VSMainなら
-        // あるのに」と読まれます。
+        // Skinning専用EntryPointがないMaterial Shaderの診断
         {
+            // Skinning EntryPoint不足の診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3501: 'VSSkinnedMain':"
                 " entrypoint not found",
@@ -181,8 +219,9 @@ int main()
                 " to add");
         }
 
-        // 入口が一つも無い場合は、必要な入口を案内すること。
+        // 必須EntryPointが存在しない場合の診断
         {
+            // 必須EntryPoint不足の診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3501: 'VSMain': entrypoint not found",
                 ComputeShader,
@@ -193,8 +232,9 @@ int main()
                 " entry point failures");
         }
 
-        // セマンティクスの付け忘れ。
+        // Shader入出力セマンティクス不足の診断
         {
+            // Sprite Shaderのセマンティクス診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3506: 'PSMain': function return value"
                 " missing semantics",
@@ -207,8 +247,9 @@ int main()
                 " mention the argument order too");
         }
 
-        // エンジンが渡す名前を、宣言せずに使った場合。
+        // Engine予約名の宣言漏れに対する診断
         {
+            // ObjectBuffer宣言漏れの診断文
             const auto message = LamaPon::ExplainShaderError(
                 "error X3004: undeclared identifier"
                 " 'ViewProjection'",
@@ -221,11 +262,12 @@ int main()
                 " constant buffer declaration");
         }
 
-        // 未知のエラーは原文を返します。誤診を避けるため、上記のヒントは
-        // 識別子が一致する場合だけ追加します。
+        // 未知のエラーは原文を保持し、識別子が一致する場合だけヒントを追加する。
         {
+            // 未知のコンパイラーエラー
             const std::string original =
                 "error X3004: undeclared identifier 'Foo'";
+            // 未知エラーに対する診断結果
             const auto message = LamaPon::ExplainShaderError(
                 original,
                 SpriteShader,
@@ -235,9 +277,9 @@ int main()
                 "an unrecognized error must be passed through");
         }
 
-        // D3DCompilerの位置表記。日本語の説明が前に付いていても、実際の
-        // ファイルと行・列を取り出してコードエディターへ渡せること。
+        // D3DCompiler位置情報から実ファイル・行・列を抽出する。
         {
+            // 日本語説明を含む診断位置
             const auto location =
                 LamaPon::ParseShaderDiagnosticLocation(
                     "分かりやすい説明\n"
@@ -251,6 +293,7 @@ int main()
                 "the compiler file, line and column are preserved");
         }
         {
+            // 列番号が省略された診断位置
             const auto location =
                 LamaPon::ParseShaderDiagnosticLocation(
                     "included.hlsli(4): error X3004");
@@ -261,6 +304,7 @@ int main()
                 "a line-only compiler location defaults to column one");
         }
         {
+            // Engine出力接頭辞を含む診断位置
             const auto location =
                 LamaPon::ParseShaderDiagnosticLocation(
                     "Failed to compile shader "
@@ -276,11 +320,14 @@ int main()
         }
 
         std::cout << "Shader diagnostics tests passed.\n";
+        // テスト成功を返す
         return 0;
     }
+    // 例外内容を出力して失敗終了する
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';
+        // テスト失敗を返す
         return 1;
     }
 }

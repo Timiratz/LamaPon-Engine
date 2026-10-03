@@ -53,7 +53,6 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Graphics/FrameDebugger.h"
-// 自動露出の順応に実時間（timeScale非依存）が要ります。
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
@@ -86,6 +85,7 @@ namespace
     class BooleanStateScope final
     {
     public:
+        // 真偽値を変更し復元用に元の値を保存します(target: 借用する真偽値, value: 設定する値)。
         BooleanStateScope(
             bool& target,
             const bool value) noexcept
@@ -95,11 +95,13 @@ namespace
             m_target = value;
         }
 
+        // 借用した真偽値を元へ戻します。
         ~BooleanStateScope()
         {
             Restore();
         }
 
+        // 保存した状態を一度だけ戻します。
         void Restore() noexcept
         {
             if (!m_active)
@@ -110,20 +112,26 @@ namespace
             m_active = false;
         }
 
+        // 借用する復元責務のコピーを禁止します。
         BooleanStateScope(
             const BooleanStateScope&) = delete;
+        // 借用する復元責務のコピー代入を禁止します。
         BooleanStateScope& operator=(
             const BooleanStateScope&) = delete;
 
     private:
+        // 借用する変更対象の真偽値
         bool& m_target;
+        // 変更前の真偽値
         bool m_previous;
+        // 元の値への復元を待つ状態
         bool m_active{ true };
     };
 
     class GraphicsOutputStateScope final
     {
     public:
+        // 描画機器の出力状態を保存します(graphics: 借用する描画機器)。
         explicit GraphicsOutputStateScope(
             LamaPon::GraphicsDevice& graphics)
             : m_graphics(graphics)
@@ -131,6 +139,7 @@ namespace
         {
         }
 
+        // 保存した描画出力状態を戻し、復元失敗の例外を外へ送出しません。
         ~GraphicsOutputStateScope() noexcept
         {
             try
@@ -143,6 +152,7 @@ namespace
             }
         }
 
+        // 保存した描画出力状態を一度だけ戻します。
         void Restore()
         {
             if (!m_state)
@@ -153,19 +163,24 @@ namespace
             m_state.reset();
         }
 
+        // 借用する復元責務のコピーを禁止します。
         GraphicsOutputStateScope(
             const GraphicsOutputStateScope&) = delete;
+        // 借用する復元責務のコピー代入を禁止します。
         GraphicsOutputStateScope& operator=(
             const GraphicsOutputStateScope&) = delete;
 
     private:
+        // 借用する描画機器
         LamaPon::GraphicsDevice& m_graphics;
+        // 復元する描画出力状態
         std::unique_ptr<LamaPon::GraphicsOutputState> m_state;
     };
 
     class UIViewportSizeScope final
     {
     public:
+        // 描画機器のUI寸法を保存します(graphics: 借用する描画機器)。
         explicit UIViewportSizeScope(
             LamaPon::GraphicsDevice& graphics) noexcept
             : m_graphics(graphics)
@@ -174,11 +189,13 @@ namespace
         {
         }
 
+        // 借用した描画機器のUI表示寸法を元へ戻します。
         ~UIViewportSizeScope()
         {
             Restore();
         }
 
+        // 保存した状態を一度だけ戻します。
         void Restore() noexcept
         {
             if (!m_active)
@@ -189,32 +206,46 @@ namespace
             m_active = false;
         }
 
+        // 借用する復元責務のコピーを禁止します。
         UIViewportSizeScope(const UIViewportSizeScope&) = delete;
+        // 借用する復元責務のコピー代入を禁止します。
         UIViewportSizeScope& operator=(
             const UIViewportSizeScope&) = delete;
 
     private:
+        // 借用する描画機器
         LamaPon::GraphicsDevice& m_graphics;
+        // 変更前のUI表示幅
         std::uint32_t m_width{};
+        // 変更前のUI表示高さ
         std::uint32_t m_height{};
+        // 元の寸法への復元を待つ状態
         bool m_active{ true };
     };
 
     struct Contact final
     {
+        // 第1形状へ通知する接触法線
         DirectX::XMFLOAT3 normal;
+        // 形状同士のめり込み量
         float penetration;
+        // 通知する代表接触点
         DirectX::XMFLOAT3 point{};
+        // 最大4個の接触点
         std::array<DirectX::XMFLOAT3, 4> points{};
+        // 有効な接触点の数
         std::size_t pointCount{};
     };
 
+    // 2Dの箱の貫入を判定し最大2点の接触を返します(left: 第1境界, right: 第2境界)。
     std::optional<Contact> IntersectBounds(
         const LamaPon::Bounds2D& left,
         const LamaPon::Bounds2D& right)
     {
+        // X方向の重なり幅
         const float overlapX = std::min(left.maximum.x, right.maximum.x)
             - std::max(left.minimum.x, right.minimum.x);
+        // Y方向の重なり幅
         const float overlapY = std::min(left.maximum.y, right.maximum.y)
             - std::max(left.minimum.y, right.minimum.y);
         if (overlapX <= 0.0f || overlapY <= 0.0f)
@@ -222,13 +253,18 @@ namespace
             return std::nullopt;
         }
 
+        // 第1境界の中心X座標
         const float centerLeftX = (left.minimum.x + left.maximum.x) * 0.5f;
+        // 第1境界の中心Y座標
         const float centerLeftY = (left.minimum.y + left.maximum.y) * 0.5f;
+        // 第2境界の中心X座標
         const float centerRightX = (right.minimum.x + right.maximum.x) * 0.5f;
+        // 第2境界の中心Y座標
         const float centerRightY = (right.minimum.y + right.maximum.y) * 0.5f;
 
         if (overlapX < overlapY)
         {
+            // 接触線のX座標
             const float contactX =
                 (std::max(
                     left.minimum.x,
@@ -237,10 +273,12 @@ namespace
                         left.maximum.x,
                         right.maximum.x))
                 * 0.5f;
+            // 接触線の最小Y座標
             const float minimumY =
                 std::max(
                     left.minimum.y,
                     right.minimum.y);
+            // 接触線の最大Y座標
             const float maximumY =
                 std::min(
                     left.maximum.y,
@@ -271,6 +309,7 @@ namespace
             };
         }
 
+        // 接触線のY座標
         const float contactY =
             (std::max(
                 left.minimum.y,
@@ -279,10 +318,12 @@ namespace
                     left.maximum.y,
                     right.maximum.y))
             * 0.5f;
+        // 接触線の最小X座標
         const float minimumX =
             std::max(
                 left.minimum.x,
                 right.minimum.x);
+        // 接触線の最大X座標
         const float maximumX =
             std::min(
                 left.maximum.x,
@@ -313,25 +354,31 @@ namespace
         };
     }
 
-    // 円×円の2D接触。法線はleft側を向きます。
+    // 円の貫入を判定し第1円側の法線で接触を返します(left: 第1円, right: 第2円)。
     std::optional<Contact> IntersectCircles(
         const LamaPon::Circle2D& left,
         const LamaPon::Circle2D& right)
     {
+        // 第2円から第1円へのX差分
         const float deltaX =
             left.center.x - right.center.x;
+        // 第2円から第1円へのY差分
         const float deltaY =
             left.center.y - right.center.y;
+        // 二つの円の半径の合計
         const float radiusSum =
             left.radius + right.radius;
+        // 最近接位置間の距離の二乗
         const float squaredDistance =
             deltaX * deltaX + deltaY * deltaY;
         if (squaredDistance >= radiusSum * radiusSum)
         {
             return std::nullopt;
         }
+        // 最近接位置間の距離
         const float distance =
             std::sqrt(squaredDistance);
+        // 第1形状側へ向く接触法線
         DirectX::XMFLOAT3 normal{ 0.0f, 1.0f, 0.0f };
         if (distance > 0.0001f)
         {
@@ -340,7 +387,9 @@ namespace
                 deltaY / distance,
                 0.0f };
         }
+        // 形状同士のめり込み量
         const float penetration = radiusSum - distance;
+        // 通知する代表接触点
         const DirectX::XMFLOAT3 point{
             right.center.x
                 + normal.x
@@ -351,6 +400,7 @@ namespace
                     * (right.radius
                         - penetration * 0.5f),
             0.0f };
+        // 法線と接触点の判定結果
         Contact contact{
             normal,
             penetration,
@@ -360,21 +410,26 @@ namespace
         return contact;
     }
 
-    // 円×AABBの2D接触。法線は円（left）側を向きます。
+    // 円と箱の貫入を判定し円側の法線で接触を返します(circle: 円形状, bounds: 箱の境界)。
     std::optional<Contact> IntersectCircleBounds(
         const LamaPon::Circle2D& circle,
         const LamaPon::Bounds2D& bounds)
     {
+        // 箱から円中心に最も近いX座標
         const float closestX = std::clamp(
             circle.center.x,
             bounds.minimum.x,
             bounds.maximum.x);
+        // 箱から円中心に最も近いY座標
         const float closestY = std::clamp(
             circle.center.y,
             bounds.minimum.y,
             bounds.maximum.y);
+        // 最近接点から円中心へのX差分
         const float deltaX = circle.center.x - closestX;
+        // 最近接点から円中心へのY差分
         const float deltaY = circle.center.y - closestY;
+        // 最近接位置間の距離の二乗
         const float squaredDistance =
             deltaX * deltaX + deltaY * deltaY;
         if (squaredDistance
@@ -383,11 +438,14 @@ namespace
             return std::nullopt;
         }
 
+        // 第1形状側へ向く接触法線
         DirectX::XMFLOAT3 normal{};
+        // 形状同士のめり込み量
         float penetration{};
         if (squaredDistance > 0.0000001f)
         {
             // 円の中心がボックスの外側にあるケース。
+            // 最近接位置間の距離
             const float distance =
                 std::sqrt(squaredDistance);
             normal = {
@@ -399,14 +457,19 @@ namespace
         else
         {
             // 中心がボックス内部：最も近い面へ押し出します。
+            // 円中心から箱の左面への距離
             const float toLeft =
                 circle.center.x - bounds.minimum.x;
+            // 円中心から箱の右面への距離
             const float toRight =
                 bounds.maximum.x - circle.center.x;
+            // 円中心から箱の下面への距離
             const float toBottom =
                 circle.center.y - bounds.minimum.y;
+            // 円中心から箱の上面への距離
             const float toTop =
                 bounds.maximum.y - circle.center.y;
+            // 内側の円中心に最も近い面の距離
             const float smallest = std::min(
                 { toLeft, toRight, toBottom, toTop });
             if (smallest == toLeft)
@@ -427,10 +490,12 @@ namespace
             }
             penetration = circle.radius + smallest;
         }
+        // 通知する代表接触点
         const DirectX::XMFLOAT3 point{
             closestX,
             closestY,
             0.0f };
+        // 法線と接触点の判定結果
         Contact contact{
             normal,
             penetration,
@@ -440,15 +505,19 @@ namespace
         return contact;
     }
 
+    // 頂点の座標平均を返し空の一覧なら原点を返します(vertices: 平均する頂点)。
     DirectX::XMFLOAT2 PolygonCentroid(
         const std::vector<DirectX::XMFLOAT2>& vertices)
     {
+        // 全頂点の座標平均
         DirectX::XMFLOAT2 centroid{ 0.0f, 0.0f };
+        // 平均へ加える頂点
         for (const auto& vertex : vertices)
         {
             centroid.x += vertex.x;
             centroid.y += vertex.y;
         }
+        // 除算に使う1以上の頂点数
         const float count = static_cast<float>(
             std::max<std::size_t>(vertices.size(), 1));
         centroid.x /= count;
@@ -456,21 +525,18 @@ namespace
         return centroid;
     }
 
-    // axis（faceの外向き法線）・facePoint（face上の1点）に対する、
-    // otherVertices側の最深めり込み量（負＝めり込み、正＝分離）。
-    // Box2Dのb2FindMaxSeparation等と同じ定義です。対称形状（例:
-    // BoxCollider2Dの上面・底面）は単純な投影オーバーラップ量だと同値に
-    // なってしまい、無関係な面が分離軸として選ばれてしまいます。
-    // 「otherVertices側の最も浅い点」を見るこの定義なら、incident側が
-    // 実際にどちら向きにあるかを区別できます。
+    // 参照面と相手頂点の最小符号距離を返します(axis: 参照面の外向き法線, facePoint: 参照面上の点, otherVertices: 相手の頂点)。
     float FaceSeparation(
         const DirectX::XMFLOAT2& axis,
         const DirectX::XMFLOAT2& facePoint,
         const std::vector<DirectX::XMFLOAT2>& otherVertices)
     {
+        // 相手頂点の最小符号付き距離
         float minimum = std::numeric_limits<float>::max();
+        // 参照面との距離を測る頂点
         for (const auto& vertex : otherVertices)
         {
+            // 参照面からの符号付き距離
             const float distance =
                 axis.x * (vertex.x - facePoint.x)
                     + axis.y * (vertex.y - facePoint.y);
@@ -479,8 +545,7 @@ namespace
         return minimum;
     }
 
-    // BoxCollider2Dは既存どおりAABBのまま扱うため、WorldBounds()の4頂点を
-    // 多角形としてPolygon×Polygon判定へ渡します（Box2D自体の挙動は不変）。
+    // 2Dの箱を反時計回りの四頂点に変換します(bounds: 箱の境界)。
     std::vector<DirectX::XMFLOAT2> BoxBoundsToPolygon(
         const LamaPon::Bounds2D& bounds)
     {
@@ -492,42 +557,56 @@ namespace
         };
     }
 
-    // 多角形の分離軸候補（各エッジの外向き法線）。頂点の巻き順（CW/CCW）に
-    // 依存しないよう、重心から外側を向くよう符号を補正します。
+    // 頂点の巻き順によらず、頂点平均から外へ向く辺の法線を持つ分離軸候補です。
     struct PolygonAxis final
     {
+        // 辺の外向き単位法線
         DirectX::XMFLOAT2 axis;
+        // 辺の始点となる頂点番号
         std::size_t edgeStart;
+        // 第1多角形由来の指定
         bool fromLeft;
     };
 
+    // 辺の外向き単位法線を列挙します(vertices: 多角形の頂点, fromLeft: 第1形状由来の指定)。
     std::vector<PolygonAxis> PolygonAxisCandidates(
         const std::vector<DirectX::XMFLOAT2>& vertices,
         const bool fromLeft)
     {
+        // 辺から求めた分離軸の候補
         std::vector<PolygonAxis> axes;
         if (vertices.size() < 2)
         {
             return axes;
         }
+        // 外向きを判定する頂点平均
         const auto centroid = PolygonCentroid(vertices);
         axes.reserve(vertices.size());
+        // 分離軸を求める辺の始点番号
         for (std::size_t index{}; index < vertices.size(); ++index)
         {
+            // 辺の始点
             const auto& a = vertices[index];
+            // 辺の終点
             const auto& b = vertices[(index + 1) % vertices.size()];
+            // 辺のX方向の差分
             const float edgeX = b.x - a.x;
+            // 辺のY方向の差分
             const float edgeY = b.y - a.y;
+            // 辺の長さ
             const float length =
                 std::sqrt(edgeX * edgeX + edgeY * edgeY);
             if (length <= 0.0001f)
             {
                 continue;
             }
+            // 正規化した辺の外向き法線
             DirectX::XMFLOAT2 normal{ edgeY / length, -edgeX / length };
+            // 辺の中点
             const DirectX::XMFLOAT2 midpoint{
                 (a.x + b.x) * 0.5f,
                 (a.y + b.y) * 0.5f };
+            // 法線が頂点平均へ向く内積
             const float towardCentroid =
                 (centroid.x - midpoint.x) * normal.x
                     + (centroid.y - midpoint.y) * normal.y;
@@ -541,8 +620,7 @@ namespace
         return axes;
     }
 
-    // 線分[a,b]を、direction・p >= offsetを満たす半平面でクリップします。
-    // 戻り値は残った頂点数（0〜2）。
+    // 半平面内に残る0〜2頂点を出力します(a: 線分始点, b: 線分終点, direction: 半平面の内向き法線, offset: 法線方向の面位置, output: 2頂点の出力先)。
     std::size_t ClipSegment(
         const DirectX::XMFLOAT2& a,
         const DirectX::XMFLOAT2& b,
@@ -550,9 +628,12 @@ namespace
         const float offset,
         std::array<DirectX::XMFLOAT2, 2>& output)
     {
+        // クリップ後の頂点数
         std::size_t count{};
+        // 始点の半平面からの符号距離
         const float distanceA =
             direction.x * a.x + direction.y * a.y - offset;
+        // 終点の半平面からの符号距離
         const float distanceB =
             direction.x * b.x + direction.y * b.y - offset;
         if (distanceA >= 0.0f)
@@ -565,6 +646,7 @@ namespace
         }
         if (distanceA * distanceB < 0.0f && count < 2)
         {
+            // 交点の線分内の補間率
             const float t = distanceA / (distanceA - distanceB);
             output[count++] = {
                 a.x + (b.x - a.x) * t,
@@ -574,10 +656,8 @@ namespace
         return count;
     }
 
-    // 凸多角形×凸多角形のSAT判定。頂点は3個以上、CW/CCWいずれの巻き順でも
-    // 構いません。参照エッジに入射エッジをクリップし、最大2点の接触
-    // マニフォールドを生成します（2D Box×Boxと同格の精度）。法線は他の2D関数と
-    // 同様にleft側（rightから見て押し出される向き）を向きます。
+    // 凸多角形のSAT判定と辺のクリップで最大2点の接触を返します(left: 第1多角形の頂点, right: 第2多角形の頂点)。
+    // 各形状は3頂点以上で、法線は第1形状側へ向けます。
     std::optional<Contact> IntersectPolygons(
         const std::vector<DirectX::XMFLOAT2>& left,
         const std::vector<DirectX::XMFLOAT2>& right)
@@ -587,7 +667,9 @@ namespace
             return std::nullopt;
         }
 
+        // 両多角形の分離軸候補
         auto axes = PolygonAxisCandidates(left, true);
+        // 第2多角形の分離軸候補
         const auto rightAxes = PolygonAxisCandidates(right, false);
         axes.insert(axes.end(), rightAxes.begin(), rightAxes.end());
         if (axes.empty())
@@ -595,14 +677,22 @@ namespace
             return std::nullopt;
         }
 
+        // 0以下で最大の符号付き分離量
         float bestSeparation = std::numeric_limits<float>::lowest();
+        // 参照面に選ぶ分離軸の添字
         std::size_t bestIndex{};
+        // 採用できる分離軸を得た状態
         bool found{};
+        // 分離軸または接触点の添字
         for (std::size_t index{}; index < axes.size(); ++index)
         {
+            // 比較する分離軸の候補
             const auto& candidate = axes[index];
+            // 参照面を持つ多角形
             const auto& facePolygon = candidate.fromLeft ? left : right;
+            // 参照面と比較する相手多角形
             const auto& otherPolygon = candidate.fromLeft ? right : left;
+            // 参照面からの符号付き分離量
             const float separation = FaceSeparation(
                 candidate.axis,
                 facePolygon[candidate.edgeStart],
@@ -624,21 +714,31 @@ namespace
             return std::nullopt;
         }
 
+        // 参照面に選んだ分離軸
         const auto winner = axes[bestIndex];
+        // クリップの参照辺を持つ多角形
         const auto& referencePolygon = winner.fromLeft ? left : right;
+        // クリップする入射辺の多角形
         const auto& incidentPolygon = winner.fromLeft ? right : left;
 
+        // 参照辺の始点
         const auto referenceA = referencePolygon[winner.edgeStart];
+        // 参照辺の終点
         const auto referenceB = referencePolygon[
             (winner.edgeStart + 1) % referencePolygon.size()];
 
         // 入射エッジ：分離軸と最も逆向き（内積が最小）の辺を選びます。
+        // 入射辺を選ぶ法線候補
         const auto incidentAxes =
             PolygonAxisCandidates(incidentPolygon, winner.fromLeft);
+        // 選んだ入射辺の始点番号
         std::size_t incidentStart{};
+        // 参照法線と最も逆向きの内積
         float lowestDot = std::numeric_limits<float>::max();
+        // 比較する分離軸の候補
         for (const auto& candidate : incidentAxes)
         {
+            // 参照法線と候補法線の内積
             const float dot =
                 candidate.axis.x * winner.axis.x
                     + candidate.axis.y * winner.axis.y;
@@ -648,12 +748,17 @@ namespace
                 incidentStart = candidate.edgeStart;
             }
         }
+        // 入射辺の始点
         const auto incidentA = incidentPolygon[incidentStart];
+        // 入射辺の終点
         const auto incidentB = incidentPolygon[
             (incidentStart + 1) % incidentPolygon.size()];
 
+        // 参照辺のX方向の差分
         const float referenceEdgeX = referenceB.x - referenceA.x;
+        // 参照辺のY方向の差分
         const float referenceEdgeY = referenceB.y - referenceA.y;
+        // 参照辺の長さ
         const float referenceLength = std::sqrt(
             referenceEdgeX * referenceEdgeX
                 + referenceEdgeY * referenceEdgeY);
@@ -661,13 +766,17 @@ namespace
         {
             return std::nullopt;
         }
+        // 参照辺の単位接線
         const DirectX::XMFLOAT2 referenceDirection{
             referenceEdgeX / referenceLength,
             referenceEdgeY / referenceLength };
+        // 参照辺の逆向き単位接線
         const DirectX::XMFLOAT2 negativeDirection{
             -referenceDirection.x, -referenceDirection.y };
 
+        // 参照辺の始点側で切った頂点
         std::array<DirectX::XMFLOAT2, 2> stage{};
+        // 最初のクリップで残った頂点数
         const std::size_t stageCount = ClipSegment(
             incidentA,
             incidentB,
@@ -679,7 +788,9 @@ namespace
         {
             return std::nullopt;
         }
+        // 参照辺の終点側でも切った頂点
         std::array<DirectX::XMFLOAT2, 2> clipped{};
+        // 両側のクリップで残った頂点数
         const std::size_t clippedCount = ClipSegment(
             stage[0],
             stage[1],
@@ -692,14 +803,19 @@ namespace
             return std::nullopt;
         }
 
+        // 参照面の法線方向の位置
         const float referenceOffset =
             winner.axis.x * referenceA.x + winner.axis.y * referenceA.y;
 
+        // 法線と接触点の判定結果
         Contact contact{};
         contact.pointCount = 0;
+        // 採用する接触点の貫入量合計
         float totalPenetration{};
+        // 採用を調べるクリップ後の頂点
         for (const auto& point : clipped)
         {
+            // 参照面からの符号付き分離量
             const float separation =
                 winner.axis.x * point.x + winner.axis.y * point.y
                     - referenceOffset;
@@ -722,9 +838,13 @@ namespace
             0.0001f);
 
         // 法線は他の2D関数と同じ規約（left側を向く）へ補正します。
+        // 第1多角形の頂点平均
         const auto leftCentroid = PolygonCentroid(left);
+        // 第2多角形の頂点平均
         const auto rightCentroid = PolygonCentroid(right);
+        // 第1形状側へ向く接触法線
         DirectX::XMFLOAT2 normal = winner.axis;
+        // 第1形状へ法線が向く内積
         const float towardLeft =
             normal.x * (leftCentroid.x - rightCentroid.x)
                 + normal.y * (leftCentroid.y - rightCentroid.y);
@@ -735,12 +855,15 @@ namespace
         }
         contact.normal = { normal.x, normal.y, 0.0f };
 
+        // 接触点の座標平均
         DirectX::XMFLOAT3 average{};
+        // 分離軸または接触点の添字
         for (std::size_t index{}; index < contact.pointCount; ++index)
         {
             average.x += contact.points[index].x;
             average.y += contact.points[index].y;
         }
+        // 平均の除算に使う接触数の逆数
         const float scale =
             1.0f / static_cast<float>(contact.pointCount);
         average.x *= scale;
@@ -750,9 +873,7 @@ namespace
         return contact;
     }
 
-    // 凸多角形×円の2D接触。法線はleft側（多角形）を向きます。
-    // 各辺の外向き法線を分離軸として最大分離量を持つ辺を探し、その辺との
-    // Voronoi領域（辺上／端点近傍）で最近接点を求める標準的な手法です。
+    // 凸多角形の辺と円を判定して接触を返します(polygon: 3頂点以上の凸多角形, circle: 円形状)。
     std::optional<Contact> IntersectPolygonCircle(
         const std::vector<DirectX::XMFLOAT2>& polygon,
         const LamaPon::Circle2D& circle)
@@ -762,18 +883,25 @@ namespace
             return std::nullopt;
         }
 
+        // 多角形の辺の外向き法線候補
         const auto axes = PolygonAxisCandidates(polygon, true);
         if (axes.empty())
         {
             return std::nullopt;
         }
 
+        // 円中心と辺の最大符号分離量
         float maxSeparation = std::numeric_limits<float>::lowest();
+        // 最も分離する辺の外向き法線
         DirectX::XMFLOAT2 faceNormal{ 0.0f, 1.0f };
+        // 最も分離する辺の始点番号
         std::size_t edgeStart{};
+        // 比較する辺の外向き法線
         for (const auto& candidate : axes)
         {
+            // 比較する辺上の頂点
             const auto& vertex = polygon[candidate.edgeStart];
+            // 円中心と辺の符号付き分離量
             const float separation =
                 candidate.axis.x * (circle.center.x - vertex.x)
                     + candidate.axis.y * (circle.center.y - vertex.y);
@@ -793,11 +921,14 @@ namespace
         if (maxSeparation <= 0.0001f)
         {
             // 中心が多角形の内部：最も近い面から押し出します。
+            // 形状同士のめり込み量
             const float penetration = circle.radius - maxSeparation;
+            // 通知する代表接触点
             const DirectX::XMFLOAT3 point{
                 circle.center.x - faceNormal.x * maxSeparation,
                 circle.center.y - faceNormal.y * maxSeparation,
                 0.0f };
+            // 法線と接触点の判定結果
             Contact contact{
                 { faceNormal.x, faceNormal.y, 0.0f },
                 std::max(penetration, 0.0001f),
@@ -807,51 +938,67 @@ namespace
             return contact;
         }
 
-        // 中心が多角形の外側：最も分離した辺の上（または端点近傍）の
-        // 最近接点を求めます。tのクランプにより、隣接する2辺のどちらを
-        // 選んでも角付近では同じ頂点へ収束します。
+        // 最近接点を求める辺の始点
         const auto& v1 = polygon[edgeStart];
+        // 最近接点を求める辺の終点
         const auto& v2 = polygon[(edgeStart + 1) % polygon.size()];
+        // 辺のX方向の差分
         const float edgeX = v2.x - v1.x;
+        // 辺のY方向の差分
         const float edgeY = v2.y - v1.y;
+        // 辺の長さの二乗
         const float lengthSquared = edgeX * edgeX + edgeY * edgeY;
+        // 辺の最近接点を表す補間率
         float t = lengthSquared > 0.0001f
             ? ((circle.center.x - v1.x) * edgeX
                 + (circle.center.y - v1.y) * edgeY) / lengthSquared
             : 0.0f;
         t = std::clamp(t, 0.0f, 1.0f);
+        // 辺上で円中心に最も近い点
         const DirectX::XMFLOAT2 closest{
             v1.x + edgeX * t, v1.y + edgeY * t };
 
+        // 最近接点から円中心へのX差分
         const float deltaX = circle.center.x - closest.x;
+        // 最近接点から円中心へのY差分
         const float deltaY = circle.center.y - closest.y;
+        // 最近接位置間の距離の二乗
         const float squaredDistance = deltaX * deltaX + deltaY * deltaY;
         if (squaredDistance >= circle.radius * circle.radius)
         {
             return std::nullopt;
         }
+        // 最近接位置間の距離
         const float distance = std::sqrt(squaredDistance);
+        // 第1形状側へ向く接触法線
         DirectX::XMFLOAT3 normal{ faceNormal.x, faceNormal.y, 0.0f };
         if (distance > 0.0001f)
         {
             normal = { deltaX / distance, deltaY / distance, 0.0f };
         }
+        // 形状同士のめり込み量
         const float penetration = circle.radius - distance;
+        // 通知する代表接触点
         const DirectX::XMFLOAT3 point{ closest.x, closest.y, 0.0f };
+        // 法線と接触点の判定結果
         Contact contact{ normal, penetration, point };
         contact.points[0] = point;
         contact.pointCount = 1;
         return contact;
     }
 
+    // 3Dの箱の貫入を判定し最小貫入軸の接触を返します(left: 第1境界, right: 第2境界)。
     std::optional<Contact> IntersectBounds(
         const LamaPon::Bounds3D& left,
         const LamaPon::Bounds3D& right)
     {
+        // X方向の重なり幅
         const float overlapX = std::min(left.maximum.x, right.maximum.x)
             - std::max(left.minimum.x, right.minimum.x);
+        // Y方向の重なり幅
         const float overlapY = std::min(left.maximum.y, right.maximum.y)
             - std::max(left.minimum.y, right.minimum.y);
+        // Z方向の重なり幅
         const float overlapZ = std::min(left.maximum.z, right.maximum.z)
             - std::max(left.minimum.z, right.minimum.z);
         if (overlapX <= 0.0f || overlapY <= 0.0f || overlapZ <= 0.0f)
@@ -859,11 +1006,13 @@ namespace
             return std::nullopt;
         }
 
+        // 第1境界の中心位置
         const DirectX::XMFLOAT3 leftCenter{
             (left.minimum.x + left.maximum.x) * 0.5f,
             (left.minimum.y + left.maximum.y) * 0.5f,
             (left.minimum.z + left.maximum.z) * 0.5f
         };
+        // 第2境界の中心位置
         const DirectX::XMFLOAT3 rightCenter{
             (right.minimum.x + right.maximum.x) * 0.5f,
             (right.minimum.y + right.maximum.y) * 0.5f,
@@ -893,19 +1042,26 @@ namespace
 
     struct DirectionalShadowCascade final
     {
+        // 分割ごとの影ビュー行列
         DirectX::XMMATRIX view;
+        // 分割ごとの影投影行列
         DirectX::XMMATRIX projection;
+        // カメラから分割終端までの距離
         float splitDistance{};
     };
 
     struct DirectionalShadowMatrices final
     {
+        // 分割ごとの影行列と分割距離
         std::array<
             DirectionalShadowCascade,
             LamaPon::MaximumShadowCascades> cascades;
+        // 有効な影分割の数
         std::size_t count{};
     };
 
+    // 視錐台を分割し位置をテクセルへ合わせた影行列を作ります(cameraView: カメラビュー, cameraProjection: カメラ投影, lightDirection: 非零の光進行方向, shadowDistance: 影距離, requestedCascadeCount: 分割数, splitLambda: 対数分割率, shadowResolution: 影解像度)。
+    // 入力は有限で、カメラのビューと投影行列は可逆である必要があります。
     DirectionalShadowMatrices BuildDirectionalShadowMatrices(
         DirectX::FXMMATRIX cameraView,
         DirectX::CXMMATRIX cameraProjection,
@@ -917,76 +1073,101 @@ namespace
     {
         using namespace DirectX;
 
+        // 逆行列計算時の行列式
         XMVECTOR determinant{};
+        // カメラのビュー行列の逆行列
         const XMMATRIX inverseView =
             XMMatrixInverse(&determinant, cameraView);
+        // カメラの投影行列の逆行列
         const XMMATRIX inverseProjection =
             XMMatrixInverse(&determinant, cameraProjection);
+        // 正規化した平行光の進行方向
         const XMVECTOR direction = XMVector3Normalize(
             XMLoadFloat3(&lightDirection));
 
+        // 光方向と上方向の平行度
         const float verticalAlignment = std::abs(
             XMVectorGetX(XMVector3Dot(
                 direction,
                 XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f))));
+        // 光方向に平行でない上方向
         const XMVECTOR up = verticalAlignment > 0.95f
             ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
             : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
+        // ビュー座標の近平面中心
         const XMVECTOR nearCenter = XMVector3TransformCoord(
             XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f),
             inverseProjection);
+        // ビュー座標の遠平面中心
         const XMVECTOR farCenter = XMVector3TransformCoord(
             XMVectorSet(0.0f, 0.0f, 1.0f, 1.0f),
             inverseProjection);
+        // 0.01以上のカメラ近平面距離
         const float cameraNear = std::max(
             -XMVectorGetZ(nearCenter),
             0.01f);
+        // 近平面より先の遠平面距離
         const float cameraFar = std::max(
             -XMVectorGetZ(farCenter),
             cameraNear + 0.01f);
+        // カメラ内へ制限した影距離
         const float maximumDistance = std::clamp(
             shadowDistance,
             cameraNear + 0.01f,
             cameraFar);
+        // 上限内に制限した分割数
         const std::size_t cascadeCount = std::clamp(
             requestedCascadeCount,
             std::size_t{ 1 },
             LamaPon::MaximumShadowCascades);
+        // 0〜1に制限した対数分割率
         const float lambda = std::clamp(
             splitLambda,
             0.0f,
             1.0f);
 
+        // 分割ごとの影行列と距離
         DirectionalShadowMatrices result;
         result.count = cascadeCount;
+        // 直前の分割境界の距離
         float previousSplit = cameraNear;
+        // 構築する影分割の番号
         for (std::size_t cascadeIndex = 0;
             cascadeIndex < cascadeCount;
             ++cascadeIndex)
         {
+            // 影範囲を分ける分割率
             const float fraction =
                 static_cast<float>(cascadeIndex + 1)
                 / static_cast<float>(cascadeCount);
+            // 対数配置で求めた分割距離
             const float logarithmicSplit =
                 cameraNear * std::pow(
                     maximumDistance / cameraNear,
                     fraction);
+            // 等間隔配置の分割距離
             const float uniformSplit =
                 cameraNear
                 + (maximumDistance - cameraNear)
                     * fraction;
+            // 混合後の分割境界距離
             const float splitDistance = std::lerp(
                 uniformSplit,
                 logarithmicSplit,
                 lambda);
 
+            // 分割視錐台のワールド頂点
             std::array<XMVECTOR, 8> corners;
+            // 保存する分割視錐台の頂点番号
             std::size_t cornerIndex{};
+            // 正規化画面のY端の座標
             for (const float ndcY : { -1.0f, 1.0f })
             {
+                // 正規化画面のX端の座標
                 for (const float ndcX : { -1.0f, 1.0f })
                 {
+                    // 逆射影した近平面の頂点
                     const XMVECTOR nearPoint =
                         XMVector3TransformCoord(
                             XMVectorSet(
@@ -995,6 +1176,7 @@ namespace
                                 0.0f,
                                 1.0f),
                             inverseProjection);
+                    // 逆射影した遠平面の頂点
                     const XMVECTOR farPoint =
                         XMVector3TransformCoord(
                             XMVectorSet(
@@ -1003,17 +1185,21 @@ namespace
                                 1.0f,
                                 1.0f),
                             inverseProjection);
+                    // 近平面から遠平面への差分
                     const XMVECTOR ray =
                         XMVectorSubtract(
                             farPoint,
                             nearPoint);
+                    // 遠近平面間のビュー深度差
                     const float rayDepth =
                         XMVectorGetZ(farPoint)
                         - XMVectorGetZ(nearPoint);
+                    // 分割始点への深度補間率
                     const float nearFraction =
                         (-previousSplit
                             - XMVectorGetZ(nearPoint))
                         / rayDepth;
+                    // 分割終点への深度補間率
                     const float farFraction =
                         (-splitDistance
                             - XMVectorGetZ(nearPoint))
@@ -1037,7 +1223,9 @@ namespace
                 }
             }
 
+            // 分割視錐台の頂点平均
             XMVECTOR center = XMVectorZero();
+            // 範囲を測る分割視錐台の頂点
             for (const auto& corner : corners)
             {
                 center = XMVectorAdd(center, corner);
@@ -1047,7 +1235,9 @@ namespace
                 1.0f
                     / static_cast<float>(corners.size()));
 
+            // 切り上げた分割視錐台の半径
             float radius{};
+            // 範囲を測る分割視錐台の頂点
             for (const auto& corner : corners)
             {
                 radius = std::max(
@@ -1061,18 +1251,22 @@ namespace
                 std::ceil(radius * 16.0f) / 16.0f,
                 0.5f);
 
+            // 影範囲の前後に加える余裕
             const float depthPadding = std::max(
                 shadowDistance * 0.5f,
                 10.0f);
+            // 影用カメラのワールド位置
             const XMVECTOR eye = XMVectorMultiplyAdd(
                 XMVectorNegate(direction),
                 XMVectorReplicate(
                     radius + depthPadding),
                 center);
+            // 影用のビュー行列
             auto view = XMMatrixLookToRH(
                 eye,
                 direction,
                 up);
+            // テクセル位置を合わせる投影行列
             auto projection = XMMatrixOrthographicRH(
                 radius * 2.0f,
                 radius * 2.0f,
@@ -1080,18 +1274,22 @@ namespace
                 radius * 2.0f
                     + depthPadding * 2.0f);
 
+            // 影解像度の半分の値
             const float halfResolution =
                 static_cast<float>(
                     std::max(shadowResolution, 1u))
                 * 0.5f;
+            // テクセル座標へ変換した原点
             const XMVECTOR shadowOrigin =
                 XMVectorScale(
                     XMVector3TransformCoord(
                         XMVectorZero(),
                         view * projection),
                     halfResolution);
+            // 整数テクセルへ丸めた原点
             const XMVECTOR roundedOrigin =
                 XMVectorRound(shadowOrigin);
+            // 投影行列へ加える位置補正
             XMVECTOR roundingOffset =
                 XMVectorScale(
                     XMVectorSubtract(
@@ -1119,15 +1317,17 @@ namespace
         return result;
     }
 
-    // 祖先のScrollViewを探します（最も近いもの）。
+    // 最も近い有効な祖先スクロール表示を返します(gameObject: 祖先を探す対象)。
     const LamaPon::UIScrollViewComponent*
         FindAncestorScrollView(
             const LamaPon::GameObject& gameObject)
     {
+        // スクロール表示を探す祖先
         for (const auto* ancestor = gameObject.Parent();
             ancestor != nullptr;
             ancestor = ancestor->Parent())
         {
+            // 有効性を調べるスクロール表示
             if (const auto* scrollView =
                 ancestor->GetComponent<
                     LamaPon::UIScrollViewComponent>();
@@ -1142,29 +1342,30 @@ namespace
 
     struct Light2DEntry final
     {
+        // 2DライトのワールドXY位置
         DirectX::XMFLOAT2 position;
+        // 2Dライトの影響半径
         float radius;
+        // 2Dライトの明るさ
         float intensity;
+        // 2DライトのRGB色
         DirectX::XMFLOAT3 color;
+        // UIへも加算照明を適用する指定
         bool affectsUI;
     };
 
-    // Light2Dは加算式（暗くはしない）で、ワールド空間のSprite
-    // RendererとTilemapに影響します（UIは、UIも照らす設定のLight2Dが
-    // あるときだけ）。このエンジンの2DはワールドXY＝画面ピクセルの
-    // 1対1対応（SpriteRendererComponentの位置計算と同じ）なので、
-    // 灯りの座標はそのまま画面座標として渡せます。
-    //
-    // 画面全体に広がるTilemapでは、オブジェクトの原点だけを基準に
-    // ライトを選べません。画面単位で使うライトをb1の専用バッファへ
-    // まとめ、画素ごとに評価します。
+    // 上限までライトを選び画面単位の照明定数を作ります(lights: 2Dライト一覧, uiOnly: UIへ影響するライトのみ採用, worldOffset: ワールド描画の画面位置補正)。
+    // ワールドXYと画面ピクセルは1対1で対応し、2D照明は加算で適用します。
     LamaPon::Sprite2DLighting BuildSprite2DLighting(
         const std::vector<Light2DEntry>& lights,
         const bool uiOnly,
         const DirectX::XMFLOAT2& worldOffset)
     {
+        // 画面単位の2D照明定数
         LamaPon::Sprite2DLighting lighting{};
+        // 採用した2Dライト数
         std::uint32_t count{};
+        // 採用を調べる2Dライト
         for (const auto& light : lights)
         {
             if (count >= LamaPon::MaximumSprite2DLights)
@@ -1176,6 +1377,7 @@ namespace
             {
                 continue;
             }
+            // 定数バッファへ格納するライト
             auto& destination = lighting.lights[count];
             destination.positionRadiusIntensity = {
                 light.position.x
@@ -1195,22 +1397,26 @@ namespace
         return lighting;
     }
 
+    // 2D加算照明シェーダーのパス
     const std::filesystem::path SpriteLit2DShaderPath{
         L"shaders/LamaPonSpriteLit.hlsl" };
 
     struct SpriteMaskEntry final
     {
+        // 画面補正後のマスク中心位置
         DirectX::XMFLOAT2 position;
+        // マスクの形状
         LamaPon::SpriteMaskShape shape;
+        // マスクの幅と高さ
         DirectX::XMFLOAT2 size;
     };
 
+    // 2Dマスクシェーダーのパス
     const std::filesystem::path SpriteMaskShaderPath{
         L"shaders/LamaPonSpriteMask.hlsl" };
 
-    // SpriteMaskは最も近いマスク1つだけを使うクッキリしたクリップです
-    // （半透明フェードなし）。座標系や[5]/[6]予約枠の考え方は
-    // BuildLight2DParametersと同じです。
+    // 最も近い一つのマスクと描画定数を設定します(spritePosition: 画面位置, spriteTint: 描画色, spriteDrawRect: 描画矩形, interaction: マスク内外の表示指定, masks: マスク一覧)。
+    // 5番と6番の定数に描画色と矩形を格納します。
     std::array<DirectX::XMFLOAT4, 8> BuildSpriteMaskParameters(
         const DirectX::XMFLOAT2& spritePosition,
         const DirectX::XMFLOAT4& spriteTint,
@@ -1218,19 +1424,26 @@ namespace
         const LamaPon::SpriteMaskInteraction interaction,
         const std::vector<SpriteMaskEntry>& masks)
     {
+        // マスク描画用のシェーダー定数
         std::array<DirectX::XMFLOAT4, 8> parameters{};
         parameters[5] = spriteTint;
         parameters[6] = spriteDrawRect;
 
+        // 最も近いマスクの添字
         std::size_t nearestIndex = masks.size();
+        // 最近傍マスクまでの距離の二乗
         float nearestDistanceSquared =
             std::numeric_limits<float>::max();
+        // 比較するマスクの添字
         for (std::size_t index{}; index < masks.size(); ++index)
         {
+            // スプライトからマスクへのX差分
             const float deltaX =
                 masks[index].position.x - spritePosition.x;
+            // スプライトからマスクへのY差分
             const float deltaY =
                 masks[index].position.y - spritePosition.y;
+            // マスクまでの距離の二乗
             const float distanceSquared =
                 deltaX * deltaX + deltaY * deltaY;
             if (distanceSquared < nearestDistanceSquared)
@@ -1242,6 +1455,7 @@ namespace
 
         if (nearestIndex < masks.size())
         {
+            // 採用した最近傍のマスク
             const auto& mask = masks[nearestIndex];
             parameters[0].x =
                 mask.shape == LamaPon::SpriteMaskShape::Rectangle
@@ -1262,22 +1476,31 @@ namespace
         return parameters;
     }
 
+    // 描画順で2DとUIを描き独自パス・マスク・照明を適用します(gameObjects: シーンのオブジェクト一覧, graphics: 描画機器)。
+    // 同順序は登録順を保ち、独自シェーダーを優先し、マスクは照明より優先します。
     void RenderSprites2D(
         const std::vector<std::unique_ptr<LamaPon::GameObject>>&
             gameObjects,
         LamaPon::GraphicsDevice& graphics)
     {
+        // 標準のスプライト描画パス
         auto defaultPass = graphics.BeginSpritePass();
+        // 現在の標準スプライト描画状態
         auto sprites = defaultPass.Context();
+        // 描画順序で並べる対象一覧
         std::vector<LamaPon::GameObject*> ordered;
         ordered.reserve(gameObjects.size());
+        // 描画や設定収集の対象
         for (const auto& gameObject : gameObjects)
         {
             ordered.push_back(gameObject.get());
         }
+        // 有効な2Dライトの一覧
         std::vector<Light2DEntry> lights2D;
+        // 描画や設定収集の対象
         for (const auto& gameObject : gameObjects)
         {
+            // 設定を収集する2Dライト
             if (const auto* light =
                     gameObject->GetComponent<
                         LamaPon::Light2DComponent>();
@@ -1293,23 +1516,28 @@ namespace
                     light->AffectsUI() });
             }
         }
-        // 灯りはSprite単位ではなく画面単位なので、一覧はループの外で
-        // 1回だけ組み立てます。UI用はUIを照らす設定の灯りだけの版です。
+        // 画面単位で照明一覧を一度作り、UIには指定のあるライトだけを渡します。
+        // ワールド描画用の照明定数
         const auto worldLighting =
             BuildSprite2DLighting(
                 lights2D,
                 false,
                 graphics.Sprite2DOffset());
+        // UIへ適用する照明定数
         const auto uiLighting =
             BuildSprite2DLighting(
                 lights2D,
                 true,
                 graphics.Sprite2DOffset());
+        // UIへ影響するライトの有無
         const bool anyLightAffectsUI =
             uiLighting.counts.x > 0u;
+        // 有効な2Dマスクの一覧
         std::vector<SpriteMaskEntry> masks2D;
+        // 描画や設定収集の対象
         for (const auto& gameObject : gameObjects)
         {
+            // 設定を収集する2Dマスク
             if (const auto* mask =
                     gameObject->GetComponent<
                         LamaPon::SpriteMaskComponent>();
@@ -1328,6 +1556,7 @@ namespace
                     mask->Size() });
             }
         }
+        // 2D描画順序を比較します(left: 一方の対象, right: もう一方の対象)。
         std::stable_sort(
             ordered.begin(),
             ordered.end(),
@@ -1338,19 +1567,17 @@ namespace
                 return left->Render2DSortOrder()
                     < right->Render2DSortOrder();
             });
-        // ScrollView配下のオブジェクトは表示領域でクリッピング
-        // します。
+        // ScrollView配下のオブジェクトは表示領域でクリッピングします。
+        // 標準パスで適用中のスクロール表示
         const LamaPon::UIScrollViewComponent*
             activeScrollView{};
+        // 描画や設定収集の対象
         for (auto* gameObject : ordered)
         {
-            // SpriteRenderer にカスタムシェーダーが指定されている場合は、
-            // そのオブジェクトの描画だけSprite passを差し替えます。
-            // パラメーターはオブジェクトごとに異なるため、カスタム描画の
-            // 手前で一度バッチを確定させます（ScrollViewのクリッピングは
-            // 通常バッチのみ対象で、切替時にシザーを畳んで整合させます）。
+            // 独自シェーダーは対象ごとにパスを切り替え、標準パスのスクロールクリップを解除します。
             if (gameObject->IsEnabled())
             {
+                // 独自シェーダーを使う描画設定
                 if (auto* sprite =
                         gameObject->GetComponent<
                             LamaPon::SpriteRendererComponent>();
@@ -1364,6 +1591,7 @@ namespace
                         activeScrollView = nullptr;
                     }
                     defaultPass.End();
+                    // 独自シェーダーの描画パス
                     auto customPass =
                         sprite->BeginRenderPass(graphics);
                     gameObject->Render2D(
@@ -1375,16 +1603,14 @@ namespace
                     continue;
                 }
             }
-            // SpriteMaskによるクリップ：MaskInteractionを設定した
-            // Sprite Rendererだけに適用します。Light2Dと同時に必要な
-            // Spriteでは、こちら（マスク）を優先します
-            // （1回のバッチ切替で使えるカスタムShaderは1つのため）。
+            // マスク指定のスプライトだけを別パスで描き、同じ対象の2D照明より優先します。
             if (!masks2D.empty()
                 && gameObject->IsEnabled()
                 && gameObject->GetComponent<
                     LamaPon::UIRectTransformComponent>()
                     == nullptr)
             {
+                // マスクを適用する描画設定
                 if (auto* maskedSprite =
                         gameObject->GetComponent<
                             LamaPon::SpriteRendererComponent>();
@@ -1394,30 +1620,37 @@ namespace
                     && maskedSprite->MaskInteraction()
                         != LamaPon::SpriteMaskInteraction::None)
                 {
+                    // スプライトのワールド変換
                     DirectX::XMFLOAT4X4 spriteWorld{};
                     DirectX::XMStoreFloat4x4(
                         &spriteWorld,
                         gameObject->WorldMatrix());
+                    // ワールド変換のX拡縮量
                     const float worldScaleX = std::sqrt(
                         spriteWorld._11 * spriteWorld._11
                             + spriteWorld._12
                                 * spriteWorld._12);
+                    // ワールド変換のY拡縮量
                     const float worldScaleY = std::sqrt(
                         spriteWorld._21 * spriteWorld._21
                             + spriteWorld._22
                                 * spriteWorld._22);
+                    // スプライトの設定寸法
                     const auto& spriteSize =
                         maskedSprite->Size();
+                    // 拡縮後の描画幅
                     const float drawWidth = std::max(
                         spriteSize.x * worldScaleX,
                         0.0001f);
+                    // 拡縮後の描画高さ
                     const float drawHeight = std::max(
                         spriteSize.y * worldScaleY,
                         0.0001f);
-                    // Pivotを動かしているとTransformの位置は左上では
-                    // ないので、矩形の左上へ戻してから渡します。
+                    // Pivotを動かしているとTransformの位置は左上ではないので、矩形の左上へ戻してから渡します。
+                    // 描画矩形の基準点
                     const auto& spritePivot =
                         maskedSprite->Pivot();
+                    // 画面上の位置と描画寸法
                     const DirectX::XMFLOAT4 drawRect{
                         spriteWorld._41
                             - spritePivot.x * drawWidth
@@ -1428,6 +1661,7 @@ namespace
                         drawWidth,
                         drawHeight
                     };
+                    // マスク描画のシェーダー定数
                     const auto parameters =
                         BuildSpriteMaskParameters(
                             { spriteWorld._41
@@ -1445,10 +1679,12 @@ namespace
                         activeScrollView = nullptr;
                     }
                     defaultPass.End();
+                    // マスク描画パスの設定
                     LamaPon::SpritePassDescription maskDescription;
                     maskDescription.pixelShader =
                         SpriteMaskShaderPath;
                     maskDescription.customParameters = parameters;
+                    // マスクを適用する描画パス
                     auto maskPass = graphics.BeginSpritePass(
                         maskDescription);
                     gameObject->Render2D(
@@ -1460,29 +1696,28 @@ namespace
                     continue;
                 }
             }
-            // Light2Dの加算式ライティング。カスタムShaderの分岐と同じ、
-            // バッチを一度確定させてから差し替える方式です。
-            //
-            // 対象は独自Shaderを持たないSprite RendererとTilemapです。
-            // UIは既定では外します（文字が読めなくなるほうが困る）。
-            // UIも照らす設定のLight2Dが1つでもあるときだけ、UI側は
-            // その灯りだけの一覧で照らします。
+            // 独自シェーダーのないスプライトとタイルを照らし、UIは指定されたライトだけを適用します。
             if (!lights2D.empty() && gameObject->IsEnabled())
             {
+                // UI座標で描画する対象
                 const bool isUI =
                     gameObject->GetComponent<
                         LamaPon::UIRectTransformComponent>()
                         != nullptr;
+                // 照明を適用する描画設定
                 auto* litSprite =
                     gameObject->GetComponent<
                         LamaPon::SpriteRendererComponent>();
+                // 照明を使うスプライトの状態
                 const bool spriteIsLit =
                     litSprite != nullptr
                     && litSprite->IsEnabled()
                     && litSprite->ShaderPath().empty();
+                // 照明を調べるタイル描画設定
                 const auto* tilemap =
                     gameObject->GetComponent<
                         LamaPon::TilemapComponent>();
+                // 照明を使うタイルの状態
                 const bool tilemapIsLit =
                     !isUI
                     && tilemap != nullptr
@@ -1496,13 +1731,14 @@ namespace
                         activeScrollView = nullptr;
                     }
                     defaultPass.End();
-                    // 色とUVは頂点から受け取るので、この経路では
-                    // CustomParametersを使いません（灯りはb1）。
+                    // 色とUVは頂点から受け取り、照明定数はb1へ渡します。
+                    // 照明付き描画パスの設定
                     LamaPon::SpritePassDescription litDescription;
                     litDescription.pixelShader =
                         SpriteLit2DShaderPath;
                     litDescription.lighting =
                         isUI ? uiLighting : worldLighting;
+                    // 照明を適用する描画パス
                     auto litPass = graphics.BeginSpritePass(
                         litDescription);
                     gameObject->Render2D(
@@ -1514,6 +1750,7 @@ namespace
                     continue;
                 }
             }
+            // 現在の対象の祖先スクロール表示
             const auto* scrollView =
                 FindAncestorScrollView(*gameObject);
             if (scrollView != activeScrollView)
@@ -1525,6 +1762,7 @@ namespace
                 activeScrollView = scrollView;
                 if (activeScrollView != nullptr)
                 {
+                    // 画面上のスクロール表示範囲
                     const auto viewRect =
                         activeScrollView->ViewRect(
                             graphics);
@@ -1592,10 +1830,12 @@ namespace LamaPon
 
     GameObject& Scene::CreateGameObject(std::string name)
     {
+        // 新たに所有するオブジェクト
         auto gameObject = std::make_unique<GameObject>(m_nextId++, std::move(name));
         gameObject->m_scene = this;
         // 追加読み込み中なら、そのシーンの所属にします。
         gameObject->m_sourceScene = m_loadingScene;
+        // 生成または複製したルート
         auto* result = gameObject.get();
         m_gameObjects.emplace_back(std::move(gameObject));
         return *result;
@@ -1612,22 +1852,26 @@ namespace LamaPon
             throw std::invalid_argument("The duplicate target parent is not in this scene.");
         }
 
+        // 失敗時に破棄する複製ルート
         GameObject* duplicatedRoot{};
+        // 複製元と複製先の番号対応表
         std::unordered_map<
             GameObjectId,
             GameObjectId> duplicatedIds;
 
-        // 複製は複製元と同じシーンの所属にします（追加シーンの中で
-        // 複製したものが主シーンへ紛れ込まないようにするため）。
-        // CreateGameObjectがm_loadingSceneを見るので、その間だけ
-        // 差し替えます。
+        // CreateGameObjectの所属を複製元に合わせ、終了時に元へ戻します。
+        // 複製前の生成所属シーン番号
         const SceneHandle previousLoadingScene =
             m_loadingScene;
         m_loadingScene = source.SourceScene();
+        // 生成所属シーンの復元ガード
         struct LoadingSceneRestore final
         {
+            // 借用する複製先のシーン
             Scene& scene;
+            // 複製前の生成所属シーン番号
             SceneHandle previous;
+            // 複製中だけ変更した生成所属シーン番号を戻します。
             ~LoadingSceneRestore()
             {
                 scene.m_loadingScene = previous;
@@ -1637,6 +1881,7 @@ namespace LamaPon
             previousLoadingScene
         };
 
+        // 対象と子孫を複製します(self: 再帰用の自身, sourceObject: 複製元, parent: 複製先の親, isRoot: ルートの指定)。
         const auto clone =
             [this,
                 &duplicatedRoot,
@@ -1647,6 +1892,7 @@ namespace LamaPon
                 GameObject* parent,
                 const bool isRoot) -> GameObject&
             {
+                // 新たに生成した複製先
                 auto& duplicate = CreateGameObject(
                     sourceObject.Name()
                     + (isRoot && appendCopySuffix
@@ -1668,10 +1914,13 @@ namespace LamaPon
                     sourceObject.PrefabAssetPath());
                 duplicate.SetParent(parent);
 
+                // 複製元が所有する構成要素
                 for (const auto& sourceComponent : sourceObject.Components())
                 {
+                    // 生成した構成要素の非所有参照
                     Component* duplicateComponent{};
 
+                    // 複製元のカメラ
                     if (const auto* camera =
                         dynamic_cast<const CameraComponent*>(sourceComponent.get()))
                     {
@@ -1680,6 +1929,7 @@ namespace LamaPon
                             camera->NearPlane(),
                             camera->FarPlane());
                     }
+                    // 複製元の平行光源
                     else if (const auto* directionalLight =
                         dynamic_cast<const DirectionalLightComponent*>(
                             sourceComponent.get()))
@@ -1697,10 +1947,12 @@ namespace LamaPon
                                 directionalLight->ShadowCascadeCount(),
                                 directionalLight->ShadowSplitLambda());
                     }
+                    // 複製元の点光源
                     else if (const auto* pointLight =
                         dynamic_cast<const PointLightComponent*>(
                             sourceComponent.get()))
                     {
+                        // 設定を引き継ぐ点光源
                         auto& duplicatePointLight =
                             duplicate.AddComponent<
                                 PointLightComponent>(
@@ -1718,10 +1970,12 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicatePointLight;
                     }
+                    // 複製元のスポット光源
                     else if (const auto* spotLight =
                         dynamic_cast<const SpotLightComponent*>(
                             sourceComponent.get()))
                     {
+                        // 設定を引き継ぐスポット光源
                         auto& duplicateSpotLight =
                             duplicate.AddComponent<
                                 SpotLightComponent>(
@@ -1745,6 +1999,7 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateSpotLight;
                     }
+                    // 複製元の2Dライト
                     else if (const auto* light2D =
                         dynamic_cast<
                             const Light2DComponent*>(
@@ -1757,6 +2012,7 @@ namespace LamaPon
                                     light2D->Intensity(),
                                     light2D->Radius());
                     }
+                    // 複製元の2D箱コライダー
                     else if (const auto* collider2D =
                         dynamic_cast<const BoxCollider2DComponent*>(sourceComponent.get()))
                     {
@@ -1768,6 +2024,7 @@ namespace LamaPon
                             collider2D->CollisionMask(),
                             collider2D->Material());
                     }
+                    // 複製元の2D円コライダー
                     else if (const auto* circle2D =
                         dynamic_cast<
                             const CircleCollider2DComponent*>(
@@ -1784,6 +2041,7 @@ namespace LamaPon
                                         ->CollisionMask(),
                                     circle2D->Material());
                     }
+                    // 複製元の2D多角形コライダー
                     else if (const auto* polygon2D =
                         dynamic_cast<
                             const PolygonCollider2DComponent*>(
@@ -1800,6 +2058,7 @@ namespace LamaPon
                                         ->CollisionMask(),
                                     polygon2D->Material());
                     }
+                    // 複製元の3D箱コライダー
                     else if (const auto* collider3D =
                         dynamic_cast<const BoxCollider3DComponent*>(sourceComponent.get()))
                     {
@@ -1811,6 +2070,7 @@ namespace LamaPon
                             collider3D->CollisionMask(),
                             collider3D->Material());
                     }
+                    // 複製元のカプセルコライダー
                     else if (const auto* capsule =
                         dynamic_cast<const CapsuleCollider3DComponent*>(
                             sourceComponent.get()))
@@ -1826,6 +2086,7 @@ namespace LamaPon
                                     capsule->CollisionMask(),
                                     capsule->Material());
                     }
+                    // 複製元の球コライダー
                     else if (const auto* sphere =
                         dynamic_cast<
                             const SphereCollider3DComponent*>(
@@ -1841,6 +2102,7 @@ namespace LamaPon
                                     sphere->CollisionMask(),
                                     sphere->Material());
                     }
+                    // 複製元の凸形状コライダー
                     else if (const auto* hull =
                         dynamic_cast<
                             const ConvexHullCollider3DComponent*>(
@@ -1856,6 +2118,7 @@ namespace LamaPon
                                     hull->CollisionMask(),
                                     hull->Material());
                     }
+                    // 複製元のメッシュコライダー
                     else if (const auto* meshCollider =
                         dynamic_cast<
                             const MeshCollider3DComponent*>(
@@ -1875,9 +2138,11 @@ namespace LamaPon
                                     meshCollider
                                         ->Material());
                     }
+                    // 複製元のメッシュ描画
                     else if (const auto* mesh =
                         dynamic_cast<const MeshRendererComponent*>(sourceComponent.get()))
                     {
+                        // 設定を引き継ぐメッシュ描画
                         auto& duplicateMesh =
                             duplicate.AddComponent<MeshRendererComponent>(
                             mesh->Shape(),
@@ -1889,7 +2154,6 @@ namespace LamaPon
                             mesh->MaterialAssetPath());
                         duplicateMesh.SetMetallic(
                             mesh->Metallic());
-                        // PBRマップと発光も引き継ぎます。
                         duplicateMesh.SetRoughnessTexturePath(
                             mesh->RoughnessTexturePath());
                         duplicateMesh.SetMetallicTexturePath(
@@ -1911,9 +2175,11 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateMesh;
                     }
+                    // 複製元のスプライト描画
                     else if (const auto* sprite =
                         dynamic_cast<const SpriteRendererComponent*>(sourceComponent.get()))
                     {
+                        // 設定を引き継ぐスプライト描画
                         auto& duplicateSprite =
                             duplicate.AddComponent<SpriteRendererComponent>(
                                 sprite->Size(),
@@ -1927,6 +2193,7 @@ namespace LamaPon
                             sprite->ShaderPath());
                         duplicateSprite.SetMaskInteraction(
                             sprite->MaskInteraction());
+                        // 引き継ぐシェーダー定数の番号
                         for (std::size_t index = 0;
                             index
                                 < SpriteRendererComponent::
@@ -1939,6 +2206,7 @@ namespace LamaPon
                         }
                         duplicateComponent = &duplicateSprite;
                     }
+                    // 複製元の2Dマスク
                     else if (const auto* spriteMask =
                         dynamic_cast<
                             const SpriteMaskComponent*>(
@@ -1950,6 +2218,7 @@ namespace LamaPon
                                     spriteMask->Shape(),
                                     spriteMask->Size());
                     }
+                    // 複製元のカリング設定
                     else if (const auto* renderCulling =
                         dynamic_cast<
                             const RenderCullingComponent*>(
@@ -1963,14 +2232,14 @@ namespace LamaPon
                                     renderCulling
                                         ->CullingMargin());
                     }
+                    // 複製元の反射プローブ
                     else if (const auto* reflectionProbe =
                         dynamic_cast<
                             const ReflectionProbeComponent*>(
                                 sourceComponent.get()))
                     {
-                        // ベイク結果は複製しません（新しい位置で
-                        // 焼き直すのが正しいため。作成直後は
-                        // ベイク待ちなので自動で焼かれます）。
+                        // 複製したプローブは新しい位置で自動ベイクするため、結果を引き継ぎません。
+                        // 新たにベイクする反射プローブ
                         auto& duplicateProbe =
                             duplicate.AddComponent<
                                 ReflectionProbeComponent>(
@@ -1986,11 +2255,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateProbe;
                     }
+                    // 複製元のスプライト再生設定
                     else if (const auto* spriteAnimator =
                         dynamic_cast<
                             const SpriteAnimatorComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐスプライト再生
                         auto& duplicateAnimator =
                             duplicate.AddComponent<
                                 SpriteAnimatorComponent>(
@@ -2002,6 +2273,7 @@ namespace LamaPon
                             spriteAnimator->PlayOnStart());
                         duplicateAnimator.SetDefaultClip(
                             spriteAnimator->DefaultClip());
+                        // 引き継ぐスプライトクリップ
                         for (const auto& clip :
                             spriteAnimator->Clips())
                         {
@@ -2011,11 +2283,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateAnimator;
                     }
+                    // 複製元のタイルマップ
                     else if (const auto* tilemap =
                         dynamic_cast<
                             const TilemapComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐタイルマップ
                         auto& duplicateTilemap =
                             duplicate.AddComponent<
                                 TilemapComponent>(
@@ -2028,6 +2302,7 @@ namespace LamaPon
                                     tilemap->Color(),
                                     tilemap->
                                         TexturePath());
+                        // セルの配置(coordinate: 格子のXY番号, tileIndex: アトラスのタイル番号)。
                         for (const auto&
                             [coordinate, tileIndex] :
                             tilemap->Cells())
@@ -2042,6 +2317,7 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateTilemap;
                     }
+                    // 複製元の視差レイヤー
                     else if (const auto* parallax =
                         dynamic_cast<
                             const ParallaxLayerComponent*>(
@@ -2054,11 +2330,13 @@ namespace LamaPon
                                     parallax
                                         ->ReferenceId());
                     }
+                    // 複製元のナビメッシュ
                     else if (const auto* navMesh =
                         dynamic_cast<
                             const NavMeshComponent*>(
                                 sourceComponent.get()))
                     {
+                        // ベイク格子を引き継ぐナビメッシュ
                         auto& duplicateNavMesh =
                             duplicate.AddComponent<
                                 NavMeshComponent>(
@@ -2072,15 +2350,18 @@ namespace LamaPon
                                         AgentHeight());
                         if (navMesh->IsBaked())
                         {
+                            // ベイク済みの通行不可セル一覧
                             std::vector<
                                 NavMeshComponent::
                                     CellCoordinate>
                                 blockedCells;
+                            // 通行不可を調べる格子のZ番号
                             for (std::uint32_t z{};
                                 z < navMesh->
                                     GridDepth();
                                 ++z)
                             {
+                                // 通行不可を調べる格子のX番号
                                 for (std::uint32_t x{};
                                     x < navMesh->
                                         GridWidth();
@@ -2103,12 +2384,14 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateNavMesh;
                     }
+                    // 複製元の経路移動エージェント
                     else if (const auto* agent =
                         dynamic_cast<
                             const
                                 NavMeshAgentComponent*>(
                                     sourceComponent.get()))
                     {
+                        // 経路を引き継ぐ移動エージェント
                         auto& duplicateAgent =
                             duplicate.AddComponent<
                                 NavMeshAgentComponent>(
@@ -2123,12 +2406,14 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateAgent;
                     }
+                    // 複製元の粒子システム
                     else if (const auto* particles =
                         dynamic_cast<
                             const
                                 ParticleSystemComponent*>(
                                     sourceComponent.get()))
                     {
+                        // 設定を引き継ぐ粒子システム
                         auto& duplicateParticles =
                             duplicate.AddComponent<
                                 ParticleSystemComponent>(
@@ -2194,6 +2479,7 @@ namespace LamaPon
                             SetAuxiliaryTexturePath(
                                 particles->
                                     AuxiliaryTexturePath());
+                        // 引き継ぐシェーダー定数の番号
                         for (std::size_t index = 0;
                             index
                                 < ParticleSystemComponent::
@@ -2209,6 +2495,7 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateParticles;
                     }
+                    // 複製元のUIキャンバス
                     else if (const auto* canvas =
                         dynamic_cast<
                             const UICanvasComponent*>(
@@ -2222,6 +2509,7 @@ namespace LamaPon
                                     canvas->
                                         MatchWidthOrHeight());
                     }
+                    // 複製元のUI配置設定
                     else if (const auto* uiTransform =
                         dynamic_cast<
                             const
@@ -2238,11 +2526,13 @@ namespace LamaPon
                                         AnchoredPosition(),
                                     uiTransform->SizeDelta());
                     }
+                    // 複製元のUIボタン
                     else if (const auto* button =
                         dynamic_cast<
                             const UIButtonComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUIボタン
                         auto& duplicateButton =
                             duplicate.AddComponent<
                                 UIButtonComponent>(
@@ -2280,11 +2570,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateButton;
                     }
+                    // 複製元のUI画像
                     else if (const auto* image =
                         dynamic_cast<
                             const UIImageComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUI画像
                         auto& duplicateImage =
                             duplicate.AddComponent<
                                 UIImageComponent>(
@@ -2299,11 +2591,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateImage;
                     }
+                    // 複製元のUIトグル
                     else if (const auto* toggle =
                         dynamic_cast<
                             const UIToggleComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUIトグル
                         auto& duplicateToggle =
                             duplicate.AddComponent<
                                 UIToggleComponent>(
@@ -2331,11 +2625,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateToggle;
                     }
+                    // 複製元のUIスライダー
                     else if (const auto* slider =
                         dynamic_cast<
                             const UISliderComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUIスライダー
                         auto& duplicateSlider =
                             duplicate.AddComponent<
                                 UISliderComponent>(
@@ -2364,11 +2660,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateSlider;
                     }
+                    // 複製元のUI入力欄
                     else if (const auto* inputField =
                         dynamic_cast<
                             const UIInputFieldComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUI入力欄
                         auto& duplicateField =
                             duplicate.AddComponent<
                                 UIInputFieldComponent>(
@@ -2405,11 +2703,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateField;
                     }
+                    // 複製元のUIレイアウト
                     else if (const auto* layoutGroup =
                         dynamic_cast<
                             const UILayoutGroupComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐUIレイアウト
                         auto& duplicateLayout =
                             duplicate.AddComponent<
                                 UILayoutGroupComponent>(
@@ -2425,11 +2725,13 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateLayout;
                     }
+                    // 複製元のスクロール表示
                     else if (const auto* scrollView =
                         dynamic_cast<
                             const UIScrollViewComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐスクロール表示
                         auto& duplicateScroll =
                             duplicate.AddComponent<
                                 UIScrollViewComponent>();
@@ -2458,9 +2760,11 @@ namespace LamaPon
                             &duplicate.AddComponent<
                                 AudioListenerComponent>();
                     }
+                    // 複製元の音源
                     else if (const auto* audio =
                         dynamic_cast<const AudioSourceComponent*>(sourceComponent.get()))
                     {
+                        // 設定を引き継ぐ音源
                         auto& duplicateAudio =
                             duplicate.AddComponent<AudioSourceComponent>(
                             audio->AudioPath(),
@@ -2478,6 +2782,7 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateAudio;
                     }
+                    // 複製元のモデル描画
                     else if (const auto* model =
                         dynamic_cast<const ModelRendererComponent*>(sourceComponent.get()))
                     {
@@ -2503,13 +2808,13 @@ namespace LamaPon
                             duplicateComponent)
                             ->SetMetallic(
                                 model->Metallic());
+                        // 設定を引き継ぐモデル描画
                         auto* const duplicateModel =
                             static_cast<
                                 ModelRendererComponent*>(
                                     duplicateComponent);
                         duplicateModel->SetUseLegacyShading(
                             model->UsesLegacyShading());
-                        // PBRマップと発光も引き継ぎます。
                         duplicateModel->SetRoughnessTexturePath(
                             model->RoughnessTexturePath());
                         duplicateModel->SetMetallicTexturePath(
@@ -2523,9 +2828,11 @@ namespace LamaPon
                         duplicateModel->SetEmissiveColor(
                             model->EmissiveColor());
                     }
+                    // 複製元のテキスト描画
                     else if (const auto* text =
                         dynamic_cast<const TextRendererComponent*>(sourceComponent.get()))
                     {
+                        // 設定を引き継ぐテキスト描画
                         auto& duplicateText =
                             duplicate.AddComponent<TextRendererComponent>(
                                 text->Text(),
@@ -2540,17 +2847,20 @@ namespace LamaPon
                             text->SortOrder());
                         duplicateComponent = &duplicateText;
                     }
+                    // 複製元の自動回転設定
                     else if (const auto* rotator =
                         dynamic_cast<const RotatorComponent*>(sourceComponent.get()))
                     {
                         duplicateComponent = &duplicate.AddComponent<RotatorComponent>(
                             rotator->AngularVelocity());
                     }
+                    // 複製元のビルボード設定
                     else if (const auto* billboard =
                         dynamic_cast<
                             const BillboardComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐビルボード
                         auto& duplicateBillboard =
                             duplicate.AddComponent<
                                 BillboardComponent>(
@@ -2563,6 +2873,7 @@ namespace LamaPon
                         duplicateComponent =
                             &duplicateBillboard;
                     }
+                    // 複製元の変換アニメーション
                     else if (const auto* animator =
                         dynamic_cast<
                             const TransformAnimatorComponent*>(
@@ -2577,6 +2888,7 @@ namespace LamaPon
                                     animator->PlayOnStart(),
                                     animator->ControllerPath());
                     }
+                    // 複製元の入力移動設定
                     else if (const auto* inputMover =
                         dynamic_cast<const InputMoverComponent*>(
                             sourceComponent.get()))
@@ -2590,11 +2902,13 @@ namespace LamaPon
                                         VerticalAction(),
                                     inputMover->Speed());
                     }
+                    // 複製元のキャラクター制御
                     else if (const auto* controller =
                         dynamic_cast<
                             const CharacterControllerComponent*>(
                                 sourceComponent.get()))
                     {
+                        // 設定を引き継ぐキャラクター制御
                         auto& duplicateController =
                             duplicate.AddComponent<
                                 CharacterControllerComponent>(
@@ -2617,6 +2931,7 @@ namespace LamaPon
                             controller->JumpAction());
                         duplicateComponent = &duplicateController;
                     }
+                    // 複製元の物理ボディ
                     else if (const auto* rigidbody =
                         dynamic_cast<const RigidbodyComponent*>(sourceComponent.get()))
                     {
@@ -2633,6 +2948,7 @@ namespace LamaPon
                             rigidbody->Constraints(),
                             rigidbody->Interpolates());
                     }
+                    // 接続先を引き継ぐジョイント
                     else if (const auto* joint =
                         dynamic_cast<const JointComponent*>(
                             sourceComponent.get()))
@@ -2653,6 +2969,7 @@ namespace LamaPon
                                 joint->UseMotor(),
                                 joint->Motor());
                     }
+                    // 参照先を引き継ぐLOD設定
                     else if (const auto* lodGroup =
                         dynamic_cast<const LODGroupComponent*>(
                             sourceComponent.get()))
@@ -2664,20 +2981,25 @@ namespace LamaPon
                                     lodGroup->
                                         CullDistance());
                     }
+                    // 複製元のネットワーク識別設定
                     else if (const auto* identity = dynamic_cast<const NetworkIdentityComponent*>(sourceComponent.get()))
                     {
+                        // 重複を避ける通信のシーンキー
                         std::string key = identity->SceneKey();
                         if (!key.empty())
                         {
+                            // 通信キーに加える複製番号
                             const auto suffix = ".copy" + std::to_string(duplicate.Id());
                             key.resize(std::min(key.size(), 64 - suffix.size()));
                             key += suffix;
                         }
+                        // 新しいキーで生成した通信設定
                         auto& copy = duplicate.AddComponent<NetworkIdentityComponent>(key);
                         copy.SetHostOnlySimulation(identity->HostOnlySimulation());
                         copy.SetInterpolationSeconds(identity->InterpolationSeconds());
                         duplicateComponent = &copy;
                     }
+                    // 複製元のネイティブスクリプト
                     else if (const auto* nativeScript =
                         dynamic_cast<
                             const NativeScriptComponent*>(
@@ -2697,6 +3019,7 @@ namespace LamaPon
                     }
                 }
 
+                // 再帰的に複製する子
                 for (const auto* sourceChild : sourceObject.Children())
                 {
                     self(self, *sourceChild, &duplicate, false);
@@ -2707,19 +3030,24 @@ namespace LamaPon
 
         try
         {
+            // 生成または複製したルート
             auto& result =
                 clone(clone, source, targetParent, true);
+            // 複製番号の対応(sourceId: 複製元の番号, duplicateId: 複製した対象の番号)。
             for (const auto& [sourceId, duplicateId] :
                 duplicatedIds)
             {
                 static_cast<void>(sourceId);
+                // 新たに生成した複製先
                 auto* duplicate = FindGameObject(
                     duplicateId);
+                // 接続先を引き継ぐジョイント
                 auto* joint = duplicate != nullptr
                     ? duplicate->GetComponent<JointComponent>()
                     : nullptr;
                 if (joint != nullptr)
                 {
+                    // 複製先番号の対応表の位置
                     if (const auto target =
                             duplicatedIds.find(
                                 joint->ConnectedBodyId());
@@ -2729,16 +3057,20 @@ namespace LamaPon
                             target->second);
                     }
                 }
+                // 参照先を引き継ぐLOD設定
                 if (auto* lodGroup =
                         duplicate != nullptr
                         ? duplicate->GetComponent<
                             LODGroupComponent>()
                         : nullptr)
                 {
+                    // 参照先を引き継ぐLOD段階
                     auto levels =
                         lodGroup->Levels();
+                    // 参照番号を変えるLOD段階
                     for (auto& level : levels)
                     {
+                        // 複製先番号の対応表の位置
                         if (const auto target =
                                 duplicatedIds.find(
                                     level.targetId);
@@ -2768,6 +3100,7 @@ namespace LamaPon
 
     GameObject* Scene::FindGameObject(const GameObjectId id) const noexcept
     {
+        // 照合するシーンのオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
             if (gameObject->Id() == id)
@@ -2782,6 +3115,7 @@ namespace LamaPon
     GameObject* Scene::FindGameObjectByName(
         const std::string_view name) const noexcept
     {
+        // 照合するシーンのオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
             if (gameObject->Name() == name)
@@ -2795,7 +3129,9 @@ namespace LamaPon
     std::vector<GameObject*> Scene::FindGameObjectsByName(
         const std::string_view name) const
     {
+        // 名前やタグが一致した対象一覧
         std::vector<GameObject*> results;
+        // 照合するシーンのオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
             if (gameObject->Name() == name)
@@ -2809,6 +3145,7 @@ namespace LamaPon
     GameObject* Scene::FindGameObjectByTag(
         const std::string_view tag) const noexcept
     {
+        // 照合するシーンのオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
             if (gameObject->CompareTag(tag))
@@ -2822,7 +3159,9 @@ namespace LamaPon
     std::vector<GameObject*> Scene::FindGameObjectsByTag(
         const std::string_view tag) const
     {
+        // 名前やタグが一致した対象一覧
         std::vector<GameObject*> results;
+        // 照合するシーンのオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
             if (gameObject->CompareTag(tag))
@@ -2836,6 +3175,7 @@ namespace LamaPon
     bool Scene::IsTagRegistered(
         const std::string_view tag) const noexcept
     {
+        // 比較する登録タグ
         for (const auto& registered : m_registeredTags)
         {
             if (registered == tag)
@@ -2875,8 +3215,8 @@ namespace LamaPon
         {
             return false;
         }
-        // 自分の子孫を基準に動かすと、自分の中へ自分を入れる形に
-        // なってしまいます。
+        // 自分の子孫を基準に動かすと、自分の中へ自分を入れる形になってしまいます。
+        // 移動対象の子孫か調べる祖先
         for (const auto* ancestor = reference.Parent();
             ancestor != nullptr;
             ancestor = ancestor->Parent())
@@ -2887,16 +3227,17 @@ namespace LamaPon
             }
         }
 
-        // 動かすのは自分と子孫のまとまりです。親だけ動かすと
-        // 親子が配列上で離れ、保存したJSONの並びが階層表示と
-        // 食い違って読みにくくなります。
+        // 対象と子孫を一緒に移し、保存順で親が子より先に来る並びを保ちます。
+        // 一緒に移す対象と子孫の番号
         std::unordered_set<GameObjectId> movedIds;
+        // 移動対象の子孫番号を集めます(self: 再帰用の自身, current: 収集する対象)。
         const auto collectSubtree =
             [&movedIds](
                 const auto& self,
                 const GameObject& current) -> void
             {
                 movedIds.insert(current.Id());
+                // 対象の直下の子
                 for (const auto* child : current.Children())
                 {
                     self(self, *child);
@@ -2911,8 +3252,10 @@ namespace LamaPon
         }
 
         // まとまりを相対順序のまま取り出します。
+        // 相対順序を保って取り外した対象
         std::vector<std::unique_ptr<GameObject>> detached;
         detached.reserve(movedIds.size());
+        // 照合する所有オブジェクト
         for (auto& candidate : m_gameObjects)
         {
             if (candidate != nullptr
@@ -2925,8 +3268,9 @@ namespace LamaPon
             m_gameObjects,
             std::unique_ptr<GameObject>{});
 
-        // 取り出した後の位置で基準を探し直します（取り出しで
-        // 添字がずれるため、先に求めた位置は使えません）。
+        // 対象を取り外した後の位置で基準を探し直します。
+        // 基準対象に一致するか調べます(candidate: 所有するオブジェクト)。
+        // 取り外した後の基準対象の位置
         const auto referencePosition = std::ranges::find_if(
             m_gameObjects,
             [&reference](
@@ -2936,7 +3280,7 @@ namespace LamaPon
             });
         if (referencePosition == m_gameObjects.end())
         {
-            // 起こらないはずですが、失った状態にはしません。
+            // 元へ戻す対象物体
             for (auto& object : detached)
             {
                 m_gameObjects.push_back(std::move(object));
@@ -2944,6 +3288,7 @@ namespace LamaPon
             return false;
         }
 
+        // 対象群を挿入する位置
         const auto insertPosition = insertAfter
             ? std::next(referencePosition)
             : referencePosition;
@@ -2952,16 +3297,16 @@ namespace LamaPon
             std::make_move_iterator(detached.begin()),
             std::make_move_iterator(detached.end()));
 
-        // 表示順の出どころは2つあります。ルートはm_gameObjectsの順、
-        // 子は親のm_childrenの順です。片方だけ直すと、保存には
-        // 反映されるのにエディターの表示が変わらない（再起動すると
-        // 変わる）という食い違いになります。
+        // 同じ親の子を移す場合は、保存順と兄弟の表示順を合わせます。
+        // 移動する対象の親
         if (auto* const parent = moved.Parent();
             parent != nullptr
             && reference.Parent() == parent)
         {
+            // 表示順を更新する兄弟一覧
             auto& siblings = parent->m_children;
             std::erase(siblings, &moved);
+            // 兄弟一覧の基準対象の位置
             const auto siblingPosition =
                 std::ranges::find(siblings, &reference);
             if (siblingPosition == siblings.end())
@@ -2987,11 +3332,14 @@ namespace LamaPon
             return false;
         }
 
+        // 対象と子孫の削除する番号
         std::unordered_set<GameObjectId> idsToRemove;
+        // 削除対象の子孫番号を集めます(self: 再帰用の自身, current: 収集する対象)。
         const auto collectChildren =
             [&idsToRemove](const auto& self, const GameObject& current) -> void
             {
                 idsToRemove.insert(current.Id());
+                // 対象の直下の子
                 for (const auto* child : current.Children())
                 {
                     self(self, *child);
@@ -3006,14 +3354,17 @@ namespace LamaPon
         }
 
         gameObject.SetParent(nullptr);
+        // 削除対象の番号か調べます(candidate: 所有するオブジェクト)。
         std::erase_if(
             m_gameObjects,
             [&idsToRemove](const std::unique_ptr<GameObject>& candidate)
             {
                 return idsToRemove.contains(candidate->Id());
             });
+        // 削除後に残るオブジェクト
         for (const auto& remaining : m_gameObjects)
         {
+            // 接続先を解除するジョイント
             if (auto* joint =
                     remaining->GetComponent<JointComponent>();
                 joint != nullptr
@@ -3022,13 +3373,17 @@ namespace LamaPon
             {
                 joint->SetConnectedBodyId(0);
             }
+            // 削除対象を参照するLOD設定
             if (auto* lodGroup =
                     remaining->GetComponent<
                         LODGroupComponent>())
             {
+                // 参照先を更新するLOD段階
                 auto levels =
                     lodGroup->Levels();
+                // LOD対象の参照を変更した状態
                 bool changed{};
+                // 削除対象を調べるLOD段階
                 for (auto& level : levels)
                 {
                     if (idsToRemove.contains(
@@ -3072,6 +3427,7 @@ namespace LamaPon
                 "PersistentGameObject:"
                 + std::to_string(gameObject.Id());
         }
+        // 照合する所有オブジェクト
         for (const auto& candidate : m_gameObjects)
         {
             if (candidate.get() != &gameObject
@@ -3107,8 +3463,10 @@ namespace LamaPon
         {
             return PrimarySceneHandle();
         }
+        // 字句正規化した生成元パス
         const auto normalized =
             path.lexically_normal();
+        // 照合する追加シーンの情報
         for (const auto& scene : m_additiveScenes)
         {
             if (scene.path == normalized)
@@ -3122,6 +3480,7 @@ namespace LamaPon
     const LoadedSceneInfo* Scene::FindAdditiveScene(
         const SceneHandle handle) const noexcept
     {
+        // 照合する追加シーンの情報
         for (const auto& scene : m_additiveScenes)
         {
             if (scene.handle == handle)
@@ -3143,6 +3502,8 @@ namespace LamaPon
             return false;
         }
 
+        // 指定した番号の追加シーンか調べます(scene: 追加シーンの情報)。
+        // 破棄する追加シーンの格納位置
         const auto entry = std::find_if(
             m_additiveScenes.begin(),
             m_additiveScenes.end(),
@@ -3154,14 +3515,16 @@ namespace LamaPon
         {
             return false;
         }
+        // ログに残す追加シーンのパス
         const auto unloadedPath = entry->path;
 
-        // 先にルートを消すと子孫もまとめて消えます。追加シーンの
-        // GameObjectを主シーン側へ親付けし直していた場合の取り
-        // こぼしを、2周目で回収します。
+        // 先にルートを破棄し、主シーン側に親付けされた対象も二周目で回収します。
+        // ルート優先で削除する走査番号
         for (int pass = 0; pass < 2; ++pass)
         {
+            // 今回の走査で削除する対象
             std::vector<GameObject*> targets;
+            // 所属や識別番号を調べる対象
             for (const auto& object : m_gameObjects)
             {
                 if (object->m_sourceScene != handle)
@@ -3175,6 +3538,7 @@ namespace LamaPon
                 }
                 targets.push_back(object.get());
             }
+            // 追加シーンから削除する対象
             for (auto* target : targets)
             {
                 if (FindGameObject(target->Id())
@@ -3196,6 +3560,7 @@ namespace LamaPon
     bool Scene::UnloadScene(
         const std::filesystem::path& path)
     {
+        // 破棄する追加シーン番号
         const auto handle = FindAdditiveScene(path);
         if (handle == PrimarySceneHandle())
         {
@@ -3208,6 +3573,7 @@ namespace LamaPon
     {
         while (!m_additiveScenes.empty())
         {
+            // 破棄する追加シーン番号
             const auto handle =
                 m_additiveScenes.back().handle;
             if (!UnloadScene(handle))
@@ -3221,20 +3587,25 @@ namespace LamaPon
     Scene::PersistentTransfer
         Scene::ExtractPersistentObjects()
     {
+        // シーンをまたいで移す所有対象
         PersistentTransfer transfer;
+        // 引き継ぐルートと子孫の番号
         std::unordered_set<GameObjectId>
             persistentIds;
+        // 保持する子孫番号を集めます(self: 再帰用の自身, object: 収集する対象)。
         const auto collect =
             [&persistentIds](
                 const auto& self,
                 const GameObject& object) -> void
             {
                 persistentIds.insert(object.Id());
+                // 対象の直下の子
                 for (const auto* child : object.Children())
                 {
                     self(self, *child);
                 }
             };
+        // 所属や識別番号を調べる対象
         for (const auto& object : m_gameObjects)
         {
             if (object->m_persistent
@@ -3257,6 +3628,7 @@ namespace LamaPon
         }
         transfer.objects.reserve(
             persistentIds.size());
+        // 所属や識別番号を調べる対象
         for (auto& object : m_gameObjects)
         {
             if (persistentIds.contains(object->Id()))
@@ -3280,11 +3652,15 @@ namespace LamaPon
             return;
         }
 
+        // 引き継ぐルートの保持キー
         std::unordered_set<std::string>
             incomingKeys;
+        // 引き継ぐオブジェクトの番号
         std::unordered_set<GameObjectId>
             incomingIds;
+        // 番号衝突の解消に使う次の番号
         GameObjectId nextId = m_nextId;
+        // 所属や識別番号を調べる対象
         for (const auto& object : transfer.objects)
         {
             incomingIds.insert(object->Id());
@@ -3299,7 +3675,9 @@ namespace LamaPon
             }
         }
 
+        // 保持キーが重複する既存ルート
         std::vector<GameObject*> duplicates;
+        // 所属や識別番号を調べる対象
         for (const auto& object : m_gameObjects)
         {
             if (object->m_persistent
@@ -3310,6 +3688,7 @@ namespace LamaPon
                 duplicates.push_back(object.get());
             }
         }
+        // 保持キーが重複した削除対象
         for (auto* duplicate : duplicates)
         {
             if (FindGameObject(duplicate->Id())
@@ -3319,12 +3698,14 @@ namespace LamaPon
             }
         }
 
+        // 所属や識別番号を調べる対象
         for (const auto& object : m_gameObjects)
         {
             nextId = std::max(
                 nextId,
                 object->Id() + 1);
         }
+        // 所属や識別番号を調べる対象
         for (const auto& object : m_gameObjects)
         {
             if (incomingIds.contains(object->Id()))
@@ -3333,12 +3714,11 @@ namespace LamaPon
             }
         }
 
+        // 所属や識別番号を調べる対象
         for (auto& object : transfer.objects)
         {
             object->m_scene = this;
-            // 追加シーン由来の永続オブジェクトは、シーンを跨いだ
-            // 時点で主シーンの所属にします（元の追加シーンは
-            // すでに存在せず、破棄も保存もできなくなるため）。
+            // 引き継いだ対象は元の追加シーンがなくなるため主シーンの所属へ変えます。
             object->m_sourceScene =
                 PrimarySceneHandle();
             m_gameObjects.push_back(
@@ -3383,6 +3763,7 @@ namespace LamaPon
         const SkySettings& settings) noexcept
     {
         m_sky = settings;
+        // 空のRGBを0〜8へ制限します(color: 有限なRGB色)。
         const auto clampColor =
             [](DirectX::XMFLOAT3 color)
             {
@@ -3406,12 +3787,14 @@ namespace LamaPon
         DirectX::XMFLOAT3& color,
         float& angularRadius) const noexcept
     {
+        // 更新または設定を調べる対象
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
             {
                 continue;
             }
+            // 有効性を調べる平行光源
             const auto* light =
                 gameObject->GetComponent<
                     DirectionalLightComponent>();
@@ -3419,15 +3802,17 @@ namespace LamaPon
             {
                 continue;
             }
-            // WorldDirection()は光が進む向きなので、太陽へ向かう
-            // 向きはその逆です。
+            // WorldDirection()は光が進む向きなので、太陽へ向かう向きはその逆です。
+            // 平行光がワールドで進む方向
             const auto travel = light->WorldDirection();
             directionToSun = {
                 -travel.x,
                 -travel.y,
                 -travel.z
             };
+            // 平行光のRGB色
             const auto lightColor = light->Color();
+            // 平行光の明るさ
             const float intensity = light->Intensity();
             color = {
                 lightColor.x * intensity,
@@ -3447,17 +3832,21 @@ namespace LamaPon
         {
             return m_sky;
         }
+        // 太陽へ向かうワールド方向
         DirectX::XMFLOAT3 directionToSun{};
+        // 強さを含む太陽のRGB色
         DirectX::XMFLOAT3 color{};
+        // 太陽の角半径のラジアン値
         float angularRadius{};
         if (!ResolveSkySun(directionToSun, color, angularRadius))
         {
-            // 方向光が無いなら朝も夜も決まりません。手で設定した
-            // 色のまま描きます（急に真っ暗にしない）。
+            // 有効な方向光がなければ保存した空の設定を使います。
             return m_sky;
         }
+        // 太陽方向を反映する空の三色
         const auto evaluated =
             EvaluateSunDrivenSky(directionToSun);
+        // 太陽方向を反映した空の設定
         SkySettings resolved = m_sky;
         resolved.topColor = evaluated.topColor;
         resolved.horizonColor = evaluated.horizonColor;
@@ -3652,8 +4041,7 @@ namespace LamaPon
         const DepthOfFieldSettings& settings) noexcept
     {
         m_depthOfField = settings;
-        // ピントの合う距離は0にできません（0除算になるうえ、
-        // カメラの直前にピントを合わせる意味もありません）。
+        // 焦点距離を正に保ち、0除算を避けます。
         m_depthOfField.focusDistance = std::clamp(
             m_depthOfField.focusDistance,
             0.01f,
@@ -3666,8 +4054,7 @@ namespace LamaPon
             m_depthOfField.blurStrength,
             0.0f,
             8.0f);
-        // 上限を32画素で止めているのは、サンプル数を増やさずに
-        // 半径だけ広げるとぼけの粒が目立ってくるためです。
+        // 標本数を保ったままぼけの粒を抑えるため半径を32画素までに制限します。
         m_depthOfField.maximumRadius = std::clamp(
             m_depthOfField.maximumRadius,
             0.0f,
@@ -3682,8 +4069,7 @@ namespace LamaPon
             m_motionBlur.intensity,
             0.0f,
             4.0f);
-        // 上限を64画素で止めているのは、これ以上伸ばすとサンプルの
-        // 間隔が空いて、ブレが縞に分かれて見えるためです。
+        // 標本間隔による縞を抑えるためブラー半径を64画素までに制限します。
         m_motionBlur.maximumRadius = std::clamp(
             m_motionBlur.maximumRadius,
             0.0f,
@@ -3702,8 +4088,7 @@ namespace LamaPon
             m_autoExposure.minimumLuminance,
             0.0001f,
             100.0f);
-        // 上限は下限より下へ行けません。逆に入れられると露出が
-        // どちらへ張り付くか分からなくなります。
+        // 自動露出の輝度上限を下限以上に保ちます。
         m_autoExposure.maximumLuminance = std::clamp(
             m_autoExposure.maximumLuminance,
             m_autoExposure.minimumLuminance,
@@ -3720,6 +4105,7 @@ namespace LamaPon
 
     PostProcessFrame Scene::PostProcessFrameData() const
     {
+        // 現在の設定と保存した描画情報
         PostProcessFrame frame{};
         frame.bloom = m_bloom;
         frame.screenOutline = m_screenOutlineFrame;
@@ -3728,16 +4114,13 @@ namespace LamaPon
         frame.colorGrading = m_colorGrading;
         frame.volumetric = m_volumetricFrame;
         frame.temporal = m_temporalFrame;
-        // 行列は直前の3D描画が控えたものを使い、設定は今の値を
-        // その場で読みます。こうしないと、インスペクターで動かした
-        // 値が1フレーム遅れて効きます。
+        // 直前の3D描画の行列へ最新の設定を合わせ、設定変更の遅延を避けます。
         frame.depthOfField = m_depthOfFieldFrame;
         frame.depthOfField.settings = m_depthOfField;
         frame.motionBlur = m_motionBlurFrame;
         frame.motionBlur.settings = m_motionBlur;
         frame.autoExposure.settings = m_autoExposure;
-        // 順応は実時間で進めます。timeScaleを0にしたときやエディター
-        // で停止しているときも露出は落ち着いてほしいためです。
+        // 一時停止中も露出が順応するよう実時間で進めます。
         frame.autoExposure.deltaSeconds =
             Time::UnscaledDeltaTime();
         return frame;
@@ -3779,8 +4162,7 @@ namespace LamaPon
         m_loadingScene = PrimarySceneHandle();
         m_nextSceneHandle = 1;
         m_additiveScenes.clear();
-        // Cameraが消えるので、名前付きレンダーテクスチャも
-        // 手放します（次のフレームで必要な分だけ作り直されます）。
+        // Cameraが消えるので、名前付きレンダーテクスチャも手放します（次のフレームで必要な分だけ作り直されます）。
         m_graphics.ClearRenderTextures();
         m_activeCollisions.clear();
         m_ambientLightColor = { 0.65f, 0.72f, 0.85f };
@@ -3797,8 +4179,7 @@ namespace LamaPon
         m_motionBlurFrame = {};
         m_autoExposure = {};
         m_ambientOcclusion = {};
-        // 通常ロードでは省略された設定も既定値に戻します。
-        // 前シーンの行列・ジッター・描画対象への参照は引き継ぎません。
+        // 設定と前シーンの行列・ジッター・描画参照を初期化します。
         m_screenSpaceReflection = {};
         m_temporalAntiAliasing = {};
         m_temporalFrame = {};
@@ -3836,16 +4217,10 @@ namespace LamaPon
             Time::UnscaledDeltaTime());
         static_cast<void>(
             m_sceneManager->ProcessPending());
-        // ユーザーコード（ScriptのStart/Update/FixedUpdate/LateUpdate）を
-        // 呼ぶ走査は、範囲forではなく添字で回します。
-        //
-        // Startは最初のUpdateから呼ばれるため、Startの中で
-        // CreateGameObjectするとm_gameObjectsが再確保されます。範囲forだと
-        // イテレーターが宙に浮き、次の要素（ムーブ済みでnullになった
-        // unique_ptr）を触ってアクセス違反になります。添字なら毎回
-        // size()と配列先頭を読み直すので、走査中に追加されても壊れません。
+        // コールバック中の追加で配列が再確保されても、添字で要素を読み直して走査します。
         {
             LAMAPON_PROFILE_SCOPE("Update");
+            // 更新するオブジェクトの添字
             for (std::size_t index = 0;
                 index < m_gameObjects.size();
                 ++index)
@@ -3853,8 +4228,10 @@ namespace LamaPon
                 m_gameObjects[index]->Update(m_graphics, deltaTime);
             }
         }
+        // 更新または設定を調べる対象
         for (const auto& gameObject : m_gameObjects)
         {
+            // 補間指定を調べる物理ボディ
             const auto* rigidbody =
                 gameObject->GetComponent<
                     RigidbodyComponent>();
@@ -3867,22 +4244,25 @@ namespace LamaPon
                 SynchronizePhysicsInterpolation();
         }
 
+        // フレーム開始時の物理設定
         const auto& physicsSettings = ActivePhysicsSettings();
         m_physicsClock.BeginFrame(deltaTime, physicsSettings.fixedTimeStep,
             static_cast<std::size_t>(physicsSettings.maximumCatchUpSteps));
+        // 0〜0.1へ制限した経過秒数
         const float safeDeltaTime =
             std::isfinite(deltaTime) ? std::clamp(deltaTime, 0.0f, 0.1f) : 0.0f;
         if (safeDeltaTime <= 0.0f)
         {
-            // エディターのゼロ時間での重なり更新を維持します。物理姿勢が
-            // 変わった物体だけ履歴を同期し、停止中の表示位置は保持します。
+            // エディターのゼロ時間更新では接触を再判定し、物理姿勢が変わった物体だけ補間履歴を同期します。
             StepPhysics(0.0f);
+            // 更新または設定を調べる対象
             for (const auto& gameObject :
                 m_gameObjects)
             {
                 gameObject->
                     SynchronizePhysicsInterpolation();
             }
+            // 更新するオブジェクトの添字
             for (std::size_t index = 0;
                 index < m_gameObjects.size();
                 ++index)
@@ -3894,11 +4274,12 @@ namespace LamaPon
             return;
         }
 
-        // コールバック中に設定が変更されても、このフレームの刻み幅は
-        // 時計・FixedUpdate・物理計算で同じ値を使います。
+        // コールバック中に設定が変更されても、このフレームの刻み幅は時計・FixedUpdate・物理計算で同じ値を使います。
+        // フレーム内で共通の固定秒数
         const float fixedDeltaTime = PhysicsTiming().fixedDeltaTime;
         while (m_physicsClock.PendingStep())
         {
+            // 更新または設定を調べる対象
             for (const auto& gameObject : m_gameObjects)
             {
                 gameObject->
@@ -3906,6 +4287,7 @@ namespace LamaPon
             }
             {
                 LAMAPON_PROFILE_SCOPE("FixedUpdate");
+                // 更新するオブジェクトの添字
                 for (std::size_t index = 0;
                     index < m_gameObjects.size();
                     ++index)
@@ -3916,6 +4298,7 @@ namespace LamaPon
                 }
             }
             StepPhysics(fixedDeltaTime);
+            // 更新または設定を調べる対象
             for (const auto& gameObject : m_gameObjects)
             {
                 gameObject->
@@ -3926,6 +4309,7 @@ namespace LamaPon
         m_physicsClock.FinishFrame();
 
         LAMAPON_PROFILE_SCOPE("LateUpdate");
+        // 更新するオブジェクトの添字
         for (std::size_t index = 0;
             index < m_gameObjects.size();
             ++index)
@@ -3939,14 +4323,15 @@ namespace LamaPon
     std::size_t Scene::PhysicsSubstepCount(
         const float deltaTime) const noexcept
     {
-        // 薄い障害物のすり抜けはスイープCCD（StepPhysics内）が
-        // 防ぐため、ここでは接触品質のためのサブステップ数だけを
-        // 決めます。基準は「そのボディ自身のコライダー寸法」で、
-        // シーン内の無関係な小コライダーには影響されません。
+        // 接触品質の刻み数を自身の形状から決め、すり抜けの防止はStepPhysicsのスイープが担います。
+        // 刻み秒数の絶対値
         const float absoluteDeltaTime = std::abs(deltaTime);
+        // 各ボディが必要とする最大刻み数
         std::size_t requiredSubsteps{ 1 };
+        // 補助刻みを調べるオブジェクト
         for (const auto& gameObject : m_gameObjects)
         {
+            // 連続判定を行う動的ボディ
             const auto* body =
                 gameObject->GetComponent<RigidbodyComponent>();
             if (body == nullptr
@@ -3959,13 +4344,15 @@ namespace LamaPon
                 continue;
             }
 
-            // ボディ自身の最小コライダー寸法。
+            // 0.5以下の自身の形状寸法
             float ownFeatureSize = 0.5f;
+            // 自身の箱コライダー
             if (const auto* box =
                     gameObject->GetComponent<
                         BoxCollider3DComponent>();
                 box != nullptr && box->IsEnabled())
             {
+                // 自身のコライダーのワールド境界
                 const auto bounds = box->WorldBounds();
                 ownFeatureSize = std::min({
                     ownFeatureSize,
@@ -3974,6 +4361,7 @@ namespace LamaPon
                     std::abs(bounds.maximum.z - bounds.minimum.z)
                 });
             }
+            // 自身のカプセルコライダー
             if (const auto* capsule =
                     gameObject->GetComponent<
                         CapsuleCollider3DComponent>();
@@ -3983,6 +4371,7 @@ namespace LamaPon
                     ownFeatureSize,
                     capsule->Radius() * 2.0f);
             }
+            // 自身の球コライダー
             if (const auto* sphere =
                     gameObject->GetComponent<
                         SphereCollider3DComponent>();
@@ -3992,11 +4381,13 @@ namespace LamaPon
                     ownFeatureSize,
                     sphere->WorldSphere().radius * 2.0f);
             }
+            // 自身の箱コライダー
             if (const auto* box =
                     gameObject->GetComponent<
                         BoxCollider2DComponent>();
                 box != nullptr && box->IsEnabled())
             {
+                // 自身のコライダーのワールド境界
                 const auto bounds = box->WorldBounds();
                 ownFeatureSize = std::min({
                     ownFeatureSize,
@@ -4004,6 +4395,7 @@ namespace LamaPon
                     std::abs(bounds.maximum.y - bounds.minimum.y)
                 });
             }
+            // 自身の円コライダー
             if (const auto* circle =
                     gameObject->GetComponent<
                         CircleCollider2DComponent>();
@@ -4013,11 +4405,13 @@ namespace LamaPon
                     ownFeatureSize,
                     circle->WorldCircle().radius * 2.0f);
             }
+            // 自身の多角形コライダー
             if (const auto* polygon =
                     gameObject->GetComponent<
                         PolygonCollider2DComponent>();
                 polygon != nullptr && polygon->IsEnabled())
             {
+                // 自身のコライダーのワールド境界
                 const auto bounds = polygon->WorldBounds();
                 ownFeatureSize = std::min({
                     ownFeatureSize,
@@ -4026,13 +4420,17 @@ namespace LamaPon
                 });
             }
 
+            // 一刻みで移動する最大距離
             const float maximumStepDistance =
                 std::max(ownFeatureSize * 0.5f, 0.01f);
+            // 現在の線形速度
             const auto velocity = body->Velocity();
+            // 現在の線形速度の大きさ
             const float speed = std::sqrt(
                 velocity.x * velocity.x
                 + velocity.y * velocity.y
                 + velocity.z * velocity.z);
+            // 重力を含めた見込みの移動距離
             const float distance =
                 speed * absoluteDeltaTime
                 + (body->UsesGravity()
@@ -4050,10 +4448,12 @@ namespace LamaPon
         const GameObject& left,
         const GameObject& right) const noexcept
     {
+        // ジョイントが相手との接触を禁止するか返します(owner: ジョイントの所有者, connected: 接続先の対象)。
         const auto suppresses = [](
             const GameObject& owner,
             const GameObject& connected) noexcept
         {
+            // 接触禁止を調べるジョイント
             const auto* joint = owner.GetComponent<JointComponent>();
             return joint != nullptr
                 && joint->IsEnabled()
@@ -4068,10 +4468,12 @@ namespace LamaPon
         const float deltaTime,
         const bool applyForces)
     {
+        // ローカル点をワールド座標へ変換します(object: 変換元の対象, local: 対象基準の接続点)。
         const auto worldPoint = [](
             const GameObject& object,
             const DirectX::XMFLOAT3& local) noexcept
         {
+            // ワールド座標へ変換した接続点
             DirectX::XMFLOAT3 result{};
             DirectX::XMStoreFloat3(
                 &result,
@@ -4080,12 +4482,14 @@ namespace LamaPon
                     object.WorldMatrix()));
             return result;
         };
+        // 有効で非キネマティックなボディか返します(body: 物理ボディかnullptr)。
         const auto isDynamic = [](const RigidbodyComponent* body) noexcept
         {
             return body != nullptr
                 && body->IsEnabled()
                 && !body->IsKinematic();
         };
+        // 三成分の内積を返します(left: 一方のベクトル, right: もう一方のベクトル)。
         const auto dot = [](
             const DirectX::XMFLOAT3& left,
             const DirectX::XMFLOAT3& right) noexcept
@@ -4094,6 +4498,7 @@ namespace LamaPon
                 + left.y * right.y
                 + left.z * right.z;
         };
+        // 三成分を同じ倍率で拡縮します(value: ベクトル, scale: 拡縮する倍率)。
         const auto multiply = [](
             const DirectX::XMFLOAT3& value,
             const float scale) noexcept
@@ -4104,6 +4509,7 @@ namespace LamaPon
                 value.z * scale
             };
         };
+        // 三成分の差を返します(left: 引かれるベクトル, right: 引くベクトル)。
         const auto subtract = [](
             const DirectX::XMFLOAT3& left,
             const DirectX::XMFLOAT3& right) noexcept
@@ -4115,9 +4521,12 @@ namespace LamaPon
             };
         };
 
+        // ジョイントを探す所有対象
         for (const auto& ownerPointer : m_gameObjects)
         {
+            // ジョイントの所有者
             auto& owner = *ownerPointer;
+            // 拘束を適用するジョイント
             auto* joint = owner.GetComponent<JointComponent>();
             if (!owner.IsActiveInHierarchy()
                 || joint == nullptr
@@ -4125,6 +4534,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // ジョイントが接続する相手
             auto* connected =
                 FindGameObject(joint->ConnectedBodyId());
             if (connected == nullptr
@@ -4134,42 +4544,55 @@ namespace LamaPon
                 continue;
             }
 
+            // 所有者の物理ボディ
             auto* ownerBody = owner.GetComponent<RigidbodyComponent>();
+            // 接続先の物理ボディ
             auto* connectedBody =
                 connected->GetComponent<RigidbodyComponent>();
+            // 所有者が動的に応答する状態
             const bool ownerDynamic = isDynamic(ownerBody);
+            // 接続先が動的に応答する状態
             const bool connectedDynamic = isDynamic(connectedBody);
             if (!ownerDynamic && !connectedDynamic)
             {
                 continue;
             }
 
+            // 所有者のワールド接続点
             const auto ownerAnchor =
                 worldPoint(owner, joint->Anchor());
+            // 接続先のワールド接続点
             const auto connectedAnchor =
                 worldPoint(*connected, joint->ConnectedAnchor());
+            // 接続点の位置差と補正移動量
             DirectX::XMFLOAT3 delta{
                 connectedAnchor.x - ownerAnchor.x,
                 connectedAnchor.y - ownerAnchor.y,
                 connectedAnchor.z - ownerAnchor.z
             };
+            // 二つの接続点の距離
             const float distance = std::sqrt(
                 delta.x * delta.x
                 + delta.y * delta.y
                 + delta.z * delta.z);
 
+            // 所有者の動的な質量の逆数
             const float ownerInverseMass =
                 ownerDynamic
                 ? ownerBody->InverseMass()
                 : 0.0f;
+            // 接続先の動的な質量の逆数
             const float connectedInverseMass =
                 connectedDynamic
                 ? connectedBody->InverseMass()
                 : 0.0f;
+            // 動的ボディの質量逆数の合計
             const float totalInverseMass =
                 ownerInverseMass + connectedInverseMass;
+            // 所有者へ割り当てる補正割合
             const float ownerShare =
                 ownerInverseMass / totalInverseMass;
+            // 接続先へ割り当てる補正割合
             const float connectedShare =
                 connectedInverseMass / totalInverseMass;
 
@@ -4179,22 +4602,28 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // 所有者から接続先への単位方向
                 const DirectX::XMFLOAT3 direction{
                     delta.x / distance,
                     delta.y / distance,
                     delta.z / distance
                 };
+                // 所有者の現在の線形速度
                 const auto ownerVelocity = ownerDynamic
                     ? ownerBody->Velocity()
                     : DirectX::XMFLOAT3{};
+                // 接続先の現在の線形速度
                 const auto connectedVelocity = connectedDynamic
                     ? connectedBody->Velocity()
                     : DirectX::XMFLOAT3{};
+                // 接続点方向の相対速度
                 const float relativeSpeed =
                     (ownerVelocity.x - connectedVelocity.x) * direction.x
                     + (ownerVelocity.y - connectedVelocity.y) * direction.y
                     + (ownerVelocity.z - connectedVelocity.z) * direction.z;
+                // 自然長からの伸び量
                 const float error = distance - joint->RestLength();
+                // ばねと減衰による速度変更係数
                 const float impulse =
                     (joint->Stiffness() * error
                         - joint->Damping() * relativeSpeed)
@@ -4220,6 +4649,7 @@ namespace LamaPon
                     });
                 }
 
+                // ばねの位置補正へ加える係数
                 const float correctionScale = std::clamp(
                     joint->Stiffness() * deltaTime * deltaTime,
                     0.0f,
@@ -4250,12 +4680,15 @@ namespace LamaPon
 
             if (joint->Type() != JointType::Spring)
             {
+                // 所有者の現在の線形速度
                 const auto ownerVelocity = ownerDynamic
                     ? ownerBody->Velocity()
                     : DirectX::XMFLOAT3{};
+                // 接続先の現在の線形速度
                 const auto connectedVelocity = connectedDynamic
                     ? connectedBody->Velocity()
                     : DirectX::XMFLOAT3{};
+                // 拘束後に両者へ設定する線形速度
                 const DirectX::XMFLOAT3 sharedVelocity{
                     ownerVelocity.x * (1.0f - ownerShare)
                         + connectedVelocity.x * ownerShare,
@@ -4277,24 +4710,30 @@ namespace LamaPon
                 {
                     joint->EnsureHingeReference(
                         *connected);
+                    // ワールド座標のヒンジ回転軸
                     const auto axis =
                         joint->HingeWorldAxis(
                             *connected);
+                    // 所有者の毎秒ラジアン角速度
                     auto ownerAngularVelocity =
                         ownerDynamic
                         ? ownerBody->AngularVelocity()
                         : DirectX::XMFLOAT3{};
+                    // 接続先の毎秒ラジアン角速度
                     auto connectedAngularVelocity =
                         connectedDynamic
                         ? connectedBody->AngularVelocity()
                         : DirectX::XMFLOAT3{};
+                    // 両者の毎秒ラジアン相対角速度
                     auto relativeAngularVelocity =
                         subtract(
                             ownerAngularVelocity,
                             connectedAngularVelocity);
+                    // ヒンジ軸方向の相対角速度
                     float axisSpeed = dot(
                         relativeAngularVelocity,
                         axis);
+                    // ヒンジ軸以外の相対角速度
                     const auto lockedAngularVelocity =
                         subtract(
                             relativeAngularVelocity,
@@ -4327,19 +4766,25 @@ namespace LamaPon
                             connectedAngularVelocity);
                     }
 
+                    // 現在のヒンジ角のラジアン値
                     const float angle =
                         joint->HingeAngleRadians(
                             *connected);
+                    // 度数をラジアンへ変える係数
                     constexpr float degreesToRadians =
                         DirectX::XM_PI / 180.0f;
+                    // ヒンジ角が下限以下の状態
                     bool atLowerLimit{};
+                    // ヒンジ角が上限以上の状態
                     bool atUpperLimit{};
                     if (joint->UseLimits())
                     {
+                        // ヒンジ角下限のラジアン値
                         const float minimum =
                             joint->Limits()
                                 .minimumAngleDegrees
                             * degreesToRadians;
+                        // ヒンジ角上限のラジアン値
                         const float maximum =
                             joint->Limits()
                                 .maximumAngleDegrees
@@ -4348,11 +4793,13 @@ namespace LamaPon
                             angle <= minimum;
                         atUpperLimit =
                             angle >= maximum;
+                        // 制限範囲へ戻したヒンジ角
                         const float target =
                             std::clamp(
                                 angle,
                                 minimum,
                                 maximum);
+                        // 制限範囲からはみ出たラジアン角
                         const float error =
                             angle - target;
                         if (std::abs(error)
@@ -4376,6 +4823,7 @@ namespace LamaPon
                             }
                         }
 
+                        // 制限の外側へ回転する状態
                         const bool movingOutward =
                             (atLowerLimit
                                 && axisSpeed < 0.0f)
@@ -4396,6 +4844,7 @@ namespace LamaPon
                             }
                             if (connectedDynamic)
                             {
+                                // 接続先の現在の角速度
                                 const auto velocity =
                                     connectedBody
                                         ->AngularVelocity();
@@ -4423,6 +4872,7 @@ namespace LamaPon
                         && joint->Motor()
                             .maximumTorque > 0.0f)
                     {
+                        // モーターの毎秒ラジアン目標速度
                         float targetSpeed =
                             joint->Motor()
                                 .targetVelocityDegrees
@@ -4447,6 +4897,7 @@ namespace LamaPon
                         axisSpeed = dot(
                             relativeAngularVelocity,
                             axis);
+                        // 所有者の軸方向の慣性逆数
                         const float ownerResponse =
                             ownerDynamic
                             ? dot(
@@ -4455,6 +4906,7 @@ namespace LamaPon
                                         axis),
                                 axis)
                             : 0.0f;
+                        // 接続先の軸方向の慣性逆数
                         const float connectedResponse =
                             connectedDynamic
                             ? dot(
@@ -4463,15 +4915,18 @@ namespace LamaPon
                                         axis),
                                 axis)
                             : 0.0f;
+                        // 両者の軸方向の慣性逆数の合計
                         const float response =
                             ownerResponse
                             + connectedResponse;
                         if (response > 0.000001f)
                         {
+                            // 最大トルクと秒数による上限
                             const float maximumImpulse =
                                 joint->Motor()
                                     .maximumTorque
                                 * std::abs(deltaTime);
+                            // トルク上限で制限した角インパルス
                             const float impulse =
                                 std::clamp(
                                     (targetSpeed
@@ -4500,14 +4955,17 @@ namespace LamaPon
                 }
                 else if (joint->Type() == JointType::Fixed)
                 {
+                    // 所有者の毎秒ラジアン角速度
                     const auto ownerAngularVelocity =
                         ownerDynamic
                         ? ownerBody->AngularVelocity()
                         : DirectX::XMFLOAT3{};
+                    // 接続先の毎秒ラジアン角速度
                     const auto connectedAngularVelocity =
                         connectedDynamic
                         ? connectedBody->AngularVelocity()
                         : DirectX::XMFLOAT3{};
+                    // 両者へ設定する毎秒ラジアン角速度
                     const DirectX::XMFLOAT3
                         sharedAngularVelocity{
                             ownerAngularVelocity.x
@@ -4541,16 +4999,22 @@ namespace LamaPon
     void Scene::StepPhysics(const float deltaTime)
     {
         LAMAPON_PROFILE_SCOPE("Physics");
+        // 今回の接触組とトリガー区分
         std::map<CollisionKey, bool> currentCollisions;
+        // 今回記録した表示用接触点
         std::vector<PhysicsDebugContact> debugContacts;
+        // 非反発の接触面に支えられた剛体番号
         std::unordered_set<std::uint64_t>
             supportedBodies;
+        // 自身から親へ最初の剛体と所有物体を探します(colliderObject: 接触形状の所有物体)。
         const auto findRigidbodyObject =
             [](GameObject& colliderObject)
         {
+            // 剛体を探している親階層
             auto* current = &colliderObject;
             while (current != nullptr)
             {
+                // 最初に見つかった剛体
                 if (auto* body =
                     current->GetComponent<
                         RigidbodyComponent>())
@@ -4570,6 +5034,7 @@ namespace LamaPon
                 };
         };
 
+        // 接触を通知して位置・法線力積・摩擦を解きます(left: 左形状の物体, right: 右形状の物体, contact: 左向き法線を持つ接触, is3D: 三次元判定か, isTrigger: 通知のみの接触か, leftMaterial: 左形状の応答材質, rightMaterial: 右形状の応答材質)。
         const auto processContact =
             [this,
                 &currentCollisions,
@@ -4584,8 +5049,10 @@ namespace LamaPon
                 const PhysicsMaterial leftMaterial,
                 const PhysicsMaterial rightMaterial)
             {
+                // leftPhysicsObject: 左形状を動かす物体, leftBody: 左側の剛体
                 auto [leftPhysicsObject, leftBody] =
                     findRigidbodyObject(left);
+                // rightPhysicsObject: 右形状を動かす物体, rightBody: 右側の剛体
                 auto [rightPhysicsObject, rightBody] =
                     findRigidbodyObject(right);
                 if (leftBody != nullptr
@@ -4594,19 +5061,21 @@ namespace LamaPon
                 {
                     return;
                 }
+                // 順序を正規化した衝突組
                 const CollisionKey key{
                     std::min(left.Id(), right.Id()),
                     std::max(left.Id(), right.Id()),
                     is3D
                 };
+                // 物理ステップ内で最初の接触
                 const bool firstContactThisFrame =
                     !currentCollisions.contains(key);
                 currentCollisions[key] = isTrigger;
 
-                // CCDのサブステップで同じ組を何度も解決するため、
-                // 表示用の接触点はステップ内で最初の1回だけ控えます。
+                // CCDのサブステップで同じ組を何度も解決するため、表示用の接触点はステップ内で最初の1回だけ控えます。
                 if (m_physicsDebugCaptureEnabled && firstContactThisFrame)
                 {
+                    // 表示用の接触点を記録します(point: ワールド接触位置)。
                     const auto record =
                         [&](const DirectX::XMFLOAT3& point)
                         {
@@ -4623,6 +5092,7 @@ namespace LamaPon
                     {
                         record(contact.point);
                     }
+                    // 接触点の添字
                     for (std::size_t pointIndex{};
                         pointIndex < std::min(
                             contact.pointCount,
@@ -4633,16 +5103,16 @@ namespace LamaPon
                     }
                 }
 
+                // 右側へ通知する接触法線
                 const DirectX::XMFLOAT3 oppositeNormal{
                     -contact.normal.x,
                     -contact.normal.y,
                     -contact.normal.z
                 };
 
+                // 各衝突組の通知は一回の物理ステップで一度だけ行います。
                 if (!firstContactThisFrame)
                 {
-                    // 接触の解決はCCDの各サブステップで行いますが、ゲーム側への
-                    // コールバックはフレームごとに一度だけ通知します。
                 }
                 else if (m_activeCollisions.contains(key))
                 {
@@ -4680,10 +5150,12 @@ namespace LamaPon
                     return;
                 }
 
+                // 左側を動的剛体として解くか
                 const bool leftDynamic =
                     leftBody != nullptr
                     && leftBody->IsEnabled()
                     && !leftBody->IsKinematic();
+                // 右側を動的剛体として解くか
                 const bool rightDynamic =
                     rightBody != nullptr
                     && rightBody->IsEnabled()
@@ -4694,26 +5166,34 @@ namespace LamaPon
                     return;
                 }
 
+                // 左側の逆質量
                 const float inverseMassLeft = leftDynamic
                     ? leftBody->InverseMass()
                     : 0.0f;
+                // 右側の逆質量
                 const float inverseMassRight = rightDynamic
                     ? rightBody->InverseMass()
                     : 0.0f;
+                // 両側の逆質量の合計
                 const float inverseMassSum =
                     inverseMassLeft + inverseMassRight;
                 if (inverseMassSum <= 0.0f)
                 {
                     return;
                 }
+                // 左側の位置補正割合
                 const float leftShare =
                     inverseMassLeft / inverseMassSum;
+                // 右側の位置補正割合
                 const float rightShare =
                     inverseMassRight / inverseMassSum;
+                // 許容する食い込み深さ
                 constexpr float penetrationSlop =
                     0.001f;
+                // 超過した食い込みの補正率
                 constexpr float positionCorrection =
                     0.8f;
+                // 分配する位置補正距離
                 const float correctionDepth =
                     std::max(
                         contact.penetration
@@ -4739,15 +5219,18 @@ namespace LamaPon
                     });
                 }
 
+                // 両材質から合成した応答係数
                 const auto material = CombinePhysicsMaterials(
                     leftMaterial,
                     rightMaterial);
+                // 二つのベクトルの内積を求めます(a: 左ベクトル, b: 右ベクトル)。
                 const auto dot = [](
                     const DirectX::XMFLOAT3& a,
                     const DirectX::XMFLOAT3& b) noexcept
                 {
                     return a.x * b.x + a.y * b.y + a.z * b.z;
                 };
+                // ベクトルの差を求めます(a: 引かれるベクトル, b: 引くベクトル)。
                 const auto subtract = [](
                     const DirectX::XMFLOAT3& a,
                     const DirectX::XMFLOAT3& b) noexcept
@@ -4758,6 +5241,7 @@ namespace LamaPon
                         a.z - b.z
                     };
                 };
+                // ベクトルを倍率で伸縮します(value: 対象ベクトル, scale: 倍率)。
                 const auto multiply = [](
                     const DirectX::XMFLOAT3& value,
                     const float scale) noexcept
@@ -4768,6 +5252,7 @@ namespace LamaPon
                         value.z * scale
                     };
                 };
+                // 二つのベクトルの外積を求めます(a: 左ベクトル, b: 右ベクトル)。
                 const auto cross = [](
                     const DirectX::XMFLOAT3& a,
                     const DirectX::XMFLOAT3& b) noexcept
@@ -4778,39 +5263,48 @@ namespace LamaPon
                         a.x * b.y - a.y * b.x
                     };
                 };
+                // 解決に使う接触点数
                 const std::size_t pointCount =
                     contact.pointCount > 0
                     ? std::min(
                         contact.pointCount,
                         contact.points.size())
                     : 1;
+                // 接触点ごとの累積法線力積
                 std::array<float, 4>
                     accumulatedNormalImpulses{};
-                // 接触の解決を繰り返す回数。積み上げた物体が沈む場合は、
-                // プロジェクト設定の値を増やします。
+                // 法線力積の反復回数
                 const int impulseIterations =
                     static_cast<int>(
                         ActivePhysicsSettings()
                             .solverIterations);
+                // ソルバーの反復番号
                 for (int iteration{};
+                    // 法線力積の反復回数
                     iteration < impulseIterations;
                     ++iteration)
                 {
+                    // 今回の反復で加える法線力積
                     std::array<float, 4>
                         iterationNormalImpulses{};
+                    // 接触点の添字
                     for (std::size_t pointIndex{};
+                        // 解決に使う接触点数
                         pointIndex < pointCount;
                         ++pointIndex)
                     {
+                        // 反復順を交互にした接触点添字
                         const std::size_t orderedIndex =
                             iteration % 2 == 0
                             ? pointIndex
                             : pointCount
                                 - pointIndex - 1;
+                        // 力積を加える接触位置
                         const auto point =
                             contact.pointCount > 0
                             ? contact.points[orderedIndex]
                             : contact.point;
+                        // 左重心から接触点へのベクトル
                         const auto leftRadius =
                             leftDynamic
                             ? subtract(
@@ -4818,6 +5312,7 @@ namespace LamaPon
                                 leftBody
                                     ->WorldCenterOfMass())
                             : DirectX::XMFLOAT3{};
+                        // 右重心から接触点へのベクトル
                         const auto rightRadius =
                             rightDynamic
                             ? subtract(
@@ -4825,10 +5320,12 @@ namespace LamaPon
                                 rightBody
                                     ->WorldCenterOfMass())
                             : DirectX::XMFLOAT3{};
+                        // 接触位置の回転慣性を含む力積分母を求めます(direction: 単位力積方向)。
                         const auto impulseDenominator =
                             [&](const DirectX::XMFLOAT3&
                                 direction)
                         {
+                            // 回転分を含む力積の分母
                             float result =
                                 inverseMassSum;
                             if (leftDynamic)
@@ -4858,6 +5355,7 @@ namespace LamaPon
                             return result;
                         };
 
+                        // 接触点での左側の相対速度
                         auto relativeVelocity =
                             subtract(
                                 leftDynamic
@@ -4870,10 +5368,12 @@ namespace LamaPon
                                     ->VelocityAtPoint(
                                         point)
                                 : DirectX::XMFLOAT3{});
+                        // 法線方向の相対速度
                         const float inwardSpeed =
                             dot(
                                 relativeVelocity,
                                 contact.normal);
+                        // 法線力積の計算分母
                         const float normalDenominator =
                             impulseDenominator(
                                 contact.normal);
@@ -4884,10 +5384,12 @@ namespace LamaPon
                             continue;
                         }
 
+                        // 初回反復だけ加える反発係数
                         const float restitution =
                             iteration == 0
                             ? material.restitution
                             : 0.0f;
+                        // 接触点へ加える法線力積量
                         const float
                             normalImpulseMagnitude =
                                 -(1.0f + restitution)
@@ -4899,10 +5401,13 @@ namespace LamaPon
                             orderedIndex] =
                                 normalImpulseMagnitude;
                     }
+                    // 接触点の添字
                     for (std::size_t pointIndex{};
+                        // 解決に使う接触点数
                         pointIndex < pointCount;
                         ++pointIndex)
                     {
+                        // 接触点へ加える法線力積量
                         const float
                             normalImpulseMagnitude =
                                 iterationNormalImpulses[
@@ -4915,10 +5420,12 @@ namespace LamaPon
                         accumulatedNormalImpulses[
                             pointIndex] +=
                                 normalImpulseMagnitude;
+                        // 力積を加える接触位置
                         const auto point =
                             contact.pointCount > 0
                             ? contact.points[pointIndex]
                             : contact.point;
+                        // 接触法線方向の力積
                         const auto normalImpulse =
                             multiply(
                                 contact.normal,
@@ -4941,14 +5448,18 @@ namespace LamaPon
                         }
                     }
                 }
+                // 接触点の添字
                 for (std::size_t pointIndex{};
+                    // 解決に使う接触点数
                     pointIndex < pointCount;
                     ++pointIndex)
                 {
+                    // 力積を加える接触位置
                     const auto point =
                         contact.pointCount > 0
                         ? contact.points[pointIndex]
                         : contact.point;
+                    // 接触点での左側の相対速度
                     auto relativeVelocity =
                         subtract(
                             leftDynamic
@@ -4959,10 +5470,12 @@ namespace LamaPon
                             ? rightBody
                                 ->VelocityAtPoint(point)
                             : DirectX::XMFLOAT3{});
+                    // 摩擦計算時の法線方向速度
                     const float normalSpeed =
                         dot(
                             relativeVelocity,
                             contact.normal);
+                    // 接線速度から得る摩擦方向
                     auto tangent = subtract(
                         relativeVelocity,
                         multiply(
@@ -4973,6 +5486,7 @@ namespace LamaPon
                     {
                         tangent.z = 0.0f;
                     }
+                    // 正規化前の接線速度の長さ
                     const float tangentLength =
                         std::sqrt(
                             dot(tangent, tangent));
@@ -4984,6 +5498,7 @@ namespace LamaPon
                     tangent.y /= tangentLength;
                     tangent.z /= tangentLength;
 
+                    // 左重心から接触点へのベクトル
                     const auto leftRadius =
                         leftDynamic
                         ? subtract(
@@ -4991,6 +5506,7 @@ namespace LamaPon
                             leftBody
                                 ->WorldCenterOfMass())
                         : DirectX::XMFLOAT3{};
+                    // 右重心から接触点へのベクトル
                     const auto rightRadius =
                         rightDynamic
                         ? subtract(
@@ -4998,6 +5514,7 @@ namespace LamaPon
                             rightBody
                                 ->WorldCenterOfMass())
                         : DirectX::XMFLOAT3{};
+                    // 接線力積の計算分母
                     float tangentDenominator =
                         inverseMassSum;
                     if (leftDynamic)
@@ -5024,6 +5541,7 @@ namespace LamaPon
                                 rightRadius),
                             tangent);
                     }
+                    // 滑りを止めるための接線力積
                     const float desiredTangentImpulse =
                         -dot(
                             relativeVelocity,
@@ -5031,15 +5549,18 @@ namespace LamaPon
                         / std::max(
                             tangentDenominator,
                             0.000001f);
+                    // 摩擦係数で制限する力積上限
                     const float maximumFrictionImpulse =
                         accumulatedNormalImpulses[
                             pointIndex]
                         * material.friction;
+                    // 上限適用後の接線力積量
                     const float tangentImpulseMagnitude =
                         std::clamp(
                             desiredTangentImpulse,
                             -maximumFrictionImpulse,
                             maximumFrictionImpulse);
+                    // 接触点へ加える摩擦力積
                     const auto tangentImpulse =
                         multiply(
                             tangent,
@@ -5092,13 +5613,18 @@ namespace LamaPon
                 }
             };
 
+        // サブステップを集計した統計
         PhysicsBroadPhaseStats aggregateStats{};
+        // 移動量に応じた分割数
         const std::size_t substepCount =
             PhysicsSubstepCount(deltaTime);
+        // 一サブステップの秒数
         const float substepDeltaTime =
             deltaTime / static_cast<float>(substepCount);
+        // サブステップ番号
         for (std::size_t substep{}; substep < substepCount; ++substep)
         {
+            // 剛体または形状を調べる物体
             for (const auto& gameObject : m_gameObjects)
             {
                 if (!gameObject->IsActiveInHierarchy())
@@ -5106,32 +5632,37 @@ namespace LamaPon
                     continue;
                 }
 
+                // 積分または休止判定する剛体
                 if (auto* rigidbody =
                         gameObject->GetComponent<RigidbodyComponent>();
                     rigidbody != nullptr && rigidbody->IsEnabled())
                 {
+                    // 衝突位置で制限した積分秒数
                     float integrateDelta = substepDeltaTime;
-                    // Continuousモードは移動をスイープし、最初の
-                    // 衝突位置までに制限します（トンネリング防止）。
+                    // Continuousモードは移動をスイープし、最初の衝突位置までに制限します（トンネリング防止）。
                     if (rigidbody
                             ->UsesContinuousCollisionDetection()
                         && !rigidbody->IsKinematic()
                         && !rigidbody->IsSleeping())
                     {
+                        // 重心の移動速度
                         const auto velocity =
                             rigidbody->Velocity();
+                        // 重心速度の大きさ
                         const float speed = std::sqrt(
                             velocity.x * velocity.x
                             + velocity.y * velocity.y
                             + velocity.z * velocity.z);
+                        // travel: 一substepで進む推定距離。
                         const float travel =
                             speed * substepDeltaTime;
 
-                        // 自身のコライダーの最小断面半径を
-                        // スイープ球の半径にします。
+                        // 連続判定に使う近似球の半径
                         float sweepRadius = 0.25f;
+                        // 最後に取得した形状の対象層
                         std::uint32_t sweepMask =
                             0xffffffffu;
+                        // 境界の最短半寸法で近似球を縮めます(bounds: 形状のワールド境界)。
                         const auto shrinkToBounds =
                             [&sweepRadius](
                                 const Bounds3D& bounds)
@@ -5151,6 +5682,7 @@ namespace LamaPon
                                     - bounds.minimum.z)
                                     * 0.5f });
                         };
+                        // 近似球の寸法を得る箱形状
                         if (const auto* box =
                             gameObject->GetComponent<
                                 BoxCollider3DComponent>();
@@ -5162,6 +5694,7 @@ namespace LamaPon
                             sweepMask =
                                 box->CollisionMask();
                         }
+                        // 近似球の寸法を得る球形状
                         if (const auto* sphere =
                             gameObject->GetComponent<
                                 SphereCollider3DComponent>();
@@ -5175,6 +5708,7 @@ namespace LamaPon
                             sweepMask =
                                 sphere->CollisionMask();
                         }
+                        // 近似球の寸法を得るカプセル
                         if (const auto* capsule =
                             gameObject->GetComponent<
                                 CapsuleCollider3DComponent>();
@@ -5188,17 +5722,18 @@ namespace LamaPon
                                 capsule->CollisionMask();
                         }
 
-                        // 1サブステップで自身の断面を超えて動く
-                        // 場合だけスイープします。
+                        // 1サブステップで自身の断面を超えて動く場合だけスイープします。
                         if (speed > 0.0001f
                             && travel > sweepRadius)
                         {
+                            // 連続判定の対象層と除外物体
                             PhysicsQueryFilter sweepFilter;
                             sweepFilter.layerMask =
                                 sweepMask;
                             sweepFilter
                                 .ignoredGameObjectId =
                                 gameObject->Id();
+                            // 重心から速度方向への探索線
                             const Ray sweepRay{
                                 rigidbody
                                     ->WorldCenterOfMass(),
@@ -5207,6 +5742,7 @@ namespace LamaPon
                                     velocity.y / speed,
                                     velocity.z / speed
                                 } };
+                            // 近似球が最初に当たる情報
                             PhysicsHit sweepHit{};
                             if (SphereCast(
                                     sweepRay,
@@ -5215,8 +5751,10 @@ namespace LamaPon
                                     sweepHit,
                                     sweepFilter))
                             {
+                                // 衝突面から残す隙間
                                 constexpr float skin =
                                     0.01f;
+                                // 衝突面まで進める距離
                                 const float allowed =
                                     std::max(
                                         sweepHit.distance
@@ -5228,8 +5766,7 @@ namespace LamaPon
                                         allowed / travel,
                                         0.0f,
                                         1.0f);
-                                // 進入方向の速度を消して
-                                // 次ステップの再貫通を防止。
+                                // 進入方向の速度を消して次ステップの再貫通を防止。
                                 rigidbody
                                     ->RemoveInwardVelocity(
                                         sweepHit.normal);
@@ -5241,8 +5778,11 @@ namespace LamaPon
                         integrateDelta);
                 }
             }
+            // 位置拘束の反復回数
             constexpr int jointSolverIterations = 4;
+            // ソルバーの反復番号
             for (int iteration{};
+                // 位置拘束の反復回数
                 iteration < jointSolverIterations;
                 ++iteration)
             {
@@ -5251,42 +5791,69 @@ namespace LamaPon
                     iteration == 0);
             }
 
+        // このサブステップの二次元衝突候補です。
         struct ColliderEntry2D final
         {
+            // 形状の所有物体
             GameObject* gameObject{};
+            // 箱形状の参照
             BoxCollider2DComponent* box{};
+            // 円形状の参照
             CircleCollider2DComponent* circle{};
+            // 多角形状の参照
             PolygonCollider2DComponent* polygon{};
+            // 候補抽出時点のワールド境界
             Bounds2D bounds{};
+            // 通知のみの形状か
             bool isTrigger{};
+            // 形状の所属層
             std::uint32_t layer{};
+            // 判定対象層のビット集合
             std::uint32_t collisionMask{};
+            // 反発と摩擦の応答材質
             PhysicsMaterial material{};
         };
+        // このサブステップの三次元衝突候補です。
         struct ColliderEntry3D final
         {
+            // 形状の所有物体
             GameObject* gameObject{};
+            // 箱形状の参照
             BoxCollider3DComponent* box{};
+            // カプセル形状の参照
             CapsuleCollider3DComponent* capsule{};
+            // 球形状の参照
             SphereCollider3DComponent* sphere{};
+            // 凸形状の参照
             ConvexHullCollider3DComponent* hull{};
+            // 三角形メッシュ形状の参照
             MeshCollider3DComponent* mesh{};
+            // 候補抽出時点のワールド境界
             Bounds3D bounds{};
+            // 通知のみの形状か
             bool isTrigger{};
+            // 形状の所属層
             std::uint32_t layer{};
+            // 判定対象層のビット集合
             std::uint32_t collisionMask{};
+            // 反発と摩擦の応答材質
             PhysicsMaterial material{};
         };
 
+        // 有効な二次元形状の一覧
         std::vector<ColliderEntry2D> entries2D;
+        // 有効な三次元形状の一覧
         std::vector<ColliderEntry3D> entries3D;
+        // 二次元候補抽出用の境界
         std::vector<Bounds2D> bounds2D;
+        // 三次元候補抽出用の境界
         std::vector<Bounds3D> bounds3D;
         entries2D.reserve(m_gameObjects.size());
         entries3D.reserve(m_gameObjects.size());
         bounds2D.reserve(m_gameObjects.size());
         bounds3D.reserve(m_gameObjects.size());
 
+        // 剛体または形状を調べる物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
@@ -5294,12 +5861,14 @@ namespace LamaPon
                 continue;
             }
 
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     BoxCollider2DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds = collider->WorldBounds();
                 entries2D.push_back({
                     gameObject.get(),
@@ -5314,12 +5883,14 @@ namespace LamaPon
                 });
                 bounds2D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     CircleCollider2DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds = collider->WorldBounds();
                 entries2D.push_back({
                     gameObject.get(),
@@ -5334,12 +5905,14 @@ namespace LamaPon
                 });
                 bounds2D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     PolygonCollider2DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds = collider->WorldBounds();
                 entries2D.push_back({
                     gameObject.get(),
@@ -5354,12 +5927,14 @@ namespace LamaPon
                 });
                 bounds2D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     BoxCollider3DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds = collider->WorldBounds();
                 entries3D.push_back({
                     gameObject.get(),
@@ -5376,12 +5951,14 @@ namespace LamaPon
                 });
                 bounds3D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     CapsuleCollider3DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds = collider->WorldBounds();
                 entries3D.push_back({
                     gameObject.get(),
@@ -5398,12 +5975,14 @@ namespace LamaPon
                 });
                 bounds3D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     SphereCollider3DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds =
                     collider->WorldBounds();
                 entries3D.push_back({
@@ -5421,12 +6000,14 @@ namespace LamaPon
                 });
                 bounds3D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     ConvexHullCollider3DComponent>();
                 collider != nullptr
                 && collider->IsEnabled())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds =
                     collider->WorldBounds();
                 entries3D.push_back({
@@ -5444,6 +6025,7 @@ namespace LamaPon
                 });
                 bounds3D.push_back(bounds);
             }
+            // 候補一覧へ登録する形状
             if (auto* collider =
                 gameObject->GetComponent<
                     MeshCollider3DComponent>();
@@ -5451,6 +6033,7 @@ namespace LamaPon
                 && collider->IsEnabled()
                 && collider->HasMesh())
             {
+                // 候補抽出時点の形状境界
                 const auto bounds =
                     collider->WorldBounds();
                 entries3D.push_back({
@@ -5470,12 +6053,15 @@ namespace LamaPon
             }
         }
 
+        // 三次元空間分割の候補組
         const auto broadPhase3D = BuildSpatialHashPairs(
             bounds3D,
             m_physicsBroadPhaseCellSize);
+        // 二次元空間分割の候補組
         const auto broadPhase2D = BuildSpatialHashPairs(
             bounds2D,
             m_physicsBroadPhaseCellSize);
+        // 今回のサブステップの統計
         PhysicsBroadPhaseStats stepStats{
             entries2D.size(),
             entries3D.size(),
@@ -5490,20 +6076,27 @@ namespace LamaPon
             0
         };
 
+        // 接触位置の反復回数
         constexpr int collisionSolverIterations = 4;
+        // 接触位置を解く反復番号
         for (int collisionIteration{};
             collisionIteration
                 < collisionSolverIterations;
             ++collisionIteration)
         {
+            // 空間分割で重なる候補組
             for (const auto& pair :
                 broadPhase3D.pairs)
             {
+                // 衝突組の左側の物体または形状
                 auto& left = entries3D[pair.left];
+                // 衝突組の右側の物体または形状
                 auto& right = entries3D[pair.right];
+                // leftPhysicsObject: 左形状を動かす物体, leftBody: 左側の剛体
                 const auto [leftPhysicsObject, leftBody] =
                     findRigidbodyObject(
                         *left.gameObject);
+                // rightPhysicsObject: 右形状を動かす物体, rightBody: 右側の剛体
                 const auto [
                     rightPhysicsObject,
                     rightBody] =
@@ -5521,8 +6114,6 @@ namespace LamaPon
                         & (1u << right.layer)) == 0
                     || (right.collisionMask
                         & (1u << left.layer)) == 0
-                    // プロジェクト設定の衝突マトリクス
-                    // （既定は全部当たる）。
                     || !LayersCanCollide(
                         left.layer,
                         right.layer))
@@ -5536,9 +6127,7 @@ namespace LamaPon
                         .narrowPhaseTestCount3D;
                 }
 
-                // メッシュコライダーは三角形単位で接触を生成し、
-                // 1三角形ごとにprocessContactを呼びます（コール
-                // バックはキー単位で重複抑制済み）。
+                // メッシュコライダーは三角形単位で接触を生成し、1三角形ごとにprocessContactを呼びます（コールバックはキー単位で重複抑制済み）。
                 if (left.mesh != nullptr
                     || right.mesh != nullptr)
                 {
@@ -5548,14 +6137,19 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 左側がメッシュ形状か
                     const bool meshIsLeft =
                         left.mesh != nullptr;
+                    // 三角形を取得するメッシュ形状
                     auto& meshEntry =
                         meshIsLeft ? left : right;
+                    // メッシュと判定する相手形状
                     auto& otherEntry =
                         meshIsLeft ? right : left;
 
+                    // 三角形取得境界の拡張幅
                     constexpr float queryMargin = 0.05f;
+                    // 相手の境界を拡張した探索範囲
                     Bounds3D query = otherEntry.bounds;
                     query.minimum.x -= queryMargin;
                     query.minimum.y -= queryMargin;
@@ -5563,23 +6157,29 @@ namespace LamaPon
                     query.maximum.x += queryMargin;
                     query.maximum.y += queryMargin;
                     query.maximum.z += queryMargin;
+                    // 探索境界に重なる三角形
                     std::vector<MeshColliderTriangle>
                         triangles;
                     meshEntry.mesh->CollectTriangles(
                         query,
                         triangles);
 
+                    // 一形状組の三角形接触処理上限
                     constexpr std::size_t
                         MaximumTriangleContacts = 8;
+                    // 処理済みの三角形接触数
                     std::size_t triangleContacts{};
+                    // 接触候補のワールド三角形
                     for (const auto& triangle : triangles)
                     {
+                        // 三角形を表す凸形状
                         ConvexHull3D triangleHull{
                             {
                                 triangle.a,
                                 triangle.b,
                                 triangle.c
                             } };
+                        // 単一接触点の三次元判定結果
                         std::optional<Contact3D> single;
                         if (otherEntry.box != nullptr)
                         {
@@ -5616,10 +6216,11 @@ namespace LamaPon
                         {
                             continue;
                         }
-                        // 法線は第1引数（三角形＝メッシュ側）を
-                        // 向くため、leftへ向くよう調整します。
+                        // 法線は第1引数（三角形＝メッシュ側）を向くため、leftへ向くよう調整します。
+                        // 法線を左側向きに揃える符号
                         const float normalScale =
                             meshIsLeft ? 1.0f : -1.0f;
+                        // 三角形と相手形状の接触情報
                         const Contact meshContact{
                             {
                                 single->normal.x
@@ -5650,16 +6251,20 @@ namespace LamaPon
                     continue;
                 }
 
+                // 三次元形状間の接触情報
                 std::optional<Contact> contact;
                 if (left.box != nullptr
                     && right.box != nullptr)
                 {
+                    // 複数点を含む三次元接触情報
                     if (const auto manifold =
                         LamaPon::IntersectManifold(
                         left.box->WorldBox(),
                         right.box->WorldBox()))
                     {
+                        // 接触位置の合計から得る代表点
                         DirectX::XMFLOAT3 average{};
+                        // 接触点の添字
                         for (std::size_t index{};
                             index < manifold->pointCount;
                             ++index)
@@ -5671,6 +6276,7 @@ namespace LamaPon
                             average.z +=
                                 manifold->points[index].z;
                         }
+                        // 接触点数の逆数
                         const float scale =
                             1.0f / static_cast<float>(
                                 std::max<std::size_t>(
@@ -5695,8 +6301,10 @@ namespace LamaPon
                         && right.capsule != nullptr))
                 {
                     // カプセル×ボックスは両端球の2点マニフォールド。
+                    // 左側がカプセル形状か
                     const bool capsuleIsLeft =
                         left.capsule != nullptr;
+                    // 複数点を含む三次元接触情報
                     const auto manifold =
                         LamaPon::IntersectManifold(
                             (capsuleIsLeft
@@ -5709,11 +6317,13 @@ namespace LamaPon
                                 ->WorldBox());
                     if (manifold)
                     {
-                        // 法線はカプセル側を向くため、leftへ
-                        // 向くように調整します。
+                        // 法線はカプセル側を向くため、leftへ向くように調整します。
+                        // 法線を左側向きに揃える符号
                         const float normalScale =
                             capsuleIsLeft ? 1.0f : -1.0f;
+                        // 接触位置の合計から得る代表点
                         DirectX::XMFLOAT3 average{};
+                        // 接触点の添字
                         for (std::size_t index{};
                             index < manifold->pointCount;
                             ++index)
@@ -5725,6 +6335,7 @@ namespace LamaPon
                             average.z +=
                                 manifold->points[index].z;
                         }
+                        // 接触点数の逆数
                         const float scale =
                             1.0f / static_cast<float>(
                                 std::max<std::size_t>(
@@ -5751,7 +6362,9 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 単一接触点の三次元判定結果
                     std::optional<Contact3D> single;
+                    // 判定順と衝突組の順が逆か
                     bool reverseNormal{};
                     if (left.capsule != nullptr
                         && right.capsule != nullptr)
@@ -5859,6 +6472,7 @@ namespace LamaPon
                     }
                     if (single)
                     {
+                        // 法線を左側向きに揃える符号
                         const float normalScale =
                             reverseNormal
                             ? -1.0f
@@ -5891,14 +6505,19 @@ namespace LamaPon
                 }
             }
 
+            // 空間分割で重なる候補組
             for (const auto& pair :
                 broadPhase2D.pairs)
             {
+                // 衝突組の左側の物体または形状
                 auto& left = entries2D[pair.left];
+                // 衝突組の右側の物体または形状
                 auto& right = entries2D[pair.right];
+                // leftPhysicsObject: 左形状を動かす物体, leftBody: 左側の剛体
                 const auto [leftPhysicsObject, leftBody] =
                     findRigidbodyObject(
                         *left.gameObject);
+                // rightPhysicsObject: 右形状を動かす物体, rightBody: 右側の剛体
                 const auto [
                     rightPhysicsObject,
                     rightBody] =
@@ -5916,8 +6535,6 @@ namespace LamaPon
                         & (1u << right.layer)) == 0
                     || (right.collisionMask
                         & (1u << left.layer)) == 0
-                    // プロジェクト設定の衝突マトリクス
-                    // （既定は全部当たる）。
                     || !LayersCanCollide(
                         left.layer,
                         right.layer))
@@ -5930,6 +6547,7 @@ namespace LamaPon
                     ++stepStats
                         .narrowPhaseTestCount2D;
                 }
+                // 二次元形状間の接触情報
                 std::optional<Contact> contact2D;
                 if (left.box != nullptr
                     && right.box != nullptr)
@@ -6048,8 +6666,10 @@ namespace LamaPon
                 stepStats.oversizedColliderCount3D;
         }
 
+        // 剛体または形状を調べる物体
         for (const auto& gameObject : m_gameObjects)
         {
+            // 積分または休止判定する剛体
             if (auto* rigidbody =
                     gameObject->GetComponent<RigidbodyComponent>();
                 rigidbody != nullptr)
@@ -6062,6 +6682,7 @@ namespace LamaPon
             }
         }
 
+        // key: 前回の衝突組, wasTrigger: 前回のトリガー区分
         for (const auto& [key, wasTrigger] : m_activeCollisions)
         {
             if (currentCollisions.contains(key))
@@ -6069,9 +6690,12 @@ namespace LamaPon
                 continue;
             }
 
+            // leftId: 左物体番号, rightId: 右物体番号, is3D: 三次元判定区分
             const auto [leftId, rightId, is3D] = key;
             static_cast<void>(is3D);
+            // 衝突組の左側の物体または形状
             auto* left = FindGameObject(leftId);
+            // 衝突組の右側の物体または形状
             auto* right = FindGameObject(rightId);
             if (left != nullptr && right != nullptr)
             {
@@ -6106,6 +6730,19 @@ namespace LamaPon
         RenderMainCamera(m_graphics.AspectRatio(), true);
     }
 
+    void Scene::RenderGameFrame(const float clearColor[4])
+    {
+        RenderTargetTextures();
+        // D3D11はHDR、D3D12はLDRでシーンを合成します。
+        m_graphics.BeginSceneComposition(clearColor);
+        RenderMainCamera(
+            m_graphics.AspectRatio(),
+            false,
+            m_graphics.SceneCompositionTarget());
+        m_graphics.EndSceneComposition(PostProcessFrameData());
+        Render2D();
+    }
+
     void Scene::RenderTargetTextures()
     {
         // 再入（レンダーテクスチャ描画中の再呼び出し）は無視します。
@@ -6113,18 +6750,20 @@ namespace LamaPon
         {
             return;
         }
-        // エディターはRenderMainCameraを通らないフレームがあるので
-        // （Scene Viewだけの表示）、ここでもベイクを拾います。
+        // メインカメラを描かないエディター表示でも、ここでベイク要求を処理します。
         BakePendingReflectionProbes();
         ProcessBakedGlobalIlluminationBake();
 
+        // テクスチャへ描画するカメラ
         std::vector<CameraComponent*> targetCameras;
+        // 描画対象の物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
             {
                 continue;
             }
+            // テクスチャ描画対象のカメラ
             auto* camera =
                 gameObject->GetComponent<CameraComponent>();
             if (camera == nullptr
@@ -6140,25 +6779,30 @@ namespace LamaPon
             return;
         }
 
+        // 再入防止フラグの復元範囲
         const BooleanStateScope targetScope{
             m_renderingTargetTextures,
             true
         };
+        // 補間描画フラグの復元範囲
         const BooleanStateScope interpolationScope{
             m_renderingInterpolatedTransforms,
             true
         };
-        // 描画先とUI基準サイズを書き換えるので、元の値へ戻します。
-        // 復元を忘れると、この後のメインカメラの描画が最後の
-        // レンダーテクスチャへ流れ込みます。
+        // 後続の描画先とUI基準サイズを例外時も復元します。
+        // 元の描画先を復元する範囲
         GraphicsOutputStateScope outputStateScope{ m_graphics };
+        // UI基準サイズを復元する範囲
         UIViewportSizeScope uiViewportScope{ m_graphics };
+        // 対象描画のGPU計測区間
         GpuProfiler::SectionScope gpuSectionScope{
             m_graphics.Gpu(),
             "レンダーテクスチャ"
         };
+        // テクスチャ描画対象のカメラ
         for (auto* camera : targetCameras)
         {
+            // カメラが使う描画先
             auto& target =
                 m_graphics.AcquireRenderTexture(
                     camera->TargetTexture(),
@@ -6175,8 +6819,10 @@ namespace LamaPon
             m_graphics.SetUIViewportSize(
                 target.Width(),
                 target.Height());
+            // カメラの背景色
             const auto& clearColor =
                 camera->TargetClearColor();
+            // 描画先を初期化するRGBA背景色
             const float clear[4]{
                 clearColor.x,
                 clearColor.y,
@@ -6198,8 +6844,7 @@ namespace LamaPon
                 m_graphics,
                 target,
                 PostProcessFrameData());
-            // ポスト処理でテクスチャを入れ替えるため、表示用へ
-            // コピーしてから参照側に渡します。
+            // ポスト処理でテクスチャを入れ替えるため、表示用へコピーしてから参照側に渡します。
             m_graphics.PublishOffscreenTarget(target);
         }
         gpuSectionScope.End();
@@ -6212,17 +6857,19 @@ namespace LamaPon
         const bool include2D,
         RenderTarget* target)
     {
-        // ベイク待ちのプローブはフレームの頭で焼きます（この後の
-        // 描画からすぐ反射に使えるように）。
+        // 現在の描画へ反映するため、先にベイク要求を処理します。
         BakePendingReflectionProbes();
         ProcessBakedGlobalIlluminationBake();
+        // 補間描画フラグの復元範囲
         const BooleanStateScope interpolationScope{
             m_renderingInterpolatedTransforms,
             true
         };
         if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
         {
+            // メインカメラのビュー行列
             const auto view = m_mainCamera->ViewMatrix();
+            // 今回の深度とカラーの射影
             const auto projection = m_mainCamera->ProjectionMatrix(aspectRatio);
             RenderWithMatrices(
                 view,
@@ -6243,11 +6890,13 @@ namespace LamaPon
 
     void Scene::Render2D()
     {
-        // UIは3D用ポストエフェクトの後から単独で描画できるよう分離する。
+        // 2DとUIは3Dのポストエフェクト適用後にも単独で描画できます。
+        // 補間描画フラグの復元範囲
         const BooleanStateScope interpolationScope{
             m_renderingInterpolatedTransforms,
             true
         };
+        // 対象描画のGPU計測区間
         GpuProfiler::SectionScope gpuSectionScope{
             m_graphics.Gpu(),
             "2D／UI"
@@ -6257,6 +6906,7 @@ namespace LamaPon
             m_graphics);
     }
 
+    // 指定行列でシーンを描きます(view: 可逆なビュー行列, rawProjection: ジッターなしの射影, include2D: 2Dも描くか, renderDebug: デバッグ表示を描くか, target: 深度と履歴を作る描画先)。
     void Scene::RenderWithMatrices(
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX rawProjection,
@@ -6264,18 +6914,18 @@ namespace LamaPon
         const bool renderDebug,
         RenderTarget* target)
     {
-        // TAAのサブピクセルずらし。深度プリパスも本描画も同じ行列で
-        // なければ噛み合わないので、ここで1回だけ織り込みます。
-        // プローブのベイク中はずらしません（キューブへ揺れが焼き
-        // 付きます）。
+        // 深度とカラーに同じTAAジッターを使い、プローブのベイク中はずらしません。
         m_temporalFrame = {};
+        // 今回TAAのジッターを使うか
         const bool temporalWanted =
             m_temporalAntiAliasing.enabled
             && target != nullptr
             && !m_bakingReflectionProbes;
+        // 今回の深度とカラーの射影
         DirectX::XMMATRIX projection = rawProjection;
         if (temporalWanted)
         {
+            // サブピクセルの射影移動量
             const auto jitter = TemporalJitterOffset(
                 m_temporalFrameIndex);
             projection = ApplyTemporalJitter(
@@ -6292,19 +6942,14 @@ namespace LamaPon
             ++m_temporalFrameIndex;
         }
 
-        // SSAOが深度をビュー空間へ戻すため、現在の描画で使用する
-        // 射影を記録します。
+        // SSAOが深度をビュー空間へ戻すため、現在の描画で使用する射影を記録します。
+        // 深度復元へ渡す今回の射影
         DirectX::XMFLOAT4X4 storedProjection{};
         DirectX::XMStoreFloat4x4(
             &storedProjection,
             projection);
         m_graphics.SetSceneProjection(storedProjection);
-        // 被写界深度へ渡す情報。ビューごとに射影が違う（エディターは
-        // Scene Viewとカメラプレビューを同じフレームで描く）ので、
-        // 共有せずにここで詰め直します。ずらしを含んだ側の行列を
-        // 渡すのが要点で、深度バッファはこの行列で書かれています。
-        // ベイク中はぼかしません（プローブのキューブへぼけが焼き
-        // 付くと、反射だけ二重にぼけます）。
+        // 被写界深度には今回の深度と同じ射影を渡し、プローブのベイク中は無効にします。
         m_depthOfFieldFrame = {};
         if (!m_bakingReflectionProbes)
         {
@@ -6316,12 +6961,13 @@ namespace LamaPon
         {
             m_screenOutlineFrame.projection = storedProjection;
         }
+        // 補間描画フラグの復元範囲
         const BooleanStateScope interpolationScope{
             m_renderingInterpolatedTransforms,
             true
         };
-        // プローブのベイク中はカリングを無効にし、必要な描画対象が
-        // ベイク結果から欠落しないようにします。
+        // プローブのベイク中はカリングを無効にし、必要な描画対象がベイク結果から欠落しないようにします。
+        // カリングとLODの判定結果
         const auto visibility = m_bakingReflectionProbes
             ? VisibilityResult{}
             : BuildRenderVisibility(view, projection);
@@ -6330,21 +6976,19 @@ namespace LamaPon
             m_visibilityStats = visibility.stats;
         }
 
-        // 今フレームで使えるリフレクションプローブを集めます
-        // （描画側がNearestReflectionProbeで引きます）。
-        // ベイク中の再帰描画では空にして映り込みを防ぎます。
-        // 前フレームの影テクスチャを持ち越さないよう毎回消します
-        // （影が無いフレームで古いSRVを読むと筋が残ります）。
+        // ベイク中の反射再帰と前回の影の流用を防ぐため、反射・影のフレーム情報を消します。
         m_volumetricFrame = {};
         m_frameReflectionProbes.clear();
         if (!m_bakingReflectionProbes)
         {
+            // 描画対象の物体
             for (const auto& gameObject : m_gameObjects)
             {
                 if (!gameObject->IsActiveInHierarchy())
                 {
                     continue;
                 }
+                // 今回使える反射プローブ
                 auto* probe = gameObject->GetComponent<
                     ReflectionProbeComponent>();
                 if (probe != nullptr
@@ -6357,11 +7001,16 @@ namespace LamaPon
             }
         }
 
+        // 今回の描画へ渡す照明情報
         auto lighting = BuildLightingState();
 
+        // 最初に影を生成する方向光源
         const DirectionalLightComponent* shadowLight{};
+        // 固定照明配列内の方向光源添字
         std::size_t shadowLightIndex{};
+        // 有効な方向光源の通し添字
         std::size_t directionalIndex{};
+        // 描画対象の物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
@@ -6369,6 +7018,7 @@ namespace LamaPon
                 continue;
             }
 
+            // 影を生成できる方向光源候補
             const auto* candidate =
                 gameObject->GetComponent<
                     DirectionalLightComponent>();
@@ -6391,13 +7041,14 @@ namespace LamaPon
             ++directionalIndex;
         }
 
-        // シャドウマップ描画中は深度専用パスに切り替えます
-        // （例外時も確実に解除するためRAIIで管理）。
-        // 深度専用パスのRAII。GPU区間の計測も兼ねます。
+        // 影の深度パスとGPU計測区間を例外時も終了するスコープです。
         struct DepthOnlyPassScope final
         {
+            // 深度パスを切り替えるデバイス
             GraphicsDevice& graphics;
+            // 影描画のGPU計測区間
             GpuProfiler::SectionScope gpuSection;
+            // 影の深度パスと計測を開始します(device: 描画デバイス, gpuSectionName: GPU計測区間名)。
             DepthOnlyPassScope(
                 GraphicsDevice& device,
                 const char* gpuSectionName)
@@ -6407,6 +7058,7 @@ namespace LamaPon
                 graphics.SetDepthPass(
                     DepthPassKind::Shadow);
             }
+            // 計測区間と影の深度パスを終了します。
             ~DepthOnlyPassScope() noexcept
             {
                 gpuSection.End();
@@ -6419,9 +7071,11 @@ namespace LamaPon
             && shadowLight != nullptr
             && m_graphics.Shadows().IsValid())
         {
+            // 影の深度パスを終了する範囲
             const DepthOnlyPassScope depthScope{
                 m_graphics,
                 "影(カスケード)" };
+            // 方向光のカスケード行列群
             const auto shadowMatrices =
                 BuildDirectionalShadowMatrices(
                     view,
@@ -6442,6 +7096,7 @@ namespace LamaPon
                     shadowLight->ShadowSplitLambda(),
                     m_graphics.Shadows().Resolution());
 
+            // 影を参照しない深度パス用照明
             auto shadowPassLighting = lighting;
             shadowPassLighting.directionalShadow.enabled =
                 false;
@@ -6449,13 +7104,17 @@ namespace LamaPon
             m_graphics.SetLightingState(
                 shadowPassLighting);
 
+            // 方向光の影描画先
             auto& shadowMap = m_graphics.Shadows();
+            // 影のカスケード添字
             for (std::size_t cascadeIndex = 0;
                 cascadeIndex < shadowMatrices.count;
                 ++cascadeIndex)
             {
+                // 描画するカスケードの行列
                 const auto& cascade =
                     shadowMatrices.cascades[cascadeIndex];
+                // 影視錐台とLODによる非表示組
                 const auto shadowHidden =
                     BuildShadowFrustumHidden(
                         cascade.view,
@@ -6467,6 +7126,7 @@ namespace LamaPon
                         cascadeIndex));
                 try
                 {
+                    // 描画対象の物体
                     for (const auto& gameObject : m_gameObjects)
                     {
                         if (visibility.lodHidden.contains(
@@ -6490,14 +7150,17 @@ namespace LamaPon
                 m_graphics.EndShadowMap(shadowMap);
             }
 
+            // カラーへ渡す方向光の影情報
             auto& shadow =
                 lighting.directionalShadow;
             shadow.cascadeCount =
                 shadowMatrices.count;
+            // 影のカスケード添字
             for (std::size_t cascadeIndex = 0;
                 cascadeIndex < shadowMatrices.count;
                 ++cascadeIndex)
             {
+                // 描画するカスケードの行列
                 const auto& cascade =
                     shadowMatrices.cascades[cascadeIndex];
                 DirectX::XMStoreFloat4x4(
@@ -6518,23 +7181,18 @@ namespace LamaPon
                 shadowLight->ShadowStrength();
             shadow.enabled = true;
 
-            // ボリュメトリックライト（光の筋）へ渡す情報。カスケードの
-            // 行列と光の向きが揃うのはここだけなので、この場で組み立てて
-            // ポスト処理まで持って行きます。ベイク中は作りません
-            // （プローブのキューブに光の筋を焼き込まないため）。
+            // ボリュメトリックライトへ今回の影とカメラ情報を渡し、プローブのベイク中は無効にします。
             if (m_volumetricLight.enabled
                 && !m_bakingReflectionProbes)
             {
+                // 今回のボリュメトリック積算情報
                 auto& frame = m_volumetricFrame;
                 frame.settings = m_volumetricLight;
-                // 届く距離は影のカスケードが覆う範囲までに抑えます。
-                // シェーダーはカスケードの外を「光が当たっている」と
-                // みなすため、影の距離（既定24m）より遠くまで進めると
-                // 遮蔽の判定が無い区間がそのまま光として積まれ、
-                // 屋内でも画面が白く霞みます。
+                // 影の範囲外では遮蔽を判定できないため、積算距離を影の距離までに制限します。
                 frame.settings.maximumDistance = std::min(
                     frame.settings.maximumDistance,
                     shadowLight->ShadowDistance());
+                // 光の積算へ渡す影とカメラ情報
                 auto& inputs = frame.inputs;
                 inputs.cascadeShadow = shadow.texture;
                 inputs.cascadeCount =
@@ -6546,11 +7204,11 @@ namespace LamaPon
                     lighting.directionalShadowResolution;
                 inputs.lightDirection =
                     shadowLight->WorldDirection();
-                // 太陽を明るくしたら筋も明るくなるよう、光源の
-                // 強度を掛けておきます。設定側のintensityは
-                // 「空気の濃さ」としてこの上に乗ります。
+                // 空気の濃さを表す効果設定とは別に、光源の色と強度を渡します。
+                // 影を生成する光源色
                 const auto& lightColor =
                     shadowLight->Color();
+                // 影を生成する光源の強度
                 const float lightIntensity =
                     shadowLight->Intensity();
                 inputs.lightColor = {
@@ -6558,6 +7216,7 @@ namespace LamaPon
                     lightColor.y * lightIntensity,
                     lightColor.z * lightIntensity
                 };
+                // 影のカスケード添字
                 for (std::size_t cascadeIndex = 0;
                     cascadeIndex < shadowMatrices.count
                         && cascadeIndex < 4;
@@ -6568,7 +7227,9 @@ namespace LamaPon
                         shadow.lightViewProjections[
                             cascadeIndex];
                 }
+                // 逆行列計算の行列式出力
                 DirectX::XMVECTOR determinant{};
+                // ワールド復元用の逆ビュー射影
                 const auto inverseViewProjection =
                     DirectX::XMMatrixInverse(
                         &determinant,
@@ -6576,6 +7237,7 @@ namespace LamaPon
                 DirectX::XMStoreFloat4x4(
                     &inputs.inverseViewProjection,
                     inverseViewProjection);
+                // カメラ位置を得る逆ビュー行列
                 const auto inverseView =
                     DirectX::XMMatrixInverse(
                         &determinant,
@@ -6592,24 +7254,32 @@ namespace LamaPon
         {
             struct SpotShadowCandidate final
             {
+                // 影を生成するスポット光源
                 const SpotLightComponent* light{};
+                // 固定照明配列内の光源添字
                 std::size_t lightIndex{};
             };
+            // 影を生成するスポット光源候補
             std::array<
                 SpotShadowCandidate,
                 MaximumSpotShadows> candidates{};
+            // 選択したスポット影の数
             std::size_t candidateCount = 0;
+            // 有効なスポット光源の添字
             std::size_t spotIndex = 0;
+            // 品質設定で許可する光源数
             const std::size_t spotLimit =
                 std::min<std::size_t>(
                     m_graphics.Settings().spotLightLimit,
                     MaximumSpotLights);
+            // 描画対象の物体
             for (const auto& gameObject : m_gameObjects)
             {
                 if (!gameObject->IsActiveInHierarchy())
                 {
                     continue;
                 }
+                // 影を生成できるスポット光源候補
                 const auto* candidate =
                     gameObject->GetComponent<
                         SpotLightComponent>();
@@ -6636,39 +7306,50 @@ namespace LamaPon
 
             if (candidateCount > 0)
             {
+                // 影の深度パスを終了する範囲
                 const DepthOnlyPassScope depthScope{
                     m_graphics,
                     "影(スポット)" };
                 m_graphics.SetLightingState(lighting);
+                // スポット光の影描画先
                 auto& spotShadowMap =
                     m_graphics.SpotShadows();
+                // スポット影のスロット添字
                 for (std::size_t slot = 0;
+                    // 選択したスポット影の数
                     slot < candidateCount;
                     ++slot)
                 {
+                    // 影を描くスポット光源
                     const auto* light =
                         candidates[slot].light;
+                    // 影カメラのワールド位置
                     const auto eye =
                         light->WorldPosition();
+                    // 影カメラの視線方向
                     const auto direction =
                         light->WorldDirection();
+                    // 視線と平行にならない上方向
                     const auto up =
                         std::abs(direction.y) > 0.99f
                         ? DirectX::XMFLOAT3{
                             0.0f, 0.0f, 1.0f }
                         : DirectX::XMFLOAT3{
                             0.0f, 1.0f, 0.0f };
+                    // スポット影のビュー行列
                     const auto shadowView =
                         DirectX::XMMatrixLookToRH(
                             DirectX::XMLoadFloat3(&eye),
                             DirectX::XMLoadFloat3(
                                 &direction),
                             DirectX::XMLoadFloat3(&up));
+                    // スポット影の視野角ラジアン
                     const float fieldOfView = std::clamp(
                         light->OuterConeAngle() * 2.0f,
                         DirectX::XMConvertToRadians(5.0f),
                         DirectX::XMConvertToRadians(
                             170.0f));
+                    // スポット影の射影行列
                     const auto shadowProjection =
                         DirectX::
                             XMMatrixPerspectiveFovRH(
@@ -6678,6 +7359,7 @@ namespace LamaPon
                                 std::max(
                                     light->Range(),
                                     0.2f));
+                    // 影視錐台とLODによる非表示組
                     const auto shadowHidden =
                         BuildShadowFrustumHidden(
                             shadowView,
@@ -6689,6 +7371,7 @@ namespace LamaPon
                         static_cast<std::uint32_t>(slot));
                     try
                     {
+                        // 描画対象の物体
                         for (const auto& gameObject :
                             m_gameObjects)
                         {
@@ -6715,6 +7398,7 @@ namespace LamaPon
                     m_graphics.EndShadowMap(
                         spotShadowMap);
 
+                    // カラーへ渡す局所光源の影情報
                     auto& destination =
                         lighting.spotShadows[slot];
                     DirectX::XMStoreFloat4x4(
@@ -6740,19 +7424,25 @@ namespace LamaPon
         if (m_graphics.Settings().shadowsEnabled
             && m_graphics.PointShadows().IsValid())
         {
+            // 最初に影を生成するポイント光源
             const PointLightComponent* pointShadowLight{};
+            // 固定配列内のポイント光源添字
             std::size_t pointShadowIndex{};
+            // 有効なポイント光源の添字
             std::size_t pointIndex = 0;
+            // 品質設定のポイント光源上限
             const std::size_t pointLimit =
                 std::min<std::size_t>(
                     m_graphics.Settings().pointLightLimit,
                     MaximumPointLights);
+            // 描画対象の物体
             for (const auto& gameObject : m_gameObjects)
             {
                 if (!gameObject->IsActiveInHierarchy())
                 {
                     continue;
                 }
+                // 影を生成できるポイント光源候補
                 const auto* candidate =
                     gameObject->GetComponent<
                         PointLightComponent>();
@@ -6776,19 +7466,23 @@ namespace LamaPon
 
             if (pointShadowLight != nullptr)
             {
+                // 影の深度パスを終了する範囲
                 const DepthOnlyPassScope depthScope{
                     m_graphics,
                     "影(ポイント)" };
                 m_graphics.SetLightingState(lighting);
+                // ポイント光の影描画先
                 auto& pointShadowMap =
                     m_graphics.PointShadows();
+                // 影カメラのワールド位置
                 const auto eye =
                     pointShadowLight->WorldPosition();
+                // 影カメラの遠平面距離
                 const float farPlane = std::max(
                     pointShadowLight->Range(),
                     0.2f);
-                // D3D標準のキューブ面向き（左手系）。シェーダー側の
-                // 深度復元式（EvaluatePointShadow）と対になります。
+                // キューブ面の向きは、EvaluatePointShadowの左手系深度復元と揃えます。
+                // キューブ面ごとの左手系視線方向
                 static constexpr DirectX::XMFLOAT3
                     FaceDirections[6]{
                         { 1.0f, 0.0f, 0.0f },
@@ -6798,6 +7492,7 @@ namespace LamaPon
                         { 0.0f, 0.0f, 1.0f },
                         { 0.0f, 0.0f, -1.0f }
                     };
+                // キューブ面ごとの上方向
                 static constexpr DirectX::XMFLOAT3
                     FaceUps[6]{
                         { 0.0f, 1.0f, 0.0f },
@@ -6807,16 +7502,19 @@ namespace LamaPon
                         { 0.0f, 1.0f, 0.0f },
                         { 0.0f, 1.0f, 0.0f }
                     };
+                // キューブ影各面の射影行列
                 const auto faceProjection =
                     DirectX::XMMatrixPerspectiveFovLH(
                         DirectX::XM_PIDIV2,
                         1.0f,
                         0.1f,
                         farPlane);
+                // キューブ影の面番号
                 for (std::uint32_t face = 0;
                     face < 6u;
                     ++face)
                 {
+                    // キューブ影対象面のビュー行列
                     const auto faceView =
                         DirectX::XMMatrixLookToLH(
                             DirectX::XMLoadFloat3(&eye),
@@ -6824,6 +7522,7 @@ namespace LamaPon
                                 &FaceDirections[face]),
                             DirectX::XMLoadFloat3(
                                 &FaceUps[face]));
+                    // 影視錐台とLODによる非表示組
                     const auto shadowHidden =
                         BuildShadowFrustumHidden(
                             faceView,
@@ -6834,6 +7533,7 @@ namespace LamaPon
                         face);
                     try
                     {
+                        // 描画対象の物体
                         for (const auto& gameObject :
                             m_gameObjects)
                         {
@@ -6860,6 +7560,7 @@ namespace LamaPon
                     m_graphics.EndShadowMap(
                         pointShadowMap);
                 }
+                // カラーへ渡す局所光源の影情報
                 auto& destination = lighting.pointShadow;
                 destination.texture =
                     pointShadowMap.ViewHandle();
@@ -6874,22 +7575,20 @@ namespace LamaPon
             }
         }
 
-        // 深度プリパス＋SSAO。ライティングの前に遮蔽を用意して、
-        // Litシェーダーが環境光／IBL項にだけ掛けられるようにします
-        // （完成した色へ掛けると直接光や影の中まで暗くなります）。
+        // SSAOは直接光を暗くしないよう、カラー描画前に環境光とIBL用の遮蔽を作ります。
         if (target != nullptr)
         {
+            // 深度結果を取得し、行列を参照するコールバックはこの呼び出し内で同期実行します。
+            // 可視物体を同期描画する深度パスの結果
             const auto prepass = RunDepthPrepass(
                 m_graphics,
                 *target,
                 storedProjection,
                 m_ambientOcclusion,
                 m_screenSpaceReflection,
-                // 参照で捕まえます（XMMATRIXは16バイト境界を要求する
-                // ため、std::functionへ値で載せたくありません）。
-                // 呼ばれるのはこの関数の中だけなので安全です。
                 [this, &visibility, &view, &projection]()
                 {
+                    // 描画対象の物体
                     for (const auto& gameObject :
                         m_gameObjects)
                     {
@@ -6907,6 +7606,7 @@ namespace LamaPon
                 });
             if (prepass.ambientOcclusionResolved)
             {
+                // カラーで参照するSSAO情報
                 auto& occlusion =
                     lighting.screenAmbientOcclusion;
                 occlusion.texture =
@@ -6921,26 +7621,24 @@ namespace LamaPon
                 occlusion.enabled = true;
             }
 
-            // SSR（画面空間反射）。前フレームのカラーがまだ無い
-            // 最初のフレームは無効のままで、2フレーム目から効きます。
+            // SSRは前回のカラー履歴があるときだけ有効にします。
             if (prepass.depthAvailable
                 && m_screenSpaceReflection.enabled
                 && !m_bakingReflectionProbes)
             {
+                // 前回のカラー履歴ビュー
                 const auto history =
                     target->ColorHistoryViewHandle();
                 if (history)
                 {
+                    // カラーで参照するSSR情報
                     auto& reflection =
                         lighting.screenSpaceReflection;
                     reflection.texture = history;
-                    // 深度はコピーを読みます（本体はDSVとして
-                    // 刺さっているためSRVにできません）。
+                    // 深度はコピーを読みます（本体はDSVとして刺さっているためSRVにできません）。
                     m_graphics.CaptureOffscreenTargetDepth(
                         *target);
-                    // Hi-Z: 深度を「距離のminミップピラミッド」へ
-                    // 直します。シェーダーはこれを読んで、何も無い
-                    // 空間を大股で飛びます。
+                    // SSRの探索用にビュー空間距離の最小値を持つミップ列を作ります。
                     if (m_graphics
                             .TryBuildReflectionDepthPyramid(
                                 *target,
@@ -6988,18 +7686,17 @@ namespace LamaPon
                     }
                     else
                     {
-                        // stale / 別BackendのRenderTargetはこのフレームの
-                        // SSRを無効にし、native viewを誤bindしません。
+                        // stale / 別BackendのRenderTargetはこのフレームのSSRを無効にし、native viewを誤bindしません。
                         reflection = {};
                     }
                 }
             }
-            // プリパスとSSAOで描画先が変わっているので、カラーへ
-            // 戻します（深度は消さずにそのまま使います）。
+            // プリパスとSSAOで描画先が変わっているので、カラーへ戻します（深度は消さずにそのまま使います）。
             m_graphics.BindOffscreenTarget(*target);
         }
 
         // キューブマップスカイとIBL（環境反射）。
+        // スカイとIBLの元キューブ
         GraphicsViewHandle skyCubemapView;
         if (m_sky.enabled
             && !m_sky.cubemapPath.empty()
@@ -7007,11 +7704,13 @@ namespace LamaPon
         {
             try
             {
+                // スカイ用キューブのアセット
                 if (const auto texture =
                         m_graphics.Assets().LoadTexture(
                             m_sky.cubemapPath);
                     texture != nullptr && texture->isCube)
                 {
+                    // スカイの描画資源の所有参照
                     const auto skyResources =
                         texture->resources.Acquire();
                     if (skyResources != nullptr)
@@ -7034,9 +7733,7 @@ namespace LamaPon
             && m_sky.iblIntensity > 0.0f;
         if (lighting.environment.enabled)
         {
-            // ディスクキャッシュの鍵（キューブマップの内容ハッシュ）。
-            // パスまたはAssetのview世代が変わったときに読み直します。
-            // 同じパスの再importでも古い内容hashを使い回しません。
+            // パスまたはビューの世代が変わったら、環境キャッシュの内容ハッシュを取り直します。
             if (m_sky.cubemapPath != m_skyPrefilterKeyPath
                 || skyCubemapView != m_skyPrefilterKeySourceView)
             {
@@ -7045,6 +7742,7 @@ namespace LamaPon
                 m_skyPrefilterKey = 0;
                 try
                 {
+                    // 環境キャッシュ鍵用の元データ
                     const auto cubemapBytes =
                         m_graphics.Assets().ReadFileBytes(
                             m_sky.cubemapPath);
@@ -7056,8 +7754,8 @@ namespace LamaPon
                 {
                 }
             }
-            // GGX事前畳み込み（初回のみ生成、以降はキャッシュ）。
-            // 失敗時はソース直接サンプリングへフォールバック。
+            // 事前畳み込みを取得できない場合は元のキューブを直接参照します。
+            // 畳み込み済みの環境ビュー
             const auto prefiltered = m_graphics
                 .TryGetPrefilteredEnvironmentViews(
                     skyCubemapView,
@@ -7073,14 +7771,12 @@ namespace LamaPon
             }
         }
 
-        // ベイクした間接光（照度ボリューム）。焼いたときの形
-        // （m_bakedGiBakedShape）で表示します。設定の格子数を後から
-        // 変えても、次にベイクするまで見た目が壊れないように。
-        // ベイク中は自分の焼きかけを読まないよう無効にします
-        // （焼き込みは常に「GIなしの絵」から＝1バウンスで確定）。
+        // 間接光はベイク時の格子形状で参照し、ベイク中は自身を含めず一回の反射として計算します。
         EnsureBakedGlobalIlluminationTextures();
         {
+            // 今回の描画の間接光情報
             auto& bakedGi = lighting.bakedGlobalIllumination;
+            // ベイク済み間接光を参照するか
             const bool bakedGiActive =
                 m_bakedGiSettings.enabled
                 && !m_bakingReflectionProbes
@@ -7090,6 +7786,7 @@ namespace LamaPon
             bakedGi.enabled = bakedGiActive;
             if (bakedGiActive)
             {
+                // ベイク時の格子形状
                 const auto& shape = m_bakedGiBakedShape;
                 bakedGi.redCoefficients =
                     m_bakedGiViews[0];
@@ -7114,14 +7811,8 @@ namespace LamaPon
             }
         }
 
-        // クラスタライトカリング（Forward+）。ライトの全量を
-        // クラスタごとの番号表にして、Litシェーダーが自分のクラスタの
-        // 分だけ計算できるようにします。
-        //
-        // Forwardを選んでいるときは番号表を作らずに飛ばします。
-        // lighting.clusteredが空のままなので、Litシェーダーは
-        // 従来の16灯経路（品質設定のポイント／スポット上限が効く方）
-        // へ落ちます。Compute Shaderのディスパッチごと省けます。
+        // Forward+でのみクラスタ表を作り、利用できない場合は固定灯数の描画経路を使います。
+        // Forward+が選択されているか
         const bool clusteredRequested =
             m_graphics.Settings().renderingPath
                 == RenderingPath::ForwardPlus;
@@ -7129,10 +7820,10 @@ namespace LamaPon
             && !lighting.clusteredLights.empty()
             && !m_clusteredLightingUnavailable)
         {
-            // 影スロットをクラスタ側のライトへも書き込みます。
-            // クラスタ配列はポイント→スポットの順で、それぞれ
-            // 固定配列と同じ並びです（BuildLightingState参照）。
+            // クラスタのポイント→スポットの並びを固定配列と揃え、スポットの影スロットを対応付けます。
+            // クラスタ内のスポット通し添字
             std::ptrdiff_t spotOrdinal = 0;
+            // 影スロットを設定する光源
             for (auto& clusteredLight :
                 lighting.clusteredLights)
             {
@@ -7141,10 +7832,12 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // スポット影のスロット添字
                 for (std::size_t slot = 0;
                     slot < MaximumSpotShadows;
                     ++slot)
                 {
+                    // 対応を調べるスポット影情報
                     const auto& spotShadow =
                         lighting.spotShadows[slot];
                     if (spotShadow.enabled
@@ -7160,6 +7853,7 @@ namespace LamaPon
 
             try
             {
+                // 対象描画のGPU計測区間
                 GpuProfiler::SectionScope gpuSectionScope{
                     m_graphics.Gpu(),
                     "ライトカリング"
@@ -7175,10 +7869,10 @@ namespace LamaPon
                         ? target->Height()
                         : m_graphics.RenderHeight());
             }
+            // exception: クラスタ表作成時の失敗内容
             catch (const std::exception& exception)
             {
-                // シェーダーを使用できない環境では16灯までの描画経路へ
-                // 切り替え、同じ初期化を毎フレーム再試行しません。
+                // シェーダーを使用できない環境では16灯までの描画経路へ切り替え、同じ初期化を毎フレーム再試行しません。
                 m_clusteredLightingUnavailable = true;
                 lighting.clustered = {};
                 Logger::Instance().Warning(
@@ -7192,11 +7886,14 @@ namespace LamaPon
 
         m_graphics.SetLightingState(lighting);
         {
+            // 対象描画のGPU計測区間
             GpuProfiler::SectionScope gpuSectionScope{
                 m_graphics.Gpu(),
                 "スカイ"
             };
+            // スカイへ渡す太陽描画情報
             SkySunDescription skySun{};
+            // 方向光から太陽を取得できたか
             const bool hasSkySun =
                 m_sky.sunDriven
                 && ResolveSkySun(
@@ -7210,6 +7907,7 @@ namespace LamaPon
                 skyCubemapView,
                 hasSkySun ? &skySun : nullptr);
         }
+        // 3D描画のGPU計測区間
         GpuProfiler::SectionScope renderSectionScope{
             m_graphics.Gpu(),
             "3D描画"
@@ -7220,12 +7918,13 @@ namespace LamaPon
         m_visibilityStats.meshInstanceBatchCount = 0;
         m_visibilityStats.meshInstancedRendererCount = 0;
 
-        // 同一形状・同一マテリアルのMeshRendererをまとめて
-        // インスタンス描画します（2個以上のグループのみ）。
+        // 同一形状・同一マテリアルのMeshRendererをまとめてインスタンス描画します（2個以上のグループのみ）。
+        // 同じメッシュと材質の一括描画候補
         std::unordered_map<
             std::uint64_t,
             std::vector<MeshRendererComponent*>>
             instanceBatches;
+        // 描画対象の物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy()
@@ -7234,15 +7933,14 @@ namespace LamaPon
             {
                 continue;
             }
+            // 一括描画候補のメッシュ
             auto* meshRenderer =
                 gameObject->GetComponent<
                     MeshRendererComponent>();
+            // アルファ合成は距離順を保つため個別描画し、順序に依存しない加算合成はまとめられます。
             if (meshRenderer != nullptr
                 && meshRenderer->IsEnabled()
                 && meshRenderer->CanBeInstanced()
-                // アルファ合成は1つずつ並べ替えて描くので、
-                // まとめてしまうと順番を作れません。加算合成は
-                // 順番によらないのでまとめたままです。
                 && !meshRenderer->IsAlphaBlended3D())
             {
                 instanceBatches[
@@ -7250,16 +7948,17 @@ namespace LamaPon
                     .push_back(meshRenderer);
             }
         }
-        // インスタンス描画は1回の描画で複数のGameObjectを描くため、
-        // 代表のComponentで1つの描画イベントとして報告します。
+        // 代表コンポーネントで一描画イベントを登録し、デバッガーが描画を許可するか返します(representative: 代表コンポーネント, count: まとめる物体数)。
         const auto submitInstancedBatch =
             [this](const Component& representative, const std::size_t count)
             {
+                // 描画可否を決めるデバッガー
                 auto& frameDebugger = m_graphics.FrameDebug();
                 if (!frameDebugger.IsEnabled())
                 {
                     return true;
                 }
+                // 代表物体の描画イベント情報
                 FrameDebugDrawDescription description;
                 try
                 {
@@ -7272,6 +7971,7 @@ namespace LamaPon
                 }
                 description.instanceCount =
                     static_cast<std::uint32_t>(count);
+                // 描画イベントが属するパス
                 const auto pass =
                     m_graphics.DepthPass() == DepthPassKind::Shadow
                         ? FrameDebugPass::ShadowDepth
@@ -7286,6 +7986,7 @@ namespace LamaPon
                     representative.TypeName(),
                     std::move(description));
             };
+        // batchKey: 一括描画の識別鍵, batch: 同じ鍵を持つ描画候補
         for (auto& [batchKey, batch] : instanceBatches)
         {
             static_cast<void>(batchKey);
@@ -7303,10 +8004,12 @@ namespace LamaPon
                 batch.size();
         }
 
+        // 同じモデルと材質の一括描画候補
         std::unordered_map<
             std::uint64_t,
             std::vector<ModelRendererComponent*>>
             modelInstanceBatches;
+        // 描画対象の物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy()
@@ -7315,6 +8018,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 一括描画候補のモデル
             auto* modelRenderer =
                 gameObject->GetComponent<
                     ModelRendererComponent>();
@@ -7328,6 +8032,7 @@ namespace LamaPon
                     .push_back(modelRenderer);
             }
         }
+        // batchKey: 一括描画の識別鍵, batch: 同じ鍵を持つ描画候補
         for (auto& [batchKey, batch] : modelInstanceBatches)
         {
             static_cast<void>(batchKey);
@@ -7344,25 +8049,25 @@ namespace LamaPon
             }
         }
 
-        // アルファ合成のオブジェクトは、不透明を全部描き終えてから
-        // カメラの遠い順に描きます。手前から描くと、後ろのものが
-        // 先に置かれた深度に阻まれて消えるためです。
-        //
-        // 遮蔽用の事前パスを持つオブジェクトは、アルファ合成用の一覧へ
-        // 入れません。preRenderGroupはm_gameObjects上で連続する要素を1組として
-        // 扱うため、事前に抜き出すと組が崩れます。
+        // アルファ合成は不透明描画後に遠い順で描き、事前パスを持つ物体は連続する組を保ちます。
         struct AlphaBlendedDraw final
         {
+            // 透明描画の対象物体
             GameObject* object;
+            // カメラまでの距離の二乗
             float distanceSquared;
         };
+        // 後で距離順に描く透明物体
         std::vector<AlphaBlendedDraw> alphaBlendedDraws;
+        // 今回のビューのワールド位置
         DirectX::XMVECTOR cameraPosition =
             DirectX::XMMatrixInverse(nullptr, view).r[3];
 
+        // 元の描画一覧内の物体添字
         for (std::size_t objectIndex = 0;
             objectIndex < m_gameObjects.size();)
         {
+            // 描画対象の物体
             const auto& gameObject = m_gameObjects[objectIndex];
             if (visibility.renderHidden.contains(
                     gameObject->Id()))
@@ -7376,10 +8081,8 @@ namespace LamaPon
                 if (gameObject->HasAlphaBlended3DPass(
                         m_graphics))
                 {
-                    // 親子関係を含んだ位置が要るのでWorldMatrixの
-                    // 平行移動成分を使います（Transform::positionは
-                    // 親から見た位置なので、入れ子のオブジェクトで
-                    // 順番が狂います）。
+                    // 距離順には親変換と補間を含むワールド位置を使います。
+                    // カメラから物体へのベクトル
                     const auto offset =
                         DirectX::XMVectorSubtract(
                             gameObject->WorldMatrix().r[3],
@@ -7401,12 +8104,14 @@ namespace LamaPon
                 continue;
             }
 
-            // 連続する遮蔽対象を先にまとめて描画し、その後に通常描画します。
-            // 分割モデルが直前の自分自身を障害物として扱う自己遮蔽を防ぎます。
+            // 自己遮蔽を避けるため、連続する組の事前パスをすべて描いてから通常パスを描きます。
+            // 連続する事前パス対象の組
             std::vector<GameObject*> preRenderGroup;
+            // 事前パス組の末尾の次の添字
             std::size_t groupEnd = objectIndex;
             for (; groupEnd < m_gameObjects.size(); ++groupEnd)
             {
+                // 連続する事前パス組を調べる物体
                 auto* candidate = m_gameObjects[groupEnd].get();
                 if (visibility.renderHidden.contains(candidate->Id()))
                 {
@@ -7418,6 +8123,7 @@ namespace LamaPon
                 }
                 preRenderGroup.push_back(candidate);
             }
+            // 事前パス組の描画対象物体
             for (auto* candidate : preRenderGroup)
             {
                 candidate->RenderPre3D(
@@ -7425,6 +8131,7 @@ namespace LamaPon
                     view,
                     projection);
             }
+            // 事前パス組の描画対象物体
             for (auto* candidate : preRenderGroup)
             {
                 candidate->Render3D(
@@ -7435,8 +8142,7 @@ namespace LamaPon
             objectIndex = groupEnd;
         }
 
-        // 遠い順。同距離のときは元の並びを保つよう安定ソートに
-        // します（毎フレーム順番が入れ替わるとちらつきます）。
+        // 遠い順に比較し、等距離では登録順を保ちます(left: 左描画候補, right: 右描画候補)。
         std::stable_sort(
             alphaBlendedDraws.begin(),
             alphaBlendedDraws.end(),
@@ -7446,6 +8152,7 @@ namespace LamaPon
                 return left.distanceSquared
                     > right.distanceSquared;
             });
+        // 距離順に並べた透明描画候補
         for (const auto& draw : alphaBlendedDraws)
         {
             draw.object->Render3D(
@@ -7456,6 +8163,7 @@ namespace LamaPon
 
         if (renderDebug)
         {
+            // 描画対象の物体
             for (const auto& gameObject : m_gameObjects)
             {
                 gameObject->RenderDebug3D(m_graphics, view, projection);
@@ -7463,30 +8171,14 @@ namespace LamaPon
         }
         renderSectionScope.End();
 
-        // TAAへ渡す行列。ワールド復元にはずらし込みの逆行列を使い
-        // （深度と噛み合わせるため）、次フレームの参照用にはずらしを
-        // 含まない行列を渡します（履歴は積算された絵で、ずらしの
-        // 位置には対応していないため）。
-        //
-        // 前フレームの行列はRenderTargetが自分で覚えます。ここで
-        // Sceneが1つだけ持つと、エディターがシーンビューとゲーム
-        // ビューを同じフレームで描いたときに互いを踏み合います。
-        //
-        // 設定は毎フレーム渡します。混ぜられないフレーム（履歴が
-        // まだ無い最初の1枚）でも、履歴の作り直しは走らせたい
-        // ためです。
+        // TAAの履歴は描画先ごとに保持し、初回も設定を渡して履歴を作ります。
         if (temporalWanted && target != nullptr)
         {
+            // 今回のTAA再投影情報
             auto& frame = m_temporalFrame;
             frame.settings = m_temporalAntiAliasing;
-            // 再投影には「ずらし無し」の行列を使います。
-            //
-            // ずらし込みの逆行列で復元すると、履歴を読む位置が毎
-            // フレーム±0.5pxだけ動きます。内部は平均されるので
-            // 収束しますが、コントラストの高い輪郭では読む場所が
-            // 揺れるぶん出力も変動し、エッジがちらつきます。
-            // 深度側にサブピクセルのずれは残りますが、写像が毎
-            // フレーム同じであることの方がずっと重要です。
+            // 履歴の参照位置が揺れないよう、復元と再投影にはジッターを含まない行列を使います。
+            // 逆行列計算の行列式出力
             DirectX::XMVECTOR determinant{};
             DirectX::XMStoreFloat4x4(
                 &frame.inputs.inverseViewProjection,
@@ -7498,16 +8190,11 @@ namespace LamaPon
                 view * rawProjection);
         }
 
-        // モーションブラーへ渡す行列。TAAとまったく同じ2本（ずらし
-        // 無しの逆ビュー射影と、次フレーム用のビュー射影）です。
-        // 前フレームの行列はここでもRenderTargetが覚えます。
-        //
-        // TAAが切られていてもモーションブラーは使えるべきなので、
-        // TAAのフレーム情報には相乗りしません。ベイク中は作りません
-        // （プローブのキューブにブレを焼き付けないため）。
+        // モーションブラーはTAAの有効状態によらずジッターなしの行列を使い、ベイク中は無効にします。
         m_motionBlurFrame = {};
         if (target != nullptr && !m_bakingReflectionProbes)
         {
+            // 逆行列計算の行列式出力
             DirectX::XMVECTOR determinant{};
             DirectX::XMStoreFloat4x4(
                 &m_motionBlurFrame.inverseViewProjection,
@@ -7519,15 +8206,12 @@ namespace LamaPon
                 view * rawProjection);
         }
 
-        // 今のカラーをSSRの「前フレームのカラー」として控えます。
-        // 3Dを描き終えた直後・ポスト処理の前でなければいけません。
-        // ポスト処理の後だとBloomやトーンマップが乗った絵になり、
-        // 反射だけ色が違って見えます。逆に3Dパスより前に控えると、
-        // まだ読んでいない履歴を潰してしまいます。
+        // SSRの履歴は読み終えた後かつポスト処理前に保存し、効果適用済みの色が反射へ混ざるのを防ぎます。
         if (target != nullptr
             && m_screenSpaceReflection.enabled
             && !m_bakingReflectionProbes)
         {
+            // SSR履歴へ渡す今回のビュー射影
             DirectX::XMFLOAT4X4 storedViewProjection{};
             DirectX::XMStoreFloat4x4(
                 &storedViewProjection,
@@ -7555,18 +8239,27 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // 範囲内で最も近い反射プローブ
         ReflectionProbeComponent* nearest = nullptr;
+        // 最近傍プローブまでの距離二乗
         float nearestSquared =
             std::numeric_limits<float>::max();
+        // 距離と影響度を調べるプローブ
         for (auto* probe : m_frameReflectionProbes)
         {
+            // プローブのワールド変換
             const auto world =
                 probe->Owner().WorldMatrix();
+            // プローブのワールド中心
             DirectX::XMFLOAT3 center{};
             DirectX::XMStoreFloat3(&center, world.r[3]);
+            // 問い合わせ位置と中心のX差
             const float dx = position.x - center.x;
+            // 問い合わせ位置と中心のY差
             const float dy = position.y - center.y;
+            // 問い合わせ位置と中心のZ差
             const float dz = position.z - center.z;
+            // 問い合わせ位置からの距離二乗
             const float distanceSquared =
                 dx * dx + dy * dy + dz * dz;
             if (distanceSquared
@@ -7585,6 +8278,7 @@ namespace LamaPon
             const DirectX::XMFLOAT3& position)
             const noexcept
     {
+        // 選択した反射環境と混合情報
         ReflectionProbeEnvironment result{};
         // ベイク中は無効（プローブがプローブを映す循環を防ぐ）。
         if (m_bakingReflectionProbes)
@@ -7592,31 +8286,43 @@ namespace LamaPon
             return result;
         }
 
-        // 影響度の上位2個を拾います。同じ影響度なら近い方を優先
-        // します（範囲の内側が一律1になるブレンド距離0のとき、
-        // 従来の「一番近いもの」と同じ選び方になります）。
+        // 同じ影響度では距離が近いプローブを優先します。
+        // 影響度が最大のプローブ
         ReflectionProbeComponent* primary = nullptr;
+        // 影響度が二番目のプローブ
         ReflectionProbeComponent* secondary = nullptr;
+        // 主プローブの影響度
         float primaryInfluence = 0.0f;
+        // 副プローブの影響度
         float secondaryInfluence = 0.0f;
+        // 主プローブまでの距離二乗
         float primaryDistanceSquared =
             std::numeric_limits<float>::max();
+        // 副プローブまでの距離二乗
         float secondaryDistanceSquared =
             std::numeric_limits<float>::max();
+        // 距離と影響度を調べるプローブ
         for (auto* probe : m_frameReflectionProbes)
         {
+            // 問い合わせ位置への影響度
             const float influence =
                 probe->InfluenceAt(position);
             if (influence <= 0.0f)
             {
                 continue;
             }
+            // プローブのワールド中心
             const auto center = probe->WorldPosition();
+            // 問い合わせ位置と中心のX差
             const float dx = position.x - center.x;
+            // 問い合わせ位置と中心のY差
             const float dy = position.y - center.y;
+            // 問い合わせ位置と中心のZ差
             const float dz = position.z - center.z;
+            // 問い合わせ位置からの距離二乗
             const float distanceSquared =
                 dx * dx + dy * dy + dz * dz;
+            // 主候補より優先度が高いか
             const bool beatsPrimary =
                 influence > primaryInfluence
                 || (influence == primaryInfluence
@@ -7633,6 +8339,7 @@ namespace LamaPon
                 primaryDistanceSquared = distanceSquared;
                 continue;
             }
+            // 副候補より優先度が高いか
             const bool beatsSecondary =
                 influence > secondaryInfluence
                 || (influence == secondaryInfluence
@@ -7652,10 +8359,9 @@ namespace LamaPon
             return result;
         }
 
+        // 主プローブのベイク済み環境
         const auto& baked = primary->BakedEnvironment();
-        // まだ焼けていないプローブは無いものとして扱います。
-        // 空のキューブを「有効」として渡すと、Shaderがnullを読んで
-        // 反射が真っ黒になります（ベイク前の1フレームで出ます）。
+        // 有効な環境ビューがない場合は反射を無効にします。
         if (!baked.IsValid())
         {
             return result;
@@ -7668,9 +8374,8 @@ namespace LamaPon
         result.boxCenter = primary->WorldPosition();
         result.boxExtents = primary->BoxExtents();
 
-        // どちらもブレンド距離0なら混ぜません（境界で切り替わる
-        // 従来の挙動をそのまま残すため）。片方でも指定があれば、
-        // 影響度の比で混ぜます。
+        // 両方のブレンド距離が0の場合は混ぜず、どちらかが正なら影響度比で混ぜます。
+        // 二つの環境を混ぜる設定か
         const bool blendRequested =
             secondary != nullptr
             && (primary->BlendDistance() > 0.0f
@@ -7680,12 +8385,14 @@ namespace LamaPon
             return result;
         }
 
+        // 主と副の影響度の合計
         const float total =
             primaryInfluence + secondaryInfluence;
         if (total <= 0.0f)
         {
             return result;
         }
+        // 副プローブのベイク済み環境
         const auto& secondaryBaked =
             secondary->BakedEnvironment();
         if (!secondaryBaked.IsValid())
@@ -7704,8 +8411,7 @@ namespace LamaPon
             secondary->BoxExtents();
         result.secondaryWeight =
             secondaryInfluence / total;
-        // 強度も比率で混ぜます（片方だけ強いプローブがあるとき、
-        // 境界で明るさが飛ばないようにするため）。
+        // 境界で明るさが飛ばないよう、環境の強度も同じ比率で混ぜます。
         result.intensity =
             primary->Intensity()
                 * (1.0f - result.secondaryWeight)
@@ -7716,26 +8422,26 @@ namespace LamaPon
 
     namespace
     {
-        // プローブの環境キャッシュの鍵。「同じシーンの、同じ場所の、
-        // 同じ範囲のプローブ」なら前回のベイク結果を使ってよい、
-        // という意味の鍵です。シーンのパスを混ぜるのは、別のシーンの
-        // 同じ座標に置かれたプローブが他所の景色を映さないためです。
-        // 位置はfloatのビット列そのままで比べます（JSONから読み直した
-        // 値は毎回同じビットになるため）。
+        // シーンパスとプローブの位置・範囲・解像度から環境キャッシュ鍵を作ります(scenePath: 主シーンのパス, probe: 対象プローブ, faceSize: キューブ面の解像度)。
+        // シーン内容や光源の変更は鍵に含まれないため、変更時は明示的な再ベイクが必要です。
         [[nodiscard]] std::uint64_t ProbeEnvironmentCacheKey(
             const std::filesystem::path& scenePath,
             const ReflectionProbeComponent& probe,
             const std::uint32_t faceSize)
         {
+            // キャッシュ鍵に使うバイト列
             std::vector<std::uint8_t> buffer;
+            // キャッシュ鍵用のUTF8パス
             const auto pathUtf8 = PathToUtf8(scenePath);
             buffer.insert(
                 buffer.end(),
                 pathUtf8.begin(),
                 pathUtf8.end());
+            // 数値のビット列を鍵の素材へ追加します(value: 追加する数値)。
             const auto appendBits =
                 [&buffer](const auto value)
             {
+                // 数値の生バイト列の先頭
                 const auto* begin =
                     reinterpret_cast<const std::uint8_t*>(
                         &value);
@@ -7761,14 +8467,17 @@ namespace LamaPon
             return;
         }
 
-        // ベイク待ちのプローブを集めます（大半のフレームは空）。
+
+        // ベイク要求のある反射プローブ
         std::vector<ReflectionProbeComponent*> pending;
+        // プローブを調べる所有物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
             {
                 continue;
             }
+            // 処理する反射プローブ
             auto* probe = gameObject->GetComponent<
                 ReflectionProbeComponent>();
             if (probe == nullptr
@@ -7776,8 +8485,8 @@ namespace LamaPon
             {
                 continue;
             }
-            // Graphics Backend再初期化後は旧resource domainのhandleを
-            // bindせず、次の描画で新しい世代へベイクし直します。
+            // 描画資源の世代が変わったプローブは、古いビューを使わず再ベイクします。
+            // 現在のベイク済み環境
             const auto& baked = probe->BakedEnvironment();
             if (baked.IsValid()
                 && (!m_graphics.IsGraphicsViewCurrent(baked.specular)
@@ -7790,15 +8499,12 @@ namespace LamaPon
             {
                 continue;
             }
-            // シーン由来のプローブの最初のベイク要求は、前回の
-            // ベイク結果がディスクに残っていれば復元で済ませます
-            // （シーンを開くたびの6面描画＋畳み込みを飛ばす）。
-            // 復元できなければ普通にベイクします。実行中に作られた
-            // プローブは対象外です（過去の別の絵を映さないため）。
+            // シーンから読み込んだプローブのみ初回のキャッシュ復元を試し、復元できなければベイクします。
             if (probe->IsLoadedFromScene()
                 && !probe->RestoreAttempted())
             {
                 probe->MarkRestoreAttempted();
+                // ディスクから復元した環境
                 auto restored =
                     m_graphics.TryLoadCachedEnvironmentViews(
                         ProbeEnvironmentCacheKey(
@@ -7826,10 +8532,11 @@ namespace LamaPon
         {
             m_graphics.PrepareEnvironmentProbeBake();
         }
+        // exception: ベイク資源の準備失敗
         catch (const std::exception& exception)
         {
-            // リソースを作成できない場合は要求を解除し、毎フレームの
-            // 再試行を防ぎます。
+            // リソースを作成できない場合は要求を解除し、毎フレームの再試行を防ぎます。
+            // 処理する反射プローブ
             for (auto* probe : pending)
             {
                 probe->SetBakedEnvironment({});
@@ -7842,11 +8549,12 @@ namespace LamaPon
             return;
         }
 
-        // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
+
+        // 描画先の復元を保証する範囲
         GraphicsOutputStateScope outputStateScope{ m_graphics };
 
-        // D3D標準のキューブ面向き（左手系）。ポイント影と同じ
-        // 並びで、ワールド方向ベクトルでのサンプリングと一致します。
+        // 面の並びはD3Dキューブのサンプリング方向と揃えます。
+        // キューブ面ごとの視線方向
         static constexpr DirectX::XMFLOAT3
             FaceDirections[6]{
                 { 1.0f, 0.0f, 0.0f },
@@ -7856,6 +8564,7 @@ namespace LamaPon
                 { 0.0f, 0.0f, 1.0f },
                 { 0.0f, 0.0f, -1.0f }
             };
+        // キューブ面ごとの上方向
         static constexpr DirectX::XMFLOAT3 FaceUps[6]{
             { 0.0f, 1.0f, 0.0f },
             { 0.0f, 1.0f, 0.0f },
@@ -7865,26 +8574,29 @@ namespace LamaPon
             { 0.0f, 1.0f, 0.0f }
         };
 
+        // プローブベイクのGPU計測区間
         GpuProfiler::SectionScope gpuSectionScope{
             m_graphics.Gpu(),
             "プローブベイク"
         };
+        // 反射再帰を防ぐフラグの範囲
         BooleanStateScope bakingScope{
             m_bakingReflectionProbes,
             true
         };
         try
         {
+            // 処理する反射プローブ
             for (auto* probe : pending)
             {
+                // 対象プローブのワールド変換
                 const auto world =
                     probe->Owner().WorldMatrix();
+                // キューブを描くワールド位置
                 DirectX::XMFLOAT3 eye{};
                 DirectX::XMStoreFloat3(&eye, world.r[3]);
-                // エンジンの右手系のまま、鏡像なしで描画します。
-                // D3Dのキューブ面レイアウト（左手系）との差は、描画後の
-                // 左右反転コピーで補正します。射影行列を鏡像にすると巻き方向と
-                // 裏面カリングが反転し、閉じたメッシュの内側だけが描画されます。
+                // 右手系で描いて巻き方向を保ち、D3Dキューブの向きとの差は描画後の左右反転コピーで補正します。
+                // キューブ各面の射影行列
                 const auto faceProjection =
                     DirectX::XMMatrixPerspectiveFovRH(
                         DirectX::XM_PIDIV2,
@@ -7894,8 +8606,8 @@ namespace LamaPon
                             probe->Range() * 4.0f,
                             100.0f));
 
-                // シーン由来のプローブは結果をディスクへ残し、
-                // 次にシーンを開いたとき復元できるようにします。
+                // シーン由来のプローブのみベイク結果をディスクキャッシュへ残します。
+                // シーン由来のプローブの保存鍵
                 const auto cacheKey = probe->IsLoadedFromScene()
                     ? std::optional<std::uint64_t>{
                         ProbeEnvironmentCacheKey(
@@ -7906,12 +8618,14 @@ namespace LamaPon
                             *probe,
                             EnvironmentProbeBakeFaceSize) }
                     : std::nullopt;
+                // キューブの各面を同期描画した反射環境(face: D3Dキューブの面番号)。
                 auto baked = m_graphics
                     .BakeReflectionProbeViews(
                         [this,
                          &eye,
                          &faceProjection](const std::uint32_t face)
                         {
+                            // キューブ対象面のビュー行列
                             const auto faceView =
                                 DirectX::XMMatrixLookToRH(
                                     DirectX::XMLoadFloat3(&eye),
@@ -7919,8 +8633,7 @@ namespace LamaPon
                                         &FaceDirections[face]),
                                     DirectX::XMLoadFloat3(
                                         &FaceUps[face]));
-                            // ポスト処理なしのHDRリニアで焼きます
-                            // （IBLはトーンマップ前の値が正）。
+                            // ポスト処理なしのHDRリニアで焼きます（IBLはトーンマップ前の値が正）。
                             RenderWithMatrices(
                                 faceView,
                                 faceProjection,
@@ -7954,8 +8667,7 @@ namespace LamaPon
             std::max(m_bakedGiSettings.size.y, 0.1f);
         m_bakedGiSettings.size.z =
             std::max(m_bakedGiSettings.size.z, 0.1f);
-        // 各軸64まで・合計32768点まで。上限が無いと、桁を1つ
-        // 打ち間違えただけでベイクが何時間も終わらなくなります。
+        // 格子は各軸64点、合計32768点までに制限します。
         m_bakedGiSettings.resolutionX = std::clamp(
             m_bakedGiSettings.resolutionX,
             1u,
@@ -7974,7 +8686,8 @@ namespace LamaPon
             * m_bakedGiSettings.resolutionZ
             > BakedGlobalIlluminationMaximumProbeCount)
         {
-            // どれか一番大きい軸を半分にして上限へ収めます。
+
+            // 点数を半減する最長の格子軸
             auto* largest = &m_bakedGiSettings.resolutionX;
             if (m_bakedGiSettings.resolutionY > *largest)
             {
@@ -7992,9 +8705,9 @@ namespace LamaPon
 
     void Scene::RequestBakedGlobalIlluminationBake() noexcept
     {
-        // 焼く形は要求時の設定で固定します（ベイク中に設定を
-        // いじっても、進行中の焼き込みが崩れないように）。
+        // 進行中の設定変更が格子を崩さないよう、要求時の形状を固定します。
         m_bakedGiBakedShape = m_bakedGiSettings;
+        // 要求時の格子の総プローブ数
         const std::size_t total =
             static_cast<std::size_t>(
                 m_bakedGiBakedShape.resolutionX)
@@ -8023,9 +8736,8 @@ namespace LamaPon
         const BakedGlobalIlluminationSettings& shape,
         std::vector<std::uint16_t> payload) noexcept
     {
-        // シーン読み込みからの復元。サイズが形と合わないデータは
-        // 受け取りません（壊れたファイルより「GIなし」のほうが
-        // ましです）。
+        // 格子の点数に係数データの長さが一致しない場合は復元しません。
+        // 復元形状の検証済み点数
         const auto probeCount =
             BakedGlobalIlluminationProbeCount(
                 shape.resolutionX,
@@ -8053,6 +8765,7 @@ namespace LamaPon
         {
             return -1.0f;
         }
+        // 要求時の格子の総プローブ数
         const std::size_t total =
             static_cast<std::size_t>(
                 m_bakedGiBakedShape.resolutionX)
@@ -8074,7 +8787,9 @@ namespace LamaPon
         {
             return;
         }
+        // 要求時に固定した格子形状
         const auto& shape = m_bakedGiBakedShape;
+        // 要求時の格子の総プローブ数
         const std::size_t total =
             static_cast<std::size_t>(shape.resolutionX)
             * shape.resolutionY
@@ -8090,6 +8805,7 @@ namespace LamaPon
         {
             m_graphics.PrepareEnvironmentProbeBake();
         }
+        // exception: 間接光ベイクの失敗内容
         catch (const std::exception& exception)
         {
             m_bakedGiBaking = false;
@@ -8100,10 +8816,12 @@ namespace LamaPon
             return;
         }
 
-        // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
+
+        // 描画先を復元する範囲
         GraphicsOutputStateScope outputStateScope{ m_graphics };
 
-        // プローブベイクと同じ面の並び（D3D標準のキューブ面）。
+        // 面の並びをD3Dキューブと反射プローブのベイクに揃えます。
+        // キューブ面ごとの視線方向
         static constexpr DirectX::XMFLOAT3 FaceDirections[6]{
             { 1.0f, 0.0f, 0.0f },
             { -1.0f, 0.0f, 0.0f },
@@ -8112,6 +8830,7 @@ namespace LamaPon
             { 0.0f, 0.0f, 1.0f },
             { 0.0f, 0.0f, -1.0f }
         };
+        // キューブ面ごとの上方向
         static constexpr DirectX::XMFLOAT3 FaceUps[6]{
             { 0.0f, 1.0f, 0.0f },
             { 0.0f, 1.0f, 0.0f },
@@ -8121,24 +8840,24 @@ namespace LamaPon
             { 0.0f, 1.0f, 0.0f }
         };
 
-        // 1フレームに焼く点数。多いほど早く終わりますが、その
-        // フレームが長く止まります（8点×7描画＝56回のシーン描画が
-        // 上限の目安です）。
+
+        // 一回の処理でベイクする点数上限
         constexpr std::size_t ProbesPerFrame = 8;
 
+        // 間接光ベイクのGPU計測区間
         GpuProfiler::SectionScope gpuSectionScope{
             m_graphics.Gpu(),
             "GIベイク"
         };
-        // ベイク中の描画が自分（焼きかけのGI）やプローブを読まない
-        // よう、プローブベイクと同じ再入ガードを立てます。焼き込みは
-        // 常に「GIなしの絵」から作られる＝1バウンスで確定します。
+        // 自身の間接光と反射プローブを参照しない描画から、一回の反射として間接光をベイクします。
+        // 反射再帰を防ぐフラグの範囲
         BooleanStateScope bakingScope{
             m_bakingReflectionProbes,
             true
         };
         try
         {
+            // 格子全域を覆う遠平面距離
             const float farPlane = std::max(
                 std::sqrt(
                     shape.size.x * shape.size.x
@@ -8146,6 +8865,7 @@ namespace LamaPon
                     + shape.size.z * shape.size.z)
                     * 2.0f,
                 100.0f);
+            // キューブ各面の射影行列
             const auto faceProjection =
                 DirectX::XMMatrixPerspectiveFovRH(
                     DirectX::XM_PIDIV2,
@@ -8153,39 +8873,45 @@ namespace LamaPon
                     0.1f,
                     farPlane);
 
+            // 今回処理する末尾の次の添字
             const std::size_t endProbe = std::min(
                 m_bakedGiNextProbe + ProbesPerFrame,
                 total);
             for (; m_bakedGiNextProbe < endProbe;
                 ++m_bakedGiNextProbe)
             {
+                // ベイク中のプローブの通し添字
                 const std::size_t index =
                     m_bakedGiNextProbe;
+                // プローブの格子X座標
                 const std::uint32_t gridX =
                     static_cast<std::uint32_t>(
                         index % shape.resolutionX);
+                // プローブの格子Y座標
                 const std::uint32_t gridY =
                     static_cast<std::uint32_t>(
                         (index / shape.resolutionX)
                         % shape.resolutionY);
+                // プローブの格子Z座標
                 const std::uint32_t gridZ =
                     static_cast<std::uint32_t>(
                         index
                         / (static_cast<std::size_t>(
                             shape.resolutionX)
                             * shape.resolutionY));
+                // 格子端間を等分する比率を返し、一点だけの軸は中央に置きます(position: 軸上の格子添字, resolution: 軸の点数)。
                 const auto axisFraction =
                     [](const std::uint32_t position,
                        const std::uint32_t resolution)
                 {
-                    // プローブは箱の角から角まで等間隔。1点だけの
-                    // 軸は中央です。
+
                     return resolution <= 1
                         ? 0.5f
                         : static_cast<float>(position)
                             / static_cast<float>(
                                 resolution - 1);
                 };
+                // プローブのワールド位置
                 DirectX::XMFLOAT3 eye{
                     shape.center.x - shape.size.x * 0.5f
                         + shape.size.x
@@ -8204,6 +8930,7 @@ namespace LamaPon
                                 shape.resolutionZ)
                 };
 
+                // キューブの各面を同期描画して得る照度係数(face: D3Dキューブの面番号)。
                 const auto coefficients =
                     m_graphics.BakeIrradianceProbe(
                         [this,
@@ -8211,6 +8938,7 @@ namespace LamaPon
                          &faceProjection](
                             const std::uint32_t face)
                         {
+                            // 対象キューブ面のビュー行列
                             const auto faceView =
                                 DirectX::XMMatrixLookToRH(
                                     DirectX::XMLoadFloat3(
@@ -8219,8 +8947,7 @@ namespace LamaPon
                                         &FaceDirections[face]),
                                     DirectX::XMLoadFloat3(
                                         &FaceUps[face]));
-                            // プローブベイクと同じくポスト処理なしの
-                            // HDRリニアで焼きます。
+                            // プローブベイクと同じくポスト処理なしのHDRリニアで焼きます。
                             RenderWithMatrices(
                                 faceView,
                                 faceProjection,
@@ -8238,6 +8965,7 @@ namespace LamaPon
                     m_bakedGiWorking.data() + index * 12);
             }
         }
+        // exception: 間接光ベイクの失敗内容
         catch (const std::exception& exception)
         {
             m_bakedGiBaking = false;
@@ -8262,15 +8990,16 @@ namespace LamaPon
             return;
         }
 
-        // 全点完了。fp16へ詰めてテクスチャの作り直しを予約します。
-        // 並びは [R,G,B]×[z,y,x]×(x,y,z,定数項) で、そのまま
-        // Texture3Dの初期データになります。
+        // 係数を[R,G,B]×[z,y,x]×(x,y,z,定数項)のfp16へ並べ直し、Texture3Dの再作成を予約します。
         m_bakedGiBaking = false;
         m_bakedGiData.assign(total * 12, 0);
+        // fp16へ変換するプローブ添字
         for (std::size_t probe = 0; probe < total; ++probe)
         {
+            // 係数のRGBチャンネル添字
             for (int channel = 0; channel < 3; ++channel)
             {
+                // 係数の方向項と定数項の添字
                 for (int component = 0;
                     component < 4;
                     ++component)
@@ -8306,6 +9035,7 @@ namespace LamaPon
         }
         m_bakedGiTexturesDirty = false;
         m_bakedGiViews = {};
+        // 要求時に固定した格子形状
         const auto& shape = m_bakedGiBakedShape;
         m_bakedGiViews =
             m_graphics.UploadBakedGlobalIlluminationViews(
@@ -8317,22 +9047,25 @@ namespace LamaPon
 
     LightingState Scene::BuildLightingState() const noexcept
     {
+        // 各描画経路へ渡す照明情報
         LightingState lighting;
         lighting.ambientColor = m_ambientLightColor;
         lighting.ambientIntensity = m_ambientLightIntensity;
-        // 朝昼夜モードでは環境光も太陽の高度に追従させます。
-        // ここを固定のままにすると、夜になっても回り込みの光だけ
-        // 昼のまま残り、影の中が妙に明るい絵になります。
+        // 太陽連動モードでは環境光の色と強さも太陽高度に追従させます。
         if (m_sky.sunDriven)
         {
+            // 解決した太陽へのワールド方向
             DirectX::XMFLOAT3 directionToSun{};
+            // 解決した太陽の色
             DirectX::XMFLOAT3 sunColor{};
+            // 解決した太陽の角半径ラジアン
             float sunAngularRadius{};
             if (ResolveSkySun(
                     directionToSun,
                     sunColor,
                     sunAngularRadius))
             {
+                // 太陽高度に応じた空と環境光
                 const auto evaluated =
                     EvaluateSunDrivenSky(directionToSun);
                 lighting.ambientColor =
@@ -8359,6 +9092,7 @@ namespace LamaPon
             lighting.fog.enabled
             && m_graphics.Settings().fogEnabled;
 
+        // 有効な光源を調べる物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (!gameObject->IsActiveInHierarchy())
@@ -8366,6 +9100,7 @@ namespace LamaPon
                 continue;
             }
 
+            // 照明情報へ登録する光源
             const auto* light =
                 gameObject->GetComponent<DirectionalLightComponent>();
             if (light == nullptr || !light->IsEnabled())
@@ -8373,16 +9108,14 @@ namespace LamaPon
                 continue;
             }
 
+            // 固定配列の光源情報の書込先
             auto& destination =
                 lighting.directionalLights[
                     lighting.directionalLightCount++];
             destination.direction = light->WorldDirection();
             destination.color = light->Color();
             destination.intensity = light->Intensity();
-            // Inspectorは「直径・度」で見せ、シェーダーは「半径・
-            // ラジアン」で使います。度のほうが太陽の0.53度という
-            // 実際の値と直に結び付き、ラジアンの半径のほうが
-            // 円盤との角度比較にそのまま使えるためです。
+            // 太陽の角直径を度から半径のラジアンへ変換してシェーダーへ渡します。
             destination.angularRadius =
                 DirectX::XMConvertToRadians(
                     light->AngularDiameterDegrees() * 0.5f);
@@ -8394,21 +9127,14 @@ namespace LamaPon
             }
         }
 
-        // ポイント／スポットは2つの行き先へ集めます。
-        //
-        // (1)従来の固定配列（先着N灯）: 自作ShaderとDirectXTKへの
-        //   フォールバックが読む互換経路。上限は品質設定どおり。
-        // (2)clusteredLights: クラスタカリング（Forward+）の全量。
-        //   LamaPonLit.hlslはこちらを使うので、上限は256灯。
-        //
-        // (2)の並び順は(1)と同じ（ポイントが先、次にスポット、どちらも
-        // m_gameObjects順）。影のスロット対応が「(1)でのライト番号＝
-        // (2)での並び位置」で成立することに依存しています。ここの
-        // 順序を変えるときはRenderWithMatricesの影割り当ても直すこと。
+        // 局所光源を品質上限の固定配列とForward+用の全体配列へ、ポイント→スポットの物体順で集めます。
+        // 影の番号対応はこの順序に依存するため、変更時はRenderWithMatricesの影割り当ても更新します。
+        // 固定配列のポイント光源上限
         const std::size_t pointLimit =
             std::min<std::size_t>(
                 m_graphics.Settings().pointLightLimit,
                 MaximumPointLights);
+        // 有効な光源を調べる物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (lighting.clusteredLights.size()
@@ -8421,6 +9147,7 @@ namespace LamaPon
                 continue;
             }
 
+            // 照明情報へ登録する光源
             const auto* light =
                 gameObject->GetComponent<PointLightComponent>();
             if (light == nullptr || !light->IsEnabled())
@@ -8428,10 +9155,13 @@ namespace LamaPon
                 continue;
             }
 
+            // 光源のワールド位置
             const auto position = light->WorldPosition();
+            // 光源の色
             const auto color = light->Color();
             if (lighting.pointLightCount < pointLimit)
             {
+                // 固定配列の光源情報の書込先
                 auto& destination =
                     lighting.pointLights[
                         lighting.pointLightCount];
@@ -8443,6 +9173,7 @@ namespace LamaPon
                 ++lighting.pointLightCount;
             }
 
+            // 全体配列へ登録するGPU光源
             GpuLight clustered{};
             clustered.positionRange = {
                 position.x,
@@ -8456,10 +9187,7 @@ namespace LamaPon
                 color.z,
                 light->Intensity()
             };
-            // z=クラスタ経路で見たポイントライトの通し番号+1。
-            // 固定配列の番号と同じ並びなので、影の対象かどうかは
-            // シェーダー側がPointShadowParametersと照合できます
-            // （上限から溢れた分は照合が成立せず影なしになるだけ）。
+            // ポイント光源の通し番号+1を保存し、シェーダーで固定配列の影対象と照合します。
             clustered.extraParameters = {
                 0.0f,
                 0.0f,
@@ -8469,16 +9197,17 @@ namespace LamaPon
             };
             lighting.clusteredLights.push_back(clustered);
         }
-        // クラスタ配列の中で「ここまでがポイント」の境界。スポットの
-        // 影スロット対応（RenderWithMatrices）が使います。
+        // ポイント光源を登録し終えた時点のクラスタ内の光源数
         const std::size_t clusteredPointCount =
             lighting.clusteredLights.size();
         static_cast<void>(clusteredPointCount);
 
+        // 固定配列のスポット光源上限
         const std::size_t spotLimit =
             std::min<std::size_t>(
                 m_graphics.Settings().spotLightLimit,
                 MaximumSpotLights);
+        // 有効な光源を調べる物体
         for (const auto& gameObject : m_gameObjects)
         {
             if (lighting.clusteredLights.size()
@@ -8491,6 +9220,7 @@ namespace LamaPon
                 continue;
             }
 
+            // 照明情報へ登録する光源
             const auto* light =
                 gameObject->GetComponent<SpotLightComponent>();
             if (light == nullptr || !light->IsEnabled())
@@ -8498,15 +9228,21 @@ namespace LamaPon
                 continue;
             }
 
+            // 光源のワールド位置
             const auto position = light->WorldPosition();
+            // スポット光源のワールド方向
             const auto direction = light->WorldDirection();
+            // 光源の色
             const auto color = light->Color();
+            // スポット内側円錐角の余弦
             const float innerCosine =
                 std::cos(light->InnerConeAngle());
+            // スポット外側円錐角の余弦
             const float outerCosine =
                 std::cos(light->OuterConeAngle());
             if (lighting.spotLightCount < spotLimit)
             {
+                // 固定配列の光源情報の書込先
                 auto& destination =
                     lighting.spotLights[
                         lighting.spotLightCount++];
@@ -8520,6 +9256,7 @@ namespace LamaPon
                 destination.outerConeCosine = outerCosine;
             }
 
+            // 全体配列へ登録するGPU光源
             GpuLight clustered{};
             clustered.positionRange = {
                 position.x,
@@ -8539,8 +9276,7 @@ namespace LamaPon
                 direction.z,
                 innerCosine
             };
-            // 影スロットはRenderWithMatricesの影割り当て後に
-            // 書き込まれます（ここでは影なし）。
+            // 影スロットはRenderWithMatricesの影割り当て後に書き込まれます（ここでは影なし）。
             clustered.extraParameters = {
                 outerCosine,
                 1.0f,

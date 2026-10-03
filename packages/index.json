@@ -2,28 +2,6 @@
   "format": "LamaPonPackageIndex",
   "packages": [
     {
-      "name": "discord-presence-sdk",
-      "displayName": "Discord Rich Presence (Social SDK)",
-      "description": "LamaPonのDiscord Rich Presenceを、Discord公式のSocial SDKで実際に表示できるようにするアダプターです。ライセンス上SDK本体は同梱できないため、Discord Developer Portalから入手してsdkフォルダーへ置いてください。置き場所はREADMEに書いてあります。Discordログインとは独立していて、ログインしなくても使えます。",
-      "author": "LamaPon",
-      "version": "1.0.0",
-      "minimumEngineVersion": "0.1.0",
-      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/discord-presence-sdk-1.0.0.zip",
-      "sizeBytes": 12332,
-      "sha256": "da0df22092136131342ad911b81df724846e2fba9d846206e7c029a0e23b6cb7"
-    },
-    {
-      "name": "easing-tween",
-      "displayName": "Easing & Tween",
-      "description": "Linearを含む28種類のイージング関数と、位置・回転・拡大縮小を補間するTweenコンポーネントを提供します。Easing.hをインクルードすると、独自のスクリプトからも利用できます。",
-      "author": "LamaPon",
-      "version": "1.0.0",
-      "minimumEngineVersion": "0.1.0",
-      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/easing-tween-1.0.0.zip",
-      "sizeBytes": 9148,
-      "sha256": "f4a7f629b3dedbd791b5c0ec0c211292198a2059aed8a9ddbfad643d36d40873"
-    },
-    {
       "name": "directx12-renderer",
       "displayName": "DirectX 12 Renderer",
       "description": "LamaPonのDirectX 12 Experimental描画バックエンドです。インストールまたは更新後に再起動してください。",
@@ -37,17 +15,28 @@
       "sha256": "0781e5b1dfcab07063b15618864173c53ea4d7d3484516ce784af33d3d62a271"
     },
     {
-      "name": "scene-transition-showcase",
-      "displayName": "Scene Transition Showcase",
-      "description": "16種類の編集可能な遷移プリセットと、覆いを自前のシェーダーで描いてSceneを切り替えるScriptです。",
-      "author": "LamaPon Community",
-      "version": "0.3.0",
+      "name": "discord-presence-sdk",
+      "displayName": "Discord Rich Presence (Social SDK)",
+      "description": "LamaPonのDiscord Rich Presenceを、Discord公式のSocial SDKで実際に表示できるようにするアダプターです。ライセンス上SDK本体は同梱できないため、Discord Developer Portalから入手してsdkフォルダーへ置いてください。置き場所はREADMEに書いてあります。Discordログインとは独立していて、ログインしなくても使えます。",
+      "author": "LamaPon",
+      "version": "1.0.0",
       "minimumEngineVersion": "0.1.0",
       "activation": "Immediate",
       "target": "Project",
-      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.3.0.zip",
-      "sizeBytes": 169884,
-      "sha256": "2229004bbbbe6a9a5e23780e7e342866b3fd0ed3f618d357ba0f43d877d57ec3"
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/discord-presence-sdk-1.0.0.zip",
+      "sizeBytes": 12326,
+      "sha256": "0fec85c7864b0ede2d616e6e63b44f152a3fa729ece2f0511601fec51cc432c5"
+    },
+    {
+      "name": "easing-tween",
+      "displayName": "Easing & Tween",
+      "description": "Linearを含む28種類のイージング関数と、位置・回転・拡大縮小を補間するTweenコンポーネントを提供します。Easing.hをインクルードすると、独自のスクリプトからも利用できます。",
+      "author": "LamaPon",
+      "version": "1.0.0",
+      "minimumEngineVersion": "0.1.0",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/easing-tween-1.0.0.zip",
+      "sizeBytes": 9148,
+      "sha256": "f4a7f629b3dedbd791b5c0ec0c211292198a2059aed8a9ddbfad643d36d40873"
     },
     {
       "name": "network-session-workflow",
@@ -59,8 +48,8 @@
       "activation": "Immediate",
       "target": "Project",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/network-session-workflow-0.1.0.zip",
-      "sizeBytes": 13393,
-      "sha256": "a1f403752fbefde5d8e3b41271999d661cfe934121f522619c40f0467fcfe711"
+      "sizeBytes": 14337,
+      "sha256": "372a4a36d2501e059be77eb66b813bae0e1947d7014fdd5cf7b33077860f18b4"
     },
     {
       "name": "ollama-ai",
@@ -72,8 +61,21 @@
       "activation": "Immediate",
       "target": "Project",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/ollama-ai-0.1.0.zip",
-      "sizeBytes": 27967,
-      "sha256": "67fe75ab43ce989a1a856e7891dd71f7eb51138556725a98ef2f4368a602e3b3"
+      "sizeBytes": 28695,
+      "sha256": "a48cd2cd88f93077c13dfc25980b1b12a9bb6d78a070d42e1b0a89ab263fbf27"
+    },
+    {
+      "name": "scene-transition-showcase",
+      "displayName": "Scene Transition Showcase",
+      "description": "16種類の編集可能な遷移プリセットと、覆いを自前のシェーダーで描いてSceneを切り替えるScriptです。",
+      "author": "LamaPon Community",
+      "version": "0.3.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Immediate",
+      "target": "Project",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.3.0.zip",
+      "sizeBytes": 172235,
+      "sha256": "c7b58e8369e979fd8d6fae13b9a26849958e4321e335dff1ee6b9cccb6c0ad6d"
     }
   ],
   "version": 1

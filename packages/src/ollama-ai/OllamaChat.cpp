@@ -1,5 +1,5 @@
-// Windows専用です。通信に使うエンジンのHttpSend（WinHTTP）とスレッドが
-// Web書き出しにはないので、Windows以外では中身のないファイルになります。
+// Windows専用です。
+// 通信に使うエンジンのHttpSend（WinHTTP）とスレッドがWeb書き出しにはないので、Windows以外では中身のないファイルになります。
 #if defined(_WIN32)
 
 #include "LamaPon/LamaPon.h"
@@ -7,6 +7,7 @@
 
 namespace
 {
+    // Ollama.ChatのScript設定欄
     constexpr char OllamaChatSchema[] = R"schema({"fields":[
         {"name":"profile","displayName":"Ollama設定アセット","type":"asset","assetType":"data",
          "dataType":"Ollama.ModelProfile","default":"packages/ollama-ai/profiles/Default.asset.json"},
@@ -31,12 +32,15 @@ namespace
 class OllamaChat final : public LamaPon::Script
 {
 public:
+    // Profileを読み込み、送信・リセットイベントを購読します。
     void OnEnable() override
     {
         m_profile = {};
         m_profileError.clear();
         m_profileIsCloud = false;
+        // 設定元のData Asset
         const auto asset = LoadDataAsset(LamaPon::PathFromUtf8(m_profilePath));
+        // Profile検証の失敗理由
         std::string error;
         if (!LamaPonOllama::ReadProfile(*asset, m_profile, error))
         {
@@ -47,6 +51,7 @@ public:
         }
         if (!m_sendEvent.empty())
         {
+            // 送信文をScriptへ渡します(args: イベント本文)。
             m_sendSubscription = On(m_sendEvent, [this](const LamaPon::EventArgs& args)
             {
                 Send(args.text);
@@ -65,8 +70,10 @@ public:
         }
     }
 
+    // イベント購読と進行中の応答待ちを解除します。
     void OnDisable() override
     {
+        // このScriptが所有する購読ID
         for (auto* subscription : { &m_sendSubscription, &m_resetSubscription })
         {
             if (*subscription != 0)
@@ -84,8 +91,10 @@ public:
         m_pendingText.clear();
     }
 
+    // 入力欄からの送信を毎フレーム確認します。
     void Update(float) override
     {
+        // Scriptに設定された入力欄
         auto* input = InputField();
         if (input != nullptr && input->ConsumeSubmit())
         {
@@ -93,10 +102,13 @@ public:
         }
     }
 
+    // Script設定を読み込みます(text: JSON文字列)。
     void LoadProperties(const std::string_view text) override
     {
+        // Script設定のJSONオブジェクト
         const auto properties = nlohmann::json::parse(text, nullptr, false);
         if (!properties.is_object()) return;
+        // DataAsset形式に変換した値
         const auto values = LamaPon::DataAsset::FromJson(nlohmann::json{{"values", properties}}.dump());
         m_profilePath = values.GetText("profile", LamaPonOllama::DefaultProfilePath);
         m_inputObject = values.GetText("inputObject", "Ollama Input");
@@ -109,6 +121,7 @@ public:
         m_errorEvent = values.GetText("errorEvent", "Ollama.Error");
     }
 
+    // Script設定をJSON文字列へ保存します。
     [[nodiscard]] std::string SaveProperties() const override
     {
         return nlohmann::json{{"profile", m_profilePath}, {"inputObject", m_inputObject},
@@ -118,10 +131,12 @@ public:
     }
 
 private:
-    // textが空なら入力欄の文を送ります。同時に送るのは1件までです。
+    // 入力欄または引数の文を1件送ります(text: 送信文)。
     void Send(std::string text)
     {
+        // 送信元の入力欄
         auto* input = InputField();
+        // 入力欄から送信するか
         const bool fromInput = text.empty() && input != nullptr;
         if (fromInput)
         {
@@ -138,11 +153,11 @@ private:
                 : LamaPonOllama::ChatError::Failed, m_profileError);
             return;
         }
-        // 事前読み込みの間に届いた最初の1件は、読み込みが終わってから送ります。
+        // Preload中の最初の送信は完了まで保留します。
         const bool afterPreload = m_preloading && m_pendingText.empty();
         if (m_worker.Busy() && !afterPreload)
         {
-            // 待っている返答はそのまま届くので、表示と入力欄の文は変えません。
+            // 進行中の返答と入力内容を維持します。
             Report(LamaPonOllama::ChatError::Busy, {});
             return;
         }
@@ -159,10 +174,10 @@ private:
         StartChat(std::move(text));
     }
 
+    // Chatを別スレッドへ依頼します(text: 送信文)。
     void StartChat(std::string text)
     {
-        // 別スレッドへは設定・履歴・文のコピーを渡します。通信中にScriptが
-        // 破棄されても、スレッドがScriptのメンバーを読むことはありません。
+        // Job用に設定・履歴・文を複製します(stop: Worker停止要求)。
         const bool started = m_worker.Start(
             [profile = m_profile, history = m_history, text](const std::stop_token stop)
             {
@@ -174,11 +189,12 @@ private:
         }
     }
 
-    // 結果が届くまで毎フレーム確認し、届いたらゲームのスレッドで表示します。
+    // 返答を表示します(userText: 送信文, conversation: 送信時の世代)。
     LamaPon::Coroutine WaitForReply(std::string userText, const std::uint64_t conversation)
     {
         co_await LamaPon::WaitUntil{ [this] { return m_worker.Ready(); } };
         m_waiting = 0;
+        // Workerから受け取ったChat結果
         auto result = m_worker.Take();
         if (!result)
         {
@@ -189,8 +205,7 @@ private:
             Fail(result->error, result->detail);
             co_return;
         }
-        // 失敗した往復は履歴へ入れません。次の送信でモデルを混乱させないためです。
-        // 返答待ちの間にリセットされた往復も、新しい会話へは持ち込みません。
+        // 失敗・リセット済みの往復は会話履歴へ追加しません。
         if (conversation == m_conversation)
         {
             LamaPonOllama::AppendExchange(m_history, std::move(userText), result->reply,
@@ -199,16 +214,17 @@ private:
         Show(result->reply);
         if (!m_replyEvent.empty())
         {
+            // 返答イベントの本文
             LamaPon::EventArgs args;
             args.text = std::move(result->reply);
             Emit(m_replyEvent, std::move(args));
         }
     }
 
-    // 送信より先にモデルを読み込ませます。取り消したあとの通信がまだ
-    // 終わっていないときは始められないので、そのときは読み込みを省きます。
+    // Chat開始前にモデルを事前読込します。
     void StartPreload()
     {
+        // モデルを事前読込します(stop: Workerの停止要求)。
         const bool started = m_worker.Start([profile = m_profile](const std::stop_token stop)
         {
             return LamaPonOllama::Preload(profile, stop);
@@ -220,13 +236,14 @@ private:
         }
     }
 
-    // 読み込みの失敗は、遊ぶ人へは見せずConsoleにだけ出します。まだ何も
-    // 送っていないためです。同じ原因が続けば、送信のときに失敗として知らせます。
+    // Preload結果を処理し、待機中の送信を再開します。
+    // Preload失敗はConsoleへ記録し、送信時に失敗を通知します。
     LamaPon::Coroutine WaitForPreload()
     {
         co_await LamaPon::WaitUntil{ [this] { return m_worker.Ready(); } };
         m_waiting = 0;
         m_preloading = false;
+        // Workerから受け取ったPreload結果
         const auto result = m_worker.Take();
         if (result && !result->Succeeded())
         {
@@ -238,25 +255,27 @@ private:
         }
     }
 
-    // 返答待ちの間に呼ばれた場合、その返答は表示しますが、履歴へは入れません。
+    // 会話履歴を消し、応答を次の会話世代へ分けます。
     void ResetHistory()
     {
         m_history.clear();
         ++m_conversation;
     }
 
+    // 代替返答を表示します(error: 失敗分類, detail: 補足情報)。
     void Fail(const LamaPonOllama::ChatError error, const std::string& detail)
     {
         Show(m_profile.fallbackReply);
         Report(error, detail);
     }
 
-    // Consoleへ理由を出し、失敗イベントを発行します。表示は変えません。
+    // Consoleと失敗イベントへ通知します(error: 分類, detail: 補足)。表示文は保ちます。
     void Report(const LamaPonOllama::ChatError error, const std::string& detail)
     {
         Warn(Describe(error, detail));
         if (!m_errorEvent.empty())
         {
+            // 失敗イベントの分類と説明
             LamaPon::EventArgs args;
             args.number = static_cast<float>(error);
             args.text = LamaPonOllama::ErrorName(error);
@@ -264,6 +283,7 @@ private:
         }
     }
 
+    // 失敗分類と補足を表示文へ整形します(error: 失敗分類, detail: 補足)。
     [[nodiscard]] static std::string Describe(
         const LamaPonOllama::ChatError error, const std::string& detail)
     {
@@ -271,9 +291,12 @@ private:
             + (detail.empty() ? std::string{} : "（" + detail + "）");
     }
 
+    // 指定したText Rendererへ文章を表示します(text: 表示文)。
     void Show(const std::string& text)
     {
+        // 返答先のGameObject
         auto* object = m_outputObject.empty() ? nullptr : Find(m_outputObject);
+        // 返答先のText Renderer
         auto* renderer = object != nullptr
             ? object->GetComponent<LamaPon::TextRendererComponent>() : nullptr;
         if (renderer != nullptr && !text.empty())
@@ -282,38 +305,57 @@ private:
         }
     }
 
+    // 設定名に一致するUI Input Fieldを返します。
     [[nodiscard]] LamaPon::UIInputFieldComponent* InputField() const
     {
+        // 入力欄のGameObject
         auto* object = m_inputObject.empty() ? nullptr : Find(m_inputObject);
         return object != nullptr
             ? object->GetComponent<LamaPon::UIInputFieldComponent>() : nullptr;
     }
 
+    // Warningログを記録します(text: 警告文)。
     static void Warn(const std::string& text) { LamaPon::Logger::Instance().Warning(text); }
 
+    // 検証済みOllama設定
     LamaPonOllama::ModelProfile m_profile;
+    // Profile読込の失敗理由
     std::string m_profileError;
+    // 失敗したProfileがCloud名を指定したか
     bool m_profileIsCloud{};
+    // モデルへ渡す会話履歴
     std::vector<LamaPonOllama::ChatMessage> m_history;
-    // リセットのたびに増やします。送った時点と違っていたら、その往復は履歴へ入れません。
+    // 応答が属する会話を識別する世代番号
     std::uint64_t m_conversation{};
-    // 事前読み込みの間だけtrueです。その間に届いた送信を m_pendingText へ預かります。
+    // モデルを事前読込中か
     bool m_preloading{};
+    // Preload完了まで保留する送信文
     std::string m_pendingText;
+    // Sendイベントの購読ID
     std::uint64_t m_sendSubscription{};
+    // Resetイベントの購読ID
     std::uint64_t m_resetSubscription{};
+    // 実行中Coroutineの識別子
     std::uint64_t m_waiting{};
+    // 設定アセットのパス
     std::string m_profilePath{ LamaPonOllama::DefaultProfilePath };
+    // 入力欄のGameObject名
     std::string m_inputObject{ "Ollama Input" };
+    // 返答表示先のGameObject名
     std::string m_outputObject{ "Ollama Reply" };
+    // 応答待ちの表示文
     std::string m_waitingText{ "考え中..." };
+    // 有効化時にモデルを事前読込するか
     bool m_preload{ true };
+    // 送信イベント名
     std::string m_sendEvent{ "Ollama.Send" };
+    // 会話リセットイベント名
     std::string m_resetEvent{ "Ollama.Reset" };
+    // 返答イベント名
     std::string m_replyEvent{ "Ollama.Reply" };
+    // 失敗イベント名
     std::string m_errorEvent{ "Ollama.Error" };
-    // 最後に宣言し、最初に破棄します。デストラクターがスレッドの終了を待つので、
-    // Scriptが消えたあとにスレッドだけが残ることはありません。
+    // Script破棄前にWorker threadをjoinするため最後に宣言します。
     LamaPonOllama::ChatWorker m_worker;
 };
 

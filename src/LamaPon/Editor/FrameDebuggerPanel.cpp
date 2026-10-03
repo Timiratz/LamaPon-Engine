@@ -12,8 +12,10 @@ namespace LamaPon
 {
     namespace
     {
+        // 描画パスを画面へ表示する名前へ変換する(pass: イベントの描画パス)。
         [[nodiscard]] const char* PassLabel(const FrameDebugPass pass)
         {
+            // 描画パスの種別に対応する表示名を選ぶ。
             switch (pass)
             {
             case FrameDebugPass::ShadowDepth:
@@ -26,8 +28,10 @@ namespace LamaPon
             return "カラー";
         }
 
+        // 描画イベントの種類を画面へ表示する名前へ変換する(kind: イベントの描画種類)。
         [[nodiscard]] const char* KindLabel(const FrameDebugEventKind kind)
         {
+            // 描画イベントの種別に対応する表示名を選ぶ。
             switch (kind)
             {
             case FrameDebugEventKind::PreRender3D:
@@ -42,6 +46,7 @@ namespace LamaPon
             return "3D描画";
         }
 
+        // 対象名・component名・GPU区間・形状の部分一致で絞り込む(filter: 大小文字を区別する検索文字列, event: 判定する描画イベント)。
         [[nodiscard]] bool MatchesFilter(
             const std::string& filter,
             const FrameDebugEvent& event)
@@ -54,6 +59,7 @@ namespace LamaPon
                     != std::string::npos;
         }
 
+        // 詳細表へ名称と値を表示し空の値は不明とする(label: 詳細の項目名, value: 表示する値)。
         void DetailRow(const char* label, const std::string& value)
         {
             ImGui::TableNextRow();
@@ -78,6 +84,7 @@ namespace LamaPon
 
     void FrameDebuggerPanel::SynchronizeEnabled(const bool panelOpen)
     {
+        // 表示中かつ記録を有効にした状態か
         const bool enabled = panelOpen && m_active;
         if (m_debugger.IsEnabled() != enabled)
         {
@@ -114,6 +121,7 @@ namespace LamaPon
             return;
         }
 
+        // 記録の有効・無効の編集値
         bool active = m_active;
         if (ImGui::Checkbox("フレームデバッガーを有効にする", &active))
         {
@@ -141,7 +149,9 @@ namespace LamaPon
             return;
         }
 
+        // 直前のフレームの描画イベント
         const auto& events = m_debugger.LastFrameEvents();
+        // 記録された描画イベント数
         const auto count = static_cast<int>(events.size());
         if (m_selected && *m_selected >= events.size() && count > 0)
         {
@@ -150,6 +160,7 @@ namespace LamaPon
         }
 
         ImGui::BeginDisabled(count == 0);
+        // 1始まりで編集する描画上限位置
         int position = m_selected
             ? static_cast<int>(*m_selected) + 1
             : count;
@@ -190,6 +201,7 @@ namespace LamaPon
             "描画イベント %d 件。空・ポスト処理・エディター表示は常に描かれます。",
             count);
 
+        // 下部の詳細表示の高さ・ピクセル
         const float detailsHeight = 190.0f;
         if (ImGui::BeginChild(
                 "FrameDebuggerEvents",
@@ -210,6 +222,7 @@ namespace LamaPon
     void FrameDebuggerPanel::DrawEventList()
     {
         ImGui::SetNextItemWidth(220.0f);
+        // イベント検索用の入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -221,6 +234,7 @@ namespace LamaPon
             m_filter = filter;
         }
 
+        // 直前のフレームの描画イベント
         const auto& events = m_debugger.LastFrameEvents();
         if (events.empty())
         {
@@ -261,7 +275,9 @@ namespace LamaPon
             ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
+        // 直前に表示したGPU区間の借用
         const std::string* previousSection = nullptr;
+        // 一覧または詳細に表示する描画記録
         for (const auto& event : events)
         {
             if (!MatchesFilter(m_filter, event))
@@ -286,6 +302,7 @@ namespace LamaPon
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::PushID(static_cast<int>(event.index));
+            // 現在の描画上限として選択中か
             const bool selected =
                 m_selected && *m_selected == event.index;
             if (event.skipped)
@@ -294,6 +311,7 @@ namespace LamaPon
                     ImGuiCol_Text,
                     ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
             }
+            // イベント番号を表示する文字バッファ
             char label[16]{};
             std::snprintf(label, sizeof(label), "%u", event.index + 1);
             if (ImGui::Selectable(
@@ -327,6 +345,7 @@ namespace LamaPon
 
     void FrameDebuggerPanel::DrawEventDetails()
     {
+        // 直前のフレームの描画イベント
         const auto& events = m_debugger.LastFrameEvents();
         if (!m_selected || *m_selected >= events.size())
         {
@@ -334,6 +353,7 @@ namespace LamaPon
                 "イベントを選ぶと、描画内容とパイプラインの状態を表示します。");
             return;
         }
+        // 一覧または詳細に表示する描画記録
         const auto& event = events[*m_selected];
         ImGui::SeparatorText("選択中のイベント");
         if (ImGui::BeginTable(
@@ -363,6 +383,7 @@ namespace LamaPon
             DetailRow("形状", event.description.geometry);
             DetailRow("マテリアル", event.description.material);
             DetailRow("状態", event.description.state);
+            // 頂点・三角形・instance数の表示文
             std::string counts;
             if (event.description.vertexCount > 0)
             {

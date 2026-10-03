@@ -112,7 +112,4 @@
 #include "LamaPon/Scripting/GameModuleHost.h"
 #include "LamaPon/Scripting/Script.h"
 
-// Windowsのminwindef.hはfar、near、pascalを空のマクロとして
-// 定義します。SDK内の宣言を保つため、このヘッダーでは#undef farを
-// 行いません。変数名にはdistantやnearPlaneなど、マクロと衝突しない
-// 名前を使用してください。
+// Windowsのnear・far・pascalマクロは維持するため、公開コードの名前に使用しない。

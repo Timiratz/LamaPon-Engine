@@ -6,41 +6,42 @@
 
 namespace LamaPon
 {
-    // 1つのオブジェクトへ適用するリフレクションプローブの内容。
-    //
-    // プローブは最大2個まで混ぜます。境界をまたいだ瞬間に映り込みが
-    // 飛ぶのを防ぐためで、weightが0なら1個だけを使う従来の挙動です。
-    //
-    // MeshRendererとModelRendererが同じ手順を踏むので、組み立ては
-    // Scene側（ReflectionProbeEnvironmentAt）に置いています。
+    // 一つの物体へ適用する最大二個の反射プローブの環境情報。
+    // 主プローブが無効ならSky環境を使い、射影箱は半径の三軸が全て正のときだけ適用する。
     struct ReflectionProbeEnvironment final
     {
-        // 主のプローブ。specularがemptyなら「プローブ無し」で、
-        // シーン共通のSky IBLがそのまま使われます。
+        // 主プローブの鏡面ビュー
         GraphicsViewHandle specular;
+        // 主プローブの拡散ビュー
         GraphicsViewHandle irradiance;
+        // 主プローブの最大ミップ
         float specularMaximumMip{};
+        // 主プローブの照明強度
         float intensity{ 1.0f };
-        // ボックス射影の箱（中心＝プローブの位置）。半径が3軸すべて
-        // 正のときだけ有効になります。
+        // 主プローブの射影箱の中心
         DirectX::XMFLOAT3 boxCenter{};
+        // 主プローブの射影箱の半径
         DirectX::XMFLOAT3 boxExtents{};
 
-        // 混ぜる相手。secondarySpecularがemptyなら混ぜません。
+        // 副プローブの鏡面ビュー
         GraphicsViewHandle secondarySpecular;
+        // 副プローブの拡散ビュー
         GraphicsViewHandle secondaryIrradiance;
+        // 副プローブの最大ミップ
         float secondarySpecularMaximumMip{};
+        // 副プローブの射影箱の中心
         DirectX::XMFLOAT3 secondaryBoxCenter{};
+        // 副プローブの射影箱の半径
         DirectX::XMFLOAT3 secondaryBoxExtents{};
-        // 相手side の比率（0＝主だけ、0.5＝半々、1＝相手だけ）。
+        // 副プローブの比率、0は主のみ
         float secondaryWeight{};
 
-        // 2枚そろっていないと使えません。片方だけ渡すと、Shaderが
-        // 空のキューブを読んで拡散か反射が真っ黒になります。
+        // 主プローブの鏡面と拡散の両ビューが存在するか判定する。
         [[nodiscard]] bool IsValid() const noexcept
         {
             return specular && irradiance;
         }
+        // 副プローブの両ビューが存在し混合比率が正か判定する。
         [[nodiscard]] bool IsBlended() const noexcept
         {
             return secondarySpecular

@@ -15,9 +15,7 @@
 
 namespace
 {
-    // package.jsonの"native"で受け付けるキーです。ここに無いキーは
-    // 拒否します。綴り間違いを黙って無視しないためと、将来フラグを
-    // 通す抜け道を作らないためです。
+    // nativeで許可するキー
     constexpr std::array<std::string_view, 4> NativeKeys{
         "includeDirectories",
         "libraries",
@@ -25,7 +23,7 @@ namespace
         "defines"
     };
 
-    // 書き出したゲームで、パッケージのDLLに上書きさせない名前です。
+    // 上書きを禁止するDLL名
     constexpr std::array<std::wstring_view, 9> ReservedRuntimeNames{
         L"lamaponruntime.dll",
         L"lamapongamemodule.dll",
@@ -38,10 +36,8 @@ namespace
         L"lamaponeditor.dll"
     };
 
-    // assets/packages/ の下でパッケージとして扱うフォルダー名です。
-    // 規則の正本は PackageManager.h の IsPackageNameSafe ですが、
-    // ここで参照するとGame Moduleビルドの単体テストまでパッケージ
-    // ダウンロード一式を引き込むため、同じ規則を持ちます。
+
+    // PackageManagerの命名規則と一致するか判定します(name: 検証するフォルダー名)。
     [[nodiscard]] bool IsPackageFolderName(
         const std::string_view name) noexcept
     {
@@ -49,6 +45,7 @@ namespace
         {
             return false;
         }
+        // 各文字がパッケージ名の許可文字か判定します(character: 検証する文字)。
         return std::ranges::all_of(
             name,
             [](const char character) noexcept
@@ -60,8 +57,10 @@ namespace
             });
     }
 
+    // ASCIIの英大文字だけを小文字へ変換します(value: 変換する文字列の所有先)。
     [[nodiscard]] std::wstring ToLowerAscii(std::wstring value)
     {
+        // 検証または変換対象の文字
         for (auto& character : value)
         {
             if (character >= L'A' && character <= L'Z')
@@ -73,6 +72,7 @@ namespace
         return value;
     }
 
+    // 宣言項目を含むエラー表示用の名前を作ります(packageName: パッケージ名, field: nativeの項目名)。
     [[nodiscard]] std::string FieldLabel(
         const std::string_view packageName,
         const std::string_view field)
@@ -81,13 +81,14 @@ namespace
             + "/package.json の native." + std::string{ field };
     }
 
-    // パッケージフォルダーの外へ出ない相対パスだけを通します。
+    // 相対指定と字句正規化後の配下関係を検証します(packageDirectory: 基準の絶対パス, value: 宣言する相対パス, packageName: エラー表示用の名前, field: エラー表示用の項目名)。
     [[nodiscard]] std::filesystem::path ResolveRelativePath(
         const std::filesystem::path& packageDirectory,
         const std::string& value,
         const std::string_view packageName,
         const std::string_view field)
     {
+        // エラー表示用の宣言項目名
         const auto label = FieldLabel(packageName, field);
         if (value.empty()
             || value.size() > LamaPon::PackageNativePathMaxBytes)
@@ -107,6 +108,7 @@ namespace
                 + " には、パッケージフォルダーからの相対パスだけを"
                   "指定してください: " + value);
         }
+        // 検証または変換対象の文字
         for (const char character : value)
         {
             if (static_cast<unsigned char>(character) < 0x20u)
@@ -116,12 +118,14 @@ namespace
             }
         }
 
+        // 宣言された相対パス
         const auto relative = LamaPon::PathFromUtf8(value);
         if (relative.is_absolute() || relative.has_root_name())
         {
             throw std::invalid_argument(
                 label + " に絶対パスは指定できません: " + value);
         }
+        // 相対パスの構成要素
         for (const auto& part : relative)
         {
             if (part == L".." )
@@ -134,10 +138,14 @@ namespace
         }
 
         // 正規化してからもう一度、パッケージフォルダー配下かを見ます。
+        // 字句正規化した依存パス
         const auto resolved =
             (packageDirectory / relative).lexically_normal();
+        // 字句正規化した基準パス
         const auto root = packageDirectory.lexically_normal();
+        // 基準パスの比較用文字列
         const auto rootText = root.wstring();
+        // 依存パスの比較用文字列
         auto resolvedText = resolved.wstring();
         if (resolvedText.size() <= rootText.size()
             || resolvedText.compare(0, rootText.size(), rootText) != 0)
@@ -150,6 +158,7 @@ namespace
         return resolved;
     }
 
+    // ASCII大小文字を無視して拡張子を判定します(path: 判定対象のパス, expected: 小文字で指定する拡張子)。
     [[nodiscard]] bool HasExtension(
         const std::filesystem::path& path,
         const std::wstring_view expected)
@@ -158,7 +167,7 @@ namespace
             == expected;
     }
 
-    // NAME または NAME=VALUE だけを通します。
+    // 名前と値の許可文字・長さを検証します(value: NAMEまたはNAME=VALUE)。
     [[nodiscard]] bool IsSafeDefine(
         const std::string_view value) noexcept
     {
@@ -166,7 +175,9 @@ namespace
         {
             return false;
         }
+        // マクロ名と値の区切り位置
         const auto separator = value.find('=');
+        // マクロ名またはパッケージ名
         const auto name = value.substr(0, separator);
         if (name.empty() || name.size() > 64u)
         {
@@ -178,6 +189,7 @@ namespace
         {
             return false;
         }
+        // 検証または変換対象の文字
         for (const char character : name)
         {
             if (!(std::isalnum(
@@ -191,11 +203,13 @@ namespace
         {
             return true;
         }
+        // マクロに代入する値
         const auto assigned = value.substr(separator + 1u);
         if (assigned.size() > 64u)
         {
             return false;
         }
+        // マクロ値の全ての文字を検証します(character: 検証する文字)。
         return std::ranges::all_of(
             assigned,
             [](const char character) noexcept
@@ -209,11 +223,13 @@ namespace
             });
     }
 
+    // 指定された配列の型と件数を検証し、無ければnullptrを返します(native: native設定のJSON, key: 読み込む項目名, packageName: エラー表示用の名前)。
     [[nodiscard]] const nlohmann::json* FindArray(
         const nlohmann::json& native,
         const std::string_view key,
         const std::string_view packageName)
     {
+        // 対象配列のJSON検索結果
         const auto found = native.find(key);
         if (found == native.end())
         {
@@ -234,6 +250,7 @@ namespace
         return &*found;
     }
 
+    // 配列要素が文字列なら取り出し、それ以外はinvalid_argumentを投げます(element: 検証する配列要素, packageName: エラー表示用の名前, key: エラー表示用の項目名)。
     [[nodiscard]] std::string RequireString(
         const nlohmann::json& element,
         const std::string_view packageName,
@@ -248,9 +265,11 @@ namespace
         return element.get<std::string>();
     }
 
+    // ファイル全体を読み、開けなければ空を返します(path: 読込対象のパス)。
     [[nodiscard]] std::string ReadFileText(
         const std::filesystem::path& path)
     {
+        // manifestまたは既存設定の入力
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -261,13 +280,15 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
-    // CMakeの文字列リテラルとして安全に書き出します。
+    // 引用符・バックスラッシュ・ドル記号をエスケープして引用します(value: CMakeへ渡す文字列)。
     [[nodiscard]] std::string QuoteForCMake(
         const std::string& value)
     {
+        // CMake用の引用済み文字列
         std::string quoted;
         quoted.reserve(value.size() + 2u);
         quoted.push_back('"');
+        // 検証または変換対象の文字
         for (const char character : value)
         {
             if (character == '"' || character == '\\'
@@ -281,11 +302,13 @@ namespace
         return quoted;
     }
 
-    // 宣言したファイルのうち、置かれていないものを1行ずつ説明します。
+    // 存在しない宣言ファイルとディレクトリの説明を集めます(package: 実在を調べる依存)。
     [[nodiscard]] std::string DescribeMissingNativeFiles(
         const LamaPon::PackageNativeDependency& package)
     {
+        // 不足する依存ファイルの説明
         std::string missing;
+        // 不足ファイルの説明を追加します(path: 不足するファイルのパス)。
         const auto report =
             [&missing, &package](
                 const std::filesystem::path& path)
@@ -293,6 +316,7 @@ namespace
             missing += "\n  - " + package.packageName
                 + ": " + LamaPon::PathToUtf8(path);
         };
+        // 宣言された依存ファイルのパス
         for (const auto& path : package.includeDirectories)
         {
             if (!std::filesystem::is_directory(path))
@@ -300,6 +324,7 @@ namespace
                 report(path);
             }
         }
+        // 宣言された依存ファイルのパス
         for (const auto& path : package.libraries)
         {
             if (!std::filesystem::is_regular_file(path))
@@ -307,6 +332,7 @@ namespace
                 report(path);
             }
         }
+        // 宣言された依存ファイルのパス
         for (const auto& path : package.runtimeFiles)
         {
             if (!std::filesystem::is_regular_file(path))
@@ -320,20 +346,24 @@ namespace
 
 namespace LamaPon
 {
+    // nativeの型・件数・パス・拡張子・マクロを検証します。
     PackageNativeDependency ParsePackageNativeDependency(
         const std::string_view manifestJson,
         const std::filesystem::path& packageDirectory,
         const std::string_view packageName)
     {
+        // 検証済みのネイティブ依存
         PackageNativeDependency dependency;
         dependency.packageName = packageName;
         dependency.packageDirectory = packageDirectory;
 
+        // パッケージのmanifest文書
         nlohmann::json manifest;
         try
         {
             manifest = nlohmann::json::parse(manifestJson);
         }
+        // JSONの解析失敗を宣言エラーへ変換します(error: 解析の失敗理由)。
         catch (const std::exception& error)
         {
             throw std::invalid_argument(
@@ -347,6 +377,7 @@ namespace LamaPon
                 + "/package.json はJSONオブジェクトで"
                   "指定してください。");
         }
+        // native設定のJSON検索結果
         const auto native = manifest.find("native");
         if (native == manifest.end())
         {
@@ -359,6 +390,7 @@ namespace LamaPon
                 + "/package.json の native はJSONオブジェクトで"
                   "指定してください。");
         }
+        // 宣言項目またはフォルダー要素
         for (const auto& entry : native->items())
         {
             if (std::ranges::find(NativeKeys, entry.key())
@@ -373,11 +405,13 @@ namespace LamaPon
             }
         }
 
+        // 指定されたnative配列への借用参照
         if (const auto* const values = FindArray(
             *native,
             "includeDirectories",
             packageName))
         {
+            // 検証する宣言配列の要素
             for (const auto& element : *values)
             {
                 dependency.includeDirectories.push_back(
@@ -391,13 +425,16 @@ namespace LamaPon
                         "includeDirectories"));
             }
         }
+        // 指定されたnative配列への借用参照
         if (const auto* const values = FindArray(
             *native,
             "libraries",
             packageName))
         {
+            // 検証する宣言配列の要素
             for (const auto& element : *values)
             {
+                // 宣言された依存ファイルのパス
                 auto path = ResolveRelativePath(
                     packageDirectory,
                     RequireString(
@@ -416,13 +453,16 @@ namespace LamaPon
                 dependency.libraries.push_back(std::move(path));
             }
         }
+        // 指定されたnative配列への借用参照
         if (const auto* const values = FindArray(
             *native,
             "runtimeFiles",
             packageName))
         {
+            // 検証する宣言配列の要素
             for (const auto& element : *values)
             {
+                // 宣言された依存ファイルのパス
                 auto path = ResolveRelativePath(
                     packageDirectory,
                     RequireString(
@@ -442,13 +482,16 @@ namespace LamaPon
                     std::move(path));
             }
         }
+        // 指定されたnative配列への借用参照
         if (const auto* const values = FindArray(
             *native,
             "defines",
             packageName))
         {
+            // 検証する宣言配列の要素
             for (const auto& element : *values)
             {
+                // 検証または出力するマクロ
                 auto define = RequireString(
                     element,
                     packageName,
@@ -467,18 +510,24 @@ namespace LamaPon
         return dependency;
     }
 
+    // 依存を名前順に収集し、不正な宣言を個別のエラーとして残します。
     PackageNativeScan ScanPackageNativeDependencies(
         const std::filesystem::path& assetRoot)
     {
+        // 依存一覧と個別エラーの結果
         PackageNativeScan scan;
+        // パッケージを走査する基準パス
         const auto packagesRoot = assetRoot / L"packages";
+        // ファイル操作の失敗状態
         std::error_code error;
         if (!std::filesystem::is_directory(packagesRoot, error))
         {
             return scan;
         }
 
+        // 依存または検索ディレクトリ一覧
         std::vector<std::filesystem::path> directories;
+        // 宣言項目またはフォルダー要素
         for (const auto& entry :
             std::filesystem::directory_iterator(
                 packagesRoot,
@@ -492,13 +541,16 @@ namespace LamaPon
         // フォルダーの列挙順に依存しないよう、名前順で固定します。
         std::ranges::sort(directories);
 
+        // 対象のパッケージか検索先パス
         for (const auto& directory : directories)
         {
+            // マクロ名またはパッケージ名
             const auto name = PathToUtf8(directory.filename());
             if (!IsPackageFolderName(name))
             {
                 continue;
             }
+            // package.jsonのパス
             const auto manifestPath = directory / L"package.json";
             if (!std::filesystem::is_regular_file(
                 manifestPath,
@@ -508,6 +560,7 @@ namespace LamaPon
             }
             try
             {
+                // 検証済みのネイティブ依存
                 auto dependency = ParsePackageNativeDependency(
                     ReadFileText(manifestPath),
                     directory,
@@ -518,6 +571,7 @@ namespace LamaPon
                         std::move(dependency));
                 }
             }
+            // 個別の宣言エラーを収集して走査を続けます(failure: 読込の失敗理由)。
             catch (const std::exception& failure)
             {
                 scan.errors.emplace_back(failure.what());
@@ -526,10 +580,13 @@ namespace LamaPon
         return scan;
     }
 
+    // 宣言ファイルの不足をまとめて例外で通知します。
     void RequirePackageNativeFiles(
         const std::vector<PackageNativeDependency>& packages)
     {
+        // 不足する依存ファイルの説明
         std::string missing;
+        // 調査または出力する依存
         for (const auto& package : packages)
         {
             missing += DescribeMissingNativeFiles(package);
@@ -544,12 +601,16 @@ namespace LamaPon
         }
     }
 
+    // 宣言ファイルが揃った依存を使用対象へ移します。
     PackageNativeSelection SelectAvailablePackageNativeDependencies(
         std::vector<PackageNativeDependency> packages)
     {
+        // 使用可能な依存と不足説明
         PackageNativeSelection selection;
+        // 調査または出力する依存
         for (auto& package : packages)
         {
+            // 不足する依存ファイルの説明
             const auto missing = DescribeMissingNativeFiles(package);
             if (missing.empty())
             {
@@ -566,16 +627,23 @@ namespace LamaPon
         return selection;
     }
 
+    // 予約名と重複を拒否して同梱DLLの一覧を作ります。
     std::vector<PackageRuntimeFile> CollectPackageRuntimeFiles(
         const std::vector<PackageNativeDependency>& packages)
     {
+        // 同梱するDLLの一覧
         std::vector<PackageRuntimeFile> files;
+        // 重複検出用の登録済み名
         std::set<std::wstring> seen;
+        // 調査または出力する依存
         for (const auto& package : packages)
         {
+            // 宣言された依存ファイルのパス
             for (const auto& path : package.runtimeFiles)
             {
+                // 同梱先のDLL名
                 auto fileName = path.filename().wstring();
+                // DLL名のASCII小文字表現
                 const auto lowered = ToLowerAscii(fileName);
                 if (std::ranges::find(
                         ReservedRuntimeNames,
@@ -588,6 +656,7 @@ namespace LamaPon
                           "同梱しようとしています: "
                         + PathToUtf8(path.filename()));
                 }
+                // DLL名を重複検査します(iterator: 登録された名の位置, inserted: 新規登録できたか)。
                 if (const auto [iterator, inserted] =
                         seen.insert(lowered);
                     !inserted)
@@ -606,16 +675,22 @@ namespace LamaPon
         return files;
     }
 
+    // 実行時DLLの親フォルダーをパス文字列の重複なく集めます。
     std::vector<std::filesystem::path>
         PackageNativeSearchDirectories(
             const std::vector<PackageNativeDependency>& packages)
     {
+        // 依存または検索ディレクトリ一覧
         std::vector<std::filesystem::path> directories;
+        // 重複検出用の登録済み名
         std::set<std::wstring> seen;
+        // 調査または出力する依存
         for (const auto& package : packages)
         {
+            // 宣言された実行時DLLのパス
             for (const auto& file : package.runtimeFiles)
             {
+                // 対象のパッケージか検索先パス
                 auto directory = file.parent_path();
                 if (seen.insert(directory.wstring()).second)
                 {
@@ -626,10 +701,12 @@ namespace LamaPon
         return directories;
     }
 
+    // 必要な場合だけCMake設定を書き出します。
     void WritePackageNativeCMakeFile(
         const std::filesystem::path& outputPath,
         const std::vector<PackageNativeDependency>& packages)
     {
+        // 生成するCMake設定文書
         std::string text =
             "# このファイルはLamaPonが生成します。手で編集しても\n"
             "# 次のGame Moduleビルドで上書きされます。\n"
@@ -638,19 +715,23 @@ namespace LamaPon
             "set(LAMAPON_PACKAGE_INCLUDE_DIRECTORIES)\n"
             "set(LAMAPON_PACKAGE_LIBRARIES)\n"
             "set(LAMAPON_PACKAGE_DEFINES)\n";
+        // 調査または出力する依存
         for (const auto& package : packages)
         {
             text += "\n# " + package.packageName + "\n";
+            // 宣言された依存ファイルのパス
             for (const auto& path : package.includeDirectories)
             {
                 text += "list(APPEND LAMAPON_PACKAGE_INCLUDE_DIRECTORIES "
                     + QuoteForCMake(PathToUtf8(path)) + ")\n";
             }
+            // 宣言された依存ファイルのパス
             for (const auto& path : package.libraries)
             {
                 text += "list(APPEND LAMAPON_PACKAGE_LIBRARIES "
                     + QuoteForCMake(PathToUtf8(path)) + ")\n";
             }
+            // 検証または出力するマクロ
             for (const auto& define : package.defines)
             {
                 text += "list(APPEND LAMAPON_PACKAGE_DEFINES "
@@ -658,14 +739,14 @@ namespace LamaPon
             }
         }
 
-        // 内容が同じなら書き込みません。更新時刻だけが変わると
-        // CMakeが毎回configureをやり直します。
+        // 内容が同じ場合は更新時刻を保ち、CMakeの不要な再構成を避けます。
         if (ReadFileText(outputPath) == text)
         {
             return;
         }
         std::filesystem::create_directories(
             outputPath.parent_path());
+        // CMake設定の出力ストリーム
         std::ofstream output(
             outputPath,
             std::ios::binary | std::ios::trunc);
@@ -675,6 +756,7 @@ namespace LamaPon
                 "パッケージのビルド設定を書き出せませんでした: "
                 + PathToUtf8(outputPath));
         }
+        // 生成するCMake設定文書
         output << text;
         output.close();
         if (!output)

@@ -8,6 +8,7 @@
 
 namespace
 {
+    // 各軸を0〜1に制限します(value: 有限のXY比率)。
     DirectX::XMFLOAT2 ClampUnit(
         const DirectX::XMFLOAT2& value) noexcept
     {
@@ -81,6 +82,7 @@ namespace LamaPon
         const float viewportWidth,
         const float viewportHeight) const noexcept
     {
+        // 基準となる親の表示矩形
         UIRect parentRect{
             {},
             {
@@ -88,14 +90,18 @@ namespace LamaPon
                 std::max(viewportHeight, 1.0f)
             }
         };
+        // 配置に掛けるキャンバス倍率
         float scale = 1.0f;
+        // 最寄りの親矩形のスクロール
         const UIScrollViewComponent* scrollView{};
 
+        // 矩形・倍率を探す物体
         for (const GameObject* ancestor =
                 Owner().Parent();
             ancestor != nullptr;
             ancestor = ancestor->Parent())
         {
+            // 最寄りの親のUI矩形
             if (const auto* parentTransform =
                 ancestor->GetComponent<
                     UIRectTransformComponent>())
@@ -103,19 +109,20 @@ namespace LamaPon
                 parentRect = parentTransform->Resolve(
                     viewportWidth,
                     viewportHeight);
-                // 親がScrollViewならコンテンツを
-                // スクロール量だけずらします。
+                // 親がScrollViewならコンテンツをスクロール量だけずらします。
                 scrollView = ancestor->GetComponent<
                     UIScrollViewComponent>();
                 break;
             }
         }
 
+        // 矩形・倍率を探す物体
         for (const GameObject* ancestor =
                 &Owner();
             ancestor != nullptr;
             ancestor = ancestor->Parent())
         {
+            // 最寄りのキャンバス設定
             if (const auto* canvas =
                 ancestor->GetComponent<
                     UICanvasComponent>())
@@ -130,26 +137,31 @@ namespace LamaPon
         if (scrollView != nullptr
             && scrollView->IsEnabled())
         {
+            // ピクセル換算の上向き移動量
             const float shift =
                 scrollView->ScrollOffset() * scale;
             parentRect.minimum.y -= shift;
             parentRect.maximum.y -= shift;
         }
 
+        // 親の表示幅・高さピクセル
         const auto parentSize =
             parentRect.Size();
+        // アンカー始点のピクセル位置
         const DirectX::XMFLOAT2 anchorPixelsMin{
             parentRect.minimum.x
                 + parentSize.x * m_anchorMin.x,
             parentRect.minimum.y
                 + parentSize.y * m_anchorMin.y
         };
+        // アンカー終点のピクセル位置
         const DirectX::XMFLOAT2 anchorPixelsMax{
             parentRect.minimum.x
                 + parentSize.x * m_anchorMax.x,
             parentRect.minimum.y
                 + parentSize.y * m_anchorMax.y
         };
+        // 非負の表示幅・高さピクセル
         const DirectX::XMFLOAT2 size{
             std::max(
                 anchorPixelsMax.x
@@ -162,6 +174,7 @@ namespace LamaPon
                     + m_sizeDelta.y * scale,
                 0.0f)
         };
+        // 基準点の表示ピクセル位置
         const DirectX::XMFLOAT2 pivotPosition{
             anchorPixelsMin.x
                 + (anchorPixelsMax.x

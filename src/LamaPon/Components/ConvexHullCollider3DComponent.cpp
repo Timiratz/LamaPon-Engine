@@ -83,14 +83,19 @@ namespace LamaPon
             const noexcept
     {
         using namespace DirectX;
+        // 所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // 変換したワールド凸包の点群
         ConvexHull3D result;
         result.points.reserve(m_points.size());
+        // 変換するローカル点
         for (const auto& point : m_points)
         {
+            // 中心位置を足したローカル点
             const XMVECTOR local = XMVectorAdd(
                 XMLoadFloat3(&point),
                 XMLoadFloat3(&m_offset));
+            // 変換したワールドXYZ位置
             XMFLOAT3 worldPoint{};
             XMStoreFloat3(
                 &worldPoint,
@@ -113,20 +118,29 @@ namespace LamaPon
         DirectX::CXMMATRIX projection)
     {
         using namespace DirectX;
+        // ワールド凸包の点群
         const auto hull = WorldHull();
+        // 凸包のXYZ軸平行境界
         const auto bounds = BoundsOf(hull);
+        // 形状のデバッグRGBA色
         const XMVECTOR color = m_isTrigger
             ? XMVectorSet(1.0f, 0.75f, 0.1f, 1.0f)
             : XMVectorSet(0.5f, 0.65f, 1.0f, 1.0f);
 
+        // 境界と点の目印の線分端点列
         std::vector<XMFLOAT3> lines;
 
+        // 軸平行境界の8隅
         std::array<XMFLOAT3, 8> corners;
+        // 次に書き込む隅の番号
         std::size_t cornerIndex{};
+        // 境界のX端を選ぶ符号
         for (int x = -1; x <= 1; x += 2)
         {
+            // 境界のY端を選ぶ符号
             for (int y = -1; y <= 1; y += 2)
             {
+                // 境界のZ端を選ぶ符号
                 for (int z = -1; z <= 1; z += 2)
                 {
                     corners[cornerIndex++] = {
@@ -137,10 +151,13 @@ namespace LamaPon
                 }
             }
         }
+        // 辺を調べる隅の番号
         for (std::size_t corner{}; corner < corners.size(); ++corner)
         {
+            // 隣接隅を選ぶ軸ビット
             for (const std::size_t bit : { 1u, 2u, 4u })
             {
+                // 隣接する隅の番号
                 const std::size_t neighbor = corner ^ bit;
                 if (corner < neighbor)
                 {
@@ -150,7 +167,9 @@ namespace LamaPon
             }
         }
 
+        // 点の目印の半幅ワールド単位
         constexpr float markerSize = 0.06f;
+        // 目印を描画するワールド点
         for (const auto& point : hull.points)
         {
             lines.push_back(

@@ -13,25 +13,32 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // contentsをpathへ書き込むテスト資産を作ります。
+    // WriteFile(path: 出力先, contents: ファイル内容)
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // contentsを書き込むバイナリ出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // 資産fixtureの作成失敗を通知
         if (!output)
         {
             throw std::runtime_error(
@@ -41,20 +48,26 @@ namespace
     }
 }
 
+// asset GUID・参照解決・再マップ・破損ファイルを検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
+        // AssetDatabase用テストroot
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "asset-database";
         std::filesystem::remove_all(root);
 
+        // 元のtexture asset
         const auto originalAsset =
             root / "textures" / "sample.bin";
+        // rename後のtexture asset
         const auto renamedAsset =
             root / "textures" / "renamed.bin";
+        // texture参照を持つscene fixture
         const auto scenePath =
             root / "scenes" / "sample.scene.json";
         WriteFile(originalAsset, "asset");
@@ -62,8 +75,10 @@ int main()
             scenePath,
             R"({"format":"Test","texture":"textures/sample.bin"})");
 
+        // GUIDと依存を追跡するasset database
         LamaPon::AssetDatabase database;
         database.SetAssetRoot(root);
+        // 初回走査結果
         const auto first = database.Refresh(true);
         Require(
             first.assetCount == 2
@@ -71,9 +86,11 @@ int main()
                 && first.dependencyCount == 1,
             "Initial asset database scan failed.");
 
+        // GUIDが維持される元asset記録
         const auto* original =
             database.FindByPath(
                 "textures/sample.bin");
+        // textureへ依存するscene記録
         const auto* scene =
             database.FindByPath(
                 "scenes/sample.scene.json");
@@ -89,6 +106,7 @@ int main()
                 && original->dependents[0]
                     == scene->guid,
             "Dependency graph was not built.");
+        // rename前のtexture GUID
         const std::string originalGuid =
             original->guid;
 
@@ -100,8 +118,10 @@ int main()
                 originalAsset),
             LamaPon::AssetDatabase::MetaPathFor(
                 renamedAsset));
+        // move後のdatabase走査結果
         const auto afterMove =
             database.Refresh(true);
+        // 新pathで解決されるasset記録
         const auto* renamed =
             database.FindByPath(
                 "textures/renamed.bin");
@@ -114,6 +134,7 @@ int main()
                         "textures/renamed.bin"),
             "GUID was not preserved after moving the meta file.");
 
+        // asset GUIDで解決するAnimatorController
         auto controller =
             LamaPon::AnimatorController::FromJson(
                 nlohmann::json{
@@ -153,6 +174,7 @@ int main()
                     "textures/renamed.bin"),
             "Animator GUID reference did not resolve the moved asset.");
 
+        // GUID参照のテストmaterial path
         const auto materialPath =
             root / "test.material.json";
         WriteFile(
@@ -175,6 +197,7 @@ int main()
                 { "shader", "textures/sample.bin" },
                 { "shaderGuid", originalGuid }
             }.dump());
+        // databaseのGUID解決を適用したmaterial
         const auto material =
             LamaPon::LoadLitMaterialAsset(
                 materialPath,
@@ -190,6 +213,7 @@ int main()
                     "textures/renamed.bin"),
             "Material shader GUID reference did not resolve the moved asset.");
 
+        // scene JSONへ適用したasset path置換結果
         const auto remap =
             database.RemapJsonReferences(
                 "textures/sample.bin",
@@ -198,8 +222,10 @@ int main()
             remap.fileCount == 1
                 && remap.referenceCount == 1,
             "JSON asset reference was not remapped.");
+        // remap後scene JSONの読み込み先
         nlohmann::json remappedScene;
         {
+            // 更新されたscene fixture
             std::ifstream input(
                 scenePath,
                 std::ios::binary);
@@ -210,6 +236,7 @@ int main()
                     .get<std::string>()
                 == "textures/renamed.bin",
             "Remapped JSON contains the old path.");
+        // remap後のdependency graph記録
         const auto* remappedRecord =
             database.FindByPath(
                 "scenes/sample.scene.json");
@@ -221,6 +248,7 @@ int main()
                     == originalGuid,
             "Dependency graph was not refreshed after remap.");
 
+        // duplicate GUIDを割り当てる新asset
         const auto duplicateAsset =
             root / "textures" / "duplicate.bin";
         WriteFile(duplicateAsset, "duplicate");
@@ -229,12 +257,15 @@ int main()
                 renamedAsset),
             LamaPon::AssetDatabase::MetaPathFor(
                 duplicateAsset));
+        // duplicate GUID走査を拒否したか
         bool duplicateRejected = false;
+        // duplicate GUIDのdatabase更新を拒否
         try
         {
             static_cast<void>(
                 database.Refresh(true));
         }
+        // GUID重複エラーを拒否状態へ変換
         catch (const std::exception&)
         {
             duplicateRejected = true;
@@ -243,23 +274,28 @@ int main()
             duplicateRejected,
             "Duplicate asset GUID was accepted.");
 
-        // 1件の破損でプロジェクト全体を開けなくしないよう、壊れた
-        // ファイルだけを読み飛ばし、残りのアセットを走査します。
+        // 壊れたJSONを除外し、正常assetの走査を継続
         {
             std::filesystem::remove_all(root);
+            // 走査継続を確かめる正常asset
             const auto healthy = root / "textures" / "ok.bin";
+            // 不正JSONのscene fixture
             const auto brokenJson =
                 root / "scenes" / "broken.scene.json";
             WriteFile(healthy, "asset");
             WriteFile(brokenJson, "{ not valid json at all ");
 
+            // malformed fileを個別に除外するdatabase
             LamaPon::AssetDatabase resilient;
             resilient.SetAssetRoot(root);
+            // malformed JSON後も走査が完了したか
             bool refreshed = true;
+            // malformed JSONを含むrootを走査
             try
             {
                 static_cast<void>(resilient.Refresh(true));
             }
+            // malformed JSONだけを除外した走査結果
             catch (const std::exception&)
             {
                 refreshed = false;
@@ -273,16 +309,18 @@ int main()
                         / "ok.bin") != nullptr,
                 "Healthy assets must still be indexed.");
 
-            // 壊れた.metaも同じ。ただし作り直しはしません
-            // （GUIDが変わると他からの参照が黙って切れるため）。
+            // 壊れた.metaはGUID保護のため再生成せず当該assetを除外
             WriteFile(
                 LamaPon::AssetDatabase::MetaPathFor(healthy),
                 "{ not valid json either ");
+            // malformed meta後も走査が完了したか
             bool refreshedAgain = true;
+            // malformed metaを含むrootを走査
             try
             {
                 static_cast<void>(resilient.Refresh(true));
             }
+            // malformed metaだけを除外した走査結果
             catch (const std::exception&)
             {
                 refreshedAgain = false;
@@ -302,6 +340,7 @@ int main()
             << "Asset database tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

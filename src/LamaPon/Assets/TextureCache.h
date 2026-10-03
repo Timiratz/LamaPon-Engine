@@ -10,43 +10,34 @@
 
 namespace LamaPon::TextureCache
 {
-    // PNG/JPGをWICでデコードし、CPUでミップを生成してBC1/BC3へ
-    // 圧縮した結果を保存します。次回はPreparedTextureDataを直接読み、
-    // 同じ変換を省略します。キャッシュを読めない場合は再生成し、
-    // 保存できない場合はキャッシュを使わずに処理を続けます。
+    // 転送用の画素・ミップ列を保存し、キャッシュ未取得時は元画像から再生成する。
 
-    // デコード＋ミップ生成＋圧縮の結果ひとそろい。
+    // GPUへ転送する画素列と段階読み込み用の仮表示色。
     struct CachedTexture final
     {
+        // 転送用の形式と各ミップ画素
         TextureLoader::PreparedTextureData data;
-        // 段階アップロード中の仮表示に使う1x1の平均色（RGBA）。
-        // ミップ列の末尾がこれに当たりますが、キャッシュヒット時は
-        // ミップ列そのものを作らないので別に持ちます。
+        // 段階転送の仮表示用1×1RGBA
         std::array<std::uint8_t, 4> placeholderPixel{};
     };
 
-    // 置き場所。既定は shader-cache の隣
-    // （%LOCALAPPDATA%\LamaPon\texture-cache）。
+    // 差し替え先またはOS標準領域のキャッシュ保存先を返す。
     [[nodiscard]] std::filesystem::path CacheDirectory();
 
-    // 置き場所の差し替え。テストが本物のキャッシュを汚さない
-    // ためのもので、空を渡すと既定へ戻ります。
+    // 保存先を差し替え、空なら既定へ戻す(directory: 差し替える保存先)。
     void SetCacheDirectoryOverride(std::filesystem::path directory);
 
-    // 鍵はパスや更新日時ではなく、元ファイルの内容から作ります。
-    // 出力を変える圧縮設定と用途も鍵に含めます。
+    // 内容・圧縮指定・用途・形式版からキーを作る(sourceBytes: 元画像のバイト列, compress: 圧縮の指定, usage: 色または法線の用途)。
     [[nodiscard]] std::uint64_t ComputeKey(
         std::span<const std::uint8_t> sourceBytes,
         bool compress,
         TextureLoader::TextureUsage usage
             = TextureLoader::TextureUsage::Color) noexcept;
 
-    // キャッシュがない、破損している、または版が異なる場合は
-    // nulloptを返します。
+    // 形式とミップを検証し、未保存・不正な結果はnulloptにする(key: 内容由来のキー)。
     [[nodiscard]] std::optional<CachedTexture> TryLoad(
         std::uint64_t key);
 
-    // 保存に失敗した場合も例外を投げず、キャッシュなしで処理を
-    // 続けます。
+    // 小さい結果を除いて保存し、失敗は呼び出し側へ伝播しない(key: 内容由来のキー, value: 転送用画素と仮表示色)。
     void Store(std::uint64_t key, const CachedTexture& value) noexcept;
 }

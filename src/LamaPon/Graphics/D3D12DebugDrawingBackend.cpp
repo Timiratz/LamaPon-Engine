@@ -13,32 +13,42 @@
 
 namespace
 {
+    // 内蔵の線分描画HLSL
     constexpr char DebugLineShader[] = R"(
+// 線分用のビュー射影定数
 cbuffer DebugLineConstants : register(b0)
 {
+    // ビュー射影行列
     row_major float4x4 ViewProjection;
 };
 
 struct VertexInput
 {
+    // 頂点のワールド座標
     float3 position : POSITION;
+    // 頂点の色
     float4 color : COLOR;
 };
 
 struct PixelInput
 {
+    // 頂点のクリップ座標
     float4 position : SV_POSITION;
+    // 補間する頂点の色
     float4 color : COLOR;
 };
 
+// 線分頂点を画面へ射影する(input: 線分の頂点情報)。
 PixelInput DebugVertexMain(VertexInput input)
 {
+    // 射影済みの線分頂点
     PixelInput output;
     output.position = mul(float4(input.position, 1.0f), ViewProjection);
     output.color = input.color;
     return output;
 }
 
+// 補間した線分の色を返す(input: 射影済みの頂点情報)。
 float4 DebugPixelMain(PixelInput input) : SV_TARGET
 {
     return input.color;
@@ -47,14 +57,18 @@ float4 DebugPixelMain(PixelInput input) : SV_TARGET
 
     struct DebugVertex final
     {
+        // 線分端点のワールド座標
         DirectX::XMFLOAT3 position{};
+        // 線分端点の色
         DirectX::XMFLOAT4 color{};
     };
 
+    // 失敗したHRESULTを例外に変える(result: 実行結果, operation: 操作名)。
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
         {
+            // API操作の失敗説明
             std::ostringstream message;
             message << operation << " failed (HRESULT=0x" << std::hex
                 << std::uppercase << static_cast<unsigned long>(result)
@@ -63,12 +77,16 @@ float4 DebugPixelMain(PixelInput input) : SV_TARGET
         }
     }
 
+    // 内蔵の線分シェーダーをコンパイルする(entryPoint: 入口の名前, target: 対象のシェーダー段階)。
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(
         const char* entryPoint,
         const char* target)
     {
+        // 生成するシェーダーバイト列
         Microsoft::WRL::ComPtr<ID3DBlob> bytecode;
+        // シェーダー生成のエラー列
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
+        // シェーダーの生成結果
         const HRESULT result = D3DCompile(
             DebugLineShader,
             sizeof(DebugLineShader) - 1u,
@@ -83,6 +101,7 @@ float4 DebugPixelMain(PixelInput input) : SV_TARGET
             errors.GetAddressOf());
         if (FAILED(result))
         {
+            // API操作の失敗説明
             std::string message = std::string("D3DCompile(") + entryPoint
                 + ") failed";
             if (errors != nullptr && errors->GetBufferSize() != 0)
@@ -113,6 +132,7 @@ namespace LamaPon
         m_vertexShader = CompileShader("DebugVertexMain", "vs_5_0");
         m_pixelShader = CompileShader("DebugPixelMain", "ps_5_0");
 
+        // ビュー射影行列のルート定数
         D3D12_ROOT_PARAMETER matrix{};
         matrix.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         matrix.Constants.ShaderRegister = 0;
@@ -120,13 +140,16 @@ namespace LamaPon
         matrix.Constants.Num32BitValues = 16;
         matrix.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+        // 線分用のルート署名仕様
         D3D12_ROOT_SIGNATURE_DESC description{};
         description.NumParameters = 1;
         description.pParameters = &matrix;
         description.Flags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
+        // 直列化したルート署名
         Microsoft::WRL::ComPtr<ID3DBlob> serialized;
+        // シェーダー生成のエラー列
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
         ThrowIfFailed(
             D3D12SerializeRootSignature(
@@ -165,18 +188,25 @@ namespace LamaPon
             throw std::length_error("There are too many debug lines to draw.");
         }
 
+        // 線分の全頂点数
         const auto vertexCount = static_cast<UINT>(lines.size() * 2u);
+        // 線分の全頂点バイト数
         const auto vertexBytes = static_cast<UINT>(
             vertexCount * sizeof(DebugVertex));
+        // 描画を記録するコマンド一覧
         auto* const commands = m_backend->BeginFrameCommands();
+        // 線分頂点のフレーム転送領域
         const auto upload = m_backend->AllocateFrameUpload(vertexBytes, 16u);
+        // 転送先の頂点書込位置
         auto* vertices = reinterpret_cast<DebugVertex*>(upload.data);
+        // 転送する線分
         for (const auto& line : lines)
         {
             *vertices++ = { line.start, line.color };
             *vertices++ = { line.end, line.color };
         }
 
+        // ビュー射影行列
         DirectX::XMFLOAT4X4 viewProjection{};
         DirectX::XMStoreFloat4x4(
             &viewProjection,
@@ -184,6 +214,7 @@ namespace LamaPon
                 DirectX::XMLoadFloat4x4(&view),
                 DirectX::XMLoadFloat4x4(&projection)));
 
+        // 転送した頂点バッファー参照
         const D3D12_VERTEX_BUFFER_VIEW vertexBuffer{
             upload.gpuAddress,
             vertexBytes,
@@ -210,6 +241,7 @@ namespace LamaPon
         const DXGI_FORMAT colorFormat,
         const DXGI_FORMAT depthFormat)
     {
+        // 色形式のキャッシュ番号
         const std::size_t colorIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
             ? 0u
@@ -218,6 +250,7 @@ namespace LamaPon
                 : throw std::invalid_argument(
                     "The active DirectX 12 color target format is not "
                     "supported by debug drawing.");
+        // 深度形式のキャッシュ番号
         const std::size_t depthIndex = depthFormat == DXGI_FORMAT_UNKNOWN
             ? 0u
             : depthFormat == D3D12Backend::PrimaryDepthFormat
@@ -227,12 +260,14 @@ namespace LamaPon
                     : throw std::invalid_argument(
                         "The active DirectX 12 depth target format is not "
                         "supported by debug drawing.");
+        // 対象形式の描画パイプライン
         auto& pipeline = m_pipelineStates[colorIndex * 3u + depthIndex];
         if (pipeline != nullptr)
         {
             return pipeline.Get();
         }
 
+        // 位置と色の頂点入力仕様
         static const std::array<D3D12_INPUT_ELEMENT_DESC, 2> inputs{ {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
                 offsetof(DebugVertex, position),
@@ -242,6 +277,7 @@ namespace LamaPon
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         } };
 
+        // 深度を無視する線分描画仕様
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = m_rootSignature.Get();
         description.VS = {
@@ -252,6 +288,7 @@ namespace LamaPon
             m_pixelShader->GetBufferPointer(),
             m_pixelShader->GetBufferSize()
         };
+        // アルファ混合の描画先設定
         auto& target = description.BlendState.RenderTarget[0];
         target.BlendEnable = TRUE;
         target.SrcBlend = D3D12_BLEND_SRC_ALPHA;

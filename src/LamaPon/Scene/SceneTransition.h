@@ -11,199 +11,209 @@
 
 namespace LamaPon
 {
-    // シーン遷移は「旧シーンを覆う→覆ったまま新シーンへ切り替える→
-    // 開く」の順に進みます。エンジンは覆う絵を描かず、覆い具合
-    // （Coverage、0～1）だけを計算します。Coverageは
-    // SceneManager::TransitionCoverageで読めるので、ScriptやSpriteで
-    // 自分の演出を描きます（例はscene-transition-showcaseパッケージ）。
-    //
-    // Coverageの変化のしかた（イージング）です。
+    // 覆う・保持・開く順に進み、描画側はSceneManagerのCoverageを使って覆いを描きます。
     enum class SceneTransitionEasing : std::uint8_t
     {
+        // 一定速度の変化
         Linear,
+        // 二次曲線による加速
         EaseInQuad,
+        // 二次曲線による減速
         EaseOutQuad,
+        // 二次曲線による加減速
         EaseInOutQuad,
+        // 三次曲線による加速
         EaseInCubic,
+        // 三次曲線による減速
         EaseOutCubic,
+        // 三次曲線による加減速
         EaseInOutCubic,
+        // 正弦曲線による加減速
         EaseInOutSine,
+        // イージング種別の総数
         Count
     };
 
-    // シーン遷移1回分の時間と動作です。時間はtimeScaleの影響を
-    // 受けない実時間（秒）で、一時停止中のメニューからでも動きます。
-    // 既定値は3つの時間がすべて0の「すぐ切り替える遷移」で、従来どおり
-    // 読み込み中だけ読み込み画面を表示します。
+    // 時間はtimeScaleの影響を受けない秒数で、既定値では読み込み画面のみ表示して即時に切り替えます。
     struct SceneTransitionSettings final
     {
-        // Coverageの変化のしかたです。
+        // 覆い具合の変化曲線
         SceneTransitionEasing easing{
             SceneTransitionEasing::EaseInOutCubic
         };
-        // 旧シーンを覆い終えるまでの秒数。
+        // 旧シーンを覆う秒数
         float coverDuration{};
-        // 覆い終えてから開き始めるまでの最短秒数。読み込みが
-        // 速くても、ここで指定した時間は覆ったままにします。
+        // 全面を覆う最短保持秒数
         float holdDuration{};
-        // 新シーンを見せ終えるまでの秒数。
+        // 新シーンを開く秒数
         float revealDuration{};
-        // 覆っている間に読み込みが続いていれば、読み込み画面を
-        // フェードで重ねます。
+        // 読込中に標準画面を重ねる指定
         bool showLoadingScreen{ true };
-        // 遷移中はUI Buttonのクリックを受け付けません
-        // （二重に遷移を要求する事故を防ぎます）。
+        // 遷移中のUIクリック禁止
         bool blockInput{ true };
-        // 覆い具合に合わせてMusicバスの音量を下げ、開くときに戻します。
+        // 覆いに連動する音楽減衰指定
         bool fadeMusic{ true };
     };
 
-    // 非同期読み込み中に重ねる標準の読み込み画面です。遷移で
-    // 画面を覆っている間に読み込みが続いていれば、その上へ重ねます。
+    // 遷移で覆っている間に読み込みが続く場合に重ねる標準画面の設定です。
     struct SceneLoadingScreenSettings final
     {
+        // 読み込み画面の表示指定
         bool enabled{ true };
+        // 読み込み画面の主メッセージ
         std::string message{ "シーンを読み込んでいます..." };
+        // 画面背景のRGBA色
         DirectX::XMFLOAT4 backgroundColor{
             0.02f, 0.03f, 0.06f, 0.94f
         };
+        // 進捗バー背景のRGBA色
         DirectX::XMFLOAT4 barBackgroundColor{
             0.12f, 0.16f, 0.24f, 1.0f
         };
+        // 進捗バー進捗部分のRGBA色
         DirectX::XMFLOAT4 barFillColor{
             0.12f, 0.48f, 0.9f, 1.0f
         };
+        // 文字のRGBA色
         DirectX::XMFLOAT4 textColor{
             0.92f, 0.96f, 1.0f, 1.0f
         };
+        // 進捗率の数値表示指定
         bool showPercentage{ true };
-        // ここから下は後から追加した項目で、既定値では従来と同じ
-        // 見た目になります。
-        // メッセージの下に小さく表示する補足（操作のヒントなど）。
+        // 主メッセージ下の補足文
         std::string hint;
-        // 背景へ画面全体を覆うように表示する画像（assets相対）。
-        // 空なら背景色だけを塗ります。
+        // 背景画像のassets相対パス
         std::filesystem::path backgroundTexture;
-        // 読み込み中を示す回転インジケーターを表示します。
+        // 回転インジケーター表示指定
         bool showSpinner{};
-        // 進捗バーを実際の進捗へ滑らかに追いつかせます。
+        // 表示進捗を滑らかに追従する指定
         bool smoothProgress{ true };
-        // 時間のある遷移と組み合わせたときの表示・非表示のフェード秒数。
+        // 標準画面をフェードする秒数
         float fadeDuration{ 0.2f };
     };
 
+    // 読み込み画面の設定をJSONへ変換します(settings: 保存する設定)。
     [[nodiscard]] nlohmann::json SceneLoadingScreenToJson(
         const SceneLoadingScreenSettings& settings);
+    // 既知の設定を読み込み色とフェード時間を制限します(value: 設定JSON, fallback: 欠落や型違いの代替値)。
+    // オブジェクト以外のJSONではfallbackをそのまま返します。
     [[nodiscard]] SceneLoadingScreenSettings SceneLoadingScreenFromJson(
         const nlohmann::json& value,
         const SceneLoadingScreenSettings& fallback = {});
 
-    // 覆う時間と開く時間の両方にdurationSecondsを使う設定を作ります。
-    // 残りの項目は既定値のままです。
+    // 同じ秒数で覆いと開きを行う設定を作ります(durationSeconds: 覆いと開きの秒数, holdSeconds: 最短保持秒数, easing: 変化曲線)。
     [[nodiscard]] SceneTransitionSettings MakeSceneTransition(
         float durationSeconds,
         float holdSeconds = 0.1f,
         SceneTransitionEasing easing =
             SceneTransitionEasing::EaseInOutCubic);
 
-    // 3つの時間がすべて0（覆わずにすぐ切り替える）ならtrueです。
+    // 三つの時間がいずれも正数でない場合にtrueを返します(settings: 判定する設定)。
     [[nodiscard]] bool IsInstantSceneTransition(
         const SceneTransitionSettings& settings) noexcept;
 
-    // 範囲外の値を安全な範囲へ丸めた設定を返します。
+    // 時間を0〜30秒に制限し非有限値と不正な曲線を既定値へ戻します(settings: 補正する設定)。
     [[nodiscard]] SceneTransitionSettings SanitizeSceneTransition(
         const SceneTransitionSettings& settings);
 
-    // tは0～1。範囲外はクランプします。
+    // 曲線を適用した進捗を返します(easing: 変化曲線, t: 0〜1に制限し非有限値は0とする進捗)。
     [[nodiscard]] float EvaluateSceneTransitionEasing(
         SceneTransitionEasing easing,
         float t) noexcept;
 
+    // 曲線の保存名を返し、不明な値ならlinearを返します(easing: 変化曲線)。
     [[nodiscard]] std::string_view SceneTransitionEasingName(
         SceneTransitionEasing easing) noexcept;
+    // 保存名に対応する曲線を返し、未知の名前ならEaseInOutCubicを返します(name: 曲線の保存名)。
     [[nodiscard]] SceneTransitionEasing SceneTransitionEasingFromName(
         std::string_view name) noexcept;
 
-    // データアセットなどへ保存する形式です。読み込みでは無い項目に
-    // fallbackの値を使い、未知の名前はfallbackへ戻します。知らない
-    // キー（演出の見た目など）は無視するため、自分の演出の設定と
-    // 同じJSONへまとめて保存できます。
+    // 補正した遷移設定をJSONへ変換します(settings: 保存する設定)。
     [[nodiscard]] nlohmann::json SceneTransitionToJson(
         const SceneTransitionSettings& settings);
+    // 既知の遷移設定を読み込み補正します(value: 設定JSON, fallback: 欠落・型違い・未知の曲線名の代替値)。
     [[nodiscard]] SceneTransitionSettings SceneTransitionFromJson(
         const nlohmann::json& value,
         const SceneTransitionSettings& fallback = {});
 
     enum class SceneTransitionPhase : std::uint8_t
     {
+        // 覆いのない待機状態
         Idle,
-        // 旧シーンを覆っている途中です。
+        // 旧シーンを覆う段階
         Covering,
-        // 画面を覆い終え、読み込みの完了と最短保持時間を待っています。
+        // 読み込みと最短保持時間の待機
         Covered,
-        // 新シーンを見せている途中です。
+        // 新シーンを開く段階
         Revealing
     };
 
     // Advanceの1回で起きた出来事です。
     struct SceneTransitionTimelineEvents final
     {
+        // 全面を覆い終えた通知
         bool covered{};
+        // 新シーンを開き始めた通知
         bool revealStarted{};
+        // 覆いを解除し終えた通知
         bool finished{};
     };
 
-    // 覆う→保持→開くの進行だけを持つ、描画やシーンに依存しない
-    // 時間軸です。SceneManagerが毎フレーム実時間で進めます。
+    // SceneManagerが実時間で進める、描画やシーンから独立した遷移の時間軸です。
     class SceneTransitionTimeline final
     {
     public:
-        // 開いている途中から始めた場合は、今の覆い具合から
-        // 続けて覆い直します（見た目が飛びません）。
+        // 現在の覆い具合を維持して遷移を開始します(settings: 時間と変化曲線の設定)。
         void Start(const SceneTransitionSettings& settings);
-        // readyToRevealは「新シーンの有効化が済み、開いてよい」状態です。
-        // 1回の呼び出しで進む段階は1つだけなので、覆い終えたフレームに
-        // 呼び出し側がシーンを有効化してから開き始められます。
+        // 一段階まで時間軸を進め発生したイベントを返します(deltaSeconds: 非有限・負値を0とする実時間秒数, readyToReveal: 新シーンを開ける状態)。
+        // 保持時間に加えて、即時遷移は準備完了1回、時間のある遷移は連続2回の呼び出しを待ちます。
         SceneTransitionTimelineEvents Advance(
             float deltaSeconds,
             bool readyToReveal) noexcept;
-        // 覆っている途中でも、今の覆い具合からすぐ開き始めます
-        // （読み込みのキャンセルや失敗時に使います）。
+        // 現在の覆い具合を維持して即座に開き始めます。
         void Reveal() noexcept;
-        // 演出を打ち切って何も覆っていない状態へ戻します。
+        // 遷移を打ち切り、覆いのない待機状態へ戻します。
         void Reset() noexcept;
 
+        // 現在の遷移段階を返します。
         [[nodiscard]] SceneTransitionPhase Phase() const noexcept
         {
             return m_phase;
         }
+        // 適用中の補正済み遷移設定への参照を返します。
         [[nodiscard]] const SceneTransitionSettings&
             Settings() const noexcept
         {
             return m_settings;
         }
+        // 待機状態以外の遷移段階か返します。
         [[nodiscard]] bool IsActive() const noexcept
         {
             return m_phase != SceneTransitionPhase::Idle;
         }
+        // 覆い終えて保持している段階か返します。
         [[nodiscard]] bool IsFullyCovered() const noexcept
         {
             return m_phase == SceneTransitionPhase::Covered;
         }
-        // 0で何も覆っていない、1で全面を覆っている状態です。
-        // イージング適用後の値です。
+        // 曲線を適用した覆い具合を返し、0は覆いなし、1は全面の覆いを表します。
         [[nodiscard]] float Coverage() const noexcept;
-        // 今の段階の進み具合（イージング前、0～1）。
+        // 現在の段階の曲線適用前の進捗率を返します。
         [[nodiscard]] float PhaseProgress() const noexcept
         {
             return m_progress;
         }
 
     private:
+        // 適用中の遷移設定
         SceneTransitionSettings m_settings;
+        // 現在の遷移段階
         SceneTransitionPhase m_phase{ SceneTransitionPhase::Idle };
+        // 現在の段階の進捗率
         float m_progress{};
+        // 全面を覆ってからの経過秒数
         float m_heldSeconds{};
+        // 連続して準備完了した呼び出し数
         std::uint32_t m_readyFrames{};
     };
 }

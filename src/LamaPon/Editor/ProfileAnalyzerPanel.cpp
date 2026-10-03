@@ -16,9 +16,10 @@ namespace LamaPon
 {
     namespace
     {
+        // 比較する2つの記録の表示名
         constexpr std::array<const char*, 2> SlotNames{ "A", "B" };
 
-        // 表の列IDです。並べ替えの指定から列を特定するために使います。
+        // 並べ替えの対象列を識別するID。
         enum MarkerColumn : ImGuiID
         {
             ColumnName,
@@ -34,6 +35,7 @@ namespace LamaPon
             ColumnCallsB
         };
 
+        // 記録の有効範囲内で両端を含む解析対象を借用する(dataset: 範囲指定を持つ計測記録)。
         [[nodiscard]] std::span<const ProfileFrame> RangeOf(
             const ProfileAnalyzerPanel::Dataset& dataset)
         {
@@ -41,8 +43,10 @@ namespace LamaPon
             {
                 return {};
             }
+            // 解析範囲の0始まり開始位置
             const auto first = static_cast<std::size_t>(
                 std::max(dataset.rangeFirst, 0));
+            // 履歴範囲へ制限した終了位置
             const auto last = std::min(
                 static_cast<std::size_t>(
                     std::max(dataset.rangeLast, 0)),
@@ -55,6 +59,7 @@ namespace LamaPon
                 .subspan(first, last - first + 1);
         }
 
+        // 中央・平均・最小・最大・95百分位の時間を表示する(label: 記録の表示名, statistics: 表示する時間統計・ms)。
         void DrawValueStatistics(
             const char* label,
             const ProfileValueStatistics& statistics)
@@ -69,6 +74,7 @@ namespace LamaPon
                 statistics.percentile95);
         }
 
+        // 経路の大小文字を区別する部分一致で絞り込む(filter: 検索文字列・空なら全件, path: 検査する区間経路)。
         [[nodiscard]] bool MatchesFilter(
             const std::string& filter,
             const std::string& path)
@@ -77,6 +83,7 @@ namespace LamaPon
                 || path.find(filter) != std::string::npos;
         }
 
+        // 区間が存在するフレーム当たりの平均呼出数を返す(marker: 呼出数と出現数を持つ区間統計)。
         [[nodiscard]] double CallsPerFrame(
             const ProfileMarkerStatistics& marker)
         {
@@ -86,8 +93,7 @@ namespace LamaPon
                     / static_cast<double>(marker.presentFrameCount);
         }
 
-        // 深さの分だけ字下げして区間名を出し、経路をtooltipにします。
-        // 返り値は行が選択されたかどうかです。
+        // 階層の深さで字下げし経路をtooltipに表示して選択を返す(path: 識別とtooltip用の経路, name: 表示する区間名, depth: 字下げする階層の深さ, selected: 当該区間を選択中か)。
         [[nodiscard]] bool DrawMarkerNameCell(
             const std::string& path,
             const std::string& name,
@@ -96,6 +102,7 @@ namespace LamaPon
         {
             ImGui::Indent(static_cast<float>(depth) * 12.0f);
             ImGui::PushID(path.c_str());
+            // 区間名の行を選択したか
             const bool clicked = ImGui::Selectable(
                 name.c_str(),
                 selected,
@@ -134,6 +141,7 @@ namespace LamaPon
         {
             return;
         }
+        // 解析範囲を編集する記録の借用
         auto& dataset = m_datasets[slot];
         dataset.label = std::move(label);
         dataset.frames = std::move(frames);
@@ -149,7 +157,9 @@ namespace LamaPon
         const std::size_t slot,
         const std::filesystem::path& path)
     {
+        // 新規に読み込む計測フレーム一覧
         std::vector<ProfileFrame> frames;
+        // 記録文書を読み込めなかった理由
         std::string error;
         if (!LoadProfileJson(path, frames, &error))
         {
@@ -173,12 +183,14 @@ namespace LamaPon
 
     void ProfileAnalyzerPanel::RefreshAnalysis()
     {
+        // 解析範囲を編集する記録の借用
         for (auto& dataset : m_datasets)
         {
             if (!dataset.dirty)
             {
                 continue;
             }
+            // 範囲指定できる最後の0始まり位置
             const int lastFrame =
                 std::max(static_cast<int>(dataset.frames.size()) - 1, 0);
             dataset.rangeFirst =
@@ -227,6 +239,7 @@ namespace LamaPon
                 ImGuiTableFlags_BordersInnerV
                     | ImGuiTableFlags_SizingStretchSame))
         {
+            // Aは0・Bは1の記録番号
             for (std::size_t slot{}; slot < m_datasets.size(); ++slot)
             {
                 ImGui::TableNextColumn();
@@ -250,6 +263,7 @@ namespace LamaPon
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(200.0f);
+        // 区間経路の検索入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -288,6 +302,7 @@ namespace LamaPon
         const std::size_t slot,
         const std::filesystem::path& captureDirectory)
     {
+        // 解析範囲を編集する記録の借用
         auto& dataset = m_datasets[slot];
         ImGui::PushID(static_cast<int>(slot));
         ImGui::Text(
@@ -297,6 +312,7 @@ namespace LamaPon
 
         if (ImGui::Button("現在の記録を取り込む"))
         {
+            // 新規に読み込む計測フレーム一覧
             auto frames = Profiler::Instance().Snapshot();
             if (frames.empty())
             {
@@ -307,6 +323,7 @@ namespace LamaPon
             }
             else
             {
+                // 現在の記録の表示名の文字バッファ
                 char label[64]{};
                 std::snprintf(
                     label,
@@ -335,8 +352,10 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "プロファイラーの「記録を保存」で作成できます。");
             }
+            // 選択する保存済み計測文書
             for (const auto& file : m_captureFiles)
             {
+                // 保存済み計測文書の表示名
                 const auto name = PathToUtf8(file.filename());
                 if (ImGui::Selectable(name.c_str()))
                 {
@@ -349,6 +368,7 @@ namespace LamaPon
         ImGui::BeginDisabled(!m_openFile);
         if (ImGui::Button("参照..."))
         {
+            // dialogで選択した計測文書のパス
             if (const auto path = m_openFile(captureDirectory))
             {
                 static_cast<void>(LoadDataset(slot, *path));
@@ -358,6 +378,7 @@ namespace LamaPon
 
         if (dataset.IsLoaded())
         {
+            // 範囲指定できる最後の0始まり位置
             const int lastFrame =
                 static_cast<int>(dataset.frames.size()) - 1;
             ImGui::SetNextItemWidth(-FLT_MIN);
@@ -374,6 +395,7 @@ namespace LamaPon
             {
                 dataset.dirty = true;
             }
+            // 両端を含む解析用フレームの借用
             const auto range = RangeOf(dataset);
             if (!range.empty())
             {
@@ -400,8 +422,10 @@ namespace LamaPon
         }
         if (m_seriesDirty || m_seriesPath != m_selectedPath)
         {
+            // Aは0・Bは1の記録番号
             for (std::size_t slot{}; slot < m_datasets.size(); ++slot)
             {
+                // 区間のフレームごとの時間・ms
                 const auto values = MarkerMillisecondsPerFrame(
                     RangeOf(m_datasets[slot]),
                     m_selectedPath);
@@ -411,9 +435,12 @@ namespace LamaPon
             m_seriesDirty = false;
         }
 
+        // AとBの時間グラフの縦軸上限・ms
         float maximum = 0.0f;
+        // AまたはBのフレームごとの時間
         for (const auto& series : m_series)
         {
+            // 縦軸の最大値を調べる時間・ms
             for (const float value : series)
             {
                 maximum = std::max(maximum, value);
@@ -421,6 +448,7 @@ namespace LamaPon
         }
         maximum = std::max(maximum * 1.1f, 0.01f);
         ImGui::Text("%s", m_selectedPath.c_str());
+        // Aは0・Bは1の記録番号
         for (std::size_t slot{}; slot < m_series.size(); ++slot)
         {
             if (m_series[slot].empty())
@@ -441,9 +469,12 @@ namespace LamaPon
 
     void ProfileAnalyzerPanel::DrawSingleView()
     {
+        // 記録Aの集計結果の借用
         const auto& analysis = m_datasets[0].analysis;
+        // 検索条件に合う区間の参照一覧
         std::vector<const ProfileMarkerStatistics*> rows;
         rows.reserve(analysis.markers.size());
+        // 表示または比較する計測区間
         for (const auto& marker : analysis.markers)
         {
             if ((!m_topLevelOnly || marker.depth == 0)
@@ -511,17 +542,21 @@ namespace LamaPon
             ColumnFrames);
         ImGui::TableHeadersRow();
 
-        // 並べ替え指定が無い（三状態の解除）ときは、親の直後に子が並ぶ
-        // 解析順のまま表示します。
+        // 並べ替え指定が無い（三状態の解除）ときは、親の直後に子が並ぶ解析順のまま表示します。
+        // 表に指定された並べ替え条件
         if (const auto* specs = ImGui::TableGetSortSpecs();
             specs != nullptr && specs->SpecsCount > 0)
         {
+            // 最優先の並べ替え対象列
             const auto& spec = specs->Specs[0];
+            // 並べ替えを昇順にするか
             const bool ascending =
                 spec.SortDirection == ImGuiSortDirection_Ascending;
+            // 指定列の区間統計を返す(marker: 比較する区間の統計)。
             const auto value =
                 [&spec](const ProfileMarkerStatistics& marker)
                 {
+                    // 選択列に対応する比較値を返す。
                     switch (spec.ColumnUserID)
                     {
                     case ColumnMedian:
@@ -541,6 +576,7 @@ namespace LamaPon
                         return 0.0;
                     }
                 };
+            // 指定列の値で安定に並べ替える(left: 比較する区間の借用, right: 比較対象の区間の借用)。
             std::ranges::stable_sort(
                 rows,
                 [&](const ProfileMarkerStatistics* left,
@@ -558,9 +594,11 @@ namespace LamaPon
                 });
         }
 
+        // 表に並べ替えの指定があるか
         const bool sorted =
             ImGui::TableGetSortSpecs() != nullptr
             && ImGui::TableGetSortSpecs()->SpecsCount > 0;
+        // 表示または比較する計測区間
         for (const auto* marker : rows)
         {
             ImGui::TableNextRow();
@@ -605,8 +643,11 @@ namespace LamaPon
             m_comparison.frameMedianDifference,
             m_comparison.frameMeanDifference);
 
+        // 検索条件に合う区間の参照一覧
         std::vector<const ProfileMarkerComparison*> rows;
+        // 棒の幅の基準になる最大の時間差
         double largestDifference = 0.0;
+        // 表示または比較する計測区間
         for (const auto& marker : m_comparison.markers)
         {
             if ((!m_topLevelOnly || marker.depth == 0)
@@ -677,15 +718,20 @@ namespace LamaPon
         ImGui::TableHeadersRow();
 
         // 並べ替え指定が無いときは、CompareProfilesの差の大きい順です。
+        // 表に指定された並べ替え条件
         if (const auto* specs = ImGui::TableGetSortSpecs();
             specs != nullptr && specs->SpecsCount > 0)
         {
+            // 最優先の並べ替え対象列
             const auto& spec = specs->Specs[0];
+            // 並べ替えを昇順にするか
             const bool ascending =
                 spec.SortDirection == ImGuiSortDirection_Ascending;
+            // 指定列の比較統計を返す(marker: 比較するAとBの区間統計)。
             const auto value =
                 [&spec](const ProfileMarkerComparison& marker)
                 {
+                    // 選択列に対応する比較値を返す。
                     switch (spec.ColumnUserID)
                     {
                     case ColumnMedian:
@@ -704,6 +750,7 @@ namespace LamaPon
                         return 0.0;
                     }
                 };
+            // 指定列の値で安定に並べ替える(left: 比較する区間の借用, right: 比較対象の区間の借用)。
             std::ranges::stable_sort(
                 rows,
                 [&](const ProfileMarkerComparison* left,
@@ -721,6 +768,7 @@ namespace LamaPon
                 });
         }
 
+        // 表示または比較する計測区間
         for (const auto* marker : rows)
         {
             ImGui::TableNextRow();
@@ -752,19 +800,25 @@ namespace LamaPon
                 ImGui::TextDisabled("なし");
             }
 
-            // 差を棒で示します。遅くなった（正）ものは赤、速くなった
-            // （負）ものは緑です。
+            // 時間差を棒で示しBが遅い正の差は赤、速い負の差は緑にする。
             ImGui::TableSetColumnIndex(3);
+            // 差分を描く表のcellの左上座標
             const ImVec2 cell = ImGui::GetCursorScreenPos();
+            // 差分cellの幅・ピクセル
             const float cellWidth = ImGui::GetContentRegionAvail().x;
+            // 差分cellの高さ・ピクセル
             const float lineHeight = ImGui::GetTextLineHeight();
             if (largestDifference > 0.0)
             {
+                // 最大時間差に対する比率
                 const float ratio = static_cast<float>(
                     std::abs(marker->medianDifference)
                     / largestDifference);
+                // 正負の差分を分ける中央x座標
                 const float center = cell.x + cellWidth * 0.5f;
+                // 比率に対応する差分の幅
                 const float extent = ratio * cellWidth * 0.5f;
+                // Bの時間がAより長くなったか
                 const bool slower = marker->medianDifference > 0.0;
                 ImGui::GetWindowDrawList()->AddRectFilled(
                     ImVec2{

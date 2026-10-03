@@ -13,35 +13,42 @@ namespace LamaPon
         struct ShadowMapBackendState;
     }
 
-    // 描画APIに依存しない影mapの公開facadeです。native資源とbind状態は
-    // Backend専用stateが所有し、この公開ヘッダーには具象API型を出しません。
+    // バックエンドが所有する影マップの公開窓口。
     class ShadowMap final
     {
     public:
+        // バックエンド状態を持たない影マップを作成する。
         ShadowMap() noexcept;
+        // 所有するバックエンド状態を解放する。
         ~ShadowMap() noexcept;
 
+        // 所有状態のコピーを禁止する。
         ShadowMap(const ShadowMap&) = delete;
+        // 所有状態のコピー代入を禁止する。
         ShadowMap& operator=(const ShadowMap&) = delete;
+        // 公開窓口の移動を禁止する。
         ShadowMap(ShadowMap&&) = delete;
+        // 公開窓口の移動代入を禁止する。
         ShadowMap& operator=(ShadowMap&&) = delete;
 
+        // 影マップの読込ビューを取得し、未公開なら空を返す。
         [[nodiscard]] GraphicsViewHandle ViewHandle() const noexcept;
+        // 影マップ一辺の解像度を取得し、未公開なら0を返す。
         [[nodiscard]] std::uint32_t Resolution() const noexcept;
+        // カスケード数を取得し、未公開なら0を返す。
         [[nodiscard]] std::uint32_t CascadeCount() const noexcept;
+        // 初期化・ビュー・解像度・カスケード数の有効性を判定する。
         [[nodiscard]] bool IsValid() const noexcept;
 
     private:
         friend struct Detail::ShadowMapBackendAccess;
 
-        // API 55以前のGame ModuleがAPI不一致の案内まで到達できるよう、
-        // 旧D3D11 member symbolの転送先だけをAPI-neutralな形で残します。
-        // MSVC x64では旧関数と同じくthisをRCX、pointer戻り値をRAXで
-        // 扱うため、GraphicsDeviceLegacyExports.defからaliasできます。
+        // 旧ABI用にD3D11のSRVを借用し、他の状態ならヌルを返す。
+        // API55以前のモジュールが版検査へ到達できるよう、旧関数の転送先を残す。
+        // GraphicsDeviceLegacyExports.defのエイリアスはRCXのthisとRAXの戻り値が一致するx64用。
         [[nodiscard]] void* LegacyNativeView() const noexcept;
 
-        // Backendはnative資源と公開handleを完成させた後、このpointerを
-        // 一度に差し替えます。作成失敗時に旧世代を壊しません。
+        // 完成後に差し替えるバックエンド状態
         std::unique_ptr<Detail::ShadowMapBackendState> m_backendState;
     };
 }

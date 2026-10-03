@@ -41,6 +41,7 @@ namespace LamaPon
 
     void Component::RefreshActiveState()
     {
+        // 初期化と有効階層を満たす稼働状態
         const bool active =
             m_initialized
             && m_enabled

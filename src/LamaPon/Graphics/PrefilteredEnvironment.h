@@ -7,22 +7,25 @@
 
 namespace LamaPon
 {
-    // Sky IBLとReflection Probeが共有するAPI非依存の畳み込み結果です。
-    // 2本は同じBackend世代で一組として生成・更新されます。
+    // 同じバックエンド世代で一組として生成・更新する環境の畳込結果。
     struct PrefilteredEnvironmentViews final
     {
+        // 鏡面反射用のキューブビュー
         GraphicsViewHandle specular;
+        // 拡散照明用のキューブビュー
         GraphicsViewHandle irradiance;
+        // 鏡面反射で使う最大ミップ
         float specularMaximumMip{};
 
+        // 鏡面と拡散の両ビューが存在するか判定する。
         [[nodiscard]] bool IsValid() const noexcept
         {
             return specular && irradiance;
         }
     };
 
-    // Probeの各cube面を描く同期callbackです。描画先の切り替えは
-    // GraphicsDevice側が行い、呼び出し側はその面のSceneだけを描きます。
+    // キューブ面のシーンを同期描画する(face: 面番号)。
+    // 描画先の切替はGraphicsDeviceが行う。
     using EnvironmentProbeFaceRenderer =
         std::function<void(std::uint32_t face)>;
 }

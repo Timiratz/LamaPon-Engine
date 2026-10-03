@@ -32,31 +32,43 @@ namespace
     using LamaPon::Detail::LocalPersistenceDocumentIdentity;
     using LamaPon::Detail::LocalPersistenceDocumentState;
 
+    // JSONの最大入れ子階層数
     constexpr std::size_t MaximumJsonDepth = 64u;
+    // JSONの最大要素数
     constexpr std::size_t MaximumJsonElements = 65536u;
 
+    // 次に注入する保存失敗の段階
     std::atomic<LamaPon::Detail::LocalPersistenceTestFailPoint>
         PersistenceFailPoint{};
+    // 通知コールバックの失敗有無
     std::atomic_bool ObserverFailure{};
+    // このスレッドの通知抑制深度
     thread_local std::size_t ObserverSuppressionDepth{};
 
     struct ObserverRegistration final
     {
+        // コミット後の通知先
         LamaPon::Detail::LocalPersistenceCommitCallback callback{};
+        // 削除前の許可通知先
         LamaPon::Detail::LocalPersistencePreDeleteCallback preDeleteCallback{};
+        // 通知先の非所有文脈
         void* context{};
+        // 登録したプロファイルの世代
         std::uint64_t profileEpoch{};
+        // 通知登録の識別番号
         LamaPon::Detail::LocalPersistenceObserverToken token{};
     };
 
-    // PlayerPrefs/SaveDataと同じmain thread限定契約なので、登録のpairを
-    // lock-freeに差し替えても途中状態を別threadから観測しません。
+    // 主スレッド限定の現在の通知登録
     ObserverRegistration Observer{};
+    // 次に発行する通知登録番号
     std::uint64_t NextObserverToken{};
 
+    // 一致する失敗注入を消費します(expected: 今回の保存段階)。
     bool ConsumeFailPoint(
         const LamaPon::Detail::LocalPersistenceTestFailPoint expected) noexcept
     {
+        // 比較交換用の失敗段階
         auto value = expected;
         return PersistenceFailPoint.compare_exchange_strong(
             value,
@@ -68,12 +80,15 @@ namespace
     class FileHandle final
     {
     public:
+        // 無効なファイルハンドルで初期化します。
         FileHandle() = default;
+        // ファイルハンドルの所有権を引き取ります(value: 所有するハンドル)。
         explicit FileHandle(const HANDLE value) noexcept
             : value(value)
         {
         }
 
+        // 所有するファイルハンドルを閉じます。
         ~FileHandle()
         {
             if (value != INVALID_HANDLE_VALUE)
@@ -82,14 +97,18 @@ namespace
             }
         }
 
+        // ハンドルの二重解放を防ぐためコピーを禁止します。
         FileHandle(const FileHandle&) = delete;
+        // ハンドルの二重解放を防ぐためコピー代入を禁止します。
         FileHandle& operator=(const FileHandle&) = delete;
 
+        // ファイルハンドルを移譲します(other: 移譲元)。
         FileHandle(FileHandle&& other) noexcept
             : value(std::exchange(other.value, INVALID_HANDLE_VALUE))
         {
         }
 
+        // 現在のハンドルを閉じて移譲します(other: 移譲元)。
         FileHandle& operator=(FileHandle&& other) noexcept
         {
             if (this != &other)
@@ -103,17 +122,20 @@ namespace
             return *this;
         }
 
+        // 所有するWin32ハンドル
         HANDLE value{ INVALID_HANDLE_VALUE };
     };
 
     class FindHandle final
     {
     public:
+        // 検索ハンドルの所有権を引き取ります(value: 所有するハンドル)。
         explicit FindHandle(const HANDLE value) noexcept
             : value(value)
         {
         }
 
+        // 所有するファイル検索を終了します。
         ~FindHandle()
         {
             if (value != INVALID_HANDLE_VALUE)
@@ -122,21 +144,32 @@ namespace
             }
         }
 
+        // 検索の二重終了を防ぐためコピーを禁止します。
         FindHandle(const FindHandle&) = delete;
+        // 検索の二重終了を防ぐためコピー代入を禁止します。
         FindHandle& operator=(const FindHandle&) = delete;
 
+        // 所有するWin32ハンドル
         HANDLE value{ INVALID_HANDLE_VALUE };
     };
 
     struct RestrictedSecurity final
     {
+        // 現在のプロセストークン
         FileHandle processToken;
+        // ユーザートークン情報の領域
         std::vector<std::uint8_t> tokenUser;
+        // 所有するSYSTEMのSID
         PSID systemSid{};
+        // 所有する制限アクセス一覧
+        // 検証するアクセス許可一覧
         PACL acl{};
+        // ACLを持つセキュリティ情報
         SECURITY_DESCRIPTOR descriptor{};
+        // 新規作成時のセキュリティ属性
         SECURITY_ATTRIBUTES attributes{};
 
+        // ACLとSYSTEM識別子の確保領域を解放します。
         ~RestrictedSecurity()
         {
             if (acl != nullptr)
@@ -149,6 +182,7 @@ namespace
             }
         }
 
+        // 現ユーザーとSYSTEMだけを許可するACLを作ります(inheritance: ACEの継承フラグ)。
         bool Initialize(const DWORD inheritance = NO_INHERITANCE)
         {
             if (OpenProcessToken(
@@ -158,6 +192,7 @@ namespace
             {
                 return false;
             }
+            // ユーザートークン情報のバイト数
             DWORD tokenUserBytes{};
             GetTokenInformation(
                 processToken.value,
@@ -180,6 +215,7 @@ namespace
             {
                 return false;
             }
+            // SYSTEM SIDの識別機関
             SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
             if (AllocateAndInitializeSid(
                     &authority,
@@ -196,8 +232,11 @@ namespace
             {
                 return false;
             }
+            // 非所有の現ユーザーSID
             const auto currentUser = CurrentUserSid();
+            // ユーザーとSYSTEMの許可項目
             EXPLICIT_ACCESSW entries[2]{};
+            // 初期化するアクセス許可項目
             for (auto& entry : entries)
             {
                 entry.grfAccessPermissions = FILE_ALL_ACCESS;
@@ -239,6 +278,7 @@ namespace
             return true;
         }
 
+        // 取得済みトークンのユーザーSIDを非所有参照で返します。
         PSID CurrentUserSid() const noexcept
         {
             return tokenUser.empty()
@@ -248,14 +288,13 @@ namespace
         }
     };
 
-    // 43箇所から同じ文言で投げていたため、CIのログからどの操作が
-    // 失敗したのか特定できませんでした。呼び出し元の行と、直前の
-    // Win32エラーを添えます（Win32呼び出し以外の検証で失敗した場合、
-    // エラー番号は直前の呼び出しのものになり得ます）。
+    // 呼び出し位置を添えて保存失敗を送出します(location: 失敗の検出位置)。
+    // 検証失敗時のWin32エラー番号は、以前のAPI呼び出しの値になる場合があります。
     [[noreturn]] void ThrowPersistenceFailure(
         const std::source_location& location =
             std::source_location::current())
     {
+        // 直前のWin32エラー番号
         const DWORD error = GetLastError();
         throw std::runtime_error(
             "Local persistence operation failed at "
@@ -270,33 +309,33 @@ namespace
     class PersistenceLockBusy final : public std::runtime_error
     {
     public:
+        // 保存先ロックの競合を表す例外を初期化します。
         PersistenceLockBusy()
             : std::runtime_error("Local persistence is busy.")
         {
         }
     };
 
+    // 未存在を表すWin32エラーか判定します(error: エラー番号)。
     bool IsMissingError(const DWORD error) noexcept
     {
         return error == ERROR_FILE_NOT_FOUND
             || error == ERROR_PATH_NOT_FOUND;
     }
 
+    // 保存先に補助ファイルの接尾辞を付けます(path: 保存先, suffix: 接尾辞)。
     std::filesystem::path WithSuffix(
         const std::filesystem::path& path,
         const std::wstring_view suffix)
     {
+        // 接尾辞を追加するパス
         auto result = path;
         result += suffix;
         return result;
     }
 
-    // Windowsは新規オブジェクトの所有者にtokenの既定所有者(TokenOwner)を
-    // 設定します。管理者アカウントではこれがBuiltin Administrators群に
-    // なるため、TokenUserだけを見るとファイルの所有者が自分と一致せず、
-    // 正常に作成した保存先を拒否してしまいます。自分が所属するgroupが
-    // 所有している場合も自分の所有として扱い、第三者が所有している
-    // 場合は従来どおり拒否します。
+    // 所有者の信頼性を検査します(owner: 所有者SID, currentUserSid: 現ユーザーSID, systemSid: SYSTEMのSID)。
+    // Windowsの既定所有者を許容するため、現ユーザー・SYSTEM・所属グループを信頼します。
     bool OwnerSidIsTrusted(
         const PSID owner,
         const PSID currentUserSid,
@@ -315,17 +354,22 @@ namespace
         {
             return true;
         }
+        // 所有者が所属グループかの結果
         BOOL isMember = FALSE;
         return CheckTokenMembership(nullptr, owner, &isMember) != FALSE
             && isMember != FALSE;
     }
 
+    // ファイルの所有者を検証します(file: 検査するハンドル, security: 許可する主体)。
     bool OwnerIsAllowed(
         const HANDLE file,
         const RestrictedSecurity& security)
     {
+        // 照合する所有者SID
         PSID owner{};
+        // 取得するセキュリティ情報
         PSECURITY_DESCRIPTOR descriptor{};
+        // セキュリティ情報の取得結果
         const auto result = GetSecurityInfo(
             file,
             SE_FILE_OBJECT,
@@ -335,6 +379,7 @@ namespace
             nullptr,
             nullptr,
             &descriptor);
+        // 所有者の信頼検査結果
         const bool allowed = result == ERROR_SUCCESS
             && descriptor != nullptr
             && OwnerSidIsTrusted(
@@ -348,11 +393,15 @@ namespace
         return allowed;
     }
 
+    // 通常ファイルの安全性を検査します(file: 検査するハンドル, security: 許可する主体)。
+    // ディレクトリ・再解析ポイント・複数ハードリンク・信頼しない所有者を拒否します。
     bool IsSafeFileHandle(
         const HANDLE file,
         const RestrictedSecurity& security)
     {
+        // ファイル種別と再解析の情報
         FILE_ATTRIBUTE_TAG_INFO attributes{};
+        // リンク数を含む標準情報
         FILE_STANDARD_INFO standard{};
         return GetFileInformationByHandleEx(
                 file,
@@ -370,10 +419,12 @@ namespace
             && OwnerIsAllowed(file, security);
     }
 
+    // 通常ディレクトリの安全性を検査します(directory: 検査するハンドル, security: 許可する主体)。
     bool IsSafeDirectoryHandle(
         const HANDLE directory,
         const RestrictedSecurity& security)
     {
+        // ファイル種別と再解析の情報
         FILE_ATTRIBUTE_TAG_INFO attributes{};
         return GetFileInformationByHandleEx(
                 directory,
@@ -385,13 +436,17 @@ namespace
             && OwnerIsAllowed(directory, security);
     }
 
+    // ハンドルから文書の識別情報を取得します(file: 読み取り対象, completeBytes: 内容全体の保持有無)。
     std::optional<LamaPon::Detail::LocalPersistenceDocumentIdentity>
         CaptureDocumentIdentity(
         const HANDLE file,
         const bool completeBytes) noexcept
     {
+        // サイズと最終書き込み情報
         BY_HANDLE_FILE_INFORMATION information{};
+        // メタデータの変更情報
         FILE_BASIC_INFO basic{};
+        // ボリュームとファイルのID
         FILE_ID_INFO fileId{};
         if (GetFileInformationByHandle(file, &information) == FALSE
             || GetFileInformationByHandleEx(
@@ -408,14 +463,17 @@ namespace
             return std::nullopt;
         }
 
+        // 照合用の16バイトファイルID
         std::array<std::uint8_t, 16u> identifier{};
         std::copy_n(
             fileId.FileId.Identifier,
             identifier.size(),
             identifier.begin());
+        // ファイルサイズのバイト数
         ULARGE_INTEGER byteLength{};
         byteLength.HighPart = information.nFileSizeHigh;
         byteLength.LowPart = information.nFileSizeLow;
+        // 最終書き込み時刻の結合値
         ULARGE_INTEGER lastWrite{};
         lastWrite.HighPart = information.ftLastWriteTime.dwHighDateTime;
         lastWrite.LowPart = information.ftLastWriteTime.dwLowDateTime;
@@ -430,6 +488,7 @@ namespace
         };
     }
 
+    // 読み取り前後のファイル識別情報を照合します(left: 読み取り前, right: 読み取り後)。
     bool SameCapturedFile(
         const LamaPon::Detail::LocalPersistenceDocumentIdentity& left,
         const LamaPon::Detail::LocalPersistenceDocumentIdentity& right)
@@ -444,6 +503,7 @@ namespace
             && left.changeTime == right.changeTime;
     }
 
+    // 許可する二主体だけの継承禁止ACLを適用・検証します(file: 更新するハンドル, security: 制限ACL)。
     bool ProtectFileHandle(
         const HANDLE file,
         const RestrictedSecurity& security)
@@ -459,8 +519,11 @@ namespace
         {
             return false;
         }
+        // 照合する所有者SID
         PSID owner{};
+        // 検証するアクセス許可一覧
         PACL acl{};
+        // 取得するセキュリティ情報
         PSECURITY_DESCRIPTOR descriptor{};
         if (GetSecurityInfo(
                 file,
@@ -481,9 +544,13 @@ namespace
             }
             return false;
         }
+        // ACLの継承制御フラグ
         SECURITY_DESCRIPTOR_CONTROL control{};
+        // セキュリティ情報の版番号
         DWORD revision{};
+        // ACLの許可項目数
         ACL_SIZE_INFORMATION information{};
+        // 制限ACLの検証結果
         bool valid = GetSecurityDescriptorControl(
                 descriptor,
                 &control,
@@ -499,16 +566,21 @@ namespace
                 owner,
                 security.CurrentUserSid(),
                 security.systemSid);
+        // 現ユーザーの許可を確認済み
         bool currentSeen{};
+        // SYSTEMの許可を確認済み
         bool systemSeen{};
+        // 検査するアクセス許可の番号
         for (DWORD index = 0u; valid && index < information.AceCount; ++index)
         {
+            // 取得するアクセス許可項目
             void* rawAce{};
             if (GetAce(acl, index, &rawAce) == FALSE || rawAce == nullptr)
             {
                 valid = false;
                 break;
             }
+            // 型を確認するアクセス許可項目
             const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(rawAce);
             if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE
                 || ace->Header.AceFlags != 0u
@@ -517,6 +589,7 @@ namespace
                 valid = false;
                 break;
             }
+            // 許可対象の非所有SID
             const auto sid = const_cast<DWORD*>(&ace->SidStart);
             if (EqualSid(sid, security.CurrentUserSid()) != FALSE
                 && !currentSeen)
@@ -537,13 +610,16 @@ namespace
         return valid && currentSeen && systemSeen;
     }
 
+    // 保存先の親の種別と所有者を検査します(path: 親ディレクトリ)。
     void ValidateParentDirectory(const std::filesystem::path& path)
     {
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 検証するディレクトリのハンドル
         FileHandle directory(CreateFileW(
             path.c_str(),
             FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -559,8 +635,10 @@ namespace
         }
     }
 
+    // パス要素が再解析でないディレクトリか検査します(path: 検査するパス)。
     void ValidatePlainDirectoryComponent(const std::filesystem::path& path)
     {
+        // 検証するディレクトリのハンドル
         FileHandle directory(CreateFileW(
             path.c_str(),
             FILE_READ_ATTRIBUTES,
@@ -569,6 +647,7 @@ namespace
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             nullptr));
+        // ファイル種別と再解析の情報
         FILE_ATTRIBUTE_TAG_INFO attributes{};
         if (directory.value == INVALID_HANDLE_VALUE
             || GetFileInformationByHandleEx(
@@ -585,14 +664,19 @@ namespace
 
     enum class DirectoryChainState : std::uint8_t
     {
+        // 安全なディレクトリが存在
         Exists,
+        // 途中のディレクトリが未存在
         Missing,
+        // 安全に利用できないパス
         Unavailable
     };
 
+    // ローカル固定ドライブの全パス要素を検査します(directory: 保存先ディレクトリ)。
     DirectoryChainState InspectExistingDirectoryChain(
         const std::filesystem::path& directory) noexcept
     {
+        // 正規化した絶対ディレクトリ
         std::filesystem::path normalized;
         try
         {
@@ -605,6 +689,7 @@ namespace
         {
             return DirectoryChainState::Unavailable;
         }
+        // 固定ドライブを判定するルート名
         const auto drive = normalized.root_name().native();
         if (drive.size() != 2u
             || !((drive[0] >= L'A' && drive[0] <= L'Z')
@@ -614,13 +699,16 @@ namespace
         {
             return DirectoryChainState::Unavailable;
         }
+        // 順に検査するディレクトリ
         auto current = normalized.root_path();
         try
         {
             ValidatePlainDirectoryComponent(current);
+            // 検査するディレクトリの要素
             for (const auto& component : normalized.relative_path())
             {
                 current /= component;
+                // パス要素のファイル属性
                 const auto attributes = GetFileAttributesW(current.c_str());
                 if (attributes == INVALID_FILE_ATTRIBUTES)
                 {
@@ -638,11 +726,15 @@ namespace
         return DirectoryChainState::Exists;
     }
 
+    // 保存先までの安全な親ディレクトリを用意します(targetPath: 保存先)。
+    // ローカル固定ドライブだけを許可し、新規ディレクトリには制限ACLを適用します。
     void EnsureParentDirectory(const std::filesystem::path& targetPath)
     {
+        // 保存先の親ディレクトリ
         const auto parent = targetPath.parent_path().empty()
             ? std::filesystem::current_path()
             : targetPath.parent_path();
+        // 正規化した絶対ディレクトリ
         std::filesystem::path normalized;
         try
         {
@@ -652,6 +744,7 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // 固定ドライブを判定するルート名
         const auto drive = normalized.root_name().native();
         if (drive.size() != 2u
             || !((drive[0] >= L'A' && drive[0] <= L'Z')
@@ -661,17 +754,21 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // 新規ディレクトリの継承ACL
         RestrictedSecurity directorySecurity;
         if (!directorySecurity.Initialize(
                 CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE))
         {
             ThrowPersistenceFailure();
         }
+        // 順に検査するディレクトリ
         auto current = normalized.root_path();
         ValidatePlainDirectoryComponent(current);
+        // 作成・検査するディレクトリ要素
         for (const auto& component : normalized.relative_path())
         {
             current /= component;
+            // パス要素のファイル属性
             const auto attributes = GetFileAttributesW(current.c_str());
             if (attributes == INVALID_FILE_ATTRIBUTES)
             {
@@ -689,14 +786,19 @@ namespace
         ValidateParentDirectory(normalized);
     }
 
+    // 保存先の共有禁止ロックを取得します(targetPath: 保存先)。
+    // 競合はPersistenceLockBusyで、返すハンドルを閉じるまでロックを保持します。
     FileHandle AcquireTargetLock(const std::filesystem::path& targetPath)
     {
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 保存先固有のロックパス
         const auto lockPath = WithSuffix(targetPath, L".lock");
+        // 共有を禁止するロックハンドル
         FileHandle lock(CreateFileW(
             lockPath.c_str(),
             GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES
@@ -708,6 +810,7 @@ namespace
             nullptr));
         if (lock.value == INVALID_HANDLE_VALUE)
         {
+            // 直前のWin32エラー番号
             const auto error = GetLastError();
             if (error == ERROR_SHARING_VIOLATION
                 || error == ERROR_LOCK_VIOLATION)
@@ -724,13 +827,17 @@ namespace
         return lock;
     }
 
+    // 既存の保存先が安全か検査します(targetPath: 保存先)。
+    // 未存在ならfalseで、安全でない対象や検査失敗は例外です。
     bool ValidateExistingTarget(const std::filesystem::path& targetPath)
     {
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 検証・更新する保存先ハンドル
         FileHandle target(CreateFileW(
             targetPath.c_str(),
             FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -754,15 +861,18 @@ namespace
         return true;
     }
 
+    // 公開前ファイルへ全内容を書いて確定します(stagePath: 公開前パス, bytes: 文書全体)。
     void WriteAndFlushStage(
         const std::filesystem::path& stagePath,
         const std::string_view bytes)
     {
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 公開前ファイルのハンドル
         FileHandle stage(CreateFileW(
             stagePath.c_str(),
             GENERIC_WRITE | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC,
@@ -777,6 +887,7 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // ファイルの先頭オフセット
         LARGE_INTEGER beginning{};
         if (SetFilePointerEx(
                 stage.value,
@@ -787,12 +898,15 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // 処理済み内容のバイト数
         std::size_t offset{};
         while (offset < bytes.size())
         {
+            // 今回処理する最大バイト数
             const auto remaining = std::min<std::size_t>(
                 bytes.size() - offset,
                 std::numeric_limits<DWORD>::max());
+            // 今回書き込んだバイト数
             DWORD written{};
             if (WriteFile(
                     stage.value,
@@ -814,11 +928,16 @@ namespace
         }
     }
 
+    // 文字列内を除いてJSONの入れ子上限を検査します(text: JSONテキスト)。
     bool JsonNestingIsSafe(const std::string_view text) noexcept
     {
+        // JSONの現在の入れ子深度
         std::size_t depth{};
+        // JSON文字列の解析中か
         bool inString{};
+        // 文字列のエスケープ待機有無
         bool escaped{};
+        // 検査するJSONのバイト
         for (const unsigned char character : text)
         {
             if (inString)
@@ -860,6 +979,7 @@ namespace
         return depth == 0u && !inString && !escaped;
     }
 
+    // JSON要素の残り予算を消費して上限を検査します(value: 検査する値, remaining: 残り要素数)。
     bool JsonElementCountIsSafe(
         const Json& value,
         std::size_t& remaining) noexcept
@@ -871,6 +991,7 @@ namespace
         --remaining;
         if (value.is_array() || value.is_object())
         {
+            // 要素数を検査する子の値
             for (const auto& child : value)
             {
                 if (!JsonElementCountIsSafe(child, remaining))
@@ -882,6 +1003,7 @@ namespace
         return true;
     }
 
+    // UTF-8・入れ子・重複キー・要素数を検証して解析します(text: JSONテキスト)。
     Json ParseJsonStrict(const std::string_view text)
     {
         if (text.empty()
@@ -890,9 +1012,12 @@ namespace
         {
             throw std::runtime_error("Local persistence JSON is invalid.");
         }
+        // 重複キーまたは階層違反の有無
         bool duplicateKey{};
+        // 階層ごとの解析済みキー集合
         std::array<std::unordered_set<std::string>, MaximumJsonDepth + 1u>
             keysByDepth;
+        // 重複キーを検出します(depth: 解析階層, event: 解析イベント, parsed: 今回の値)。
         const auto callback =
             [&duplicateKey, &keysByDepth](
                 const int depth,
@@ -907,6 +1032,7 @@ namespace
                 }
                 if (event == Json::parse_event_t::object_start)
                 {
+                    // キーを登録する解析階層
                     const auto keyDepth = static_cast<std::size_t>(depth) + 1u;
                     if (keyDepth >= keysByDepth.size())
                     {
@@ -919,6 +1045,7 @@ namespace
                 }
                 else if (event == Json::parse_event_t::key)
                 {
+                    // 現在階層のキー集合
                     auto& keys = keysByDepth[static_cast<std::size_t>(depth)];
                     if (!keys.insert(parsed.get<std::string>()).second)
                     {
@@ -927,6 +1054,7 @@ namespace
                 }
                 return true;
             };
+        // 厳密に解析したJSON値
         Json parsed;
         try
         {
@@ -936,6 +1064,7 @@ namespace
         {
             throw std::runtime_error("Local persistence JSON is invalid.");
         }
+        // 解析後の残り要素数予算
         std::size_t remaining = MaximumJsonElements;
         if (duplicateKey || !JsonElementCountIsSafe(parsed, remaining))
         {
@@ -944,10 +1073,12 @@ namespace
         return parsed;
     }
 
+    // 必要なキーだけを持つオブジェクトか調べます(object: JSON値, expected: キー一覧)。
     bool HasExactKeys(
         const Json& object,
         const std::initializer_list<std::string_view> expected)
     {
+        // 各必要キーの存在を確認します(key: 検査するキー)。
         return object.is_object()
             && object.size() == expected.size()
             && std::ranges::all_of(
@@ -958,6 +1089,7 @@ namespace
                 });
     }
 
+    // 設定キーのUTF-8と1〜128バイトの制約を検査します(key: 設定キー)。
     void ValidatePreferenceKey(const std::string_view key)
     {
         if (key.empty()
@@ -969,6 +1101,7 @@ namespace
         }
     }
 
+    // 符号付き64ビット整数として保持できるか調べます(value: JSON値)。
     bool IsValidInteger(const Json& value)
     {
         if (value.type() == Json::value_t::number_integer)
@@ -981,6 +1114,7 @@ namespace
                     std::numeric_limits<std::int64_t>::max());
     }
 
+    // 同一ファイルから全内容を読み検証します(file: 対象ハンドル, security: 許可主体, maximumBytes: 読み取り上限, saveSlot: 空なら設定文書)。
     LocalPersistenceDocument ReadOpenDocument(
         const HANDLE file,
         const RestrictedSecurity& security,
@@ -991,6 +1125,7 @@ namespace
         {
             return { LocalPersistenceDocumentState::Unavailable, {} };
         }
+        // 読み取り前の識別情報
         auto before = CaptureDocumentIdentity(file, false);
         if (!before)
         {
@@ -1020,6 +1155,7 @@ namespace
                 *before
             };
         }
+        // ファイルの先頭オフセット
         LARGE_INTEGER beginning{};
         if (SetFilePointerEx(
                 file,
@@ -1029,14 +1165,18 @@ namespace
         {
             return { LocalPersistenceDocumentState::Unavailable, {} };
         }
+        // 読み込む文書全体のバイト列
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(before->byteLength));
+        // 処理済み内容のバイト数
         std::size_t offset{};
         while (offset < bytes.size())
         {
+            // 今回処理する最大バイト数
             const auto remaining = std::min<std::size_t>(
                 bytes.size() - offset,
                 std::numeric_limits<DWORD>::max());
+            // 今回読み込んだバイト数
             DWORD read{};
             if (ReadFile(
                     file,
@@ -1050,11 +1190,13 @@ namespace
             }
             offset += read;
         }
+        // 読み取り後の識別情報
         auto after = CaptureDocumentIdentity(file, true);
         if (!after || !SameCapturedFile(*before, *after))
         {
             return { LocalPersistenceDocumentState::Unavailable, {} };
         }
+        // 検証する文書のUTF-8参照
         const std::string_view text(
             reinterpret_cast<const char*>(bytes.data()),
             bytes.size());
@@ -1084,11 +1226,13 @@ namespace
         };
     }
 
+    // 安全な保存先から文書を厳密に読みます(path: 保存先, maximumBytes: 読み取り上限, saveSlot: 空なら設定文書)。
     LocalPersistenceDocument ReadDocument(
         const std::filesystem::path& path,
         const std::size_t maximumBytes,
         const std::optional<std::string_view> saveSlot)
     {
+        // 親までの安全性と存在状態
         const auto chain = InspectExistingDirectoryChain(path.parent_path());
         if (chain != DirectoryChainState::Exists)
         {
@@ -1099,11 +1243,13 @@ namespace
                 {}
             };
         }
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             return { LocalPersistenceDocumentState::Unavailable, {} };
         }
+        // 読み取る文書のハンドル
         FileHandle file(CreateFileW(
             path.c_str(),
             GENERIC_READ | READ_CONTROL,
@@ -1128,13 +1274,16 @@ namespace
             saveSlot);
     }
 
+    // 保存文書の接尾辞を大文字小文字を無視して検査します(name: ファイル名)。
     bool EndsWithSaveSuffix(const std::wstring_view name)
     {
+        // 保存文書を判別する接尾辞
         constexpr std::wstring_view suffix = L".save.json";
         if (name.size() < suffix.size())
         {
             return false;
         }
+        // 比較するファイル名の末尾
         const auto tail = name.substr(name.size() - suffix.size());
         return CompareStringOrdinal(
             tail.data(),
@@ -1144,6 +1293,8 @@ namespace
             TRUE) == CSTR_EQUAL;
     }
 
+    // 状態・識別情報・保持内容を観測と照合します(current: 再読み取り結果, observed: 以前の観測)。
+    // 利用不能な観測はinvalid_argumentで、過大な破損ファイルは識別情報だけを比較します。
     bool MatchesObservedDocument(
         const LamaPon::Detail::LocalPersistenceDocument& current,
         const LamaPon::Detail::LocalPersistenceDocument& observed)
@@ -1173,12 +1324,15 @@ namespace
             "Conditional persistence requires a readable observation.");
     }
 
+    // 保持中のロックで文書を公開します(targetPath: 保存先, bytes: 文書全体, replaceExisting: 置換許可)。
+    // 呼び出し側が保存先ロックを保持し、置換禁止で先行作成があればfalseです。
     bool PublishDocumentWithHeldLock(
         const std::filesystem::path& targetPath,
         const std::string_view bytes,
         const bool replaceExisting = true)
     {
         (void)ValidateExistingTarget(targetPath);
+        // 公開前の書き込みファイルパス
         const auto stagePath = WithSuffix(targetPath, L".writing");
         WriteAndFlushStage(stagePath, bytes);
         if (ConsumeFailPoint(
@@ -1194,6 +1348,7 @@ namespace
                     | (replaceExisting ? MOVEFILE_REPLACE_EXISTING : 0u))
             == FALSE)
         {
+            // 直前のWin32エラー番号
             const auto error = GetLastError();
             if (!replaceExisting
                 && (error == ERROR_ALREADY_EXISTS
@@ -1206,13 +1361,17 @@ namespace
         return true;
     }
 
+    // 保持中のハンドルで文書を改名して削除します(targetPath: 保存先, target: 対象ハンドル, security: 許可主体)。
+    // 呼び出し側が保存先ロックを保持し、検証済みハンドルを削除のコミットまで使います。
     void DeleteOpenDocumentWithHeldLock(
         const std::filesystem::path& targetPath,
         const HANDLE target,
         const RestrictedSecurity& security)
     {
+        // 削除対象を退避するパス
         const auto deletingPath = WithSuffix(targetPath, L".deleting");
         {
+            // 前回残った削除対象のハンドル
             FileHandle stale(CreateFileW(
                 deletingPath.c_str(),
                 DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -1227,6 +1386,7 @@ namespace
                 {
                     ThrowPersistenceFailure();
                 }
+                // 前回残った対象の削除指定
                 FILE_DISPOSITION_INFO disposition{ TRUE };
                 if (SetFileInformationByHandle(
                         stale.value,
@@ -1243,6 +1403,7 @@ namespace
             }
         }
 
+        // 削除退避先の絶対パス
         std::filesystem::path absoluteDeletingPath;
         try
         {
@@ -1253,6 +1414,7 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // 削除退避先のUTF-16パス
         const auto fileName = absoluteDeletingPath.native();
         if (fileName.empty()
             || fileName.size()
@@ -1260,15 +1422,19 @@ namespace
         {
             ThrowPersistenceFailure();
         }
+        // 改名先パスのバイト数
         const auto fileNameBytes = static_cast<DWORD>(
             fileName.size() * sizeof(wchar_t));
+        // 改名要求の全体バイト数
         const auto renameBytes = sizeof(FILE_RENAME_INFO)
             + static_cast<std::size_t>(fileNameBytes);
         if (renameBytes > std::numeric_limits<DWORD>::max())
         {
             ThrowPersistenceFailure();
         }
+        // 改名要求の所有バッファー
         auto renameStorage = std::make_unique<std::byte[]>(renameBytes);
+        // バッファー内の改名情報
         auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(
             renameStorage.get());
         rename->ReplaceIfExists = FALSE;
@@ -1280,12 +1446,8 @@ namespace
                 + fileNameBytes,
             reinterpret_cast<std::byte*>(rename->FileName));
 
-        // 検証済みの同一handleをcommit pointまで保持するため、path再openに
-        // よる差替えTOCTOUを作りません。rename後の`.deleting`はselector外で、
-        // crash時にも公開側はMissingとして一貫します。
-        // FileRenameInfoにはWRITE_THROUGH flagがないため、内容を
-        // rename前にdurability barrierへ通し、rename後も同一handleを
-        // flushしてdirectory metadataのpublishを耐久化します。
+        // WRITE_THROUGHのないハンドル改名の前後で、同じハンドルをFlushFileBuffersへ渡します。
+        // .deletingへの改名が論理コミットで、その後は公開パスがMissingになります。
         if (FlushFileBuffers(target) == FALSE)
         {
             ThrowPersistenceFailure();
@@ -1298,16 +1460,14 @@ namespace
         {
             ThrowPersistenceFailure();
         }
-        // ここで失敗しても公開pathは既にMissingです。曖昧に
-        // 成功扱いせずgeneric failureを返し、selector外の
-        // `.deleting`を次回の安全なcleanupに残します。
+        // 改名後の確定失敗は例外とし、既にMissingの公開パスと残る.deletingを成功扱いしません。
         if (FlushFileBuffers(target) == FALSE)
         {
             ThrowPersistenceFailure();
         }
+        // 改名後ファイルの削除指定
         FILE_DISPOSITION_INFO disposition{ TRUE };
-        // renameが論理commit pointです。cleanup失敗時は安全なstale
-        // `.deleting`として次回処理に残します。
+        // 後片付けの失敗は、次回に安全に処理する.deletingとして残します。
         (void)SetFileInformationByHandle(
             target,
             FileDispositionInfo,
@@ -1315,14 +1475,18 @@ namespace
             sizeof(disposition));
     }
 
+    // 保持中のロックで既存文書を削除します(targetPath: 保存先)。
+    // 呼び出し側が保存先ロックを保持し、未存在ならfalseです。
     bool DeleteDocumentWithHeldLock(
         const std::filesystem::path& targetPath)
     {
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 検証・更新する保存先ハンドル
         FileHandle target(CreateFileW(
             targetPath.c_str(),
             GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -1447,9 +1611,11 @@ namespace LamaPon::Detail
         const std::filesystem::path& targetPath)
     {
         EnsureParentDirectory(targetPath);
+        // 検査中に保持する保存先ロック
         auto held = AcquireTargetLock(targetPath);
         try
         {
+            // 競合を試す二つ目のロック
             auto peer = AcquireTargetLock(targetPath);
             return false;
         }
@@ -1464,6 +1630,7 @@ namespace LamaPon::Detail
         const std::string_view bytes)
     {
         EnsureParentDirectory(targetPath);
+        // 操作完了まで保持する保存先ロック
         auto lock = AcquireTargetLock(targetPath);
         static_cast<void>(PublishDocumentWithHeldLock(targetPath, bytes));
     }
@@ -1471,9 +1638,11 @@ namespace LamaPon::Detail
     bool DurableDeleteLocalDocument(
         const std::filesystem::path& targetPath)
     {
+        // 保存先の親ディレクトリ
         const auto parent = targetPath.parent_path().empty()
             ? std::filesystem::current_path()
             : targetPath.parent_path();
+        // 親までの安全性と存在状態
         const auto chain = InspectExistingDirectoryChain(parent);
         if (chain == DirectoryChainState::Missing)
         {
@@ -1484,6 +1653,7 @@ namespace LamaPon::Detail
             ThrowPersistenceFailure();
         }
         ValidateParentDirectory(parent);
+        // 操作完了まで保持する保存先ロック
         auto lock = AcquireTargetLock(targetPath);
         return DeleteDocumentWithHeldLock(targetPath);
     }
@@ -1497,7 +1667,9 @@ namespace LamaPon::Detail
         const std::string_view saveSlot)
     {
         EnsureParentDirectory(targetPath);
+        // 操作完了まで保持する保存先ロック
         auto lock = AcquireTargetLock(targetPath);
+        // 再照合する現在の文書
         const auto current = ReadDocument(
             targetPath,
             maximumBytes,
@@ -1534,9 +1706,11 @@ namespace LamaPon::Detail
         const std::size_t maximumBytes,
         const std::string_view saveSlot)
     {
+        // 保存先の親ディレクトリ
         const auto parent = targetPath.parent_path().empty()
             ? std::filesystem::current_path()
             : targetPath.parent_path();
+        // 親までの安全性と存在状態
         const auto chain = InspectExistingDirectoryChain(parent);
         if (chain == DirectoryChainState::Missing)
         {
@@ -1551,12 +1725,15 @@ namespace LamaPon::Detail
             ThrowPersistenceFailure();
         }
         ValidateParentDirectory(parent);
+        // 操作完了まで保持する保存先ロック
         auto lock = AcquireTargetLock(targetPath);
+        // 現ユーザーとSYSTEMの制限ACL
         RestrictedSecurity security;
         if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
+        // 検証・更新する保存先ハンドル
         FileHandle target(CreateFileW(
             targetPath.c_str(),
             GENERIC_READ | GENERIC_WRITE | DELETE
@@ -1576,6 +1753,7 @@ namespace LamaPon::Detail
             }
             ThrowPersistenceFailure();
         }
+        // 同じハンドルの現在の文書
         const auto current = ReadOpenDocument(
             target.value,
             security,
@@ -1607,6 +1785,7 @@ namespace LamaPon::Detail
         {
             throw std::runtime_error("PlayerPrefs document is invalid.");
         }
+        // 厳密に解析した保存文書
         const auto document = ParseJsonStrict(bytes);
         if (!HasExactKeys(document, { "format", "version", "values" })
             || !document.at("format").is_string()
@@ -1618,6 +1797,8 @@ namespace LamaPon::Detail
         {
             throw std::runtime_error("PlayerPrefs document is invalid.");
         }
+        // key: 設定値のキー名
+        // entry: 型と実値を持つ項目
         for (const auto& [key, entry] : document.at("values").items())
         {
             ValidatePreferenceKey(key);
@@ -1626,8 +1807,11 @@ namespace LamaPon::Detail
             {
                 throw std::runtime_error("PlayerPrefs value is invalid.");
             }
+            // 設定値に記録された型名
             const auto type = entry.at("type").get<std::string>();
+            // 型を検証する設定値
             const auto& value = entry.at("value");
+            // 設定型と実値の一致有無
             const bool valid = type == "integer"
                 ? IsValidInteger(value)
                 : type == "number"
@@ -1652,6 +1836,7 @@ namespace LamaPon::Detail
         {
             throw std::runtime_error("SaveData document is invalid.");
         }
+        // 厳密に解析した保存文書
         const auto document = ParseJsonStrict(bytes);
         if (!HasExactKeys(document, { "format", "version", "slot", "data" })
             || !document.at("format").is_string()
@@ -1690,7 +1875,9 @@ namespace LamaPon::Detail
     LocalPersistenceSlotListing LocalPersistenceDocuments::ListSaveData(
         const SaveDataStore& saveData)
     {
+        // 列挙する保存先ディレクトリ
         const auto& directory = saveData.Directory();
+        // 親までの安全性と存在状態
         const auto chain = InspectExistingDirectoryChain(directory);
         if (chain != DirectoryChainState::Exists)
         {
@@ -1709,11 +1896,15 @@ namespace LamaPon::Detail
         {
             return { LocalPersistenceDocumentState::Unavailable, {} };
         }
+        // 現在のファイル検索結果
         WIN32_FIND_DATAW data{};
+        // 保存先全体の検索パターン
         const auto pattern = directory / L"*";
+        // Win32の検索開始結果
         const auto rawSearch = FindFirstFileW(pattern.c_str(), &data);
         if (rawSearch == INVALID_HANDLE_VALUE)
         {
+            // 直前のWin32エラー番号
             const auto error = GetLastError();
             return {
                 error == ERROR_FILE_NOT_FOUND
@@ -1724,13 +1915,16 @@ namespace LamaPon::Detail
                 {}
             };
         }
+        // 所有するファイル検索ハンドル
         FindHandle search(rawSearch);
+        // 検証済みスロットの列挙結果
         LocalPersistenceSlotListing result{
             LocalPersistenceDocumentState::Loaded,
             {}
         };
         do
         {
+            // 検索で得たUTF-16ファイル名
             const std::wstring_view name(data.cFileName);
             if (!EndsWithSaveSuffix(name))
             {
@@ -1741,14 +1935,18 @@ namespace LamaPon::Detail
             {
                 return { LocalPersistenceDocumentState::Unavailable, {} };
             }
+            // 保存文書の接尾辞の文字数
             constexpr std::size_t suffixLength =
                 std::wstring_view(L".save.json").size();
+            // 接尾辞を除いたUTF-16名
             const auto wideSlot = name.substr(0u, name.size() - suffixLength);
+            // 検証するUTF-8スロット名
             const auto slot = WideToUtf8(wideSlot);
             if (!IsValidSaveSlotName(slot))
             {
                 return { LocalPersistenceDocumentState::Corrupt, {} };
             }
+            // 同じ名前の既存スロットか検査します(existing: 列挙済みのスロット名)。
             if (std::ranges::any_of(
                     result.slots,
                     [&slot](const std::string& existing)
@@ -1777,6 +1975,7 @@ namespace LamaPon::Detail
         PlayerPrefs& playerPrefs,
         const std::span<const std::uint8_t> fullDocument)
     {
+        // リモート文書全体の文字列参照
         const std::string_view bytes(
             fullDocument.empty()
                 ? ""
@@ -1797,6 +1996,7 @@ namespace LamaPon::Detail
         const LocalPersistenceDocument& observed,
         const std::span<const std::uint8_t> fullDocument)
     {
+        // リモート文書全体の文字列参照
         const std::string_view bytes(
             fullDocument.empty()
                 ? ""
@@ -1864,6 +2064,7 @@ namespace LamaPon::Detail
         const std::string_view slot,
         const std::span<const std::uint8_t> fullDocument)
     {
+        // リモート文書全体の文字列参照
         const std::string_view bytes(
             fullDocument.empty()
                 ? ""
@@ -1888,6 +2089,7 @@ namespace LamaPon::Detail
         const LocalPersistenceDocument& observed,
         const std::span<const std::uint8_t> fullDocument)
     {
+        // リモート文書全体の文字列参照
         const std::string_view bytes(
             fullDocument.empty()
                 ? ""

@@ -32,18 +32,24 @@
 
 namespace
 {
+    // Require(condition: 期待条件, message: 失敗説明): 条件違反をtest failureにします。
     void Require(const bool condition, const char* message)
     {
+        // 条件不成立なら失敗理由を送出します。
         if (!condition)
         {
+            // fixture不整合を例外で通知します。
             throw std::runtime_error(message);
         }
     }
 
     // このテスト実行ファイル自身のパス（本物のPEとして使います）。
+    // SelfExecutablePath(): 現在のtest実行ファイルのpathを返します。
     std::filesystem::path SelfExecutablePath()
     {
+        // 現在の実行file pathを受け取るbuffer。
         wchar_t buffer[MAX_PATH]{};
+        // Windows APIが返すpath文字数。
         const DWORD length = GetModuleFileNameW(
             nullptr,
             buffer,
@@ -51,19 +57,23 @@ namespace
         Require(
             length > 0 && length < MAX_PATH,
             "Could not resolve the test executable path.");
+        // 現在実行中のtest executable pathを返します。
         return std::filesystem::path(buffer);
     }
 
-    // CIではこのテスト自体が静的CRTでリンクされる場合があり、
-    // GetModuleHandleWだけではVC++再頒布DLLを取得できません。実行時に
-    // Windowsが解決できるsystem directoryも同じ順で確認します。
+    // CIではこのテスト自体が静的CRTでリンクされる場合があり、GetModuleHandleWだけではVC++再頒布DLLを取得できません。
+    // 実行時にWindowsが解決できるsystem directoryも同じ順で確認します。
+    // VcRuntimeLibraryPath(moduleName: runtime DLL名): load元DLLのpathを解決します。
     std::filesystem::path VcRuntimeLibraryPath(
         const wchar_t* const moduleName)
     {
+        // moduleが既にload済みの場合はそのfileを調べます。
         if (const HMODULE module = GetModuleHandleW(moduleName);
             module != nullptr)
         {
+            // modulePath: module file path。
             std::wstring modulePath(32768, L'\0');
+            // Windows APIが返すpath文字数。
             const DWORD length = GetModuleFileNameW(
                 module,
                 modulePath.data(),
@@ -72,26 +82,32 @@ namespace
                 length != 0 && length < modulePath.size(),
                 "A loaded VC runtime module path was not available.");
             modulePath.resize(length);
+            // load済みruntime moduleのpathを返します。
             return std::filesystem::path(modulePath);
         }
 
+        // Windows system directoryのpath。
         wchar_t systemDirectory[MAX_PATH]{};
         Require(
             GetSystemDirectoryW(systemDirectory, MAX_PATH) != 0,
             "The Windows system directory was not available.");
+        // systemRuntime: system directory内runtime DLL path。
         const auto systemRuntime =
             std::filesystem::path(systemDirectory) / moduleName;
         Require(
             std::filesystem::is_regular_file(systemRuntime),
             "A VC runtime DLL was not found.");
+        // system directory内runtime DLL pathを返します。
         return systemRuntime;
     }
 
     // 実行ファイルへ埋め込まれたアイコングループを検証します。
+    // RequireEmbeddedIcon(executablePath: PE path, expectedImageCount: icon数): resourceの埋込みを検証します。
     void RequireEmbeddedIcon(
         const std::filesystem::path& executablePath,
         const std::uint16_t expectedImageCount)
     {
+        // resource検査用に開いたexecutable module。
         const HMODULE module = LoadLibraryExW(
             executablePath.c_str(),
             nullptr,
@@ -100,19 +116,25 @@ namespace
         Require(
             module != nullptr,
             "Exported executable could not be inspected.");
+        // 実行file内のicon group resource。
         const HRSRC group = FindResourceW(
             module,
             MAKEINTRESOURCEW(IDI_LAMAPON_ENGINE),
             RT_GROUP_ICON);
+        // imageCount: embedded icon image数。
         std::uint16_t imageCount = 0;
+        // icon group resourceが見つかった場合に内容を読みます。
         if (group != nullptr)
         {
+            // 読み込んだicon group resource。
             const HGLOBAL loaded =
                 LoadResource(module, group);
+            // data: 読み込んだResourceの先頭byte。
             const auto* data = loaded != nullptr
                 ? static_cast<const unsigned char*>(
                     LockResource(loaded))
                 : nullptr;
+            // resource dataが有効な長さを持つ場合にicon数を読みます。
             if (data != nullptr
                 && SizeofResource(module, group) >= 6)
             {
@@ -122,6 +144,7 @@ namespace
                     sizeof(imageCount));
             }
         }
+        // firstIconPresent: 先頭icon resourceの存在状態。
         const bool firstIconPresent = FindResourceW(
             module,
             MAKEINTRESOURCEW(1),
@@ -134,65 +157,77 @@ namespace
             "Icon group was not embedded correctly.");
     }
 
-    // 事前コンパイル済みシェーダーを除いた同梱ファイル数。
-    // shader-cacheの中身は入口の一覧が増えれば変わるので、
-    // 「想定どおりのランタイム一式が入っているか」を見る側では
-    // 数えません（そちらは別途、空でないことだけ確かめます）。
+    // CountExportedFilesExcludingShaderCache(outputDirectory: export root): shader-cache等を除く同梱file数を返します。
     std::size_t CountExportedFilesExcludingShaderCache(
         const std::filesystem::path& outputDirectory)
     {
+        // count: 除外条件適用後のfile数。
         std::size_t count{};
+        // export directory内の各fileを調べます。
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
                 outputDirectory))
         {
+            // 通常fileだけをexport対象数へ含めます。
             if (!entry.is_regular_file())
             {
+                // export対象外fileを飛ばして次entryへ進みます。
                 continue;
             }
+            // shader cacheやlicense等の可変fileを数から除きます。
             if (entry.path().parent_path().filename()
                 == L"shader-cache"
                 || entry.path().parent_path().filename() == L"licenses"
                 || entry.path().filename() == L"THIRD_PARTY_NOTICES.md")
             {
+                // export対象外fileを飛ばして次entryへ進みます。
                 continue;
             }
             ++count;
         }
+        // 除外条件適用後の同梱file数を返します。
         return count;
     }
 
+    // ReadBytes(path: 読込file): 全byteを返します。
     std::vector<std::uint8_t> ReadBytes(
         const std::filesystem::path& path)
     {
+        // input: file読込stream。
         std::ifstream input(
             path,
             std::ios::binary | std::ios::ate);
         Require(
             static_cast<bool>(input),
             "Could not open a file for reading.");
+        // end: file内容の終端位置。
         const auto end = input.tellg();
         Require(
             end >= 0,
             "Could not determine the size of a file.");
+        // bytes: fileまたはarchiveのbinary内容。
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(end));
         input.seekg(0);
+        // 空でないfileだけstreamからbyte列へ読み込みます。
         if (!bytes.empty())
         {
             input.read(
                 reinterpret_cast<char*>(bytes.data()),
                 static_cast<std::streamsize>(bytes.size()));
         }
+        // 読み込んだfile byte列を返します。
         return bytes;
     }
 
+    // WriteBytes(path: 保存先, bytes: 書込byte列): 親folderを作りbinary保存します。
     void WriteBytes(
         const std::filesystem::path& path,
         const std::vector<std::uint8_t>& bytes)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // output: 生成または検証する出力file。
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -204,27 +239,39 @@ namespace
             static_cast<std::streamsize>(bytes.size()));
     }
 
+    // RunArchiveValidationProbe(archivePath: 検証archive path): 暗号化archiveの拒否条件を確認します。
     void RunArchiveValidationProbe(
         const std::filesystem::path& archivePath)
     {
         using Json = nlohmann::json;
+        // key: archive暗号化key。
         const auto key = LamaPon::Crypto::RandomKey();
+        // macKey: archive MAC導出key。
         const auto macKey = LamaPon::Crypto::DeriveMacKey(key);
+        // entryIv: archive entryの暗号化IV。
         const auto entryIv = LamaPon::Crypto::RandomIv();
+        // plain: 暗号化前または復号後の本文。
         const std::vector<std::uint8_t> plain{ 'o', 'k' };
+        // payload: 暗号化entry payload。
         const auto payload = LamaPon::Crypto::AesEncrypt(
             plain, key, entryIv);
+        // entryMac: ciphertextの認証tag。
         const auto entryMac = LamaPon::Crypto::MacForCipherText(
             macKey, entryIv, payload.data(), payload.size());
+        // numbers: byte列をJSON array化するcallback。
         const auto numbers = [](const auto& bytes)
         {
+            // result: exportまたはprobeの結果。
             std::vector<unsigned> result;
+            // byte列の各値をJSON用numberへ変換します。
             for (const auto value : bytes)
             {
                 result.push_back(value);
             }
+            // byte値を並べたJSON number列を返します。
             return result;
         };
+        // 暗号化archiveへ格納する最初のentry。
         const Json first{
             { "path", "data/test.bin" },
             { "offset", 0 },
@@ -232,56 +279,73 @@ namespace
             { "iv", numbers(entryIv) },
             { "mac", numbers(entryMac) }
         };
+        // makeArchive: 検証用tpakを組み立てるcallback。
         const auto makeArchive = [&](
             const Json& entries,
             const std::vector<std::uint8_t>& entryPayload)
         {
+            // indexText: 復号したcache index文字列。
             const auto indexText = Json{
                 { "entries", entries }
             }.dump();
+            // indexPlain: 暗号化前のarchive index。
             const std::vector<std::uint8_t> indexPlain(
                 indexText.begin(), indexText.end());
+            // indexIv: archive indexのIV。
             const auto indexIv = LamaPon::Crypto::RandomIv();
+            // indexCipher: 暗号化したarchive index。
             const auto indexCipher = LamaPon::Crypto::AesEncrypt(
                 indexPlain, key, indexIv);
+            // indexMac: archive indexの認証tag。
             const auto indexMac =
                 LamaPon::Crypto::MacForCipherText(
                     macKey, indexIv,
                     indexCipher.data(), indexCipher.size());
+            // bytes: fileまたはarchiveのbinary内容。
             std::vector<std::uint8_t> bytes{
                 'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
             };
+            // append: archive byte列へdataを追加するfunction。
             const auto append = [&](const void* data,
                 const std::size_t size)
             {
+                // start: 追加するbyte列の先頭。
                 const auto* start =
                     static_cast<const std::uint8_t*>(data);
                 bytes.insert(bytes.end(), start, start + size);
             };
+            // indexSize: 暗号化indexのbyte数。
             const std::uint64_t indexSize = indexCipher.size();
             append(&indexSize, sizeof(indexSize));
             append(indexIv.data(), indexIv.size());
             append(indexMac.data(), indexMac.size());
             append(indexCipher.data(), indexCipher.size());
             append(entryPayload.data(), entryPayload.size());
+            // 読み込んだfile byte列を返します。
             return bytes;
         };
+        // reject: 拒否結果を検証するcallback。
         const auto reject = [&](
             const std::vector<std::uint8_t>& bytes,
             const char* failure)
         {
             WriteBytes(archivePath, bytes);
+            // rejected: 拒否が成立した状態。
             bool rejected{};
+            // 不正archiveが拒否される例外経路を確認します。
             try
             {
                 static_cast<void>(LamaPon::AssetArchive::Open(
                     archivePath, key));
             }
+            // oversized inputの確保失敗をarchive errorへ変換します。
             catch (const std::bad_alloc&)
             {
+                // fixture不整合を例外で通知します。
                 throw std::runtime_error(
                     "Archive allocated memory before rejecting a bad size.");
             }
+            // 期待するfixture拒否例外を捕捉します。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -289,16 +353,21 @@ namespace
             Require(rejected, failure);
         };
 
+        // archive index用のentry配列。
         const Json entries = Json::array({ first });
+        // valid: 有効なarchive headerとentry。
         auto valid = makeArchive(entries, payload);
         WriteBytes(archivePath, valid);
+        // archive: 開いたtpak archive。
         const auto archive = LamaPon::AssetArchive::Open(
             archivePath, key);
         Require(archive->EntryCount() == 1
             && archive->TryRead("data/test.bin") == plain,
             "A valid archive was rejected by the new limits.");
 
+        // oversizedHeader: 上限超過sizeのarchive header。
         auto oversizedHeader = valid;
+        // huge: 64bit最大値のentry size。
         const auto huge = std::numeric_limits<std::uint64_t>::max();
         std::memcpy(oversizedHeader.data() + 8,
             &huge, sizeof(huge));
@@ -307,35 +376,43 @@ namespace
         reject(std::vector<std::uint8_t>(
             valid.begin(), valid.begin() + 63),
             "A truncated archive header was accepted.");
+        // truncatedEntry: 切詰めentry data。
         auto truncatedEntry = valid;
         truncatedEntry.pop_back();
         reject(truncatedEntry,
             "A truncated entry payload was accepted.");
+        // oversizedEntry: 範囲外sizeのarchive entry。
         auto oversizedEntry = first;
         oversizedEntry["size"] =
             LamaPon::AssetArchiveLimits::MaxEntryCipherBytes + 16;
         reject(makeArchive(Json::array({ oversizedEntry }), payload),
             "An oversized entry was accepted.");
+        // overflowEntry: offset加算overflow用entry。
         auto overflowEntry = first;
         overflowEntry["offset"] = huge;
         reject(makeArchive(Json::array({ overflowEntry }), payload),
             "An overflowing entry offset was accepted.");
+        // traversal: path traversal用archive entry。
         auto traversal = first;
         traversal["path"] = "../escape.bin";
         reject(makeArchive(Json::array({ traversal }), payload),
             "A traversal path was accepted.");
+        // longPath: 上限超過entry path。
         auto longPath = first;
         longPath["path"] = std::string(
             LamaPon::AssetArchiveLimits::MaxPathBytes + 1, 'x');
         reject(makeArchive(Json::array({ longPath }), payload),
             "An oversized entry path was accepted.");
+        // invalidIv: 範囲外IVのarchive entry。
         auto invalidIv = first;
         invalidIv["iv"][0] = 256;
         reject(makeArchive(Json::array({ invalidIv }), payload),
             "An out-of-range IV byte was accepted.");
+        // duplicate: 重複archive entry。
         auto duplicate = first;
         duplicate["path"] = "DATA/TEST.BIN";
         duplicate["offset"] = payload.size();
+        // twice: entryを二重化したpayload。
         auto twice = payload;
         twice.insert(twice.end(), payload.begin(), payload.end());
         reject(makeArchive(Json::array({ first, duplicate }), twice),
@@ -345,25 +422,31 @@ namespace
         std::filesystem::remove(archivePath);
     }
 
-    // 既存のrigged GLBへ同じmeshのskin無しnodeを足し、1ファイル内で
-    // Forward／Skinned primitiveが混在するexport検証用モデルにします。
-    // JSON chunkの長さは変えず、元からコピー済みのテストファイルだけを
-    // 上書きするため、追加fixtureは要りません。
+    // AddUnskinnedInstanceToGlb(path: mixed-role GLB): 既存JSON chunk長を保ってskin無しnodeを追加します。
     void AddUnskinnedInstanceToGlb(
         const std::filesystem::path& path)
     {
+        // GlbMagic: GLB format magic。
         constexpr std::uint32_t GlbMagic = 0x46546c67;
+        // GlbVersion: 対応するGLB version。
         constexpr std::uint32_t GlbVersion = 2;
+        // JsonChunkType: GLB JSON chunk type。
         constexpr std::uint32_t JsonChunkType = 0x4e4f534a;
+        // JsonChunkOffset: GLB JSON chunkの開始offset。
         constexpr std::size_t JsonChunkOffset = 20;
+        // bytes: fileまたはarchiveのbinary内容。
         auto bytes = ReadBytes(path);
         Require(
             bytes.size() >= JsonChunkOffset,
             "The mixed-role GLB fixture header is truncated.");
 
+        // magic: GLB header magic。
         std::uint32_t magic{};
+        // version: GLB version field。
         std::uint32_t version{};
+        // jsonLength: 元のJSON chunk長。
         std::uint32_t jsonLength{};
+        // chunkType: GLB JSON chunkのtype。
         std::uint32_t chunkType{};
         std::memcpy(&magic, bytes.data(), sizeof(magic));
         std::memcpy(
@@ -385,37 +468,45 @@ namespace
                 && jsonLength <= bytes.size() - JsonChunkOffset,
             "The mixed-role GLB fixture has an invalid header.");
 
+        // document: GLB JSON document。
         auto document = nlohmann::json::parse(
             bytes.begin() + JsonChunkOffset,
             bytes.begin() + JsonChunkOffset + jsonLength);
+        // nodes: GLB JSONのNode一覧。
         auto& nodes = document.at("nodes");
+        // skinned: skinを参照するGLB node。
         const auto skinned = std::ranges::find_if(
             nodes,
             [](const nlohmann::json& node)
             {
+                // meshとskinを持つnodeか判定します。
                 return node.contains("mesh")
                     && node.contains("skin");
             });
         Require(
             skinned != nodes.end(),
             "The mixed-role GLB fixture has no skinned mesh node.");
+        // mesh: skin付きnodeが参照するmesh番号。
         const auto mesh = skinned->at("mesh");
+        // nodeIndex: 追加nodeのindex。
         const auto nodeIndex = nodes.size();
         nodes.push_back(nlohmann::json{ { "mesh", mesh } });
 
+        // sceneIndex: GLB内のcurrent scene番号。
         const auto sceneIndex = document.value("scene", 0u);
+        // sceneNodes: current Sceneが参照するNode index。
         auto& sceneNodes = document.at("scenes")
             .at(sceneIndex)
             .at("nodes");
         sceneNodes.push_back(nodeIndex);
 
-        // 追加nodeぶんを既存JSON chunkへ収めるため、描画判定に影響しない
-        // 表示名とgenerator文字列だけを落とします。
+        // 追加nodeぶんを既存JSON chunkへ収めるため、描画判定に影響しない表示名とgenerator文字列だけを落とします。
         for (auto& node : nodes)
         {
             node.erase("name");
         }
         document.at("asset").erase("generator");
+        // json: GLB JSON本文。
         const auto json = document.dump();
         Require(
             json.size() <= jsonLength,
@@ -431,20 +522,18 @@ namespace
         WriteBytes(path, bytes);
     }
 
-    // 偽のLamaPonRuntime.dll。本物と同じように鍵スロットを1つだけ
-    // 持たせます。書き出しはこのスロットを、そのゲームだけの鍵で
-    // 書き換えます（スロットが無ければ書き出しは失敗するのが正しい
-    // 挙動なので、テストの偽物にも必ず入れます）。
+    // FakeRuntimeKeySlotOffset: fake DLL内のkey marker先頭位置。
     constexpr std::size_t FakeRuntimeKeySlotOffset = 64;
 
+    // WriteFakeRuntimeLibrary(path: DLL path): export鍵の置換対象となるkey slot付きDLLを作ります。
     void WriteFakeRuntimeLibrary(
         const std::filesystem::path& path)
     {
+        // bytes: fileまたはarchiveのbinary内容。
         std::vector<std::uint8_t> bytes(
             FakeRuntimeKeySlotOffset,
             0x2a);
-        // 目印さえ入っていれば書き換えられます（続く64バイトは
-        // 書き出しで丸ごと上書きされるので、中身は何でも構いません）。
+        // marker: export処理が認識するkey slot先頭marker。
         const auto marker =
             LamaPon::Crypto::ExpectedKeySlotMarker();
         bytes.insert(bytes.end(), marker.begin(), marker.end());
@@ -456,23 +545,28 @@ namespace
         WriteBytes(path, bytes);
     }
 
-    // 書き出したDLLへ焼き込まれた鍵を、スロットの並びから戻します。
+    // ReadEmbeddedArchiveKey(runtimeLibrary: export DLL): key slotから埋込みarchive keyを復号します。
     LamaPon::Crypto::AesKey ReadEmbeddedArchiveKey(
         const std::filesystem::path& runtimeLibrary)
     {
+        // bytes: fileまたはarchiveのbinary内容。
         const auto bytes = ReadBytes(runtimeLibrary);
         Require(
             bytes.size()
                 >= FakeRuntimeKeySlotOffset
                     + LamaPon::Crypto::KeySlotSize,
             "Exported runtime is too small to hold a key slot.");
+        // key: archive暗号化key。
         LamaPon::Crypto::AesKey key{};
+        // key slot内の全key byteを復元します。
         for (std::size_t index = 0; index < key.size(); ++index)
         {
+            // pad: 鍵slotのXOR pad byte。
             const auto pad = bytes[
                 FakeRuntimeKeySlotOffset
                 + LamaPon::Crypto::KeySlotMarkerSize
                 + index];
+            // stored: runtime内に保存されたkey bytes。
             const auto stored = bytes[
                 FakeRuntimeKeySlotOffset
                 + LamaPon::Crypto::KeySlotMarkerSize
@@ -480,21 +574,26 @@ namespace
                 + index];
             key[index] = static_cast<std::uint8_t>(stored ^ pad);
         }
+        // 復号したruntime archive keyを返します。
         return key;
     }
 
-    // 封筒（暗号化）済みなら開いてから、平文ならそのまま文字列で返します。
+    // ReadSealedText(path: file path, key: 復号鍵): sealedなら復号しplainならそのまま返します。
     std::string ReadSealedText(
         const std::filesystem::path& path,
         const LamaPon::Crypto::AesKey& key)
     {
+        // bytes: fileまたはarchiveのbinary内容。
         const auto bytes = ReadBytes(path);
+        // 入力がsealedでない場合は平文として扱います。
         if (!LamaPon::Crypto::IsSealed(
                 bytes.data(),
                 bytes.size()))
         {
+            // sealedでないfileをUTF-8 textとして返します。
             return std::string(bytes.begin(), bytes.end());
         }
+        // plain: 暗号化前または復号後の本文。
         const auto plain = LamaPon::Crypto::Unseal(
             bytes.data(),
             bytes.size(),
@@ -503,15 +602,20 @@ namespace
             plain.has_value(),
             "A sealed export file could not be opened with the"
                 " key embedded in the exported runtime.");
+        // 復号したsealed fileのtextを返します。
         return std::string(plain->begin(), plain->end());
     }
 
+    // ContainsKeySlotMarker(path: binary path): embedded key markerの有無を返します。
     bool ContainsKeySlotMarker(
         const std::filesystem::path& path)
     {
+        // bytes: fileまたはarchiveのbinary内容。
         const auto bytes = ReadBytes(path);
+        // marker: key slot識別marker。
         const auto marker =
             LamaPon::Crypto::ExpectedKeySlotMarker();
+        // binary内にkey slot markerがあるか返します。
         return std::search(
             bytes.begin(),
             bytes.end(),
@@ -519,46 +623,58 @@ namespace
             marker.end()) != bytes.end();
     }
 
+    // WriteFile(path: 保存先, contents: file本文): 親folderを作って書き込みます。
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // output: 生成または検証する出力file。
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // 出力fileを作成できない場合はfixtureを失敗させます。
         if (!output)
         {
+            // fixture不整合を例外で通知します。
             throw std::runtime_error(
                 "Could not create test file.");
         }
         output << contents;
     }
 
-    // 配布先のコピーとして起動された子processで実行します。このprocessが
-    // 読み込むLamaPonRuntime.dllにはexport固有鍵が埋め込まれているため、
-    // 平文化せずに sealed index/CSO とmetadataを一続きで検証できます。
+    // 配布先のコピーとして起動された子processで実行します。
+    // RunExportedShaderCacheProbe(): export先DLLの鍵でsealed index/CSOとmetadataを検証します。
     void RunExportedShaderCacheProbe()
     {
+        // shader cache検査用COM初期化の結果。
         const HRESULT comResult = CoInitializeEx(
             nullptr,
             COINIT_MULTITHREADED);
+        // uninitializeCom: COM初期化を解除する状態。
         const bool uninitializeCom = SUCCEEDED(comResult);
         Require(
             SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE,
             "COM initialization failed in the exported shader-cache probe.");
+        // probe failureでもcache検索設定とCOMを後始末します。
         try
         {
+            // exportRoot: 配布先export root。
             const auto exportRoot = std::filesystem::current_path();
+            // cacheDirectory: 配布後のshader-cache path。
             const auto cacheDirectory = exportRoot / "shader-cache";
+            // export directory内の各fileを調べます。
             for (const auto& entry :
                 std::filesystem::directory_iterator(cacheDirectory))
             {
+                // 通常fileだけをexport対象数へ含めます。
                 if (!entry.is_regular_file())
                 {
+                    // export対象外fileを飛ばして次entryへ進みます。
                     continue;
                 }
+                // bytes: fileまたはarchiveのbinary内容。
                 const auto bytes = ReadBytes(entry.path());
                 Require(
                     LamaPon::Crypto::IsSealed(
@@ -567,13 +683,16 @@ namespace
                     "The exported shader-cache probe found a plaintext file.");
             }
 
+            // assets: shader cache probe用AssetManager。
             LamaPon::AssetManager assets(nullptr, nullptr);
             assets.SetAssetRoot(
                 exportRoot / "unpacked-assets-not-created");
             LamaPon::ClearShaderCacheSearchDirectories();
             LamaPon::AddShaderCacheSearchDirectory(cacheDirectory);
+            // sourcePath: shader sourceのasset path。
             const auto sourcePath = assets.ResolvePath(
                 "Shaders/TESTEXPORT.HLSL");
+            // blob: 復号したshader bytecode。
             const auto blob = LamaPon::CompileShaderCached(
                 assets,
                 sourcePath,
@@ -584,8 +703,7 @@ namespace
                 blob && blob->GetBufferSize() != 0,
                 "The exported runtime could not decrypt a cached shader.");
 
-            // D3DReflectを動的取得し、復号結果が単に非空なだけでなく、
-            // 有効なDirect3D shader bytecodeであることまで確認します。
+            // D3DReflectを動的取得し、復号結果が単に非空なだけでなく、有効なDirect3D shader bytecodeであることまで確認します。
             const HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
             Require(
                 compiler != nullptr,
@@ -595,18 +713,22 @@ namespace
                 SIZE_T,
                 REFIID,
                 void**);
+            // reflect: 動的取得したD3DReflect function。
             const auto reflect = reinterpret_cast<ReflectFunction>(
                 GetProcAddress(compiler, "D3DReflect"));
             Require(
                 reflect != nullptr,
                 "D3DReflect was not available to the cache probe.");
+            // bytecodeを検査するshader reflection interface。
             Microsoft::WRL::ComPtr<ID3D11ShaderReflection> reflection;
+            // D3DReflectによるbytecode解析結果。
             const HRESULT reflectResult = reflect(
                 blob->GetBufferPointer(),
                 blob->GetBufferSize(),
                 __uuidof(ID3D11ShaderReflection),
                 reinterpret_cast<void**>(
                     reflection.ReleaseAndGetAddressOf()));
+            // reflected: shader bytecodeのreflection成功状態。
             const bool reflected =
                 SUCCEEDED(reflectResult) && reflection;
             reflection.Reset();
@@ -615,7 +737,9 @@ namespace
                 reflected,
                 "The decrypted cache payload was not valid shader bytecode.");
 
+            // restoredState: 復元したshader render state。
             LamaPon::ShaderRenderState restoredState;
+            // restoredVariants: 復元したshader variant declaration。
             LamaPon::ShaderVariantDeclaration restoredVariants;
             Require(
                 LamaPon::LoadPrecompiledShaderMetadata(
@@ -630,30 +754,38 @@ namespace
                 "The exported runtime could not decrypt shader metadata.");
             LamaPon::ClearShaderCacheSearchDirectories();
         }
+        // 期待するfixture拒否例外を捕捉します。
         catch (...)
         {
             LamaPon::ClearShaderCacheSearchDirectories();
+            // このprobeがCOM初期化を所有する場合に解放します。
             if (uninitializeCom)
             {
                 CoUninitialize();
             }
+            // fixture不整合を例外で通知します。
             throw;
         }
+        // このprobeがCOM初期化を所有する場合に解放します。
         if (uninitializeCom)
         {
             CoUninitialize();
         }
     }
 
+    // RunChildProcess(executable: 起動file, workingDirectory: cwd, arguments: CLI引数): probeを起動して成功を検証します。
     void RunChildProcess(
         const std::filesystem::path& executable,
         const std::filesystem::path& workingDirectory,
         const std::wstring_view arguments)
     {
+        // commandLine: CreateProcessへ渡す完全なcommand line。
         std::wstring commandLine = L"\"" + executable.wstring()
             + L"\" " + std::wstring(arguments);
+        // 起動する子processの作成設定。
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動した子processのhandle群。
         PROCESS_INFORMATION process{};
         Require(
             CreateProcessW(
@@ -669,14 +801,18 @@ namespace
                 &process) != FALSE,
             "Could not launch the exported shader-cache probe.");
         CloseHandle(process.hThread);
+        // 子process終了待ちの結果。
         const DWORD wait = WaitForSingleObject(
             process.hProcess,
             30000);
+        // 失敗時も明示的に非0とする子process終了code。
         DWORD exitCode = 1;
+        // child processがsignal状態ならexit codeを読みます。
         if (wait == WAIT_OBJECT_0)
         {
             GetExitCodeProcess(process.hProcess, &exitCode);
         }
+        // child processがtimeoutまたはwait errorの場合を処理します。
         else
         {
             TerminateProcess(process.hProcess, 1);
@@ -689,14 +825,18 @@ namespace
     }
 }
 
+// main(argumentCount: 引数数, arguments: 引数列): export testを実行しprocess終了codeを返します。
 int main(const int argumentCount, char** const arguments)
 {
+    // 不正archiveが拒否される例外経路を確認します。
     try
     {
+        // archive validation probeのCLI引数を処理します。
         if (argumentCount == 3
             && std::string_view{ arguments[1] }
                 == "--signing-options-probe")
         {
+            // signing: 署名設定fixture。
             LamaPon::GameSigningOptions signing;
             LamaPon::ValidateGameSigningOptions(signing);
             signing.enabled = true;
@@ -705,16 +845,21 @@ int main(const int argumentCount, char** const arguments)
             signing.timestampUrl =
                 "https://timestamp.example.invalid";
             LamaPon::ValidateGameSigningOptions(signing);
+            // expectRejected: 拒否結果を検証するcallback。
             auto expectRejected = [&]()
             {
+                // 不正archiveが拒否される例外経路を確認します。
                 try
                 {
                     LamaPon::ValidateGameSigningOptions(signing);
                 }
+                // 期待するfixture拒否例外を捕捉します。
                 catch (const std::invalid_argument&)
                 {
+                    // probeの成功結果を呼び出し元へ返します。
                     return;
                 }
+                // fixture不整合を例外で通知します。
                 throw std::runtime_error(
                     "Invalid signing options were accepted.");
             };
@@ -728,15 +873,19 @@ int main(const int argumentCount, char** const arguments)
             signing.signToolPath = "signtool.exe";
             expectRejected();
             std::cout << "Signing options probe passed.\n";
+            // probe成功をprocess exit codeで通知します。
             return 0;
         }
+        // child processへ渡されたprobe modeを選びます。
         if (argumentCount == 2
             && std::string_view{ arguments[1] }
                 == "--shader-cache-probe")
         {
             RunExportedShaderCacheProbe();
+            // probe成功をprocess exit codeで通知します。
             return 0;
         }
+        // child processへ渡されたprobe modeを選びます。
         if (argumentCount == 2
             && std::string_view{ arguments[1] }
                 == "--archive-validation-probe")
@@ -746,17 +895,22 @@ int main(const int argumentCount, char** const arguments)
                 / "test-output" / "game-exporter"
                 / "archive-validation.tpak");
             std::cout << "Archive validation tests passed.\n";
+            // probe成功をprocess exit codeで通知します。
             return 0;
         }
+        // child processへ渡されたprobe modeを選びます。
         if (argumentCount == 2
             && std::string_view{ arguments[1] }
                 == "--existing-archive-probe")
         {
+            // output: 生成または検証する出力file。
             const auto output = std::filesystem::current_path()
                 / "test-output" / "game-exporter"
                 / "dist" / "MyGame";
+            // key: archive暗号化key。
             const auto key = ReadEmbeddedArchiveKey(
                 output / "LamaPonRuntime.dll");
+            // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
                 output / "assets.tpak", key);
             Require(archive->EntryCount() > 0
@@ -767,19 +921,26 @@ int main(const int argumentCount, char** const arguments)
                         'a', 's', 's', 'e', 't' },
                 "An existing exported archive no longer opens.");
             std::cout << "Existing archive probe passed.\n";
+            // probe成功をprocess exit codeで通知します。
             return 0;
         }
+        // root: test-output内のexport root。
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "game-exporter";
         std::filesystem::remove_all(root);
 
+        // runtimeDirectory: fake runtime DLLの置き場。
         const auto runtimeDirectory = root / "runtime";
+        // assetDirectory: export対象projectのassets root。
         const auto assetDirectory = root / "project" / "assets";
+        // outputDirectory: exportされたgame directory。
         const auto outputDirectory = root / "dist" / "MyGame";
+        // startupScene: projectのstartup scene path。
         const auto startupScene =
             std::filesystem::path(L"scenes/日本語.scene.json");
+        // projectSettings: export対象project settings。
         LamaPon::ProjectSettings projectSettings{
             "日本語ゲーム",
             1600,
@@ -787,10 +948,8 @@ int main(const int argumentCount, char** const arguments)
             startupScene
         };
         projectSettings.splashScreenEnabled = false;
-        // 1本目は「HLSLを残す」側の書き出しとして検証します
-        // （外す側は後半のstrippedSettingsで別に見ます）。既定値へ
-        // 任せると、既定が変わったときにshader_featureのバリアント数の
-        // 検証が黙って別のことを測り始めます。
+        // 1本目は「HLSLを残す」側の書き出しとして検証します（外す側は後半のstrippedSettingsで別に見ます）。
+        // 既定値へ任せると、既定が変わったときにshader_featureのバリアント数の検証が黙って別のことを測り始めます。
         projectSettings.stripShaderSourceOnExport = false;
         projectSettings.graphics =
             LamaPon::GraphicsSettingsForPreset(
@@ -826,13 +985,14 @@ int main(const int argumentCount, char** const arguments)
         projectSettings.online.discordPresence
             .defaultLargeImageText = "My Awesome Game";
 
-        // 書き出し時にシェーダーが事前コンパイルされることを見るため、
-        // 本物としてコンパイルできるHLSLを1本置きます。#includeも
-        // 使い、依存の記録がアセットルート相対で残ることも兼ねて
-        // 確かめます（絶対パスで残すと、配布先で必ず外れます）。
+        // 書き出し時にシェーダーが事前コンパイルされることを見るため、本物としてコンパイルできるHLSLを1本置きます。
+        // #includeも使い、依存の記録がアセットルート相対で残ることも兼ねて確かめます（絶対パスで残すと、配布先で必ず外れます）。
         WriteFile(
             assetDirectory / "shaders" / "TestCommon.hlsli",
             "float TestTint() { return 0.5f; }\n");
+        // multi_compileは常に全組み合わせ、shader_featureは使われているものだけ。
+        // ここでは EXPORT_FEATURE_ON をどのシーンも使っていないので、落ちるのが正解です。
+        // source-stripped配布でも、Manifestだけでなく従来のHLSL直接指定が固定entryの索引を使えることを検証します。
         WriteFile(
             assetDirectory / "shaders" / "TestExport.hlsl",
             "/* LAMAPON_RENDER_STATE\n"
@@ -840,13 +1000,8 @@ int main(const int argumentCount, char** const arguments)
             " \"depthWrite\": false, \"depthTest\": false }\n"
             "*/\n"
             "#include \"TestCommon.hlsli\"\n"
-            // multi_compileは常に全組み合わせ、shader_featureは
-            // 使われているものだけ。ここでは EXPORT_FEATURE_ON を
-            // どのシーンも使っていないので、落ちるのが正解です。
             "#pragma multi_compile _ EXPORT_MULTI_ON\n"
             "#pragma shader_feature _ EXPORT_FEATURE_ON\n"
-            // source-stripped配布でも、Manifestだけでなく従来の
-            // HLSL直接指定が固定entryの索引を使えることを検証します。
             "float4 VSMain(uint id : SV_VertexID) : SV_Position\n"
             "{\n"
             "    return float4(id == 2 ? 3 : -1, id == 1 ? 3 : -1, 0, 1);\n"
@@ -1143,8 +1298,7 @@ int main(const int argumentCount, char** const arguments)
 }
 )json");
 
-        // アイコン埋め込みを検証するため、ゲームexeには本物のPE
-        // （このテスト自身のコピー）を使います。
+        // アイコン埋め込みを検証するため、ゲームexeには本物のPE（このテスト自身のコピー）を使います。
         std::filesystem::create_directories(
             runtimeDirectory);
         std::filesystem::copy(
@@ -1173,20 +1327,21 @@ int main(const int argumentCount, char** const arguments)
             runtimeDirectory / "msvcp140.dll",
             "crt");
 
-        // ゲームアイコン: 16pxと32pxの2枚を持つICOを生成して
-        // アセットとして配置します。
+        // ゲームアイコン: 16pxと32pxの2枚を持つICOを生成してアセットとして配置します。
         LamaPon::IconImage smallIcon;
         smallIcon.width = 16;
         smallIcon.height = 16;
         smallIcon.bgraPixels.resize(
             16 * 16 * 4,
             std::byte{ 0x7F });
+        // largeIcon: 大サイズicon resource。
         LamaPon::IconImage largeIcon;
         largeIcon.width = 32;
         largeIcon.height = 32;
         largeIcon.bgraPixels.resize(
             32 * 32 * 4,
             std::byte{ 0x3F });
+        // icoBytes: 生成するICO file bytes。
         const auto icoBytes = LamaPon::BuildIcoFileBytes(
             { smallIcon, largeIcon });
         Require(
@@ -1198,6 +1353,7 @@ int main(const int argumentCount, char** const arguments)
         {
             std::filesystem::create_directories(
                 assetDirectory / "icons");
+            // icoOutput: ICO fixtureの出力stream。
             std::ofstream icoOutput(
                 assetDirectory / "icons" / "game.ico",
                 std::ios::binary | std::ios::trunc);
@@ -1216,12 +1372,14 @@ int main(const int argumentCount, char** const arguments)
                 assetDirectory / "icons" / "game.ico")
                 == icoBytes,
             ".ico passthrough altered the bytes.");
+        // projectGameModule: export対象game module。
         const auto projectGameModule =
             root / "project" / ".lamapon" / "bin"
             / "LamaPonGameModule.dll";
         WriteFile(
             projectGameModule,
             "project-game-module");
+        // projectScript: project script source。
         const auto projectScript =
             assetDirectory / "scripts" / "TestScript.cpp";
         WriteFile(
@@ -1240,11 +1398,11 @@ int main(const int argumentCount, char** const arguments)
             projectGameModule.parent_path()
                 / "middleware.dll",
             "project-middleware");
-        // 平文漏れ検査の目印は長い一意な文字列にします。短い文字列
-        // （"{}"など）は暗号化後のバイト列に偶然出現する確率が
-        // 無視できず、テストがまれに失敗します。
+        // 平文漏れ検査の目印は長い一意な文字列にします。
+        // 短い文字列（"{}"など）は暗号化後のバイト列に偶然出現する確率が無視できず、テストがまれに失敗します。
         constexpr const char* sceneMarker =
             R"({"marker":"LAMAPON_PLAINTEXT_SCENE_MARKER"})";
+        // 平文残存を検査するtexture payloadの目印。
         constexpr const char* textureMarker =
             "LAMAPON_PLAINTEXT_TEXTURE_MARKER";
         WriteFile(
@@ -1257,14 +1415,14 @@ int main(const int argumentCount, char** const arguments)
             assetDirectory / "data" / "custom.lpdata",
             "custom-runtime-asset");
 
-        // エンジン更新後に古いGame Moduleを梱包するとNative Scriptが
-        // 解決できないため、配布前に拒否します。
+        // エンジン更新後に古いGame Moduleを梱包するとNative Scriptが解決できないため、配布前に拒否します。
         const auto runtimeWriteTime =
             std::filesystem::last_write_time(
                 runtimeDirectory / "LamaPonRuntime.dll");
         std::filesystem::last_write_time(
             projectScript,
             runtimeWriteTime - std::chrono::minutes(2));
+        // Game Moduleのheader拡張子を順に更新します。
         for (const auto* name : { "TestScript.h", "TestScript.hpp" })
         {
             std::filesystem::last_write_time(
@@ -1274,7 +1432,9 @@ int main(const int argumentCount, char** const arguments)
         std::filesystem::last_write_time(
             projectGameModule,
             runtimeWriteTime - std::chrono::minutes(1));
+        // staleModuleRejected: 古いmoduleの拒否結果。
         bool staleModuleRejected = false;
+        // このexport設定が拒否される経路を検証します。
         try
         {
             static_cast<void>(LamaPon::ExportGamePackage(
@@ -1286,6 +1446,7 @@ int main(const int argumentCount, char** const arguments)
                     projectGameModule
                 }));
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             staleModuleRejected = true;
@@ -1300,7 +1461,9 @@ int main(const int argumentCount, char** const arguments)
         std::filesystem::last_write_time(
             projectScript,
             runtimeWriteTime + std::chrono::minutes(2));
+        // staleSourceRejected: 古いshader sourceの拒否結果。
         bool staleSourceRejected = false;
+        // このexport設定が拒否される経路を検証します。
         try
         {
             static_cast<void>(LamaPon::ExportGamePackage(
@@ -1312,6 +1475,7 @@ int main(const int argumentCount, char** const arguments)
                     projectGameModule
                 }));
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             staleSourceRejected = true;
@@ -1323,6 +1487,7 @@ int main(const int argumentCount, char** const arguments)
             projectScript,
             runtimeWriteTime);
 
+        // first: archiveの先行entry。
         const auto first = LamaPon::ExportGamePackage(
             LamaPon::GameExportOptions{
                 runtimeDirectory,
@@ -1334,11 +1499,15 @@ int main(const int argumentCount, char** const arguments)
         RunArchiveValidationProbe(
             root / "archive-validation.tpak");
         {
+            // invalidManifestReported: invalid manifestが報告された状態。
             bool invalidManifestReported{};
+            // compileFailureReported: shader compile失敗を確認した状態。
             bool compileFailureReported{};
+            // exportされた各shader cache fileを調べます。
             for (const auto& entry :
                 LamaPon::Logger::Instance().Snapshot())
             {
+                // 対象manifestのwarning診断だけを照合します。
                 if (entry.level == LamaPon::LogLevel::Warning
                     && entry.message.find(
                         "InvalidExport.lamashader.json")
@@ -1348,6 +1517,7 @@ int main(const int argumentCount, char** const arguments)
                 {
                     invalidManifestReported = true;
                 }
+                // 対象manifestのwarning診断だけを照合します。
                 if (entry.level == LamaPon::LogLevel::Warning
                     && entry.message.find(
                         "BrokenEntryExport.lamashader.json")
@@ -1414,9 +1584,11 @@ int main(const int argumentCount, char** const arguments)
                 outputDirectory / "middleware.dll"),
             "Project-local runtime DLL was not exported.");
         {
+            // moduleInput: project module読込stream。
             std::ifstream moduleInput(
                 outputDirectory / "LamaPonGameModule.dll",
                 std::ios::binary);
+            // moduleContents: module file本文。
             const std::string moduleContents{
                 std::istreambuf_iterator<char>{ moduleInput },
                 std::istreambuf_iterator<char>{}
@@ -1429,30 +1601,36 @@ int main(const int argumentCount, char** const arguments)
             std::filesystem::is_regular_file(
                 outputDirectory / "assets.tpak"),
             "Encrypted asset archive was not exported.");
-        // 書き出しごとに配布物固有の鍵を生成し、配布用の
-        // LamaPonRuntime.dllへ埋め込みます。以降はその鍵を取り出して検証します。
+        // 書き出しごとに配布物固有の鍵を生成し、配布用のLamaPonRuntime.dllへ埋め込みます。
+        // 以降はその鍵を取り出して検証します。
         const auto exportedRuntime =
             outputDirectory / "LamaPonRuntime.dll";
+        // embeddedKey: runtime DLLに埋め込まれたarchive key。
         const auto embeddedKey =
             ReadEmbeddedArchiveKey(exportedRuntime);
         {
-            // 事前コンパイル済みシェーダーの同梱。無いと、
-            // プレイヤーの初回起動で全部コンパイルすることになります。
+            // 事前コンパイル済みシェーダーの同梱。
+            // 無いと、プレイヤーの初回起動で全部コンパイルすることになります。
             const auto shaderCache =
                 outputDirectory / "shader-cache";
             Require(
                 std::filesystem::is_directory(shaderCache),
                 "Precompiled shader cache was not exported.");
+            // byteCodeCount: reflectionが報告したbytecode数。
             std::size_t byteCodeCount{};
+            // manifestCount: manifest entry数。
             std::size_t manifestCount{};
+            // exportされた各shader cache fileを調べます。
             for (const auto& entry :
                 std::filesystem::directory_iterator(
                     shaderCache))
             {
+                // compiled shader bytecode数を数えます。
                 if (entry.path().extension() == ".cso")
                 {
                     ++byteCodeCount;
                 }
+                // .deps dependency manifestの件数を集計します。
                 else if (entry.path().extension() == ".deps")
                 {
                     ++manifestCount;
@@ -1466,23 +1644,28 @@ int main(const int argumentCount, char** const arguments)
                 "Compiled shaders were exported without their"
                     " dependency manifests.");
 
-            // shader_featureのストリップ。EXPORT_MULTI_ONは
-            // multi_compileなので必ず2通り焼かれ、
-            // EXPORT_FEATURE_ONはどのシーンも使っていないので
-            // 落ちます。つまりバリアントは2通りのはずです。
+            // shader_featureのストリップ。
+            // EXPORT_MULTI_ONはmulti_compileなので必ず2通り焼かれ、EXPORT_FEATURE_ONはどのシーンも使っていないので落ちます。
+            // つまりバリアントは2通りのはずです。
             // 落ちていなければ4通りぶんの.depsが出ます。
             std::size_t exportManifests{};
+            // exportされた各shader cache fileを調べます。
             for (const auto& entry :
                 std::filesystem::directory_iterator(
                     shaderCache))
             {
+                // dependency manifest以外をvariant解析から除きます。
                 if (entry.path().extension() != ".deps")
                 {
+                    // 対象外のshader cache entryを飛ばします。
                     continue;
                 }
+                // manifest: export manifest文書。
                 std::istringstream manifest(
                     ReadSealedText(entry.path(), embeddedKey));
+                // line: 現在解析中のindex行。
                 std::string line;
+                // index lineに対象shader pathが含まれるか確認します。
                 if (std::getline(manifest, line)
                     && line.find("testexport.hlsl")
                         != std::string::npos)
@@ -1490,13 +1673,10 @@ int main(const int argumentCount, char** const arguments)
                     ++exportManifests;
                 }
             }
-            // 既知の入口は2バリアントずつ、Manifest固有の
-            // vertex/pixelはScreenEffect実行時と同じキーワード無しを
-            // 1本ずつ、Material全14 stageは使用中の2バリアントずつ、
-            // Computeは実行時と同じ必須CSを1本焼きます。壊れた
-            // Manifestの2 stageも失敗cache用の.depsを残します。
+            // 既知entrypointは2 variant、screen-effectは1、Material stageは2、Computeは1を焼き、失敗stageもmanifestに残します。
             const auto entryPoints =
                 LamaPon::KnownShaderEntryPoints().size();
+            // expectedExportManifests: exportで生成するmanifest一覧。
             const auto expectedExportManifests =
                 entryPoints * 2 + 2 + 14 * 2 + 1 + 2;
             std::cout
@@ -1528,12 +1708,14 @@ int main(const int argumentCount, char** const arguments)
         {
             // 既定鍵では開けず、書き出し固有鍵だけが有効であることを確認します。
             bool openedWithEngineKey = true;
+            // 不正または改ざんarchiveの拒否を確認します。
             try
             {
                 static_cast<void>(
                     LamaPon::AssetArchive::Open(
                         outputDirectory / "assets.tpak"));
             }
+            // exception: 期待する拒否経路で発生した理由。
             catch (const std::exception&)
             {
                 openedWithEngineKey = false;
@@ -1547,8 +1729,10 @@ int main(const int argumentCount, char** const arguments)
             // 索引を1バイト書き換えたら開けないこと（改ざん検知）。
             const auto tampered =
                 outputDirectory.parent_path() / "tampered.tpak";
+            // bytes: fileまたはarchiveのbinary内容。
             auto bytes = ReadBytes(
                 outputDirectory / "assets.tpak");
+            // headerSize: probe file header長。
             constexpr std::size_t headerSize = 8 + 8 + 16 + 32;
             Require(
                 bytes.size() > headerSize,
@@ -1557,7 +1741,9 @@ int main(const int argumentCount, char** const arguments)
                 static_cast<std::uint8_t>(
                     bytes[headerSize] ^ 0xff);
             WriteBytes(tampered, bytes);
+            // openedTampered: 改ざんarchiveのopen結果。
             bool openedTampered = true;
+            // 不正または改ざんarchiveの拒否を確認します。
             try
             {
                 static_cast<void>(
@@ -1565,6 +1751,7 @@ int main(const int argumentCount, char** const arguments)
                         tampered,
                         embeddedKey));
             }
+            // exception: 期待する拒否経路で発生した理由。
             catch (const std::exception&)
             {
                 openedTampered = false;
@@ -1574,8 +1761,7 @@ int main(const int argumentCount, char** const arguments)
                 "A tampered archive index must be rejected.");
         }
         {
-            // 同梱した事前コンパイル済みシェーダーが暗号化されて
-            // いること（HLSLを外してもDXBCが素で置いてあれば読めます）。
+            // 同梱した事前コンパイル済みシェーダーが暗号化されていること（HLSLを外してもDXBCが素で置いてあれば読めます）。
             const auto index = ReadBytes(
                 outputDirectory / "shader-cache" / "index.txt");
             Require(
@@ -1585,6 +1771,7 @@ int main(const int argumentCount, char** const arguments)
                 "The bundled shader cache must be encrypted.");
         }
         {
+            // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
                 outputDirectory / "assets.tpak",
                 embeddedKey);
@@ -1603,6 +1790,7 @@ int main(const int argumentCount, char** const arguments)
             Require(
                 archive->Contains("data/custom.lpdata"),
                 "A custom runtime asset extension was not exported.");
+            // decryptedScene: 復号したscene本文。
             const auto decryptedScene =
                 archive->TryRead(startupScene);
             Require(
@@ -1612,12 +1800,14 @@ int main(const int argumentCount, char** const arguments)
                         decryptedScene->end()) == sceneMarker,
                 "Startup scene did not decrypt to its original contents.");
 
+            // texturePath: export対象texture path。
             const auto texturePath =
                 std::filesystem::path("textures")
                     / "sample.bin";
             Require(
                 archive->Contains(texturePath),
                 "Texture asset is missing from the encrypted archive.");
+            // decryptedTexture: 復号したtexture bytes。
             const auto decryptedTexture =
                 archive->TryRead(texturePath);
             Require(
@@ -1628,9 +1818,11 @@ int main(const int argumentCount, char** const arguments)
                         == textureMarker,
                 "Texture asset did not decrypt to its original contents.");
 
+            // rawArchive: export archiveの入力stream。
             std::ifstream rawArchive(
                 outputDirectory / "assets.tpak",
                 std::ios::binary);
+            // rawArchiveBytes: export archiveのbinary内容。
             const std::string rawArchiveBytes{
                 std::istreambuf_iterator<char>{ rawArchive },
                 std::istreambuf_iterator<char>{}
@@ -1645,9 +1837,12 @@ int main(const int argumentCount, char** const arguments)
         }
 
         {
+            // credential: 署名certificate fixture。
             const auto credential = assetDirectory / ".env";
             WriteFile(credential, "TEST_SECRET=do-not-ship\n");
+            // credentialRejected: 署名certificate拒否結果。
             bool credentialRejected = false;
+            // このexport設定が拒否される経路を検証します。
             try
             {
                 static_cast<void>(LamaPon::ExportGamePackage(
@@ -1659,6 +1854,7 @@ int main(const int argumentCount, char** const arguments)
                         projectGameModule
                     }));
             }
+            // exception: 期待する拒否経路で発生した理由。
             catch (const std::exception& exception)
             {
                 credentialRejected = std::string_view(exception.what())
@@ -1670,8 +1866,10 @@ int main(const int argumentCount, char** const arguments)
                 "An asset named .env must block game export.");
         }
 
+        // export済みgame設定のJSON。
         nlohmann::json settings;
         {
+            // input: file読込stream。
             std::ifstream input(
                 outputDirectory / "LamaPonGame.json",
                 std::ios::binary);
@@ -1688,6 +1886,7 @@ int main(const int argumentCount, char** const arguments)
             settings.at("gameName").get<std::string>()
                 == "日本語ゲーム",
             "Game name was not exported.");
+        // onlineSettings: Export後の公開通信設定。
         const auto& onlineSettings = settings.at("online");
         Require(
             onlineSettings.size() == 7
@@ -1708,6 +1907,7 @@ int main(const int argumentCount, char** const arguments)
                 && !onlineSettings.contains("accessToken")
                 && !onlineSettings.contains("refreshToken"),
             "Only public online connection settings may be exported.");
+        // presenceSettings: Export後のDiscord Presence設定。
         const auto& presenceSettings =
             onlineSettings.at("discordPresence");
         Require(
@@ -1751,6 +1951,7 @@ int main(const int argumentCount, char** const arguments)
                     .at("control").get<std::string>()
                     == "GamePadRightShoulder",
             "Input actions were not exported.");
+        // loadedSettings: JSONから読み込んだexport settings。
         const auto loadedSettings =
             LamaPon::LoadProjectSettings(
                 outputDirectory / "LamaPonGame.json");
@@ -1800,14 +2001,18 @@ int main(const int argumentCount, char** const arguments)
                         .defaultLargeImageText,
             "Exported project settings did not round-trip.");
 
+        // invalidSettingsRejected: invalid settingsの拒否結果。
         bool invalidSettingsRejected = false;
+        // 期待する失敗経路を捕捉して検証します。
         try
         {
+            // invalidSettings: 拒否を検証するexport settings。
             auto invalidSettings = projectSettings;
             invalidSettings.windowWidth = 100;
             LamaPon::ValidateProjectSettings(
                 invalidSettings);
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             invalidSettingsRejected = true;
@@ -1816,9 +2021,9 @@ int main(const int argumentCount, char** const arguments)
             invalidSettingsRejected,
             "Invalid project settings were accepted.");
 
-        // Editorでlocalhostを使う明示的な開発設定は有効ですが、同じ
-        // スイッチを有効なまま配布物へ入れることはできません。
+        // Editorでlocalhostを使う明示的な開発設定は有効ですが、同じスイッチを有効なまま配布物へ入れることはできません。
         {
+            // developmentSettings: development exportの設定。
             auto developmentSettings = projectSettings;
             developmentSettings.online.serviceBaseUrl =
                 "http://localhost:8090";
@@ -1827,7 +2032,9 @@ int main(const int argumentCount, char** const arguments)
                 developmentSettings,
                 LamaPon::ProjectSettingsFileType::Project);
 
+            // rejected: 拒否が成立した状態。
             bool rejected = false;
+            // このexport設定が拒否される経路を検証します。
             try
             {
                 static_cast<void>(
@@ -1839,6 +2046,7 @@ int main(const int argumentCount, char** const arguments)
                             developmentSettings
                         }));
             }
+            // exception: 期待する拒否経路で発生した理由。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -1854,14 +2062,17 @@ int main(const int argumentCount, char** const arguments)
         }
 
         invalidSettingsRejected = false;
+        // 期待する失敗経路を捕捉して検証します。
         try
         {
+            // invalidSettings: 拒否を検証するexport settings。
             auto invalidSettings = projectSettings;
             invalidSettings.graphics.renderScale =
                 0.25f;
             LamaPon::ValidateProjectSettings(
                 invalidSettings);
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             invalidSettingsRejected = true;
@@ -1870,9 +2081,10 @@ int main(const int argumentCount, char** const arguments)
             invalidSettingsRejected,
             "Invalid graphics settings were accepted.");
 
-        // 1.0を超える描画スケールはスーパーサンプリングとして有効です
-        // （2.0が上限）。ここが再び1.0で弾かれないよう固定します。
+        // 1.0を超える描画スケールはスーパーサンプリングとして有効です（2.0が上限）。
+        // ここが再び1.0で弾かれないよう固定します。
         {
+            // supersampledSettings: supersampling有効のexport settings。
             auto supersampledSettings = projectSettings;
             supersampledSettings.graphics.renderScale = 2.0f;
             LamaPon::ValidateProjectSettings(
@@ -1880,13 +2092,16 @@ int main(const int argumentCount, char** const arguments)
         }
 
         invalidSettingsRejected = false;
+        // 期待する失敗経路を捕捉して検証します。
         try
         {
+            // invalidSettings: 拒否を検証するexport settings。
             auto invalidSettings = projectSettings;
             invalidSettings.graphics.renderScale = 2.5f;
             LamaPon::ValidateProjectSettings(
                 invalidSettings);
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             invalidSettingsRejected = true;
@@ -1896,14 +2111,17 @@ int main(const int argumentCount, char** const arguments)
             "Render scale above 2.0 was accepted.");
 
         invalidSettingsRejected = false;
+        // 期待する失敗経路を捕捉して検証します。
         try
         {
+            // invalidSettings: 拒否を検証するexport settings。
             auto invalidSettings = projectSettings;
             invalidSettings.graphics.targetFrameRate =
                 10;
             LamaPon::ValidateProjectSettings(
                 invalidSettings);
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             invalidSettingsRejected = true;
@@ -1915,6 +2133,7 @@ int main(const int argumentCount, char** const arguments)
         WriteFile(
             outputDirectory / "stale-file.txt",
             "stale");
+        // second: 後続archive entry。
         const auto second = LamaPon::ExportGamePackage(
             LamaPon::GameExportOptions{
                 runtimeDirectory,
@@ -1941,6 +2160,7 @@ int main(const int argumentCount, char** const arguments)
             projectGameModule
         };
         zipOptions.createZipArchive = true;
+        // zipped: export archiveへ追加したfile。
         const auto zipped = LamaPon::ExportGamePackage(
             zipOptions);
         Require(
@@ -1973,7 +2193,9 @@ int main(const int argumentCount, char** const arguments)
                 == L"日本語ゲーム",
             "Japanese game names must pass through.");
 
+        // unsafeDestinationRejected: unsafe destination拒否結果。
         bool unsafeDestinationRejected = false;
+        // このexport設定が拒否される経路を検証します。
         try
         {
             static_cast<void>(
@@ -1985,6 +2207,7 @@ int main(const int argumentCount, char** const arguments)
                         projectSettings
                     }));
         }
+        // exception: 期待する拒否経路で発生した理由。
         catch (const std::exception&)
         {
             unsafeDestinationRejected = true;
@@ -1993,13 +2216,11 @@ int main(const int argumentCount, char** const arguments)
             unsafeDestinationRejected,
             "Unsafe destination inside assets was accepted.");
 
-        // HLSLソースを外す設定。配布物にはバイトコードと索引だけが
-        // 入り、.hlslはアーカイブから消えることを確かめます。
+        // HLSLソースを外す設定。
+        // 配布物にはバイトコードと索引だけが入り、.hlslはアーカイブから消えることを確かめます。
         {
-            // sourceを残す通常exportでは、壊れた未使用Manifestを
-            // path付きwarningとして検証済みです。source-stripは実行時に
-            // 再コンパイルできないため、正常なManifestだけを含む実運用と
-            // 同じ入力へ戻してから完全cacheを検証します。
+            // sourceを残す通常exportでは、壊れた未使用Manifestをpath付きwarningとして検証済みです。
+            // source-stripは実行時に再コンパイルできないため、正常なManifestだけを含む実運用と同じ入力へ戻してから完全cacheを検証します。
             Require(
                 std::filesystem::remove(
                     assetDirectory / "shaders"
@@ -2009,23 +2230,28 @@ int main(const int argumentCount, char** const arguments)
                             / "BrokenEntryExport.lamashader.json"),
                 "The temporary invalid manifest fixtures could not be "
                 "removed before source-stripped export testing.");
+            // strippedSettings: source strip有効のexport settings。
             auto strippedSettings = projectSettings;
             strippedSettings.stripShaderSourceOnExport = true;
+            // strippedOutput: stripped export output root。
             const auto strippedOutput =
                 root / "dist" / "Stripped";
 
-            // ModelRendererの必須entry／roleは、model未指定・静的model・
-            // skin付きmodelで実行時経路が異なります。scene -> Material
-            // Asset -> shaderをGUIDで辿り、fallback pathが古くても実際の
-            // 描画経路どおりに検証することを確認します。
+            // ModelRendererの必須entry／roleは、model未指定・静的model・skin付きmodelで実行時経路が異なります。
+            // scene -> Material Asset -> shaderをGUIDで辿り、fallback pathが古くても実際の描画経路どおりに検証することを確認します。
+            // 不正shaderを参照させるfixture GUID。
             constexpr const char* brokenShaderGuid =
                 "11111111111111111111111111111111";
+            // 不正materialを参照させるfixture GUID。
             constexpr const char* brokenMaterialGuid =
                 "22222222222222222222222222222222";
+            // 小文字形式のGUID照合用fixture値。
             constexpr const char* lowerCaseGuid =
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            // 大文字形式のGUID照合用fixture値。
             constexpr const char* upperCaseGuid =
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+            // backup拡張子で無視されるGUID fixture値。
             constexpr const char* ignoredBackupGuid =
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
             WriteFile(
@@ -2050,9 +2276,8 @@ int main(const int argumentCount, char** const arguments)
                     R"json({"format":"LamaPonAssetMeta","version":1,"guid":")json" }
                     + brokenMaterialGuid
                     + R"json(","importer":"LitMaterial"})json");
-            // AssetDatabaseはGUIDをcase-sensitiveに扱います。caseだけが
-            // 異なる2件を同じkeyへ潰さず、指定された側へcanonicalize
-            // することもpacked JSONで確認します。
+            // AssetDatabaseはGUIDをcase-sensitiveに扱います。
+            // caseだけが異なる2件を同じkeyへ潰さず、指定された側へcanonicalizeすることもpacked JSONで確認します。
             WriteFile(
                 assetDirectory / "CaseLower.asset",
                 "lower");
@@ -2089,13 +2314,17 @@ int main(const int argumentCount, char** const arguments)
                     + upperCaseGuid
                     + R"json(","ignoredAsset":"BackupFallback.asset","ignoredAssetGuid":")json"
                     + ignoredBackupGuid + R"json("})json");
+            // requireStrippedFailure: source strip時の失敗を検証するcallback。
             const auto requireStrippedFailure =
                 [&](const std::string_view firstDiagnostic,
                     const std::string_view secondDiagnostic,
                     const char* const failureMessage)
                 {
+                    // rejected: 拒否が成立した状態。
                     bool rejected = false;
+                    // diagnostic: shader compile診断文。
                     std::string diagnostic;
+                    // このexport設定が拒否される経路を検証します。
                     try
                     {
                         static_cast<void>(LamaPon::ExportGamePackage(
@@ -2106,16 +2335,19 @@ int main(const int argumentCount, char** const arguments)
                                 strippedSettings
                             }));
                     }
+                    // exception: 期待する拒否経路で発生した理由。
                     catch (const std::exception& exception)
                     {
                         rejected = true;
                         diagnostic = exception.what();
                     }
+                    // diagnosticMatched: 期待する診断が見つかった状態。
                     const bool diagnosticMatched = rejected
                         && diagnostic.find(firstDiagnostic)
                             != std::string::npos
                         && diagnostic.find(secondDiagnostic)
                             != std::string::npos;
+                    // 期待するcompile diagnosticがない場合は失敗させます。
                     if (!diagnosticMatched)
                     {
                         std::cerr << "Unexpected stripped-export diagnostic: "
@@ -2139,8 +2371,7 @@ int main(const int argumentCount, char** const arguments)
                 "Unsupported material asset",
                 "A source-stripped export accepted an invalid material asset.");
 
-            // 参照pathだけが残り、対応するHLSLが存在しないケースも、
-            // 実在ファイルだけを走査する総当たりから漏らしません。
+            // 参照pathだけが残り、対応するHLSLが存在しないケースも、実在ファイルだけを走査する総当たりから漏らしません。
             WriteFile(
                 assetDirectory / "BrokenDirect.material.json",
                 R"json({"type":"LamaPonLitMaterial","version":2,"shader":"shaders/MissingDirect.hlsl"})json");
@@ -2158,8 +2389,8 @@ int main(const int argumentCount, char** const arguments)
                 "A source-stripped export accepted a missing shader "
                 "manifest.");
 
-            // model未指定ならnon-skeletal経路です。skinned entryだけの
-            // HLSLを受理せず、通常のVSMain／PSMainを要求します。
+            // model未指定ならnon-skeletal経路です。
+            // skinned entryだけのHLSLを受理せず、通常のVSMain／PSMainを要求します。
             WriteFile(
                 assetDirectory / "shaders" / "BrokenDirect.hlsl",
                 "float4 VSSkinnedMain(uint id : SV_VertexID) : SV_Position\n"
@@ -2181,10 +2412,8 @@ int main(const int argumentCount, char** const arguments)
                 "A model-less ModelRenderer did not require the Forward "
                 "direct-HLSL entry pair.");
 
-            // GSMainは入口がコンパイルできるだけでなく、runtimeが流す
-            // triangle入力を受ける必要があります。sourceを外した後の
-            // 初回実行までpoint/line不整合を持ち越さないよう、export
-            // 時点でbytecodeをreflectして拒否します。
+            // GSMainは入口がコンパイルできるだけでなく、runtimeが流すtriangle入力を受ける必要があります。
+            // sourceを外した後の初回実行までpoint/line不整合を持ち越さないよう、export時点でbytecodeをreflectして拒否します。
             WriteFile(
                 assetDirectory / "shaders" / "BrokenDirect.hlsl",
                 "float4 VSMain(uint id : SV_VertexID) : SV_Position\n"
@@ -2223,9 +2452,11 @@ int main(const int argumentCount, char** const arguments)
                 "    return float4(1, 0, 0, 1);\n"
                 "}\n");
 
+            // invalidGeometrySource: invalid geometry用HLSL source。
             const auto invalidGeometrySource =
                 assetDirectory / "shaders"
                 / "InvalidGeometryExport.hlsl";
+            // invalidGeometryManifest: invalid geometry用manifest。
             const auto invalidGeometryManifest =
                 assetDirectory / "shaders"
                 / "InvalidGeometryExport.lamashader.json";
@@ -2281,8 +2512,7 @@ int main(const int argumentCount, char** const arguments)
                 "The invalid geometry export fixtures could not be removed.");
 
             // model未指定のModelRendererはForward roleを使います。
-            // Forward-only ManifestをSkinned不足で拒否せず、次のsource
-            // 検証まで進むことを診断から確認します。
+            // Forward-only ManifestをSkinned不足で拒否せず、次のsource検証まで進むことを診断から確認します。
             const auto forwardOnlyManifest =
                 assetDirectory / "shaders"
                 / "ForwardOnlyModel.lamashader.json";
@@ -2322,8 +2552,7 @@ int main(const int argumentCount, char** const arguments)
                 "material manifest.");
 
             // 同じManifestでもskin付きglTFならSkinned roleが必要です。
-            // 実在fixtureをproject assetsへコピーし、さらにskin無しnodeを
-            // 足してForward／Skinnedの混在判定をGPUなしで通します。
+            // 実在fixtureをproject assetsへコピーし、さらにskin無しnodeを足してForward／Skinnedの混在判定をGPUなしで通します。
             const auto riggedModel =
                 assetDirectory / "models" / "RiggedSimple.glb";
             std::filesystem::create_directories(
@@ -2334,9 +2563,11 @@ int main(const int argumentCount, char** const arguments)
                 riggedModel);
             AddUnskinnedInstanceToGlb(riggedModel);
             {
+                // rigged model検査用COM初期化の結果。
                 const HRESULT comResult = CoInitializeEx(
                     nullptr,
                     COINIT_MULTITHREADED);
+                // uninitializeCom: COM初期化を解除する状態。
                 const bool uninitializeCom = SUCCEEDED(comResult);
                 Require(
                     SUCCEEDED(comResult)
@@ -2344,7 +2575,9 @@ int main(const int argumentCount, char** const arguments)
                     "COM initialization failed for the mixed glTF "
                         "role probe.");
                 {
+                    // probeAssets: child probe用AssetManager。
                     LamaPon::AssetManager probeAssets(nullptr, nullptr);
+                    // requiresForwardRole: forward rendering roleを要求するstate。
                     bool requiresForwardRole{};
                     Require(
                         LamaPon::GltfImporter::RequiresSkinning(
@@ -2355,6 +2588,7 @@ int main(const int argumentCount, char** const arguments)
                         "The generated mixed glTF was not classified as "
                             "requiring both Forward and Skinned roles.");
                 }
+                // このprocessが初期化したCOM状態だけを解放します。
                 if (uninitializeCom)
                 {
                     CoUninitialize();
@@ -2403,8 +2637,8 @@ int main(const int argumentCount, char** const arguments)
                         forwardOnlyManifest.string() + ".meta"),
                 "The incompatible manifest fixture could not be removed.");
 
-            // GUIDを優先して実際のHLSLまで辿り、Model用途のentryを
-            // 要求します。VSMain／PSMainだけならここで拒否されます。
+            // GUIDを優先して実際のHLSLまで辿り、Model用途のentryを要求します。
+            // VSMain／PSMainだけならここで拒否されます。
             WriteFile(
                 assetDirectory / "BrokenDirect.material.json",
                 std::string{
@@ -2416,8 +2650,8 @@ int main(const int argumentCount, char** const arguments)
                 "A source-stripped export did not follow ModelRenderer "
                 "Material/GUID references or lost its skinned diagnostic.");
 
-            // 逆にskinned pairだけを持つModel用HLSLは有効です。誤って
-            // VSMain／PSMainまで要求するfalse-positiveも同じ経路で防ぎます。
+            // 逆にskinned pairだけを持つModel用HLSLは有効です。
+            // 誤ってVSMain／PSMainまで要求するfalse-positiveも同じ経路で防ぎます。
             WriteFile(
                 assetDirectory / "shaders" / "BrokenDirect.hlsl",
                 "float4 VSSkinnedMain(uint id : SV_VertexID) : SV_Position\n"
@@ -2429,10 +2663,11 @@ int main(const int argumentCount, char** const arguments)
                 "    return float4(1, 0, 0, 1);\n"
                 "}\n");
 
-            // Editor側の通常cacheを無効化していても、export用contextは
-            // source-stripped成果物を必ず書く必要があります。
+            // Editor側の通常cacheを無効化していても、export用contextはsource-stripped成果物を必ず書く必要があります。
             LamaPon::SetShaderCacheEnabled(false);
+            // stripped: source strip済みexport state。
             LamaPon::GameExportResult stripped;
+            // このexport設定が拒否される経路を検証します。
             try
             {
                 stripped = LamaPon::ExportGamePackage(
@@ -2443,21 +2678,27 @@ int main(const int argumentCount, char** const arguments)
                         strippedSettings
                     });
             }
+            // 期待する失敗例外を捕捉します。
             catch (...)
             {
                 LamaPon::SetShaderCacheEnabled(true);
+                // 検証中の失敗を呼び出し元へ再送出します。
                 throw;
             }
             LamaPon::SetShaderCacheEnabled(true);
             static_cast<void>(stripped);
 
+            // sourceSceneBytes: source sceneのbinary bytes。
             const auto sourceSceneBytes = ReadBytes(
                 assetDirectory / startupScene);
+            // sourceMaterialBytes: source materialのbinary bytes。
             const auto sourceMaterialBytes = ReadBytes(
                 assetDirectory / "BrokenDirect.material.json");
+            // sourceScene: export対象source scene。
             const auto sourceScene = nlohmann::json::parse(
                 sourceSceneBytes.begin(),
                 sourceSceneBytes.end());
+            // sourceMaterial: export対象source material。
             const auto sourceMaterial = nlohmann::json::parse(
                 sourceMaterialBytes.begin(),
                 sourceMaterialBytes.end());
@@ -2509,28 +2750,34 @@ int main(const int argumentCount, char** const arguments)
                 "The temporary direct-HLSL fixtures could not be removed "
                 "after their successful stripped export.");
 
+            // strippedKey: stripped export runtimeのkey。
             const auto strippedKey = ReadEmbeddedArchiveKey(
                 strippedOutput / "LamaPonRuntime.dll");
             Require(
                 strippedKey != embeddedKey,
                 "Every export must get a fresh archive key.");
+            // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
                 strippedOutput / "assets.tpak",
                 strippedKey);
             Require(
                 archive != nullptr,
                 "Stripped export produced no archive.");
+            // packedSceneBytes: packed sceneのsource bytes。
             const auto packedSceneBytes =
                 archive->TryRead(startupScene);
+            // packedMaterialBytes: packed materialのsource bytes。
             const auto packedMaterialBytes =
                 archive->TryRead("BrokenDirect.material.json");
             Require(
                 packedSceneBytes.has_value()
                     && packedMaterialBytes.has_value(),
                 "The GUID rewrite fixtures were not packed.");
+            // packedScene: packed scene JSON。
             const auto packedScene = nlohmann::json::parse(
                 packedSceneBytes->begin(),
                 packedSceneBytes->end());
+            // packedMaterial: packed material JSON。
             const auto packedMaterial = nlohmann::json::parse(
                 packedMaterialBytes->begin(),
                 packedMaterialBytes->end());
@@ -2585,8 +2832,7 @@ int main(const int argumentCount, char** const arguments)
                 archive->Contains(startupScene),
                 "Stripping shaders must not drop other"
                     " assets.");
-            // ソースが無いとハッシュからキーを作れないので、
-            // パスから引ける索引が要ります。
+            // ソースが無いとハッシュからキーを作れないので、パスから引ける索引が要ります。
             Require(
                 std::filesystem::is_regular_file(
                     strippedOutput
@@ -2595,6 +2841,7 @@ int main(const int argumentCount, char** const arguments)
                 "A stripped export must ship the shader cache"
                     " index; without it the bytecode cannot be"
                     " looked up at runtime.");
+            // cacheIndex: shader-cache index path。
             const auto cacheIndex = ReadSealedText(
                 strippedOutput / "shader-cache" / "index.txt",
                 strippedKey);
@@ -2719,24 +2966,35 @@ int main(const int argumentCount, char** const arguments)
                 "The stripped export cache index omitted a"
                     " non-primary material manifest pass.");
 
+            // sourceMetadataFound: source shader metadataの検出状態。
             bool sourceMetadataFound{};
+            // indexLines: cache indexの各行。
             std::istringstream indexLines(cacheIndex);
+            // indexLine: shader cache indexの1行。
             std::string indexLine;
+            // shader cache indexを1行ずつ読み取ります。
             while (std::getline(indexLines, indexLine))
             {
+                // prefix: shader asset path prefix。
                 constexpr std::string_view prefix = "@metadata ";
+                // index entryがshader cache prefixから始まるか確認します。
                 if (indexLine.rfind(prefix, 0) != 0)
                 {
+                    // 現在のfileを除外して次のentryへ進みます。
                     continue;
                 }
+                // metadata: shader cache metadata。
                 const auto metadata = nlohmann::json::parse(
                     indexLine.substr(prefix.size()));
+                // metadata pathが対象shaderと一致するか確認します。
                 if (metadata.value("path", std::string{})
                     != "shaders/testexport.hlsl")
                 {
+                    // 現在のfileを除外して次のentryへ進みます。
                     continue;
                 }
                 sourceMetadataFound = true;
+                // state: 変換後ShaderのRender State。
                 const auto& state = metadata.at("renderState");
                 Require(
                     metadata.value("version", 0) == 1
@@ -2751,6 +3009,7 @@ int main(const int argumentCount, char** const arguments)
                         && state.at("declared").get<bool>(),
                     "The stripped export cache metadata did not"
                         " preserve the direct HLSL render state.");
+                // groups: Export後のShader variant groups。
                 const auto& groups =
                     metadata.at("variants").at("groups");
                 Require(
@@ -2767,27 +3026,32 @@ int main(const int argumentCount, char** const arguments)
                 "The stripped export cache index omitted HLSL"
                     " source metadata.");
 
-            // 配布先processではDLL内の鍵で自動復号されます。このtest
-            // processは別の鍵を持つため、書き出し鍵で既存cache fileを
-            // 同じ場所へ平文化してから、source無しのruntime lookupを
-            // 実際に通します（新しい作業folder/fileは作りません）。
+            // 配布先processではDLL内の鍵で自動復号されます。
+            // 別鍵で既存cacheを開封してsource無しlookupを行い、新規作業fileを作らないことを確認します。
             const auto shaderCacheDirectory =
                 strippedOutput / "shader-cache";
+            // exportされたcache fileを順に検証します。
             for (const auto& cacheFile :
                 std::filesystem::directory_iterator(
                     shaderCacheDirectory))
             {
+                // 通常fileだけをcache検証対象にします。
                 if (!cacheFile.is_regular_file())
                 {
+                    // 現在のfileを除外して次のentryへ進みます。
                     continue;
                 }
+                // sealed: sealed archive payload。
                 const auto sealed = ReadBytes(cacheFile.path());
+                // cache fileがsealed形式であることを確認します。
                 if (!LamaPon::Crypto::IsSealed(
                         sealed.data(),
                         sealed.size()))
                 {
+                    // 現在のfileを除外して次のentryへ進みます。
                     continue;
                 }
+                // plain: 暗号化前または復号後の本文。
                 const auto plain = LamaPon::Crypto::Unseal(
                     sealed.data(),
                     sealed.size(),
@@ -2799,9 +3063,11 @@ int main(const int argumentCount, char** const arguments)
                 WriteBytes(cacheFile.path(), *plain);
             }
 
+            // source-stripped runtime検査用COM初期化の結果。
             const HRESULT comResult = CoInitializeEx(
                 nullptr,
                 COINIT_MULTITHREADED);
+            // uninitializeCom: COM初期化を解除する状態。
             const bool uninitializeCom = SUCCEEDED(comResult);
             Require(
                 SUCCEEDED(comResult)
@@ -2809,21 +3075,26 @@ int main(const int argumentCount, char** const arguments)
                 "COM initialization failed for source-stripped"
                     " shader runtime lookup testing.");
             {
+                // strippedAssets: stripped exportのAssetManager。
                 LamaPon::AssetManager strippedAssets(nullptr, nullptr);
-                // このpathは意図的に作りません。HLSLが存在しない状態で
-                // index lookupだけを使うためのasset rootです。
+                // このpathは意図的に作りません。
+                // HLSLが存在しない状態でindex lookupだけを使うためのasset rootです。
                 strippedAssets.SetAssetRoot(
                     strippedOutput / "unpacked-assets-not-created");
                 LamaPon::ClearShaderCacheSearchDirectories();
                 LamaPon::AddShaderCacheSearchDirectory(
                     shaderCacheDirectory);
+                // sourcePath: shader sourceのasset path。
                 const auto sourcePath = strippedAssets.ResolvePath(
                     "Shaders/TESTEXPORT.HLSL");
+                // requireCachedShader: cached shaderを要求するcallback。
                 const auto requireCachedShader =
                     [&](const char* entryPoint,
                         const char* target,
+                        // keywords: shader compile keyword列。
                         std::vector<std::string> keywords = {})
                     {
+                        // blob: 復号したshader bytecode。
                         const auto blob = LamaPon::CompileShaderCached(
                             strippedAssets,
                             sourcePath,
@@ -2848,7 +3119,9 @@ int main(const int argumentCount, char** const arguments)
                     "PSManifestOccluded",
                     "ps_5_0");
 
+                // restoredState: 復元したshader render state。
                 LamaPon::ShaderRenderState restoredState;
+                // restoredVariants: 復元したshader variant declaration。
                 LamaPon::ShaderVariantDeclaration restoredVariants;
                 Require(
                     LamaPon::LoadPrecompiledShaderMetadata(
@@ -2868,19 +3141,20 @@ int main(const int argumentCount, char** const arguments)
                         " shader metadata.");
                 LamaPon::ClearShaderCacheSearchDirectories();
             }
+            // このprocessが初期化したCOM状態だけを解放します。
             if (uninitializeCom)
             {
                 CoUninitialize();
             }
 
-            // 最後にfake runtimeを実ビルドへ差し替え、同じStripped出力を
-            // 再利用してexportします。配布先exeをそのフォルダーから起動する
-            // ことで、埋込鍵 -> sealed index/CSO -> bytecode/metadata lookupを
-            // 実際のLamaPonRuntime.dll内で検証します。
+            // 最後にfake runtimeを実ビルドへ差し替え、同じStripped出力を再利用してexportします。
+            // 配布先exeを実行し、埋込鍵によるsealed index/CSO復号とmetadata lookupを検証します。
             const auto buildDirectory =
                 SelfExecutablePath().parent_path();
+            // realRuntime: 本物のruntime DLL。
             const auto realRuntime =
                 buildDirectory / "LamaPonRuntime.dll";
+            // realAudioRuntime: 本物のaudio runtime DLL。
             const auto realAudioRuntime =
                 buildDirectory / "xaudio2_9redist.dll";
             Require(
@@ -2923,11 +3197,14 @@ int main(const int argumentCount, char** const arguments)
         }
 
         std::cout << "Game exporter tests passed.\n";
+        // probe成功をprocess exit codeで通知します。
         return 0;
     }
+    // exception: 期待する拒否経路で発生した理由。
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';
+        // test failureをprocess exit codeで通知します。
         return 1;
     }
 }

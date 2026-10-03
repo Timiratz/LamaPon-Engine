@@ -33,15 +33,12 @@ namespace LamaPon
         }
         try
         {
-            // std::launch::asyncのfutureもdestructorで待ちますが、
-            // AssetManagerを借用するworkerをSceneのresource leaseより
-            // 確実に先に終了させる契約をここで明示します。
+            // アセット管理を借用するワーカーをシーンの資源解放前に終了させます。
             static_cast<void>(m_asyncFuture.get());
         }
         catch (...)
         {
-            // destructorでは終了待ちだけを保証し、読み込み失敗は
-            // ProcessPendingの通常経路へ任せます。
+            // 破棄時はワーカーの終了を待ち、結果の例外を外へ送出しません。
         }
     }
 
@@ -68,8 +65,7 @@ namespace LamaPon
                 "Scene path is empty.";
             return false;
         }
-        // 切り替えは追加読み込みの要求も無効にします（切り替え時に
-        // 追加シーンごと破棄されるため）。
+        // 切り替えは追加読み込みの要求も無効にします（切り替え時に追加シーンごと破棄されるため）。
         m_pendingRequests.clear();
         m_pendingRequests.push_back(
             PendingRequest{
@@ -100,6 +96,7 @@ namespace LamaPon
                 "Scene path is empty.";
             return false;
         }
+        // 処理する解決済みシーンパス
         const auto destination =
             Resolve(scenePath).lexically_normal();
         if (m_scene.FindAdditiveScene(destination)
@@ -183,9 +180,8 @@ namespace LamaPon
         std::filesystem::path scenePath,
         const SceneTransitionSettings& transition)
     {
-        // BeginAsyncLoadが失敗した場合に遷移を始めないよう、先に
-        // 設定を控えてから読み込みを開始します（transitionが
-        // m_defaultTransitionを指していても安全です）。
+        // 開始成功後だけ遷移を始め、借用中の既定設定もコピーして保持します。
+        // 処理に使う遷移設定
         const auto settings = transition;
         if (!BeginAsyncLoad(
                 std::move(scenePath),
@@ -201,7 +197,9 @@ namespace LamaPon
         std::filesystem::path scenePath,
         const SceneTransitionSettings& transition)
     {
+        // 処理に使う遷移設定
         const auto settings = transition;
+        // 処理する解決済みシーンパス
         const auto destination =
             Resolve(scenePath).lexically_normal();
         if (!RequestLoad(std::move(scenePath)))
@@ -215,6 +213,7 @@ namespace LamaPon
     bool SceneManager::RequestReload(
         const SceneTransitionSettings& transition)
     {
+        // 処理に使う遷移設定
         const auto settings = transition;
         if (!RequestReload())
         {
@@ -227,6 +226,7 @@ namespace LamaPon
     bool SceneManager::RequestLoadAdditiveAsync(
         std::filesystem::path scenePath)
     {
+        // 処理する解決済みシーンパス
         const auto destination =
             Resolve(scenePath).lexically_normal();
         if (m_scene.FindAdditiveScene(destination)
@@ -274,6 +274,7 @@ namespace LamaPon
             SceneLoadState::Queued);
         m_asyncShared->progress.store(0.02f);
         {
+            // 共有する状態文の排他ロック
             std::scoped_lock lock(
                 m_asyncShared->statusMutex);
             m_asyncShared->status =
@@ -288,16 +289,21 @@ namespace LamaPon
         m_prefetchedAssetBytes = 0;
         m_prefetchFailureCount = 0;
 
+        // 処理する解決済みシーンパス
         const auto destination =
             m_asyncDestination;
+        // ワーカーと共有する読込状態
         const auto shared = m_asyncShared;
+        // 借用するアセット管理
         AssetManager& assets = m_graphics.Assets();
         assets.ClearPrefetchedFiles();
+        // シーンを検証して参照アセットを先読みし、有効化は呼び出し側へ残します。
         m_asyncFuture = std::async(
             std::launch::async,
             [destination, shared, &assets]()
                 -> AsyncLoadResult
             {
+                // 取消を確認して共有状態を更新します(state: 読込段階, progress: 読込進捗, status: 状態文)。
                 const auto setStatus =
                     [&shared](
                         const SceneLoadState state,
@@ -324,11 +330,13 @@ namespace LamaPon
                                 0.0f);
                             return;
                         }
+                        // 共有する状態文の排他ロック
                         std::scoped_lock lock(
                             shared->statusMutex);
                         shared->status =
                             std::move(status);
                     };
+                // 非同期読み込みの結果
                 AsyncLoadResult result;
                 try
                 {
@@ -348,6 +356,7 @@ namespace LamaPon
                             "Could not open scene for reading: "
                             + LamaPon::PathToUtf8(destination));
                     }
+                    // 読み込んだシーンファイルのバイト
                     const auto bytes =
                         assets.ReadFileBytes(destination);
                     result.json.assign(
@@ -364,6 +373,7 @@ namespace LamaPon
                         SceneLoadState::Parsing,
                         0.75f,
                         "Validating scene JSON");
+                    // 形式更新して検証するJSON
                     auto document =
                         nlohmann::json::parse(
                             result.json);
@@ -386,6 +396,7 @@ namespace LamaPon
                         return result;
                     }
 
+                    // 先読みする参照アセットのパス
                     const auto assetPaths =
                         CollectSerializedAssetPaths(
                             document);
@@ -396,6 +407,8 @@ namespace LamaPon
                             + std::to_string(
                                 assetPaths.size())
                             + " asset files");
+                    // 取消要求時にfalseを返します(completed: 完了件数, total: 総件数)。
+                    // アセットの先読み結果
                     const auto prefetch =
                         assets.PrefetchFiles(
                             assetPaths,
@@ -408,6 +421,7 @@ namespace LamaPon
                                 {
                                     return false;
                                 }
+                                // 先読みファイルの完了割合
                                 const float fraction =
                                     total == 0
                                         ? 1.0f
@@ -437,6 +451,7 @@ namespace LamaPon
                         0.94f,
                         "Ready to activate");
                 }
+                // 記録する読み込み失敗の例外
                 catch (const std::exception& exception)
                 {
                     result.error =
@@ -486,6 +501,7 @@ namespace LamaPon
             m_asyncShared->progress.store(0.0f);
             try
             {
+                // 共有する状態文の排他ロック
                 std::scoped_lock lock(
                     m_asyncShared->statusMutex);
                 m_asyncShared->status =
@@ -537,6 +553,7 @@ namespace LamaPon
         {
             return {};
         }
+        // 共有する状態文の排他ロック
         std::scoped_lock lock(
             m_asyncShared->statusMutex);
         return m_asyncShared->status;
@@ -552,6 +569,7 @@ namespace LamaPon
     const std::filesystem::path&
         SceneManager::PendingScenePath() const noexcept
     {
+        // 保留要求がない場合の空パス
         static const std::filesystem::path
             empty;
         if (!m_pendingRequests.empty())
@@ -572,8 +590,7 @@ namespace LamaPon
 
     bool SceneManager::ProcessPending()
     {
-        // 遷移はtimeScaleの影響を受けない実時間で進めます（timeScaleを
-        // 0にした一時停止メニューからの移動でも演出を止めないため）。
+        // 遷移はtimeScaleの影響を受けない実時間で進めます（timeScaleを0にした一時停止メニューからの移動でも演出を止めないため）。
         AdvanceTransition(Time::UnscaledDeltaTime());
 
         if (m_asyncFuture.valid()
@@ -581,6 +598,7 @@ namespace LamaPon
                 std::chrono::seconds(0))
                 == std::future_status::ready)
         {
+            // 非同期読み込みの結果
             auto result =
                 m_asyncFuture.get();
             m_prefetchedAssetCount =
@@ -613,6 +631,7 @@ namespace LamaPon
                 {
                     m_asyncShared->state.store(
                         SceneLoadState::Failed);
+                    // 共有する状態文の排他ロック
                     std::scoped_lock lock(
                         m_asyncShared->statusMutex);
                     m_asyncShared->status =
@@ -626,8 +645,7 @@ namespace LamaPon
                     + m_lastError);
                 m_graphics.Assets().
                     ClearPrefetchedFiles();
-                // 失敗しても元のシーンは残っているので、覆いを開いて
-                // 元の画面へ戻します。
+                // 失敗しても元のシーンは残っているので、覆いを開いて元の画面へ戻します。
                 FinishTransitionLoad(true);
             }
             else
@@ -646,13 +664,16 @@ namespace LamaPon
             }
         }
 
+        // 保持対象を引き継いで切り替え、失敗時に復元を試みます(destination: 移動先パス, loadScene: シーンを読み込む処理)。
         const auto activate =
             [this](
                 const std::filesystem::path&
                     destination,
                 const auto& loadScene)
             {
+                // 復元に使う変更前のシーンJSON
                 std::string rollbackScene;
+                // シーンをまたいで保持する対象
                 Scene::PersistentTransfer
                     persistentObjects;
                 try
@@ -671,6 +692,7 @@ namespace LamaPon
                     ++m_loadRevision;
                     return true;
                 }
+                // 記録する切り替え失敗の例外
                 catch (const std::exception&
                     exception)
                 {
@@ -687,6 +709,7 @@ namespace LamaPon
                                     std::move(
                                         persistentObjects));
                         }
+                        // 復元にも失敗した場合の例外
                         catch (const std::exception&
                             rollbackException)
                         {
@@ -708,6 +731,7 @@ namespace LamaPon
 
         if (m_asyncStagedJson)
         {
+            // 読み込み要求からの経過秒数
             const auto elapsed =
                 std::chrono::duration<float>(
                     std::chrono::steady_clock::now()
@@ -717,8 +741,7 @@ namespace LamaPon
             {
                 return false;
             }
-            // 遷移演出が旧シーンを覆い終えるまで有効化を待ちます
-            // （読み込み自体は覆っている間に済ませています）。
+            // 遷移演出が旧シーンを覆い終えるまで有効化を待ちます（読み込み自体は覆っている間に済ませています）。
             if (TransitionBlocksActivation())
             {
                 return false;
@@ -729,19 +752,22 @@ namespace LamaPon
                     SceneLoadState::Activating);
                 m_asyncShared->progress.store(
                     0.97f);
+                // 共有する状態文の排他ロック
                 std::scoped_lock lock(
                     m_asyncShared->statusMutex);
                 m_asyncShared->status =
                     "Activating scene";
             }
+            // 有効化する検証済みJSON
             auto staged =
                 std::move(*m_asyncStagedJson);
             m_asyncStagedJson.reset();
+            // 処理する解決済みシーンパス
             const auto destination =
                 m_asyncDestination;
-            // 追加読み込みは今のシーンを消さないので、退避と
-            // ロールバックは不要です（失敗しても足しかけた分は
-            // MergeFromJson側で取り消されます）。
+            // 追加読み込みの失敗はMergeFromJsonが追加途中の対象を取り消します。
+            // 切り替え時は検証済みJSONをシーンへ適用します。
+            // シーンの有効化に成功した状態
             const bool loaded =
                 m_asyncMode == SceneLoadMode::Additive
                     ? MergeStagedScene(
@@ -762,6 +788,7 @@ namespace LamaPon
                         : SceneLoadState::Failed);
                 m_asyncShared->progress.store(
                     loaded ? 1.0f : 0.0f);
+                // 共有する状態文の排他ロック
                 std::scoped_lock lock(
                     m_asyncShared->statusMutex);
                 m_asyncShared->status =
@@ -790,21 +817,23 @@ namespace LamaPon
         {
             return false;
         }
-        // 遷移付きのRequestLoadは、覆い終えてから切り替えます。
-        // 後から積まれた追加読み込みも順番を保つために一緒に待ちます。
+        // 覆いが終わるまでは後続の追加要求も順番を維持して待機します。
         if (TransitionBlocksActivation())
         {
             return false;
         }
 
-        // 1フレームで複数の要求（ステージ2枚の追加など）を
-        // 順番に処理します。
+        // 1フレームで複数の要求（ステージ2枚の追加など）を順番に処理します。
+        // 今回処理する保留要求の一覧
         auto requests =
             std::move(m_pendingRequests);
         m_pendingRequests.clear();
+        // いずれかの要求が成功した状態
         bool processed = false;
+        // 順番に処理するシーン要求
         for (auto& request : requests)
         {
+            // 処理する解決済みシーンパス
             const auto destination =
                 Resolve(request.path).
                     lexically_normal();
@@ -834,6 +863,7 @@ namespace LamaPon
                     || processed;
                 continue;
             }
+            // 指定ファイルから主シーンを読み込みます。
             processed = activate(
                 destination,
                 [this, &destination]()
@@ -842,8 +872,7 @@ namespace LamaPon
                         destination);
                 })
                 || processed;
-            // 成功・失敗のどちらでも、覆いは通常どおり開きます
-            // （失敗時はロールバックした元のシーンが見えます）。
+            // 成功・失敗のどちらでも、覆いは通常どおり開きます（失敗時はロールバックした元のシーンが見えます）。
             FinishTransitionLoad(false);
         }
         return processed;
@@ -860,6 +889,7 @@ namespace LamaPon
             ++m_loadRevision;
             return true;
         }
+        // 記録する標準例外
         catch (const std::exception& exception)
         {
             m_lastError = exception.what();
@@ -886,6 +916,7 @@ namespace LamaPon
             ++m_loadRevision;
             return true;
         }
+        // 記録する標準例外
         catch (const std::exception& exception)
         {
             m_lastError = exception.what();
@@ -978,16 +1009,18 @@ namespace LamaPon
     void SceneManager::AdvanceTransition(
         const float unscaledDeltaSeconds)
     {
-        // 有効化で重いフレームがあっても、開く演出が一瞬で終わらない
-        // よう1回に進める時間を抑えます。
+        // 有効化で重いフレームがあっても、開く演出が一瞬で終わらないよう1回に進める時間を抑えます。
+        // 上限を設けた実時間の経過秒数
         const float delta = std::clamp(
             std::isfinite(unscaledDeltaSeconds)
                 ? unscaledDeltaSeconds
                 : 0.0f,
             0.0f,
             1.0f / 30.0f);
+        // 非同期読み込みが進行中の状態
         const bool loading = IsLoading();
 
+        // 表示が追従する読み込み進捗
         const float targetProgress = loading
             ? LoadProgress()
             : LoadState() == SceneLoadState::Succeeded
@@ -999,6 +1032,7 @@ namespace LamaPon
         }
         else
         {
+            // 進捗を滑らかに追従する補間率
             const float blend = 1.0f - std::exp(-delta * 10.0f);
             m_displayedProgress = std::max(
                 m_displayedProgress,
@@ -1016,20 +1050,23 @@ namespace LamaPon
             return;
         }
 
+        // 処理に使う遷移設定
         const auto& settings = m_transition.Settings();
-        // 時間のある遷移だけが画面を覆う想定です。すぐ切り替える遷移は
-        // 従来どおりの読み込み画面を使います（TransitionFrameを参照）。
+        // 時間のある遷移は覆いを使い、即時遷移は標準読み込み画面を使います。
+        // 時間のある覆い演出の適用状態
         const bool covering = !IsInstantSceneTransition(settings);
         if (covering)
         {
-            // 覆い終えた後も読み込みが続いているときだけ、読み込み画面を
-            // フェードで重ねます。速い読み込みでは一度も表示しません。
+            // 覆い終えた後も読み込みが続く間だけ標準画面を重ねます。
+            // 標準読み込み画面の表示条件
             const bool wantsLoadingScreen =
                 m_transition.IsFullyCovered()
                 && loading
                 && settings.showLoadingScreen
                 && m_loadingScreen.enabled;
+            // 標準画面のフェード所要秒数
             const float fade = m_loadingScreen.fadeDuration;
+            // 今回の画面不透明度の変更量
             const float step = fade > 0.0f ? delta / fade : 1.0f;
             m_loadingScreenAlpha = wantsLoadingScreen
                 ? std::min(m_loadingScreenAlpha + step, 1.0f)
@@ -1041,10 +1078,13 @@ namespace LamaPon
         }
 
         // 読み込み画面を消し終えてから開き始めます。
+        // 新シーンを開き始められる状態
         const bool ready =
             !m_transitionAwaitsLoad
             && (!covering || m_loadingScreenAlpha <= 0.0f);
+        // 時間軸で今回発生した通知
         const auto events = m_transition.Advance(delta, ready);
+        // 覆いに応じて音楽を減衰する状態
         const bool fadesMusic = covering && settings.fadeMusic;
         ApplyMusicFade(
             fadesMusic && m_transition.IsActive()
@@ -1067,6 +1107,7 @@ namespace LamaPon
 
     SceneTransitionFrame SceneManager::TransitionFrame() const
     {
+        // 描画用の遷移と標準画面の状態
         SceneTransitionFrame frame;
         frame.settings = m_transition.Settings();
         frame.phase = m_transition.Phase();
@@ -1075,6 +1116,7 @@ namespace LamaPon
             ? m_displayedProgress
             : LoadProgress();
         frame.loadingScreenTime = m_loadingScreenTime;
+        // 時間のある覆い演出の適用状態
         const bool covering =
             m_transition.IsActive()
             && !IsInstantSceneTransition(frame.settings);
@@ -1084,8 +1126,7 @@ namespace LamaPon
         }
         else
         {
-            // 覆いの無い読み込みは、従来どおり読み込み中だけ即座に
-            // 読み込み画面を表示します。
+            // 覆いの無い読み込みは、従来どおり読み込み中だけ即座に読み込み画面を表示します。
             frame.legacyLoadingScreen = true;
             frame.loadingScreenAlpha =
                 IsLoading() && m_loadingScreen.enabled
@@ -1098,12 +1139,14 @@ namespace LamaPon
     void SceneManager::PublishTransitionEvent(
         const std::string_view eventName)
     {
+        // 移動先を含む遷移イベント引数
         EventArgs eventArgs;
         eventArgs.text = m_transitionTarget;
         try
         {
             m_scene.Events().Publish(eventName, eventArgs);
         }
+        // 記録する標準例外
         catch (const std::exception& exception)
         {
             // 受信側の例外で遷移の進行を止めないよう、ここで記録します。
@@ -1117,13 +1160,13 @@ namespace LamaPon
 
     void SceneManager::ApplyMusicFade(const float gain) noexcept
     {
+        // 0〜1に制限した音楽減衰係数
         const float clamped = std::clamp(gain, 0.0f, 1.0f);
         if (std::abs(clamped - m_appliedMusicFade) < 1.0e-4f)
         {
             return;
         }
-        // 音声が使えない環境（未初期化など）で毎フレーム例外を
-        // 投げ直さないよう、失敗しても適用済みとして扱います。
+        // 音声が使えない環境（未初期化など）で毎フレーム例外を投げ直さないよう、失敗しても適用済みとして扱います。
         m_appliedMusicFade = clamped;
         try
         {
@@ -1143,6 +1186,7 @@ namespace LamaPon
         {
             return path;
         }
+        // 借用するアセット管理
         if (const auto* assets =
             m_graphics.TryAssets())
         {

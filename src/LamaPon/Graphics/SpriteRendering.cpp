@@ -18,6 +18,7 @@ namespace LamaPon::Detail
     class SpriteRenderPassState final
     {
     public:
+        // デバイス資源を保持してパス状態を作ります(gate: デバイス寿命の共有ゲート, lease: 再初期化を防ぐ資源リース)。
         SpriteRenderPassState(
             std::shared_ptr<GraphicsDeviceResourceLeaseState> gate,
             GraphicsDeviceResourceLease lease) noexcept
@@ -27,33 +28,38 @@ namespace LamaPon::Detail
         {
         }
 
+        // 例外を外へ出さず描画パスを終了します。
         ~SpriteRenderPassState() noexcept
         {
             Abort();
         }
 
+        // パス状態のコピーを禁止します。
         SpriteRenderPassState(
             const SpriteRenderPassState&) = delete;
+        // パス状態のコピー代入を禁止します。
         SpriteRenderPassState& operator=(
             const SpriteRenderPassState&) = delete;
 
+        // 開始処理が設定するシェーダー状態を返します。
         [[nodiscard]] SpriteShaderStatus& MutableStatus() noexcept
         {
             return m_status;
         }
 
+        // 寿命ゲートで保護したシェーダー状態のコピーを返します。
         [[nodiscard]] SpriteShaderStatus Status() const
         {
             if (m_gate == nullptr)
             {
                 return {};
             }
+            // デバイス寿命の排他ロック
             std::scoped_lock lock(m_gate->mutex);
             return m_status;
         }
 
-        // d3d12Rendererはpassのleaseが再初期化を拒否する間だけ生存する
-        // DirectX 12 driverです。nullptrならD3D11 driverへ送ります。
+        // パスを使用中にします(token: 描画パス番号, d3d12Renderer: 借用する描画器で空ならD3D11)。
         void Activate(
             const std::uint64_t token,
             D3D12SpriteRenderer* const d3d12Renderer = nullptr) noexcept
@@ -63,6 +69,7 @@ namespace LamaPon::Detail
             m_phase = Phase::Active;
         }
 
+        // パスとデバイスが有効か確認します。
         [[nodiscard]] bool Active() const noexcept
         {
             if (m_gate == nullptr)
@@ -71,6 +78,7 @@ namespace LamaPon::Detail
             }
             try
             {
+                // デバイス寿命の排他ロック
                 std::scoped_lock lock(m_gate->mutex);
                 return m_phase == Phase::Active
                     && !m_gate->closed
@@ -82,12 +90,14 @@ namespace LamaPon::Detail
             }
         }
 
+        // 開始スレッドから描画器へ画像を送ります(request: 画像と位置・色・変形の指定)。
         bool Draw(const SpriteDrawRequest& request)
         {
             if (m_gate == nullptr)
             {
                 return false;
             }
+            // デバイス寿命の排他ロック
             std::scoped_lock lock(m_gate->mutex);
             if (m_phase != Phase::Active
                 || m_gate->closed
@@ -105,6 +115,7 @@ namespace LamaPon::Detail
                 request);
         }
 
+        // 開始スレッドからクリップ範囲を積みます(rectangle: ピクセル座標の矩形)。
         bool PushScissor(
             const SpriteClipRectangle& rectangle)
         {
@@ -112,6 +123,7 @@ namespace LamaPon::Detail
             {
                 return false;
             }
+            // デバイス寿命の排他ロック
             std::scoped_lock lock(m_gate->mutex);
             if (m_phase != Phase::Active
                 || m_gate->closed
@@ -129,12 +141,14 @@ namespace LamaPon::Detail
                 rectangle);
         }
 
+        // 開始スレッドから直前のクリップ範囲へ戻します。
         bool PopScissor()
         {
             if (m_gate == nullptr)
             {
                 return false;
             }
+            // デバイス寿命の排他ロック
             std::scoped_lock lock(m_gate->mutex);
             if (m_phase != Phase::Active
                 || m_gate->closed
@@ -151,15 +165,19 @@ namespace LamaPon::Detail
                 m_token);
         }
 
+        // 開始スレッドで終了し、リース解放後に送信例外を伝えます。
         void End()
         {
             if (m_gate == nullptr)
             {
                 return;
             }
+            // 終了後のリース解放有無
             bool releaseLease{};
+            // 終了処理で保存した例外
             std::exception_ptr failure;
             {
+                // デバイス寿命の排他ロック
                 std::scoped_lock lock(m_gate->mutex);
                 if (m_phase != Phase::Active)
                 {
@@ -172,8 +190,7 @@ namespace LamaPon::Detail
                 }
                 else
                 {
-                    // A wrong-thread call is a recoverable usage error: leave
-                    // the pass active so its render thread can still end it.
+                    // 異なるスレッドでは終了せず、開始スレッドから終了できる状態を保ちます。
                     RequireRenderThread();
                     try
                     {
@@ -189,7 +206,7 @@ namespace LamaPon::Detail
                     }
                     catch (...)
                     {
-                        // Context copies observe m_phase under this same gate.
+
                         m_phase = Phase::Failed;
                         failure = std::current_exception();
                     }
@@ -205,15 +222,18 @@ namespace LamaPon::Detail
             }
         }
 
+        // 例外を外へ出さず終了してリースを解放します。
         void Abort() noexcept
         {
             if (m_gate == nullptr)
             {
                 return;
             }
+            // 終了後のリース解放有無
             bool releaseLease{};
             try
             {
+                // デバイス寿命の排他ロック
                 std::scoped_lock lock(m_gate->mutex);
                 if (m_phase != Phase::Active)
                 {
@@ -239,9 +259,7 @@ namespace LamaPon::Detail
             {
                 releaseLease = true;
             }
-            // Immediate Contextは別threadから閉じません。誤用時は現在の
-            // API stateを開始不可のまま残し、再初期化だけを回復経路に
-            // します。
+            // 別スレッドから破棄したパスは描画開始を拒否したまま残り、再初期化で回復します。
             if (releaseLease)
             {
                 m_lease.Reset();
@@ -257,6 +275,7 @@ namespace LamaPon::Detail
             Failed
         };
 
+        // 開始スレッド以外ならlogic_errorを投げます。
         void RequireRenderThread() const
         {
             if (std::this_thread::get_id() != m_renderThread)
@@ -267,12 +286,19 @@ namespace LamaPon::Detail
             }
         }
 
+        // デバイス寿命の共有ゲート
         std::shared_ptr<GraphicsDeviceResourceLeaseState> m_gate;
+        // 再初期化を防ぐ資源リース
         GraphicsDeviceResourceLease m_lease;
+        // 描画を開始したスレッド
         std::thread::id m_renderThread;
+        // 描画パスの識別番号
         std::uint64_t m_token{};
+        // リース中だけ借用する描画器
         D3D12SpriteRenderer* m_d3d12Renderer{};
+        // 描画パスの進行状態
         Phase m_phase{ Phase::Prepared };
+        // シェーダーの使用状態
         SpriteShaderStatus m_status;
     };
 }
@@ -288,6 +314,7 @@ namespace LamaPon
 
     SpriteDrawContext::operator bool() const noexcept
     {
+        // 描画パスの共有状態
         const auto state = m_state.lock();
         return state != nullptr && state->Active();
     }
@@ -295,6 +322,7 @@ namespace LamaPon
     bool SpriteDrawContext::Draw(
         const SpriteDrawRequest& request) const
     {
+        // 描画パスの共有状態
         const auto state = m_state.lock();
         return state != nullptr && state->Draw(request);
     }
@@ -302,12 +330,14 @@ namespace LamaPon
     bool SpriteDrawContext::PushScissor(
         const SpriteClipRectangle& rectangle) const
     {
+        // 描画パスの共有状態
         const auto state = m_state.lock();
         return state != nullptr && state->PushScissor(rectangle);
     }
 
     bool SpriteDrawContext::PopScissor() const
     {
+        // 描画パスの共有状態
         const auto state = m_state.lock();
         return state != nullptr && state->PopScissor();
     }
@@ -393,16 +423,18 @@ namespace LamaPon
         }
     }
 
+    // 実効APIで描画パスを開始します(description: 合成方式・シェーダー・定数・ライト情報)。
     SpriteRenderPass GraphicsDevice::BeginSpritePass(
         const SpritePassDescription& description)
     {
-        // 実効APIのSprite driverを選びます。D3D12 driverはAPI資源が所有し、
-        // passのleaseが再初期化を拒否する間だけ参照します。
+
+        // 描画パスの共有状態
         auto state = std::make_shared<
             Detail::SpriteRenderPassState>(
                 m_state->m_resourceLeaseState,
                 AcquireResourceLease());
         {
+            // デバイス寿命の排他ロック
             std::scoped_lock lock(m_state->m_resourceLeaseState->mutex);
             if (m_state->m_resourceLeaseState->closed
                 || m_state->m_resourceLeaseState->owner != this)
@@ -410,10 +442,12 @@ namespace LamaPon
                 throw std::logic_error(
                     "GraphicsDevice is shutting down.");
             }
+            // 実効APIのD3D12資源
             if (auto* const d3d12Resources = dynamic_cast<
                     Detail::GraphicsDeviceD3D12Resources*>(
                         m_state->m_apiResources.get()))
             {
+                // 借用するD3D12描画器
                 auto* const renderer =
                     d3d12Resources->TrySpriteRenderer();
                 if (renderer == nullptr)
@@ -421,6 +455,7 @@ namespace LamaPon
                     throw std::logic_error(
                         "The DirectX 12 sprite renderer is not initialized.");
                 }
+                // 開始したパスの識別番号
                 const auto token = renderer->Begin(
                     description,
                     m_state->m_whiteTextureView,
@@ -430,6 +465,7 @@ namespace LamaPon
             }
             else
             {
+                // 開始したパスの識別番号
                 const auto token = BeginD3D11SpritePass(
                     description,
                     true,

@@ -1,10 +1,4 @@
-"""配布パッケージ一覧（packages/index.json）と同梱Zipの検証です。
-
-エディターの「拡張機能」はこの index.json を読みます。エントリの
-書き間違いやZipの入れ忘れは、利用者側で初めて分かると直しにくいので
-CIで止めます。Discord用パッケージについては、ライセンス上同梱できない
-SDK本体がZipへ紛れ込んでいないことも確認します。
-"""
+"""配布indexとZipの内容を検証し、不正な構成をCIで検出します。"""
 from __future__ import annotations
 
 import hashlib
@@ -14,9 +8,13 @@ import unittest
 import zipfile
 from pathlib import Path
 
+# Repository root.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+# Package root.
 PACKAGES_ROOT = REPOSITORY_ROOT / "packages"
+# Package index path.
 INDEX_PATH = PACKAGES_ROOT / "index.json"
+# Package source root.
 SOURCE_ROOT = PACKAGES_ROOT / "src"
 
 # PackageManager.cpp の IsPackageNameSafe と同じ規則です。
@@ -28,6 +26,7 @@ ALLOWED_URL_PREFIXES = (
 )
 # PackageManager.cpp の IsCanonicalPackageSha256 と同じ規則です。
 CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# Index fields.
 REQUIRED_KEYS = {
     "name",
     "displayName",
@@ -51,12 +50,15 @@ BINARY_SUFFIXES = {".a", ".dll", ".dylib", ".exe", ".lib", ".pdb", ".so",
                    ".png", ".jpg", ".jpeg", ".dds"}
 
 
+# load_index(): Load the distributed package index.
 def load_index() -> dict:
+    # Return the decoded package index.
     return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
 
-
+# package_source_files(source_directory: package root): List source files that enter a package ZIP.
 def package_source_files(source_directory: Path) -> list[Path]:
     """Zipへ入るファイルだけを返します（.meta と生成物は除きます）。"""
+    # path: candidate source file; return files eligible for package ZIPs.
     return [
         path
         for path in sorted(source_directory.rglob("*"))
@@ -66,42 +68,66 @@ def package_source_files(source_directory: Path) -> list[Path]:
     ]
 
 
+# Validate package metadata and ZIP contents.
 class PackageIndexTests(unittest.TestCase):
+    # setUp(self: test fixture): Load shared package test data.
     def setUp(self):
+        # Decoded package index.
         self.index = load_index()
+        # Index entries under test.
         self.packages = self.index["packages"]
 
+    # test_project_packages_use_distributed_engine_headers(self: fixture): Check package references against distributed SDK headers.
     def test_project_packages_use_distributed_engine_headers(self):
-        # リポジトリ内だけでコンパイルできても、公開SDKで除外される内部
-        # ヘッダーを参照すると利用者が配布ZIPを使えなくなります。
+        # SDK配布時のinclude解決失敗を検出します。
+        # cmake: build settings used to identify excluded SDK headers.
         cmake = (REPOSITORY_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        # Excluded headers.
         excluded = set(re.findall(r'PATTERN "([^"/]+\.h)" EXCLUDE', cmake))
+        # Include pattern.
         include = re.compile(r'^\s*#\s*include\s*[<"](LamaPon/[^">\n]+)[">]', re.MULTILINE)
+        # Project packages.
         for entry in self.packages:
+            # Skip non-projects.
             if entry.get("target") != "Project":
+                # Ignore engine and library packages.
                 continue
+            # Source root.
             source = SOURCE_ROOT / entry["name"]
+            # Skip entries that are not project packages.
             if not source.is_dir():
+                # Ignore packages with no local source tree.
                 continue
+            # Source files.
             for path in package_source_files(source):
+                # C++ source files.
                 if path.suffix not in {".h", ".cpp"}:
+                    # Ignore package assets and metadata.
                     continue
+                # Engine headers.
                 for header in include.findall(path.read_text(encoding="utf-8")):
+                    # Package failure context.
                     with self.subTest(package=entry["name"], file=path.name, header=header):
                         self.assertTrue((REPOSITORY_ROOT / "src" / header).is_file())
                         self.assertNotIn(Path(header).name, excluded,
                                          "配布SDKに含まれないヘッダーへ依存しています。")
 
+    # test_index_header(self: fixture): Validate the index format and version.
     def test_index_header(self):
         self.assertEqual(self.index["format"], "LamaPonPackageIndex")
         self.assertEqual(self.index["version"], 1)
         self.assertTrue(self.packages, "一覧が空です。")
 
+    # test_entries_are_complete_and_safe(self: fixture): Validate required fields, names, and URLs.
     def test_entries_are_complete_and_safe(self):
+        # Seen package names.
         seen = set()
+        # Package entries.
         for entry in self.packages:
+            # Test one package.
             with self.subTest(package=entry.get("name")):
                 self.assertEqual(REQUIRED_KEYS - set(entry), set())
+                # Package name.
                 name = entry["name"]
                 self.assertRegex(name, SAFE_NAME)
                 self.assertNotIn(name, seen, "名前が重複しています。")
@@ -114,9 +140,13 @@ class PackageIndexTests(unittest.TestCase):
                 self.assertTrue(entry["description"])
                 self.assertIsInstance(entry["sizeBytes"], int)
 
+    # test_archives_exist_and_match_the_entry(self: fixture): Verify archive size, hash, and manifest.
     def test_archives_exist_and_match_the_entry(self):
+        # Indexed archives.
         for entry in self.packages:
+            # Test one package.
             with self.subTest(package=entry["name"]):
+                # ZIP path.
                 archive_path = PACKAGES_ROOT / entry["downloadUrl"].rsplit("/", 1)[-1]
                 self.assertTrue(archive_path.is_file(), f"{archive_path} がありません。")
                 self.assertEqual(
@@ -124,8 +154,7 @@ class PackageIndexTests(unittest.TestCase):
                     entry["sizeBytes"],
                     "sizeBytesが実際のZipと違います。",
                 )
-                # エディターはこの値で照合してから展開します。値が
-                # 合わないパッケージは利用者の環境でインストールできません。
+                # Verify integrity before the editor extracts the ZIP.
                 self.assertRegex(entry["sha256"], CANONICAL_SHA256)
                 self.assertEqual(
                     hashlib.sha256(archive_path.read_bytes()).hexdigest(),
@@ -133,116 +162,170 @@ class PackageIndexTests(unittest.TestCase):
                     "sha256が実際のZipと違います。"
                     " build_package.py --update-index で更新してください。",
                 )
+                # Read manifest.
                 with zipfile.ZipFile(archive_path) as archive:
+                    # Parsed manifest.
                     manifest = json.loads(
                         archive.read("package.json").decode("utf-8")
                     )
                 self.assertEqual(manifest["name"], entry["name"])
                 self.assertEqual(manifest["version"], entry["version"])
 
+    # test_archives_carry_a_meta_for_every_file(self: fixture): Require metadata sidecars for packaged files.
     def test_archives_carry_a_meta_for_every_file(self):
+        # Check each ZIP.
         for entry in self.packages:
+            # Test one package.
             with self.subTest(package=entry["name"]):
+                # ZIP path.
                 archive_path = PACKAGES_ROOT / entry["downloadUrl"].rsplit("/", 1)[-1]
+                # ZIP members.
                 with zipfile.ZipFile(archive_path) as archive:
+                    # ZIP members.
                     names = set(archive.namelist())
+                # Packaged files.
                 assets = {name for name in names if not name.endswith(".meta")}
+                # Sidecar files.
                 metas = {name for name in names if name.endswith(".meta")}
                 self.assertEqual(
+                    # asset: sidecarが必要なpackage内file名。
                     {asset + ".meta" for asset in assets} - metas,
                     set(),
                     ".metaが無いファイルがあります。",
                 )
                 self.assertEqual(
+                    # meta: 対応する本体fileが必要なsidecar名。
                     {meta[: -len(".meta")] for meta in metas} - assets,
                     set(),
                     "元ファイルが無い.metaがあります。",
                 )
 
+    # test_transition_asset_importers(self: fixture): Verify importer metadata for each transition asset.
     def test_transition_asset_importers(self):
+        # entry: transition package selected by item name from the index.
         entry = next(item for item in self.packages
                      if item["name"] == "scene-transition-showcase")
+        # Read package ZIP.
         with zipfile.ZipFile(PACKAGES_ROOT / entry["downloadUrl"].rsplit("/", 1)[-1]) as archive:
+            # Map importers.
             for name in archive.namelist():
+                # Asset JSON imports as data.
                 if name.endswith(".asset.json"):
+                    # Importer type.
                     expected = "DataAsset"
+                # Scene JSON imports as a scene.
                 elif name.endswith(".scene.json"):
+                    # Importer type.
                     expected = "Scene"
+                # HLSL imports as a shader.
                 elif name.endswith(".hlsl"):
+                    # Importer type.
                     expected = "Shader"
+                # PNG imports as a texture.
                 elif name.endswith(".png"):
+                    # Importer type.
                     expected = "Texture"
+                # C++ imports as a script.
                 elif name.endswith(".cpp"):
+                    # Importer type.
                     expected = "CppScript"
+                # Ignore unrelated archive members.
                 else:
+                    # Leave unrelated package files unchanged.
                     continue
+                # Verify one asset at a time.
                 with self.subTest(asset=name):
+                    # Importer metadata.
                     meta = json.loads(archive.read(name + ".meta"))
                     self.assertEqual(meta["importer"], expected)
 
+    # test_archives_have_no_path_escape(self: fixture): Reject paths that escape the ZIP root.
     def test_archives_have_no_path_escape(self):
+        # Check every indexed archive.
+        # Skip unrelated archive members.
         for entry in self.packages:
+            # Test one package.
             with self.subTest(package=entry["name"]):
+                # ZIP path.
                 archive_path = PACKAGES_ROOT / entry["downloadUrl"].rsplit("/", 1)[-1]
+                # ZIP member paths.
                 with zipfile.ZipFile(archive_path) as archive:
+                    # Archive member name.
                     for name in archive.namelist():
                         self.assertFalse(name.startswith("/"), name)
                         self.assertNotIn("..", Path(name).parts, name)
                         self.assertNotIn(":", name, name)
 
+    # test_shipped_archive_matches_its_source(self: fixture): Compare shipped ZIP contents with package sources.
     def test_shipped_archive_matches_its_source(self):
-        # packages/src へソースがあるものは、Zipの中身がそのソースと
-        # 一致することを確かめます。手で差し替えたZipを配ってしまわない
-        # ためです。
-        #
-        # Zipのバイト列ではなく展開後の中身を比べます。deflateの出力は
-        # zlibの版で変わり得るので、バイト比較にすると環境差で落ちます。
+        # Deflate bytes vary by zlib version, so compare extracted files.
+        # Indexed packages.
         for entry in self.packages:
+            # Package name.
             name = entry["name"]
+            # Source directory.
             source_directory = SOURCE_ROOT / name
+            # Skip packages without tracked source.
             if not source_directory.is_dir():
+                # Ignore missing package source directories.
                 continue
-            with self.subTest(package=name):
-                archive_path = PACKAGES_ROOT / f"{name}-{entry['version']}.zip"
-                expected = {
-                    path.relative_to(source_directory).as_posix(): path.read_bytes()
-                    for path in package_source_files(source_directory)
+            # ZIP path for the indexed version.
+            # Archive file path.
+            archive_path = PACKAGES_ROOT / f"{name}-{entry['version']}.zip"
+            # expected: package source bytes keyed by ZIP member path.
+            expected = {
+                # path: archiveへ含めるpackage source file。
+                path.relative_to(source_directory).as_posix(): path.read_bytes()
+                for path in package_source_files(source_directory)
+            }
+            # Read shipped package members.
+            with zipfile.ZipFile(archive_path) as archive:
+                # shipped: ZIP member bytes excluding sidecar metadata.
+                shipped = {
+                    # shipped_name: archive内の本体member名。
+                    shipped_name: archive.read(shipped_name)
+                    for shipped_name in archive.namelist()
+                    if not shipped_name.endswith(".meta")
                 }
-                with zipfile.ZipFile(archive_path) as archive:
-                    shipped = {
-                        shipped_name: archive.read(shipped_name)
-                        for shipped_name in archive.namelist()
-                        if not shipped_name.endswith(".meta")
-                    }
-                self.assertEqual(
-                    sorted(shipped),
-                    sorted(expected),
-                    "Zipの中身とpackages/srcのファイル一覧が違います。"
-                    " build_package.py で作り直してください。",
-                )
-                for shipped_name, content in sorted(shipped.items()):
-                    with self.subTest(entry=shipped_name):
-                        self.assertEqual(
-                            content,
-                            expected[shipped_name],
-                            f"{shipped_name} の中身がpackages/srcと違います。"
-                            " build_package.py で作り直してください。"
-                            " 改行が変換されていないかも確認してください"
-                            "（.gitattributesでLFに固定しています）。",
-                        )
+            self.assertEqual(
+                sorted(shipped),
+                sorted(expected),
+                "Zipの中身とpackages/srcのファイル一覧が違います。"
+                " build_package.py で作り直してください。",
+            )
+            # shipped_name: ZIP member path; content: extracted file bytes.
+            for shipped_name, content in sorted(shipped.items()):
+                # Test one member.
+                with self.subTest(entry=shipped_name):
+                    self.assertEqual(
+                        content,
+                        expected[shipped_name],
+                        f"{shipped_name} の中身がpackages/srcと違います。"
+                        " build_package.py で作り直してください。"
+                        " 改行が変換されていないかも確認してください"
+                        "（.gitattributesでLFに固定しています）。",
+                    )
 
+    # test_package_sources_use_unix_line_endings(self: fixture): Reject CRLF in files shipped inside package ZIPs.
     def test_package_sources_use_unix_line_endings(self):
-        # Zipへそのまま入るので、CRLFが混ざるとOSによって利用者が
-        # 受け取る中身が変わります。.gitattributes で固定していますが、
-        # 設定漏れに気付けるようにここでも確かめます。
+        # CRLF changes extracted file contents across platforms.
+        # Source packages.
         for entry in self.packages:
+            # Source directory.
             source_directory = SOURCE_ROOT / entry["name"]
+            # Skip packages without tracked source.
             if not source_directory.is_dir():
+                # Ignore missing package source directories.
                 continue
+            # ZIP source files.
             for path in package_source_files(source_directory):
+                # Skip files whose bytes are not text.
                 if path.suffix.lower() in BINARY_SUFFIXES:
+                    # Binary payloads may contain CRLF bytes.
                     continue
+                # Relative source path.
                 relative = path.relative_to(SOURCE_ROOT).as_posix()
+                # Keep failures scoped to one source file.
                 with self.subTest(file=relative):
                     self.assertNotIn(
                         b"\r\n",
@@ -251,21 +334,30 @@ class PackageIndexTests(unittest.TestCase):
                         " .gitattributes の設定を確認してください。",
                     )
 
-
+# Validate Discord Presence package metadata and licensing rules.
 class DiscordPresencePackageTests(unittest.TestCase):
+    # Package name.
     NAME = "discord-presence-sdk"
 
+    # setUp(self: test fixture): Load the package manifest and archive path.
     def setUp(self):
+        # Discord package source root.
         self.source = SOURCE_ROOT / self.NAME
+        # Parsed package manifest.
         self.manifest = json.loads(
             (self.source / "package.json").read_text(encoding="utf-8")
         )
+        # entry: package index row selected by item name.
+        # item: 対象packageかを判定するindex row。
         entry = next(
             item for item in load_index()["packages"] if item["name"] == self.NAME
         )
+        # Versioned package archive path.
         self.archive_path = PACKAGES_ROOT / f"{self.NAME}-{entry['version']}.zip"
 
+    # test_native_manifest_uses_only_allowed_keys(self: fixture): Restrict native package settings to supported keys.
     def test_native_manifest_uses_only_allowed_keys(self):
+        # Native settings.
         native = self.manifest["native"]
         self.assertEqual(set(native) - ALLOWED_NATIVE_KEYS, set())
         self.assertEqual(native["libraries"], ["sdk/lib/discord_partner_sdk.lib"])
@@ -273,10 +365,15 @@ class DiscordPresencePackageTests(unittest.TestCase):
         self.assertEqual(native["includeDirectories"], ["sdk/include"])
         self.assertEqual(native["defines"], ["LAMAPON_DISCORD_SOCIAL_SDK"])
 
+    # test_native_paths_stay_inside_the_package(self: fixture): Reject native paths outside the package root.
     def test_native_paths_stay_inside_the_package(self):
+        # Native package settings.
         native = self.manifest["native"]
+        # Path-bearing keys.
         for key in ("includeDirectories", "libraries", "runtimeFiles"):
+            # Native paths.
             for value in native[key]:
+                # Keep failures scoped to one path.
                 with self.subTest(entry=value):
                     self.assertFalse(value.startswith("/"), value)
                     self.assertFalse(value.startswith("\\"), value)
@@ -284,12 +381,16 @@ class DiscordPresencePackageTests(unittest.TestCase):
                     self.assertNotIn("..", Path(value).parts, value)
                     self.assertNotIn("*", value, value)
 
+    # test_archive_does_not_redistribute_the_sdk(self: fixture): Keep the licensed SDK binary out of the ZIP.
     def test_archive_does_not_redistribute_the_sdk(self):
-        # Discord Social SDKはライセンス上同梱できません。誤って
-        # sdkフォルダーへ置いたまま作り直しても気付けるようにします。
+        # Discord Social SDKはライセンス上同梱できません。
+        # Read package ZIP.
         with zipfile.ZipFile(self.archive_path) as archive:
+            # ZIP member names.
             names = archive.namelist()
+        # Reject SDK binaries.
         for name in names:
+            # Test one member.
             with self.subTest(entry=name):
                 self.assertNotIn(
                     Path(name).suffix.lower(),
@@ -298,35 +399,45 @@ class DiscordPresencePackageTests(unittest.TestCase):
                 )
         self.assertNotIn("sdk/include/discordpp.h", names)
 
+    # test_archive_explains_where_to_put_the_sdk(self: fixture): Document the expected local SDK layout.
     def test_archive_explains_where_to_put_the_sdk(self):
+        # SDK setup guide.
         with zipfile.ZipFile(self.archive_path) as archive:
+            # ZIP members.
             names = set(archive.namelist())
+            # Setup README.
             readme = archive.read("README.md").decode("utf-8")
+        # SDK folders.
         for folder in ("include", "lib", "bin"):
             self.assertIn(f"sdk/{folder}/PLACE_SDK_HERE.txt", names)
         self.assertIn("discord_partner_sdk.lib", readme)
         self.assertIn("discord_partner_sdk.dll", readme)
         self.assertIn("discordpp.h", readme)
 
+    # test_adapter_is_guarded_by_the_package_define(self: fixture): Require the adapter to compile without the optional SDK.
     def test_adapter_is_guarded_by_the_package_define(self):
-        # SDKが無い状態でGame Moduleへ紛れ込んでも、コンパイルエラーに
-        # ならず「何も持たないファイル」になることを担保します。
+        # SDK未導入時にadapterを無効化します。
+        # Adapter sources.
         for file_name in (
             "DiscordSocialPresenceBackend.h",
             "DiscordSocialPresenceBackend.cpp",
         ):
+            # Keep failures scoped to one source file.
             with self.subTest(file=file_name):
+                # Adapter source text.
                 text = (self.source / file_name).read_text(encoding="utf-8")
                 self.assertIn(
                     "#if defined(LAMAPON_DISCORD_SOCIAL_SDK)",
                     text,
                 )
 
+    # test_exactly_one_translation_unit_defines_the_sdk_implementation(self: fixture): Require one implementation translation unit.
     def test_exactly_one_translation_unit_defines_the_sdk_implementation(self):
-        # discordpp.h はヘッダーオンリーです。DISCORDPP_IMPLEMENTATION を
-        # 定義した.cppが0個だと「未解決の外部シンボル」、2個以上だと
-        # 「多重定義」でリンクできません。ちょうど1つを担保します。
+        # discordpp.h はヘッダーオンリーです。
+        # DISCORDPP_IMPLEMENTATION must appear in exactly one source file.
+        # definers: source paths containing the SDK implementation macro.
         definers = sorted(
+            # path: macroの有無を調べるSDK source file。
             path.name
             for path in self.source.rglob("*.cpp")
             if "#define DISCORDPP_IMPLEMENTATION"
@@ -334,12 +445,13 @@ class DiscordPresencePackageTests(unittest.TestCase):
         )
         self.assertEqual(definers, ["DiscordSocialSdkImplementation.cpp"])
 
+    # test_adapter_does_not_touch_discord_login(self: fixture): Keep Rich Presence independent from Discord login.
     def test_adapter_does_not_touch_discord_login(self):
-        # Rich PresenceはDiscordアカウント連携から独立しています。
-        # tokenやOAuthへ触れていないことを確かめます。
+        # Adapter source.
         text = (self.source / "DiscordSocialPresenceBackend.cpp").read_text(
             encoding="utf-8"
         )
+        # Forbidden auth APIs.
         for forbidden in (
             "Authorize",
             "UpdateToken",
@@ -347,12 +459,16 @@ class DiscordPresencePackageTests(unittest.TestCase):
             "GetDefaultPresenceScopes",
             "AuthorizationArgs",
         ):
+            # Keep failures scoped to one API or credential.
             with self.subTest(symbol=forbidden):
                 self.assertNotIn(forbidden, text)
 
 
+# Validate the local-only Ollama package contract.
 class OllamaPackageTests(unittest.TestCase):
+    # Package name.
     NAME = "ollama-ai"
+    # Profile fields.
     PROFILE_FIELDS = {
         "model",
         "systemPrompt",
@@ -364,20 +480,25 @@ class OllamaPackageTests(unittest.TestCase):
         "keepAliveMinutes",
     }
 
+    # setUp(self: test fixture): Load Ollama package source and code files.
     def setUp(self):
+        # Ollama package source root.
         self.source = SOURCE_ROOT / self.NAME
+        # code: C++ source text keyed by file name.
         self.code = {
+            # path: package内のC++ source file。
             path.name: path.read_text(encoding="utf-8")
             for path in package_source_files(self.source)
             if path.suffix in {".h", ".cpp"}
         }
 
+    # test_code_never_reaches_ollama_cloud(self: fixture): Reject cloud endpoints and authentication in package code.
     def test_code_never_reaches_ollama_cloud(self):
-        # このパッケージはOllamaのローカル実行だけを使い、有料のOllama Cloudは
-        # 無料枠も含めて使いません。クラウドの接続先、APIキー、サインインを
-        # 前提にしたAPIをコードへ書き足すと、ここで止まります。
         self.assertTrue(self.code, "C++ソースが見つかりません。")
+        # Package source files.
+        # name: source filename; text: its C++ contents.
         for name, text in self.code.items():
+            # Forbidden cloud APIs.
             for forbidden in (
                 "ollama.com",
                 "https://",
@@ -390,45 +511,57 @@ class OllamaPackageTests(unittest.TestCase):
                 "web_fetch",
                 "signin",
             ):
+                # Isolate file/API failure.
                 with self.subTest(file=name, symbol=forbidden):
                     self.assertNotIn(forbidden, text)
 
+    # test_every_request_goes_through_the_endpoint_check(self: fixture): Require endpoint validation before every HTTP request.
     def test_every_request_goes_through_the_endpoint_check(self):
-        # HttpSendはHTTPSならどこへでも送れます。呼び出しを1か所にまとめ、
-        # その直前で接続先を確かめていることを担保します。
+        # callers: source file names mapped to their HTTP call counts.
         callers = {
+            # name: source file name; text: code inspected for HTTP calls.
             name: text.count("HttpSend(")
             for name, text in self.code.items()
             if "HttpSend(" in text
         }
         self.assertEqual(callers, {"OllamaClient.h": 1})
+        # HTTP client source.
         client = self.code["OllamaClient.h"]
         self.assertLess(
             client.index("IsAllowedEndpoint(url)"),
             client.index("HttpSend("),
         )
 
+    # test_threads_are_joined_not_detached(self: fixture): Require worker threads to finish before package unload.
     def test_threads_are_joined_not_detached(self):
-        # Game Moduleの差し替えではScriptを破棄してからDLLを解放します。
-        # 切り離したスレッドは解放済みのコードを実行して落ちます。
+        # Package sources.
         for name, text in self.code.items():
+            # Keep failures scoped to one source file.
             with self.subTest(file=name):
                 self.assertNotIn(".detach(", text)
         self.assertIn("std::jthread", self.code["OllamaWorker.h"])
 
+    # test_shipped_profiles_have_no_host_or_key(self: fixture): Reject cloud hosts and credentials in shipped profiles.
     def test_shipped_profiles_have_no_host_or_key(self):
+        # Profile files.
         profiles = sorted((self.source / "profiles").glob("*.asset.json"))
         self.assertTrue(profiles, "設定アセットが同梱されていません。")
+        # Shipped profiles.
         for path in profiles:
+            # Keep failures scoped to one profile.
             with self.subTest(profile=path.name):
+                # Profile asset.
                 asset = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(asset["type"], "Ollama.ModelProfile")
                 self.assertEqual(set(asset["values"]), self.PROFILE_FIELDS)
                 self.assertEqual(asset["values"]["port"], 11434)
                 self.assertNotIn("cloud", asset["values"]["model"].lower())
 
+    # test_readme_explains_the_local_only_setup(self: fixture): Require local setup instructions in the package README.
     def test_readme_explains_the_local_only_setup(self):
+        # Package setup guide.
         readme = (self.source / "README.md").read_text(encoding="utf-8")
+        # Local-only guidance.
         for required in (
             "OLLAMA_NO_CLOUD=1",
             '{"disable_ollama_cloud": true}',
@@ -437,9 +570,11 @@ class OllamaPackageTests(unittest.TestCase):
             "Windows専用",
             "モデルのライセンス",
         ):
+            # Isolate instruction failure.
             with self.subTest(text=required):
                 self.assertIn(required, readme)
 
 
+# Run tests when invoked as a script.
 if __name__ == "__main__":
     unittest.main()

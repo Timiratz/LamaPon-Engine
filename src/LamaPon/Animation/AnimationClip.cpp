@@ -16,6 +16,7 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // 3要素の有限数値配列を読みます(value: JSON配列, field: エラー用の項目名)。
     DirectX::XMFLOAT3 ReadFloat3(
         const Json& value,
         const char* field)
@@ -26,6 +27,7 @@ namespace
                 std::string{ field }
                 + " must contain three numbers.");
         }
+        // 配列から復元する三軸の値
         DirectX::XMFLOAT3 result{
             value.at(0).get<float>(),
             value.at(1).get<float>(),
@@ -42,6 +44,7 @@ namespace
         return result;
     }
 
+    // 三軸の値をJSON配列にします(value: 三軸の値)。
     Json ToJson(
         const DirectX::XMFLOAT3& value)
     {
@@ -52,6 +55,7 @@ namespace
         });
     }
 
+    // 置き換え用ファイルを書いて保存先へ改名します(path: 保存先, text: 文書テキスト)。
     void WriteTextAtomically(
         const std::filesystem::path& path,
         const std::string_view text)
@@ -61,8 +65,10 @@ namespace
             std::filesystem::create_directories(
                 path.parent_path());
         }
+        // 保存先と同じ場所の置換用パス
         auto temporaryPath = path;
         temporaryPath += L".tmp";
+        // 置換用ファイルの出力ストリーム
         std::ofstream output(
             temporaryPath,
             std::ios::binary | std::ios::trunc);
@@ -76,6 +82,7 @@ namespace
         output.close();
         if (!output)
         {
+            // 失敗後の後片付けのエラー
             std::error_code cleanupError;
             std::filesystem::remove(
                 temporaryPath,
@@ -90,6 +97,7 @@ namespace
                 MOVEFILE_REPLACE_EXISTING
                     | MOVEFILE_WRITE_THROUGH))
         {
+            // 失敗後の後片付けのエラー
             std::error_code cleanupError;
             std::filesystem::remove(
                 temporaryPath,
@@ -100,6 +108,7 @@ namespace
         }
     }
 
+    // 二つの数値を線形補間します(from: 始点の値, to: 終点の値, amount: 補間量)。
     float Lerp(
         const float from,
         const float to,
@@ -108,6 +117,7 @@ namespace
         return from + (to - from) * amount;
     }
 
+    // 三軸の値を線形補間します(from: 始点の値, to: 終点の値, amount: 補間量)。
     DirectX::XMFLOAT3 LerpFloat3(
         const DirectX::XMFLOAT3& from,
         const DirectX::XMFLOAT3& to,
@@ -120,18 +130,22 @@ namespace
         };
     }
 
+    // 角度の最短差を補間します(from: 始点ラジアン, to: 終点ラジアン, amount: 補間量)。
     float LerpAngle(
         const float from,
         const float to,
         const float amount) noexcept
     {
+        // 一周のラジアン角度
         constexpr float TwoPi =
             std::numbers::pi_v<float> * 2.0f;
+        // 一周内の最短角度差
         const float delta =
             std::remainder(to - from, TwoPi);
         return from + delta * amount;
     }
 
+    // Euler角を各軸の最短差で補間します(from: 始点の三軸角度, to: 終点の三軸角度, amount: 補間量)。
     DirectX::XMFLOAT3 LerpRotation(
         const DirectX::XMFLOAT3& from,
         const DirectX::XMFLOAT3& to,
@@ -151,6 +165,7 @@ namespace LamaPon
     AnimationClip AnimationClip::LoadFromFile(
         const std::filesystem::path& path)
     {
+        // クリップファイルの入力ストリーム
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -158,6 +173,7 @@ namespace LamaPon
                 "Could not open animation clip: "
                 + PathToUtf8(path));
         }
+        // ファイルから読んだJSON全文
         const std::string json{
             std::istreambuf_iterator<char>{ input },
             std::istreambuf_iterator<char>{}
@@ -168,6 +184,7 @@ namespace LamaPon
     AnimationClip AnimationClip::FromJson(
         const std::string_view json)
     {
+        // 解析したクリップ文書
         const Json document =
             Json::parse(json.begin(), json.end());
         if (document.value(
@@ -180,6 +197,7 @@ namespace LamaPon
                 "Unsupported LamaPon animation clip format.");
         }
 
+        // 文書のキー列のJSON項目
         const auto keyframes =
             document.find("keyframes");
         if (keyframes == document.end()
@@ -191,6 +209,7 @@ namespace LamaPon
                 "Animation clip requires between 1 and 4096 keyframes.");
         }
 
+        // 構築するアニメーションクリップ
         AnimationClip clip;
         clip.m_name =
             document.value(
@@ -201,9 +220,12 @@ namespace LamaPon
         clip.m_keyframes.reserve(
             keyframes->size());
 
+        // 直前に検証したキーの秒数
         float previousTime = -1.0f;
+        // 復元するTransformキーのJSON値
         for (const auto& value : *keyframes)
         {
+            // 検証するキーの時刻の秒数
             const float time =
                 value.at("time").get<float>();
             if (!std::isfinite(time)
@@ -231,6 +253,7 @@ namespace LamaPon
                 });
         }
 
+        // 最終キーの時刻の秒数
         const float lastKeyTime =
             clip.m_keyframes.back().time;
         clip.m_duration =
@@ -253,6 +276,7 @@ namespace LamaPon
         const bool loop,
         std::vector<TransformKeyframe> keyframes)
     {
+        // 構築するアニメーションクリップ
         AnimationClip clip;
         clip.m_name = std::move(name);
         clip.m_duration = duration;
@@ -265,6 +289,7 @@ namespace LamaPon
 
     std::string AnimationClip::SerializeToJson() const
     {
+        // 書き出すクリップのJSON文書
         Json document{
             { "format", "LamaPonAnimationClip" },
             { "version", 1 },
@@ -273,6 +298,7 @@ namespace LamaPon
             { "loop", m_loop },
             { "keyframes", Json::array() }
         };
+        // 文書へ保存するTransformキー
         for (const auto& keyframe :
             m_keyframes)
         {
@@ -323,6 +349,8 @@ namespace LamaPon
             return m_keyframes.back().transform;
         }
 
+        // 補間区間の終点を探します(value: 再生秒数, keyframe: 比較するキー)。
+        // 再生時刻より後のキーの位置
         const auto upper = std::upper_bound(
             m_keyframes.begin(),
             m_keyframes.end(),
@@ -332,8 +360,11 @@ namespace LamaPon
             {
                 return value < keyframe.time;
             });
+        // 補間区間の終点キー
         const auto& to = *upper;
+        // 補間区間の始点キー
         const auto& from = *(upper - 1);
+        // 隣接キー間の0〜1の補間量
         const float amount =
             (time - from.time)
             / (to.time - from.time);
@@ -361,6 +392,7 @@ namespace LamaPon
             return { 0.0f, 0.0f, 0.0f, 1.0f };
         }
 
+        // Euler角をクォータニオンへ変換します(sample: Transformのサンプル)。
         const auto toQuaternion = [](
             const TransformAnimationSample& sample)
         {
@@ -370,6 +402,7 @@ namespace LamaPon
                 sample.rotation.z);
         };
 
+        // 正規化する補間後の回転
         DirectX::XMVECTOR result{};
         if (time <= m_keyframes.front().time)
         {
@@ -383,6 +416,8 @@ namespace LamaPon
         }
         else
         {
+            // 補間区間の終点を探します(value: 再生秒数, keyframe: 比較するキー)。
+            // 再生時刻より後のキーの位置
             const auto upper = std::upper_bound(
                 m_keyframes.begin(),
                 m_keyframes.end(),
@@ -392,13 +427,18 @@ namespace LamaPon
                 {
                     return value < keyframe.time;
                 });
+            // 補間区間の終点キー
             const auto& to = *upper;
+            // 補間区間の始点キー
             const auto& from = *(upper - 1);
+            // 隣接キー間の0〜1の補間量
             const float amount =
                 (time - from.time)
                 / (to.time - from.time);
+            // 始点の回転クォータニオン
             auto fromRotation =
                 toQuaternion(from.transform);
+            // 短い回転側へ揃える終点回転
             auto toRotation =
                 toQuaternion(to.transform);
             if (DirectX::XMVectorGetX(
@@ -415,6 +455,7 @@ namespace LamaPon
                 amount);
         }
 
+        // 正規化した回転の出力値
         DirectX::XMFLOAT4 output{};
         DirectX::XMStoreFloat4(
             &output,

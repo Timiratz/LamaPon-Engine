@@ -14,6 +14,7 @@
 
 namespace
 {
+    // 描画用にRGBへアルファを掛ける(color: アルファ乗算前のRGBA)。
     DirectX::XMFLOAT4 Premultiply(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -25,11 +26,13 @@ namespace
         };
     }
 
+    // UI矩形またはワールドXYと代替サイズから表示範囲を求める(owner: 所有オブジェクト, graphics: 描画機器かnullptr, fallbackSize: 代替の幅と高さ)。
     LamaPon::UIRect ResolveWidgetRect(
         const LamaPon::GameObject& owner,
         const LamaPon::GraphicsDevice* graphics,
         const DirectX::XMFLOAT2& fallbackSize) noexcept
     {
+        // UI矩形の配置情報
         if (const auto* transform =
             owner.GetComponent<
                 LamaPon::UIRectTransformComponent>();
@@ -40,6 +43,7 @@ namespace
                 static_cast<float>(
                     graphics->UIHeight()));
         }
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
@@ -53,7 +57,7 @@ namespace
         };
     }
 
-    // UTF-32のコードポイント1つをUTF-8へ変換して追記します。
+    // 一つの有効なUnicodeコードポイントをUTF-8で追記する(target: 追記先の文字列, codePoint: 追記するコードポイント)。
     void AppendUtf8(
         std::string& target,
         const char32_t codePoint)
@@ -92,11 +96,13 @@ namespace
         }
     }
 
-    // UTF-8文字列のコードポイント数を数えます。
+    // 有効なUTF-8のコードポイント数を先頭バイトから数える(text: 対象のUTF-8文字列)。
     std::size_t CountUtf8CodePoints(
         const std::string& text) noexcept
     {
+        // コードポイント数
         std::size_t count{};
+        // 走査中のUTF-8バイト
         for (const char byte : text)
         {
             if ((static_cast<unsigned char>(byte)
@@ -212,14 +218,17 @@ namespace LamaPon
             return;
         }
 
+        // 借用した入力状態
         const auto& input = m_graphics->Input();
+        // ポインターの状態
         const auto& pointer = input.Pointer();
+        // 入力欄の表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
             m_fallbackSize);
 
-        // クリックでフォーカスを取得し、外側クリックで手放します。
+
         if (pointer.pressed)
         {
             m_focused =
@@ -234,7 +243,9 @@ namespace LamaPon
         }
         m_caretTimer += deltaTime;
 
+        // 文字入力による更新の有無
         bool textChanged = false;
+        // 入力のUTF-16コード単位
         for (const wchar_t character :
             input.TextInput())
         {
@@ -276,16 +287,19 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 入力欄の表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
             m_fallbackSize);
+        // 入力欄の表示幅と高さ
         const auto size = rect.Size();
         if (size.x <= 0.0f || size.y <= 0.0f)
         {
             return;
         }
 
+        // 状態に応じた背景RGBA
         auto backgroundColor = m_focused
             ? m_focusedColor
             : m_backgroundColor;
@@ -293,40 +307,50 @@ namespace LamaPon
         {
             backgroundColor.w *= 0.5f;
         }
+        // アルファ乗算済み背景色
         const auto premultipliedBackground =
             Premultiply(backgroundColor);
+        // 背景のスプライト描画指定
         SpriteDrawRequest backgroundRequest;
         backgroundRequest.position = rect.minimum;
         backgroundRequest.tint = premultipliedBackground;
         backgroundRequest.scale = { size.x, size.y };
         static_cast<void>(sprites.Draw(backgroundRequest));
 
+        // 文字の周囲の余白
         const float padding = size.y * 0.15f;
+        // 空欄の案内を表示する指定
         const bool showingPlaceholder = m_text.empty();
+        // 表示する文字画像
         const auto& texture = showingPlaceholder
             ? m_placeholderTexture
             : m_textTexture;
-        // 文字テクスチャは白で焼いてあるので、本文と説明文で
-        // 色を掛け分けます。
+        // 白色の文字画像に本文または案内文の描画色を掛ける。
+        // アルファ乗算済み文字色
         const auto textTint = PremultipliedTextColor(
             showingPlaceholder
                 ? m_placeholderColor
                 : m_textColor);
         if (texture)
         {
+            // 文字画像のGPU資源の借用
             const auto resources =
                 texture->resources.Acquire();
+            // 文字画像の描画ビュー
             const auto textureView = resources
                 ? resources->shaderResourceView
                 : GraphicsViewHandle{};
+            // 文字の表示幅
             const float textWidth =
                 size.x - padding * 2.0f;
+            // 文字の表示高さ
             const float textHeight =
                 size.y - padding * 2.0f;
             if (textureView
                 && textWidth > 0.0f
                 && textHeight > 0.0f)
             {
+                // 文字画像の描画指定
                 SpriteDrawRequest textRequest;
                 textRequest.texture = textureView;
                 textRequest.position = {
@@ -347,12 +371,14 @@ namespace LamaPon
             }
         }
 
-        // フォーカス中は右端で点滅するキャレットを描きます。
+        // キャレット位置は文字末尾によらず入力欄の右端に固定する。
         if (m_focused
             && std::fmod(m_caretTimer, 1.0f) < 0.5f)
         {
+            // アルファ乗算済みキャレット色
             const auto premultipliedCaret =
                 Premultiply(m_textColor);
+            // キャレットの描画指定
             SpriteDrawRequest caretRequest;
             caretRequest.position = {
                     rect.maximum.x - padding - 2.0f,
@@ -373,6 +399,7 @@ namespace LamaPon
             m_placeholderTexture.reset();
             return;
         }
+        // 文字画像の配置と折り返し
         const TextLayoutOptions layout{
             { 512.0f, 64.0f },
             TextHorizontalAlignment::Left,
@@ -397,12 +424,13 @@ namespace LamaPon
     void UIInputFieldComponent::AppendCharacter(
         const wchar_t character)
     {
-        // サロゲートペアはUTF-32へ合成してから追記します。
+        // 完全なサロゲートペアを前提とし、保留中の上位単位はフォーカス解除でも残る。
         if (character >= 0xD800 && character <= 0xDBFF)
         {
             m_pendingHighSurrogate = character;
             return;
         }
+        // 追記するUnicodeコードポイント
         char32_t codePoint = character;
         if (character >= 0xDC00 && character <= 0xDFFF)
         {
@@ -423,8 +451,7 @@ namespace LamaPon
 
     void UIInputFieldComponent::RemoveLastCodePoint()
     {
-        // 末尾の継続バイト(10xxxxxx)を取り除いてから
-        // 先頭バイトを1つ削除します。
+        // 継続バイトを除去した後で末尾コードポイントの先頭バイトを削除する。
         while (!m_text.empty()
             && (static_cast<unsigned char>(
                     m_text.back())

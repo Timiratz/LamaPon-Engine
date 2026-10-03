@@ -36,9 +36,11 @@ namespace LamaPon
         const float viewportWidth,
         const float viewportHeight) const noexcept
     {
+        // 表示幅と基準幅の比率
         const float widthScale =
             std::max(viewportWidth, 1.0f)
             / m_referenceResolution.x;
+        // 表示高さと基準高さの比率
         const float heightScale =
             std::max(viewportHeight, 1.0f)
             / m_referenceResolution.y;

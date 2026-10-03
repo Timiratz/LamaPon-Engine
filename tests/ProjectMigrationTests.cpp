@@ -18,23 +18,28 @@
 
 namespace
 {
+    // Require(condition: 成立条件, message: 失敗理由): 条件不成立を検査失敗にする。
     void Require(const bool condition, const char* message)
     {
+        // 検査条件の不成立を検出する。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // WriteFile(path: 出力先, contents: ファイル内容): 親フォルダーを作ってバイナリ保存する。
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // 作成するテストファイル
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // ファイル作成の失敗を検出する。
         if (!output)
         {
             throw std::runtime_error(
@@ -43,10 +48,13 @@ namespace
         output << contents;
     }
 
+    // ReadFile(path: 入力元): ファイル全体を文字列として読む。
     std::string ReadFile(
         const std::filesystem::path& path)
     {
+        // 読み込むプロジェクトファイル
         std::ifstream input(path, std::ios::binary);
+        // 入力ファイルを開けない場合は空文字列を返す。
         if (!input)
         {
             return {};
@@ -57,17 +65,20 @@ namespace
     }
 }
 
+// main(): 移行、版判定、設定保存の互換性を検証する。
 int main()
 {
+    // 検査失敗を終了コードへ変換する。
     try
     {
+        // テスト成果物の保存先
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "project-migration";
         std::filesystem::remove_all(root);
 
-        // エンジン側（最新）の組み込みシェーダー。
+        // 最新エンジンの配布アセット
         const auto engineAssets = root / "engine" / "assets";
         WriteFile(
             engineAssets / "shaders" / "LamaPonLit.hlsl",
@@ -85,8 +96,7 @@ int main()
                 / "LamaPonEngineLogo.png",
             "fake logo");
 
-        // 旧エンジンで作られたプロジェクト。
-        // Lit=古い / Custom=利用者が改造 / Environment=欠落。
+        // 古い設定と一部変更済みアセットを持つプロジェクト
         const auto projectRoot = root / "project";
         WriteFile(
             projectRoot / ".lamapon" / "project.json",
@@ -101,6 +111,7 @@ int main()
                 / "LamaPonCustomMaterial.hlsl",
             "// 改造済み");
 
+        // 最初のアセット移行結果
         const auto first = LamaPon::MigrateProjectAssets(
             projectRoot,
             engineAssets,
@@ -126,9 +137,7 @@ int main()
                 == "// environment v2",
             "a missing built-in shader must be restored");
 
-        // 既存かつ内容が異なるファイルは、利用者の改造か古い公式版か
-        // 区別できないため、どちらも一律で .bak へ退避されます
-        // （欠落していたEnvironmentは新規作成なので退避されません）。
+        // 既存かつ内容が異なるファイルは、利用者の改造か古い公式版か区別できないため、どちらも一律で .bak へ退避されます（欠落していたEnvironmentは新規作成なので退避されません）。
         Require(
             first.backedUpAssets.size() == 2,
             "every pre-existing, differing asset is backed up");
@@ -145,11 +154,13 @@ int main()
                 == "// lit v1",
             "the outdated shader's prior content must be preserved in .bak");
 
-        // エンジンバージョンが記録され、他の設定は保持されます。
+        // 版番号の更新後も既存プロジェクト設定を保持する。
         {
+            // 移行後のプロジェクト設定ファイル
             std::ifstream input(
                 projectRoot / ".lamapon" / "project.json",
                 std::ios::binary);
+            // 読み込んだプロジェクト設定JSON
             nlohmann::json document;
             input >> document;
             Require(
@@ -162,7 +173,8 @@ int main()
                 "existing project settings must be preserved");
         }
 
-        // 2回目は何も変わりません（冪等）。
+        // 2回目の移行では何も変更されない。
+        // 最新状態へ適用した再移行結果
         const auto second = LamaPon::MigrateProjectAssets(
             projectRoot,
             engineAssets,
@@ -176,8 +188,7 @@ int main()
             second.previousEngineVersion == "2026.8.1",
             "the recorded version must round-trip");
 
-        // 改行コードだけが異なる場合は、プロジェクトを開くたびに
-        // ファイルが更新されないよう書き換えを省略します。
+        // 改行差だけではアセットを書き換えない。
         WriteFile(
             engineAssets / "shaders" / "LamaPonLit.hlsl",
             "// lit v2\r\nline2\r\n");
@@ -185,6 +196,7 @@ int main()
             projectRoot / "assets" / "shaders"
                 / "LamaPonLit.hlsl",
             "// lit v2\nline2\n");
+        // 改行だけ異なる再移行結果
         const auto newlineOnly = LamaPon::MigrateProjectAssets(
             projectRoot,
             engineAssets,
@@ -200,7 +212,8 @@ int main()
                 == "// lit v2\nline2\n",
             "the project's line endings must be preserved");
 
-        // エンジンのassetsが無い場合（ソースビルド等）は無害。
+        // エンジンアセットのない環境では移行を行わない。
+        // 存在しないエンジンアセットルートの結果
         const auto missing = LamaPon::MigrateProjectAssets(
             projectRoot,
             root / "does-not-exist",
@@ -209,11 +222,11 @@ int main()
             !missing.changed,
             "a missing engine asset root must be a no-op");
 
-        // 版番号の比較。カレンダー版なので桁数が揃わないことが
-        // あります（"2026.8" と "2026.8.1"）。
+        // compare(left: 比較元版, right: 比較先版): 数値版の比較結果を返す。
         const auto compare =
             [](const char* left, const char* right)
         {
+            // バージョン比較の結果
             const auto result =
                 LamaPon::CompareEngineVersions(left, right);
             Require(
@@ -248,12 +261,15 @@ int main()
                 "", "2026.8.5").has_value(),
             "an empty version must not compare");
 
-        // プロジェクトの判定。project.jsonのengineVersionを見ます。
+        // project.jsonのengineVersionによる版判定を確認する。
+        // 読み書きするproject.json
         const auto settingsPath =
             projectRoot / ".lamapon" / "project.json";
+        // recordVersion(version: 保存する版): project.jsonへエンジン版を記録する。
         const auto recordVersion =
             [&settingsPath](const char* version)
         {
+            // 更新するプロジェクト設定JSON
             nlohmann::json document;
             document["engineVersion"] = version;
             WriteFile(settingsPath, document.dump(2));
@@ -271,9 +287,9 @@ int main()
                 projectRoot, "2026.8.5").status
                 == LamaPon::ProjectVersionStatus::Older,
             "an older project must be reported as older");
-        // 新しい形式のプロジェクトを古いエディターで開くと設定が失われるため、
-        // エディターより新しい版は拒否します。
+        // 新しい形式のプロジェクトを古いエディターで開くと設定が失われるため、エディターより新しい版は拒否します。
         recordVersion("2026.9.1");
+        // エンジンより新しいプロジェクトの判定結果
         const auto newer = LamaPon::InspectProjectVersion(
             projectRoot, "2026.8.5");
         Require(
@@ -285,8 +301,7 @@ int main()
             "the recorded version must be reported back so"
             " the message can name it");
 
-        // バージョンが無い、または読めない場合は移行対象として扱い、
-        // 手動編集されたproject.jsonも開けるようにします。
+        // バージョンが無い、または読めない場合は移行対象として扱い、手動編集されたproject.jsonも開けるようにします。
         WriteFile(settingsPath, "{}");
         Require(
             LamaPon::InspectProjectVersion(
@@ -302,27 +317,25 @@ int main()
             "an unreadable version must not lock the"
             " project out");
 
-        // プロジェクト設定を保存しても、他の仕組みが書いたキーが
-        // 残ること。
-        //
-        // 保存後もengineVersionと未知のキーが保持されることを確認します。
+        // project.jsonの保存後も他機能のキーを保持する。
         {
+            // 読み書きするプロジェクト設定ファイル
             const auto settingsFile =
                 projectRoot / ".lamapon" / "project.json";
-            // 保存検証用に、読み取り可能な設定を用意します。
+            // 保存検証用の基準設定
             nlohmann::json before;
             before["format"] = "LamaPonProject";
             before["version"] = 1;
             before["gameName"] = "VersionKeepTest";
             before["engineVersion"] = "2026.8.5";
             before["somethingElseEntirely"] = 42;
-            // renderingApiが無い旧設定でも、従来通り
-            // DirectX 11を選びます。
+            // renderingApi未設定時はDirectX 11へ既定化する。
             before["graphics"] = {
                 { "preset", "High" }
             };
             WriteFile(settingsFile, before.dump(2));
 
+            // JSONから読み込んだ設定
             const auto loaded =
                 LamaPon::LoadProjectSettings(settingsFile);
             Require(
@@ -335,6 +348,7 @@ int main()
                 loaded,
                 LamaPon::ProjectSettingsFileType::Project);
 
+            // 保存後のproject.json
             const auto after = nlohmann::json::parse(
                 ReadFile(settingsFile));
             Require(
@@ -349,8 +363,8 @@ int main()
                 " does not own");
         }
 
-        // 描画APIのJSON名と保存往復。起動中のBackend状態とは分離し、
-        // 設定値として安全に保存・再読み込みできる必要があります。
+        // 描画APIのJSON名と保存往復。
+        // 起動中のBackend状態とは分離し、設定値として安全に保存・再読み込みできる必要があります。
         {
             Require(
                 LamaPon::RenderingApiName(
@@ -385,6 +399,7 @@ int main()
                 "an invalid rendering API value must have a safe"
                 " JSON name");
 
+            // 無効な描画API値を持つ設定
             LamaPon::GraphicsSettings invalidGraphics;
             invalidGraphics.renderingApi =
                 static_cast<LamaPon::RenderingApi>(-1);
@@ -397,9 +412,12 @@ int main()
 
             struct RenderingApiCase final
             {
+                // 保存往復を検査する描画API
                 LamaPon::RenderingApi api;
+                // JSONへ保存するAPI名
                 const char* name;
             };
+            // 保存往復を確認する描画API一覧
             constexpr RenderingApiCase cases[]{
                 { LamaPon::RenderingApi::DirectX11, "DirectX11" },
                 { LamaPon::RenderingApi::Auto, "Auto" },
@@ -408,14 +426,18 @@ int main()
                     "DirectX12Experimental"
                 }
             };
+            // API設定を書き出すテストファイル
             const auto settingsFile =
                 projectRoot / ".lamapon" / "rendering-api.json";
+            // Project形式とGamePackage形式を比較する。
             for (const auto fileType : {
                     LamaPon::ProjectSettingsFileType::Project,
                     LamaPon::ProjectSettingsFileType::GamePackage })
             {
+                // 各描画API値を保存・再読込する。
                 for (const auto& testCase : cases)
                 {
+                    // 現在の描画API設定
                     LamaPon::ProjectSettings settings;
                     settings.graphics.renderingApi = testCase.api;
                     LamaPon::SaveProjectSettings(
@@ -423,6 +445,7 @@ int main()
                         settings,
                         fileType);
 
+                    // 保存された描画API設定JSON
                     const auto saved = nlohmann::json::parse(
                         ReadFile(settingsFile));
                     Require(
@@ -440,6 +463,7 @@ int main()
                 }
             }
 
+            // 未知の描画API名を含む設定JSON
             nlohmann::json unknown;
             unknown["format"] = "LamaPonProject";
             unknown["version"] = 1;
@@ -456,12 +480,12 @@ int main()
             std::filesystem::remove(settingsFile);
         }
 
-        // Discord連携に必要なのは公開可能なバックエンド接続情報だけです。
-        // Project/GamePackageの両方で往復し、資格情報らしい未知キーは
-        // onlineオブジェクトを再生成するときに持ち越さないことを確認します。
+        // Project/GamePackageで公開online設定だけを往復し、資格情報を除外する。
         {
+            // オンライン設定を書き出すテストファイル
             const auto settingsFile =
                 projectRoot / ".lamapon" / "online.json";
+            // 保存・再読込するオンライン設定
             LamaPon::ProjectSettings settings;
             settings.online.enabled = true;
             settings.online.serviceBaseUrl =
@@ -477,13 +501,13 @@ int main()
             settings.online.discordPresence
                 .defaultLargeImageText = "My Awesome Game";
 
+            // ProjectとGamePackageの保存形式を確認する。
             for (const auto fileType : {
                     LamaPon::ProjectSettingsFileType::Project,
                     LamaPon::ProjectSettingsFileType::
                         GamePackage })
             {
-                // 以前の手編集で危険なキーがあっても、所有するonline
-                // オブジェクトは許可した6項目だけで書き直します。
+                // 手編集で秘密鍵が混入したJSONを用意する。
                 WriteFile(
                     settingsFile,
                     R"({"online":{"client_secret":"leak",)"
@@ -492,6 +516,7 @@ int main()
                     settingsFile,
                     settings,
                     fileType);
+                // 保存後に復元したオンライン設定
                 const auto loaded =
                     LamaPon::LoadProjectSettings(settingsFile);
                 Require(
@@ -525,8 +550,10 @@ int main()
                     " survive project and game-package round"
                     " trips");
 
+                // 保存されたオンライン設定JSON
                 const auto document = nlohmann::json::parse(
                     ReadFile(settingsFile));
+                // 保存されたonlineオブジェクト
                 const auto& online = document.at("online");
                 Require(
                     online.size() == 7
@@ -537,6 +564,7 @@ int main()
                         && !online.contains("token"),
                     "project settings must never retain Discord"
                     " secrets or session tokens");
+                // 保存されたDiscord presence公開設定
                 const auto& presence =
                     online.at("discordPresence");
                 Require(
@@ -551,8 +579,8 @@ int main()
                     " four public settings");
             }
 
-            // HTTPは明示したloopback開発だけProjectで許可し、同じ設定を
-            // 配布用GamePackageへ入れる操作は必ず拒否します。
+            // 明示したloopback HTTPはProjectだけ許可し、GamePackageでは拒否する。
+            // ローカル開発用loopback設定
             auto development = settings;
             development.online.serviceBaseUrl =
                 "http://127.0.0.1:8080";
@@ -570,7 +598,9 @@ int main()
                 "an explicitly enabled loopback URL must be"
                 " available to local project development");
 
+            // GamePackage保存時の拒否結果
             bool rejected = false;
+            // 配布設定へのloopback URL保存を検査する。
             try
             {
                 LamaPon::SaveProjectSettings(
@@ -579,6 +609,7 @@ int main()
                     LamaPon::ProjectSettingsFileType::
                         GamePackage);
             }
+            // 安全制約の拒否を記録する。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -588,18 +619,21 @@ int main()
                 "an enabled game package must reject the insecure"
                 " loopback development switch");
 
-            // formatを手で配布用へ変えたファイルも、読み込み時点で同じ
-            // 制約を受けます。起動側だけを迂回できてはいけません。
+            // formatを書き換えたGamePackageも読込時に拒否する。
+            // 起動側で保存時検査を迂回させない。
+            // 手編集した配布形式の設定JSON
             auto packaged = nlohmann::json::parse(
                 ReadFile(settingsFile));
             packaged["format"] = "LamaPonGame";
             WriteFile(settingsFile, packaged.dump(2));
             rejected = false;
+            // 読み込み制約を再検査する。
             try
             {
                 static_cast<void>(
                     LamaPon::LoadProjectSettings(settingsFile));
             }
+            // 配布形式読込の拒否を記録する。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -609,8 +643,8 @@ int main()
                 "loading a packaged game must reject the insecure"
                 " loopback development switch");
 
-            // 有効化した設定は全項目を必要とし、namespaceにヘッダーへ
-            // 混入できる文字を受け付けません。
+            // 欠落値や危険なnamespaceを持つ設定は拒否する。
+            // 不完全または危険な値を持つonline設定を拒否する。
             for (auto invalid : {
                     LamaPon::OnlineProjectSettings{
                         true,
@@ -641,14 +675,17 @@ int main()
                         false,
                         true } })
             {
+                // 検査する無効値を適用した設定
                 auto invalidSettings = settings;
                 invalidSettings.online = std::move(invalid);
                 rejected = false;
+                // 無効なonline設定の検証を試す。
                 try
                 {
                     LamaPon::ValidateProjectSettings(
                         invalidSettings);
                 }
+                // 無効設定の拒否を記録する。
                 catch (const std::exception&)
                 {
                     rejected = true;
@@ -659,9 +696,9 @@ int main()
                     " was accepted");
             }
 
-            // JSONを手編集した場合も、6項目の型を暗黙変換しません。
-            // boolへ数値や文字列を通すと、意図せず開発用通信が有効に
-            // なるため、読込時点で閉じます。
+            // 手編集JSONの6項目は型変換せず、不正型を拒否する。
+            // boolの暗黙変換で開発用通信が有効になるのを防ぐ。
+            // 各online項目へ与える不正型
             const std::vector<std::pair<
                 std::string,
                 nlohmann::json>> invalidTypes{
@@ -675,8 +712,10 @@ int main()
                 { "allowInsecureLoopback", "true" },
                 { "openAuthorizationBrowser", nullptr }
             };
+            // field: 対象キー、invalidValue: 不正型を検査する。
             for (const auto& [field, invalidValue] : invalidTypes)
             {
+                // 有効値を持つ基準onlineオブジェクト
                 nlohmann::json online{
                     { "enabled", true },
                     {
@@ -689,6 +728,7 @@ int main()
                     { "openAuthorizationBrowser", true }
                 };
                 online[field] = invalidValue;
+                // 不正型を設定したオンラインJSON
                 WriteFile(
                     settingsFile,
                     nlohmann::json{
@@ -696,11 +736,13 @@ int main()
                         { "online", std::move(online) }
                     }.dump(2));
                 rejected = false;
+                // 型不一致の読込を検査する。
                 try
                 {
                     static_cast<void>(
                         LamaPon::LoadProjectSettings(settingsFile));
                 }
+                // 型不一致の拒否を記録する。
                 catch (const std::exception&)
                 {
                     rejected = true;
@@ -713,13 +755,12 @@ int main()
             std::filesystem::remove(settingsFile);
         }
 
-        // 物理の設定が保存・読み込みで往復すること。
-        //
-        // 物理設定はエディターと書き出したゲームの両方で必要なため、
-        // ProjectとRuntimeの設定へ保存されることを確認します。
+        // ProjectとGamePackageで物理・表示設定が往復する。
         {
+            // 物理設定を書き出すテストファイル
             const auto settingsFile =
                 projectRoot / ".lamapon" / "physics.json";
+            // 保存・再読込するプロジェクト設定
             LamaPon::ProjectSettings settings;
             settings.splashScreenEnabled = false;
             settings.viewport.navigationPreset =
@@ -735,7 +776,7 @@ int main()
             settings.physics.sleepLinearVelocity = 0.1f;
             settings.physics.sleepAngularVelocity = 0.2f;
             settings.physics.sleepDelay = 1.25f;
-            // レイヤー名と衝突マトリクス（1と2を当たらなくする）。
+            // PlayerとEnemyの衝突を無効にする。
             settings.physics.layerNames[1] = "Player";
             settings.physics.layerNames[2] = "Enemy";
             settings.physics.collisionMatrix[1] &=
@@ -746,6 +787,7 @@ int main()
             settings.loadingScreen.showSpinner = true;
             LamaPon::ValidateProjectSettings(settings);
 
+            // ProjectとGamePackageの往復を確認する。
             for (const auto fileType : {
                     LamaPon::ProjectSettingsFileType::Project,
                     LamaPon::ProjectSettingsFileType::
@@ -755,6 +797,7 @@ int main()
                     settingsFile,
                     settings,
                     fileType);
+                // 保存後に読み込んだプロジェクト設定
                 const auto loaded =
                     LamaPon::LoadProjectSettings(
                         settingsFile);
@@ -762,13 +805,13 @@ int main()
                     !loaded.splashScreenEnabled,
                     "the startup splash setting must survive the"
                     " round trip");
-                // 読み込み画面は書き出したゲームでも使うため、
-                // Project／GamePackageの両方で往復します。
+                // 読み込み画面は書き出したゲームでも使うため、Project／GamePackageの両方で往復します。
                 Require(
                     loaded.loadingScreen.message == "移動中..."
                         && loaded.loadingScreen.showSpinner,
                     "loading screen settings must survive the"
                     " round trip");
+                // Project形式にだけ保存するエディター視点設定
                 if (fileType
                     == LamaPon::ProjectSettingsFileType::Project)
                 {
@@ -815,13 +858,13 @@ int main()
                             == "Enemy",
                     "layer names must survive the round"
                     " trip");
+                // 変更していない衝突ペアは既定値を維持する。
                 Require(
                     (loaded.physics.collisionMatrix[1]
                         & (1u << 2)) == 0
                         && (loaded.physics
                             .collisionMatrix[2]
                             & (1u << 1)) == 0
-                        // 触っていないペアは既定（当たる）のまま。
                         && (loaded.physics
                             .collisionMatrix[0]
                             & (1u << 1)) != 0,
@@ -829,11 +872,12 @@ int main()
                     " round trip");
             }
 
-            // 以前保存したsceneTransition（遷移演出の見た目）は読み込みで
-            // 無視し、保存し直すと消えます。演出はScene側で描きます。
+            // 廃止済みsceneTransitionを読み飛ばし、保存時に削除する。
             {
+                // 古い形式を追加するJSON文書
                 nlohmann::json legacy;
                 {
+                    // 現在の設定JSONを読む入力
                     std::ifstream input(settingsFile);
                     input >> legacy;
                 }
@@ -842,17 +886,21 @@ int main()
                     { "coverDuration", 0.55 }
                 };
                 {
+                    // 古いtransition設定を書き込む出力
                     std::ofstream output(settingsFile);
                     output << legacy.dump(2);
                 }
+                // 旧形式を読み込んだ設定
                 const auto loaded =
                     LamaPon::LoadProjectSettings(settingsFile);
                 LamaPon::SaveProjectSettings(
                     settingsFile,
                     loaded,
                     LamaPon::ProjectSettingsFileType::Project);
+                // 保存後の互換JSON
                 nlohmann::json saved;
                 {
+                    // 保存結果を確認する入力
                     std::ifstream input(settingsFile);
                     input >> saved;
                 }
@@ -864,15 +912,19 @@ int main()
             std::filesystem::remove(settingsFile);
         }
 
-        // 物理更新が停止しないよう、刻み幅0などの無効値を拒否します。
+        // 物理更新を停止させる無効な刻み幅を拒否する。
         {
+            // 検証対象の物理設定
             LamaPon::ProjectSettings settings;
             settings.physics.fixedTimeStep = 0.0f;
+            // 無効値の拒否結果
             bool rejected = false;
+            // 無効な物理設定を検査する。
             try
             {
                 LamaPon::ValidateProjectSettings(settings);
             }
+            // 無効値の拒否を記録する。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -882,8 +934,9 @@ int main()
                 "a zero fixed time step must be rejected");
         }
 
-        // 設定画面を通らないJSONやスクリプトからの値も有効範囲へ丸めます。
+        // 設定画面を通らない無効物理値も有効範囲へ丸める。
         {
+            // 無効値を持つ物理設定
             LamaPon::PhysicsSettings broken;
             broken.fixedTimeStep = 0.0f;
             broken.solverIterations = 0;
@@ -899,24 +952,27 @@ int main()
                 LamaPon::PhysicsSettings{});
         }
 
-        // 組み込みアセットのincludeの取りこぼし検査。
-        //
-        // 組み込みシェーダーへ.hlsliのincludeを追加した場合も、参照先が
-        // 配布一覧へ含まれることを機械的に確認します。
+        // 組込shaderのinclude依存が配布一覧へ含まれることを検証する。
+        // 配布先は同じフォルダーなのでファイル名で照合する。
         {
+            // プロジェクトへ配布する組込アセット
             const auto& builtIns =
                 LamaPon::BuiltInProjectAssets();
             Require(
                 !builtIns.empty(),
                 "the built-in asset list must not be empty");
 
+            // エンジン側shader素材の場所
             const std::filesystem::path engineShaders{
                 LAMAPON_ENGINE_ASSET_DIR };
+            // 配布アセットのファイル名一覧
             std::vector<std::string> shipped;
+            // 全配布アセットを確認する。
             for (const auto& relative : builtIns)
             {
                 shipped.push_back(
                     relative.filename().string());
+                // エンジン側にある配布元ファイル
                 const auto source =
                     engineShaders / relative;
                 Require(
@@ -926,39 +982,54 @@ int main()
                         + relative.string()).c_str());
             }
 
+            // 各shaderのinclude先を配布一覧と照合する。
             for (const auto& relative : builtIns)
             {
+                // 読み込んだshaderのソース
                 const auto text =
                     ReadFile(engineShaders / relative);
+                // include検索を続ける位置
                 std::size_t cursor = 0;
+                // 次のincludeディレクティブを探す。
                 while (true)
                 {
+                    // 次に見つかったinclude位置
                     const auto found =
                         text.find("#include", cursor);
+                    // 残りのincludeがなければ走査を終える。
                     if (found == std::string::npos)
                     {
+                        // include走査を終了する。
                         break;
                     }
+                    // includeパスの開始引用符
                     const auto open =
                         text.find('"', found);
+                    // 引用符のない不正行以降は調べない。
                     if (open == std::string::npos)
                     {
+                        // 以降のinclude走査を終了する。
                         break;
                     }
+                    // includeパスの終了引用符
                     const auto close =
                         text.find('"', open + 1);
+                    // 閉じ引用符がなければ走査を終える。
                     if (close == std::string::npos)
                     {
+                        // 以降のinclude走査を終了する。
                         break;
                     }
+                    // 抽出したincludeパス
                     const auto included = text.substr(
                         open + 1,
                         close - open - 1);
                     cursor = close + 1;
-                    // パス付きで書かれていてもファイル名で照合
-                    // します（配布先は同じフォルダーです）。
+                    // 配布先の同じフォルダーにあるファイル名を得る。
+                    // includeパス内の最後の区切り位置
                     const auto slash =
                         included.find_last_of("/\\");
+                    // 配布一覧と照合するincludeファイル名
                     const auto name =
                         slash == std::string::npos
                         ? included
@@ -978,61 +1049,81 @@ int main()
             }
         }
 
-        // エンジンが名前で読むシェーダーの取りこぼし検査。
-        //
-        // include検査では直接参照されるシェーダーを検出できないため、
-        // ソース内のシェーダーパスも配布一覧と照合します。
+        // include以外でエンジンが直接読むshaderも配布一覧と照合する。
+        // ソース中の文字列パス参照を調べる。
         {
+            // プロジェクトへ配布する組込アセット
             const auto& builtIns =
                 LamaPon::BuiltInProjectAssets();
+            // 配布アセットのファイル名一覧
             std::vector<std::string> shipped;
+            // 配布アセットの名前を収集する。
             for (const auto& relative : builtIns)
             {
                 shipped.push_back(relative.filename().string());
             }
 
+            // ソース中のshaderパスを示す接頭辞
             constexpr std::string_view marker{ "\"shaders/" };
+            // エンジンソース内のファイルを調べる。
             for (const auto& file :
                 std::filesystem::recursive_directory_iterator{
                     std::filesystem::path{
                         LAMAPON_ENGINE_SOURCE_DIR } })
             {
+                // 配布一覧との比較対象になるソース拡張子
                 if (!file.is_regular_file())
                 {
+                    // 通常ファイル以外を飛ばす。
                     continue;
                 }
+                // 現在のファイル拡張子
                 const auto extension =
                     file.path().extension().string();
+                // C++ソースとヘッダー以外を飛ばす。
                 if (extension != ".cpp" && extension != ".h")
                 {
+                    // 対象外ファイルを飛ばす。
                     continue;
                 }
 
+                // 読み込んだソースファイル
                 const auto text = ReadFile(file.path());
+                // shader参照検索を続ける位置
                 std::size_t cursor = 0;
+                // 次のshaderパス参照を探す。
                 while (true)
                 {
+                    // 次に見つかった参照位置
                     const auto found = text.find(marker, cursor);
+                    // 参照が残っていなければ走査を終える。
                     if (found == std::string::npos)
                     {
+                        // 参照走査を終了する。
                         break;
                     }
+                    // shaderパスの先頭位置
                     const auto open = found + 1;
+                    // shaderパスの終端引用符
                     const auto close = text.find('"', open);
+                    // 閉じ引用符がなければ走査を終える。
                     if (close == std::string::npos)
                     {
+                        // 参照走査を終了する。
                         break;
                     }
+                    // 抽出したshader参照
                     const auto reference =
                         text.substr(open, close - open);
                     cursor = close + 1;
-                    // 「shaders/」で終わるだけの連結用の断片は
-                    // 対象外（拡張子で見分けます）。
+                    // HLSL拡張子でない文字列断片を飛ばす。
                     if (!reference.ends_with(".hlsl")
                         && !reference.ends_with(".hlsli"))
                     {
+                        // shaderファイルでない断片を飛ばす。
                         continue;
                     }
+                    // 配布一覧と照合するshaderファイル名
                     const auto name = std::filesystem::path{
                         reference }.filename().string();
                     Require(
@@ -1053,6 +1144,7 @@ int main()
         std::cout << "Project migration tests passed.\n";
         return 0;
     }
+    // 例外(exception: 検査失敗情報)を標準エラーへ出力する。
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

@@ -15,6 +15,7 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // 直前の項目へ遅延付きの説明を表示する(text: 表示する説明文)。
     void ShowItemTooltip(const char* text)
     {
         if (ImGui::IsItemHovered(
@@ -25,7 +26,7 @@ namespace
         }
     }
 
-    // ドラッグや文字入力のように、確定が後から来る項目です。
+    // 継続入力の変更を記録し操作終了時だけUndoへの確定を通知する(edited: 当該項目が変更されたか, result: 変更と確定を集める編集結果)。
     void TrackContinuous(
         const bool edited,
         SceneLoadingScreenEditResult& result)
@@ -40,7 +41,7 @@ namespace
         }
     }
 
-    // チェックや選択肢のように、変更と同時に確定する項目です。
+    // チェックや選択の変更を即時確定する(edited: 当該項目が変更されたか, result: 変更と確定を集める編集結果)。
     void TrackDiscrete(
         const bool edited,
         SceneLoadingScreenEditResult& result)
@@ -52,8 +53,7 @@ namespace
         }
     }
 
-    // assets相対のパスを入力します。Asset Browserからのドロップも
-    // 受け付け、acceptsが偽を返すファイルは無視します。
+    // assets相対パスを編集し条件に合うドロップだけを即時確定する(label: 入力欄の表示名, hint: 空欄に表示する説明, path: 編集するassetのパス, accepts: ドロップを判定する処理, result: 変更と確定を集める編集結果)。
     template <typename Predicate>
     void AssetPathInput(
         const char* label,
@@ -62,13 +62,16 @@ namespace
         Predicate accepts,
         SceneLoadingScreenEditResult& result)
     {
+        // assets相対パスの入力バッファ
         std::array<char, 512> buffer{};
+        // 編集中のパスのUTF8表記
         const auto text = PathToUtf8(path);
         strncpy_s(
             buffer.data(),
             buffer.size(),
             text.c_str(),
             _TRUNCATE);
+        // assetパスが入力で変わったか
         const bool edited = ImGui::InputTextWithHint(
             label,
             hint,
@@ -81,9 +84,11 @@ namespace
         TrackContinuous(edited, result);
         if (ImGui::BeginDragDropTarget())
         {
+            // Asset Browserから渡された文書
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(AssetPayload))
             {
+                // ドロップされたassets相対パス
                 const auto dropped = PathFromUtf8(
                     static_cast<const char*>(payload->Data));
                 if (accepts(dropped))
@@ -102,6 +107,7 @@ namespace LamaPon
     SceneLoadingScreenEditResult DrawSceneLoadingScreenEditor(
         SceneLoadingScreenSettings& settings)
     {
+        // 変更とUndo確定を通知する編集結果
         SceneLoadingScreenEditResult result;
         TrackDiscrete(
             ImGui::Checkbox("読み込み画面を表示", &settings.enabled),
@@ -113,12 +119,14 @@ namespace LamaPon
             return result;
         }
 
+        // 読込画面の文言の入力バッファ
         std::array<char, 256> message{};
         strncpy_s(
             message.data(),
             message.size(),
             settings.message.c_str(),
             _TRUNCATE);
+        // 文言が入力で変わったか
         const bool messageEdited = ImGui::InputText(
             "メッセージ",
             message.data(),
@@ -129,12 +137,14 @@ namespace LamaPon
         }
         TrackContinuous(messageEdited, result);
 
+        // 読込画面の補足の入力バッファ
         std::array<char, 256> hint{};
         strncpy_s(
             hint.data(),
             hint.size(),
             settings.hint.c_str(),
             _TRUNCATE);
+        // 補足が入力で変わったか
         const bool hintEdited = ImGui::InputTextWithHint(
             "ヒント",
             "（表示しない）",
@@ -163,6 +173,7 @@ namespace LamaPon
                 &settings.smoothProgress),
             result);
 
+        // textureとして扱えるassetだけを受け付ける(path: ドロップされたassetパス)。
         AssetPathInput(
             "背景画像",
             "（背景色だけ）",

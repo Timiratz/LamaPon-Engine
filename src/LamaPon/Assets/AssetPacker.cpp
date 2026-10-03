@@ -20,24 +20,25 @@
 namespace
 {
     using Json = nlohmann::json;
-    // v2は暗号文をHMAC-SHA256で検証します。認証を回避できるv1は拒否し、
-    // 読み込みにはv2形式での再書き出しを要求します。
+    // 認証付き形式TRDNPAK2の識別子
     constexpr std::array<char, 8> ArchiveMagic{
         'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
     };
 
-    // AssetDatabase側と同じ判定です（一時ファイルと、移行が残した
-    // <名前>.bakバックアップは書き出しに含めません）。
+    // 作業中の資源と移行バックアップを除外判定する(path: 対象のパス)。
     bool IsTemporaryAssetFile(const std::filesystem::path& path)
     {
+        // 除外判定用のファイル名
         const auto name = path.filename().wstring();
         return name.find(L".lamapon-delete") != std::wstring::npos
             || name.ends_with(L".lamapon-remap.tmp")
             || name.ends_with(L".bak");
     }
 
+    // 文字列を小文字に変換する(value: 変換する文字列)。
     std::wstring Lowercase(std::wstring value)
     {
+        // 各文字を小文字にする(character: 変換する文字)。
         std::transform(value.begin(), value.end(), value.begin(),
             [](const wchar_t character)
             {
@@ -46,9 +47,12 @@ namespace
         return value;
     }
 
+    // 機密情報候補を名前と拡張子で検出する(path: 対象のパス)。
     bool IsSecretFile(const std::filesystem::path& path)
     {
+        // 除外判定用のファイル名
         const auto name = Lowercase(path.filename().wstring());
+        // 除外判定用の小文字拡張子
         const auto extension = Lowercase(path.extension().wstring());
         return name == L".env"
             || name.starts_with(L".env.")
@@ -68,8 +72,10 @@ namespace
             || extension == L".key";
     }
 
+    // 開発用フォルダーを名前で除外判定する(path: 対象のパス)。
     bool IsDevelopmentDirectory(const std::filesystem::path& path)
     {
+        // 除外判定用のファイル名
         const auto name = Lowercase(path.filename().wstring());
         return name == L".git"
             || name == L".github"
@@ -78,8 +84,10 @@ namespace
             || name == L".vscode";
     }
 
+    // ソース・実行形式・ビルド成果物を除外判定する(path: 対象のパス)。
     bool IsBuildArtifact(const std::filesystem::path& path)
     {
+        // ソース・成果物の除外拡張子
         constexpr std::array<std::wstring_view, 25> excluded{
             L".c", L".cc", L".cpp", L".cxx", L".h", L".hpp",
             L".hxx", L".inl", L".ixx", L".cs", L".py",
@@ -87,14 +95,17 @@ namespace
             L".ilk", L".map", L".pch", L".ipch", L".exe",
             L".dll", L".bat", L".cmd", L".ps1"
         };
+        // 除外判定用の小文字拡張子
         const auto extension = Lowercase(path.extension().wstring());
         return std::find(excluded.begin(), excluded.end(), extension)
             != excluded.end();
     }
 
+    // ファイル全体をバイナリーで読み、失敗は例外にする(path: 読み込むパス)。
     std::vector<std::uint8_t> ReadWholeFile(
         const std::filesystem::path& path)
     {
+        // サイズを測定するバイナリー入力
         std::ifstream input(
             path,
             std::ios::binary | std::ios::ate);
@@ -104,6 +115,7 @@ namespace
                 "Could not open asset for packing: "
                 + LamaPon::PathToUtf8(path));
         }
+        // 元ファイルの総バイト数
         const auto end = input.tellg();
         if (end < 0)
         {
@@ -111,6 +123,7 @@ namespace
                 "Could not determine asset size: "
                 + LamaPon::PathToUtf8(path));
         }
+        // 読み込んだ元ファイルの内容
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(end));
         input.seekg(0);
@@ -146,19 +159,32 @@ namespace LamaPon
                 + PathToUtf8(sourceDirectory));
         }
 
+        // 全体で共有する派生認証鍵
         const auto macKey = Crypto::DeriveMacKey(key);
 
         struct PendingEntry final
         {
+            // 索引用の相対アセットパス
+            // 梱包ルート内の相対パス
             std::filesystem::path relativePath;
+            // 保持するエントリー暗号文
+            // 各エントリーの暗号文
             std::vector<std::uint8_t> cipherText;
+            // エントリーの初期化ベクトル
+            // 各エントリーの独立したIV
             Crypto::AesIv iv{};
+            // IVと暗号文の認証タグ
+            // 各エントリーの認証タグ
             Crypto::MacTag mac{};
         };
+        // 出力まで保持する暗号化資源
         std::vector<PendingEntry> pending;
+        // 大小を区別しない重複検出キー
         std::unordered_set<std::string> normalizedPaths;
+        // 梱包件数・容量・対象一覧
         AssetPackResult result;
 
+        // 梱包元フォルダーの走査位置
         for (std::filesystem::recursive_directory_iterator iterator{
                 sourceDirectory
             };
@@ -167,7 +193,9 @@ namespace LamaPon
                     recursive_directory_iterator{};
             ++iterator)
         {
+            // 走査中のアセットパス
             const auto& path = iterator->path();
+            // 梱包ルート内の相対パス
             const auto relativePath =
                 path.lexically_relative(sourceDirectory);
             if (iterator->is_symlink())
@@ -200,6 +228,7 @@ namespace LamaPon
                     "A file that may contain credentials is in assets: "
                     + PathToUtf8(relativePath));
             }
+            // 除外判定用の小文字拡張子
             const auto extension = Lowercase(path.extension().wstring());
             if (IsBuildArtifact(path)
                 || std::find(skipExtensions.begin(),
@@ -218,8 +247,10 @@ namespace LamaPon
                     "Asset archive entry count or path is too large: "
                     + PathToUtf8(relativePath));
             }
+            // 重複検出用の小文字パス
             auto normalizedPath = PathToUtf8(
                 relativePath.lexically_normal());
+            // 相対パスを小文字キーへ変換する(value: 符号なしのUTF8バイト)。
             std::transform(normalizedPath.begin(), normalizedPath.end(),
                 normalizedPath.begin(),
                 [](const unsigned char value)
@@ -232,11 +263,11 @@ namespace LamaPon
                     "Duplicate asset archive path: "
                     + PathToUtf8(relativePath));
             }
-            // PKCS#7 can add a full AES block. Check before loading the
-            // entire source file into memory.
+            // 一ブロックの余裕を引く平文上限
             constexpr auto MaxPlainBytes =
                 AssetArchiveLimits::MaxEntryCipherBytes
                 - Crypto::AesIvSize;
+            // パディングで一ブロック増える分を見込み、読み込み前に容量を検証する。
             if (std::filesystem::file_size(path) > MaxPlainBytes)
             {
                 throw std::runtime_error(
@@ -244,6 +275,7 @@ namespace LamaPon
                     + PathToUtf8(relativePath));
             }
 
+            // 変換後に暗号化する平文
             auto plainBytes = ReadWholeFile(path);
             if (transform)
             {
@@ -255,12 +287,15 @@ namespace LamaPon
                     "Transformed asset is too large for the archive: "
                     + PathToUtf8(relativePath));
             }
+            // 各エントリーの独立したIV
             const auto iv = Crypto::RandomIv();
+            // 各エントリーの暗号文
             auto cipherText = Crypto::AesEncrypt(
                 plainBytes,
                 key,
                 iv);
 
+            // 各エントリーの認証タグ
             const auto mac = Crypto::MacForCipherText(
                 macKey,
                 iv,
@@ -282,18 +317,25 @@ namespace LamaPon
         std::sort(result.includedFiles.begin(), result.includedFiles.end());
         std::sort(result.excludedFiles.begin(), result.excludedFiles.end());
 
+        // 暗号文位置を列挙する索引JSON
         Json index;
         index["entries"] = Json::array();
+        // 暗号データ内の次の相対位置
         std::uint64_t offset{};
+        // 出力する暗号化エントリー
         for (const auto& entry : pending)
         {
+            // 索引へ格納するIV配列
             Json ivArray = Json::array();
+            // IV・認証タグの各バイト
             for (const auto value : entry.iv)
             {
                 ivArray.push_back(
                     static_cast<unsigned>(value));
             }
+            // 索引へ格納する認証タグ配列
             Json macArray = Json::array();
+            // IV・認証タグの各バイト
             for (const auto value : entry.mac)
             {
                 macArray.push_back(
@@ -312,6 +354,7 @@ namespace LamaPon
             offset += entry.cipherText.size();
         }
 
+        // 文字列化した索引の平文
         const std::string indexText = index.dump();
         if (indexText.size()
             > AssetArchiveLimits::MaxIndexCipherBytes
@@ -320,21 +363,26 @@ namespace LamaPon
             throw std::runtime_error(
                 "Asset archive index is too large.");
         }
+        // 索引の独立したIV
         const auto indexIv = Crypto::RandomIv();
+        // 暗号化する索引の平文
         const std::vector<std::uint8_t> indexPlainBytes(
             indexText.begin(),
             indexText.end());
+        // 出力する暗号化索引
         const auto indexCipherText = Crypto::AesEncrypt(
             indexPlainBytes,
             key,
             indexIv);
-        // エントリのMAC差し替えを防ぐため、索引自体も改ざん検知の対象にします。
+
+        // IVと索引暗号文の認証タグ
         const auto indexMac = Crypto::MacForCipherText(
             macKey,
             indexIv,
             indexCipherText.data(),
             indexCipherText.size());
 
+        // 出力先フォルダーの生成結果
         std::error_code directoryError;
         if (!EnsureDirectoryExists(
                 archiveOutputPath.parent_path(),
@@ -345,6 +393,7 @@ namespace LamaPon
                 archiveOutputPath.parent_path(),
                 directoryError);
         }
+        // 既存内容を置き換える出力先
         std::ofstream output(
             archiveOutputPath,
             std::ios::binary | std::ios::trunc);
@@ -356,6 +405,7 @@ namespace LamaPon
         }
 
         output.write(ArchiveMagic.data(), ArchiveMagic.size());
+        // 暗号化索引のバイト数
         const std::uint64_t indexCipherSize =
             indexCipherText.size();
         output.write(
@@ -372,6 +422,7 @@ namespace LamaPon
                 indexCipherText.data()),
             static_cast<std::streamsize>(
                 indexCipherText.size()));
+        // 出力する暗号化エントリー
         for (const auto& entry : pending)
         {
             output.write(

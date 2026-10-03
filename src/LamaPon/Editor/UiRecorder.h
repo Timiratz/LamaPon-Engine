@@ -6,38 +6,32 @@
 
 namespace LamaPon::UiRecorder
 {
-    // 1フレームに描かれたImGuiウィジェット1個の記録です。
-    //
-    // ウィンドウ、ラベル、位置を記録し、自動化クライアントが
-    // ウィジェットをラベルで指定できるようにします。
+    // 直前のフレームのウィジェット名・矩形・状態を記録してリモート操作から参照する。
     struct Item final
     {
-        // 属するウィンドウ名（ImGuiのウィンドウ名。"##"以降も含む）。
+        // 所属ウィンドウ名・内部IDも含む
         std::string window;
-        // 表示ラベル（ItemInfoフックが報告したもの）。
+        // hookが通知したウィジェット名
         std::string label;
-        // クライアント座標の矩形（＝スクリーンショットのピクセル）。
+        // クライアント座標の左端ピクセル
         float x{};
+        // クライアント座標の上端ピクセル
         float y{};
+        // 矩形の幅・ピクセル
         float width{};
+        // 矩形の高さ・ピクセル
         float height{};
-        // ImGuiItemStatusFlags（チェック状態など）。
+        // ImGuiの項目状態フラグ
         std::uint32_t statusFlags{};
     };
 
-    // 記録の有効化。ImGuiのTestEngineHookItemsを立てます。
-    // リモート操作モード（--remote）だけが使います。記録には
-    // フレームごとのコストがあるため、通常編集では切っておきます。
+    // リモート操作用の記録を切り替え無効化時は全記録を消す(enabled: 項目の記録を有効にするか)。
     void SetEnabled(bool enabled);
 
-    // フレームの頭で呼びます。前のフレームの記録を「確定分」として
-    // 公開し、記録先を切り替えます。
+    // フレームの先頭で前の記録を公開して新しい記録を始める。
     void NextFrame();
 
-    // 確定分（直前の完成フレーム）のアイテム一覧。
-    // includeUnlabeledをtrueにすると、ラベルを報告しないウィジェット
-    // （DragFloat3の各軸など）も矩形付きで返します。自動化クライアント
-    // はスクリーンショットと照合し、座標指定で操作できます。
+    // 直前の完成フレームの項目一覧をコピーして返す(includeUnlabeled: ラベルのない矩形も含めるか)。
     [[nodiscard]] std::vector<Item> Snapshot(
         bool includeUnlabeled = false);
 }

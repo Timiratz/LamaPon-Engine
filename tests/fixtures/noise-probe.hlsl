@@ -1,40 +1,33 @@
-// CPU実装（src/LamaPon/Core/Noise.h）とGPU実装
-// （assets/shaders/LamaPonNoise.hlsli）の一致を検査するための
-// テスト専用Shaderです。ゲームでは使いません。
-//
-// 画面を横に並んだ帯として使い、各帯でノイズを1点だけ評価して
-// 値をそのまま色（グレースケール）へ書き出します。テスト側は
-// 読み取った色とCPUで求めた値を比べます。
-//
-// CustomParameters[0].xy = 評価する座標
-// CustomParameters[0].z  = 種類（0=Value2D 1=Perlin2D 2=fBm
-//                                3=Worley2D 4=Value1D 5=Value3D）
-// CustomParameters[0].w  = fBmのオクターブ数
-// CustomParameters[1].x  = Value3D の z 座標
-
-// このファイルはassetsの外（tests/fixtures）にあるため、共有実装は
-// 相対パスで取り込みます（インクルードは取り込む側のフォルダーから
-// 解決されます）。テスト専用なのでassetsを汚しません。
 #include "../../assets/shaders/LamaPonNoise.hlsli"
 
+// 画面検査の追加値と画面寸法
 cbuffer ScreenParameters : register(b0)
 {
+    // 座標XY・種別・段数・1.xZ
     float4 CustomParameters[8];
+    // 画面幅高さXY・逆幅高さZW
     float4 ScreenSize;
 };
 
+// 互換配置のシーン画像
 Texture2D SceneTexture : register(t0);
+// 互換配置の画像採取設定
 SamplerState SceneSampler : register(s0);
 
 struct VertexOutput
 {
+    // 画面三角形の透視位置
     float4 Position : SV_Position;
+    // 画面画像のUV
     float2 TexCoord : TEXCOORD0;
 };
 
+// 頂点IDだけで画面を覆う三角形とUVを作る(vertexId: 0～2の頂点番号)。
 VertexOutput VSMain(uint vertexId : SV_VertexID)
 {
+    // 画面全体の三角形頂点
     VertexOutput output;
+    // 三角形頂点の画面UV
     const float2 uv = float2(
         (vertexId << 1) & 2,
         vertexId & 2);
@@ -46,12 +39,18 @@ VertexOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+// 種類0～5の指定ノイズを評価して上位R・下位Gで返す(input: 互換用の画面頂点)。
 float4 PSMain(VertexOutput input) : SV_Target
 {
+    // 検査するノイズ座標XY
     const float2 position = CustomParameters[0].xy;
+    // 0～5の検査ノイズ種別
+    // 種別は0Value2D・1Perlin2D・2fBm・3Worley2D・4Value1D・5Value3D、3DのZは1.xを使う。
     const float kind = CustomParameters[0].z;
+    // fBmの1以上の段階数
     const int octaves = (int)max(CustomParameters[0].w, 1.0f);
 
+    // 検査したノイズの出力値
     float value = 0.0f;
     if (kind < 0.5f)
     {
@@ -80,10 +79,12 @@ float4 PSMain(VertexOutput input) : SV_Target
             float3(position, CustomParameters[1].x));
     }
 
-    // 8bitのバックバッファへ書くため、値を上位・下位に分けて
-    // 精度を確保します。R=上位、G=下位（1/255刻みの残り）。
+    // 255倍して分ける出力値
+    // 8bit画像から値を復元できるよう、Rへ上位・Gへ1/255刻みの残りを書く。
     const float quantized = saturate(value) * 255.0f;
+    // Rへ書く1/255刻みの上位
     const float high = floor(quantized) / 255.0f;
+    // Gへ書く刻み残りの下位
     const float low = frac(quantized);
     return float4(high, low, 0.0f, 1.0f);
 }

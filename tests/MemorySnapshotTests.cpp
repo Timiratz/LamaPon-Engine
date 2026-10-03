@@ -8,20 +8,26 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(const bool condition, const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // category・name・GPU/CPU bytesから項目を作ります。
+    // Entry(category: 分類, name: 名前, gpuBytes: GPU量, cpuBytes: CPU量)
     LamaPon::MemorySnapshotEntry Entry(
         const LamaPon::MemoryCategory category,
         std::string name,
         const std::uint64_t gpuBytes,
         const std::uint64_t cpuBytes = 0)
     {
+        // 作成するスナップショット項目
         LamaPon::MemorySnapshotEntry entry;
         entry.category = category;
         entry.name = std::move(name);
@@ -30,9 +36,11 @@ namespace
         return entry;
     }
 
+    // 分類集計と資産差分の順序・符号を確認します。
     void TestSummaryAndComparison()
     {
         using LamaPon::MemoryCategory;
+        // 比較前スナップショット
         LamaPon::MemorySnapshot before;
         before.process.processPrivateBytes = 1000;
         before.entries = {
@@ -41,9 +49,10 @@ namespace
             Entry(MemoryCategory::Model, "models/hero.glb", 300, 200),
             Entry(MemoryCategory::Audio, "audio/se.wav", 0, 50),
         };
+        // after: beforeの資産構成を変更する比較先
         LamaPon::MemorySnapshot after = before;
         after.process.processPrivateBytes = 900;
-        // aは消え、bは大きくなり、cが増え、モデルと音は変わりません。
+        // aを削除し、bを拡張し、cを追加
         after.entries = {
             Entry(MemoryCategory::Texture, "textures/b.png", 250),
             Entry(MemoryCategory::Texture, "textures/c.png", 1000),
@@ -51,9 +60,12 @@ namespace
             Entry(MemoryCategory::Audio, "audio/se.wav", 0, 50),
         };
 
+        // 比較前の分類別合計
         const auto totals = LamaPon::SummarizeMemorySnapshot(before);
+        // Texture分類の集計値
         const auto& textures =
             totals[static_cast<std::size_t>(MemoryCategory::Texture)];
+        // Model分類の集計値
         const auto& models =
             totals[static_cast<std::size_t>(MemoryCategory::Model)];
         Require(
@@ -63,6 +75,7 @@ namespace
                 && models.cpuBytes == 200,
             "Category totals are wrong.");
 
+        // beforeとafterの資産差分
         const auto comparison =
             LamaPon::CompareMemorySnapshots(before, after);
         Require(
@@ -91,6 +104,7 @@ namespace
             "A resized resource was not reported.");
     }
 
+    // メモリ表示書式とGPUテクスチャ容量推定を確認します。
     void TestFormattingAndEstimates()
     {
         Require(
@@ -106,23 +120,25 @@ namespace
                     std::numeric_limits<std::int64_t>::min()).empty(),
             "Delta formatting is wrong.");
 
-        // 4x4 RGBA8の完全なミップ列: 64 + 16 + 4 = 84バイト。
+        // RGBA8の4x4完全mip列は84 bytes
         Require(
             LamaPon::EstimateTextureBytes(4, 4, 1, 3, 32, false) == 84,
             "Uncompressed mip estimate is wrong.");
-        // BC1(4bpp)の各ミップは4x4ブロックへ切り上げ: 8 + 8 + 8。
+        // BC1は4x4ブロック単位に各mipを切り上げる
         Require(
             LamaPon::EstimateTextureBytes(4, 4, 1, 3, 4, true) == 24,
             "Block-compressed mip padding is wrong.");
-        // キューブマップは6面分です。
+        // cubemapは6面分を数える
         Require(
             LamaPon::EstimateTextureBytes(2, 2, 6, 1, 32, false)
                 == 6 * 16,
             "Array slices were not multiplied.");
     }
 
+    // JSON保存・読込と未知分類・不正型の扱いを確認します。
     void TestJsonRoundTrip()
     {
+        // シリアライズ往復に使うメモリ記録
         LamaPon::MemorySnapshot snapshot;
         snapshot.label = "起動直後";
         snapshot.capturedAt = "20260925-120000";
@@ -139,18 +155,23 @@ namespace
         };
         snapshot.entries.front().detail = "256x256";
 
+        // テスト成果物のルート
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "memory-snapshot";
+        // 削除操作時のエラー状態
         std::error_code error;
         std::filesystem::remove_all(root, error);
+        // JSONスナップショット出力先
         const auto path = root / "snapshot.json";
         Require(
             LamaPon::WriteMemorySnapshotJson(path, snapshot),
             "The snapshot could not be written.");
 
+        // JSON読込先
         LamaPon::MemorySnapshot loaded;
+        // 読込失敗時の説明
         std::string message;
         Require(
             LamaPon::LoadMemorySnapshotJson(path, loaded, &message),
@@ -191,8 +212,10 @@ namespace
     }
 }
 
+// メモリスナップショットの集計・書式・JSONを検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
         TestSummaryAndComparison();
@@ -201,6 +224,7 @@ int main()
         std::cout << "Memory snapshot tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

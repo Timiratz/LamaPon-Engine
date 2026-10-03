@@ -6,16 +6,9 @@
 
 namespace LamaPon
 {
-    // RGBA8のピクセル列をPNGへ書き出します。WIC（Windows標準）を
-    // 使うので追加のライブラリは要りません。
-    //
-    // LamaPonCliのスクリーンショットとエディターのスクリーンショット
-    // モードの両方が使うため、ランタイムに置いています。
-    // アルファは不透明（255）として書きます。バックバッファの
-    // アルファには描画の都合の値が残っていて、そのまま書くと
-    // 「半透明のスクリーンショット」になるためです。
-    //
-    // 失敗は std::runtime_error で投げます。
+    // 密に並ぶRGBA8画素を不透明なPNGへ保存する(path: 保存ファイル, width: 画像幅, height: 画像高さ, rgbaPixels: 行順の画素バイト列)。
+    // 呼出スレッドのCOMを初期化済みとし、サイズは非ゼロで転送バイト数をUINT内に収める。
+    // バッファー不足やWICの失敗はruntime_errorとし、保存失敗時の部分ファイルは削除しない。
     void SavePng(
         const std::filesystem::path& path,
         std::uint32_t width,

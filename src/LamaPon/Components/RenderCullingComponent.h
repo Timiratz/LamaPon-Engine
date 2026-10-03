@@ -4,12 +4,11 @@
 
 namespace LamaPon
 {
-    // 描画カリングをGameObjectごとに調整します。広い地形や背景など、
-    // カメラ外でも描画するものや余白が必要なものにだけ追加します。
-    // 追加していないGameObjectには通常のカリングを適用します。
+    // 有効な部品の設定で物体ごとの視錐台・遮蔽カリングを調整します。
     class RenderCullingComponent final : public Component
     {
     public:
+        // 物体のカリング設定を作ります(alwaysVisible: 視錐台・遮蔽判定の除外指定, cullingMargin: 境界の拡張幅)。
         explicit RenderCullingComponent(
             const bool alwaysVisible = false,
             const float cullingMargin = 0.0f) noexcept
@@ -18,30 +17,32 @@ namespace LamaPon
             SetCullingMargin(cullingMargin);
         }
 
-        // 視錐台・遮蔽カリングの対象から外し、常に描画します。
+        // 視錐台・遮蔽判定の除外を設定します(enabled: 除外する指定)。
+        // LOD判定はこの指定でも適用されます。
         void SetAlwaysVisible(const bool enabled) noexcept
         {
             m_alwaysVisible = enabled;
         }
+        // 視錐台・遮蔽判定からの除外指定を返します。
         [[nodiscard]] bool AlwaysVisible() const noexcept
         {
             return m_alwaysVisible;
         }
 
-        // 視錐台カリングの境界をワールド単位で外側へ広げます。
-        // 頂点シェーダーで揺らす草木など、バウンディングより
-        // 大きく見えるものの消え際を防ぎます。
+        // 境界を広げる幅を設定します(margin: ワールド単位の幅で0以下とNaNは0)。
         void SetCullingMargin(const float margin) noexcept
         {
             m_cullingMargin = margin > 0.0f
                 ? margin
                 : 0.0f;
         }
+        // 境界を広げる幅をワールド単位で返します。
         [[nodiscard]] float CullingMargin() const noexcept
         {
             return m_cullingMargin;
         }
 
+        // 保存用のコンポーネント型名を返します。
         [[nodiscard]] std::string_view
             TypeName() const noexcept override
         {
@@ -49,7 +50,9 @@ namespace LamaPon
         }
 
     private:
+        // 視錐台・遮蔽判定の除外指定
         bool m_alwaysVisible{};
+        // ワールド境界の拡張幅
         float m_cullingMargin{};
     };
 }

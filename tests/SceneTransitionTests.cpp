@@ -1,7 +1,3 @@
-// シーン遷移の純粋ロジック（イージング、時間軸、保存形式）を検査します。
-// エンジンは覆いの絵を描かないため、覆い具合（Coverage）の変化と
-// 各段階の出来事だけを確かめます。
-
 #include "LamaPon/Scene/SceneTransition.h"
 
 #include <nlohmann/json.hpp>
@@ -13,12 +9,16 @@
 #include <limits>
 #include <string>
 
+// シーン遷移の進捗・イベント・保存形式を検証します。
 namespace
 {
+    // テスト失敗数
     int g_failures = 0;
 
+    // Require(condition: 成立条件, message: 失敗理由): 条件不成立を検査失敗として記録する。
     void Require(const bool condition, const std::string& message)
     {
+        // 検査条件の不成立を記録する。
         if (!condition)
         {
             std::cerr << "FAILED: " << message << '\n';
@@ -26,6 +26,7 @@ namespace
         }
     }
 
+    // NearlyEqual(left: 実値, right: 期待値, tolerance: 許容誤差): 浮動小数値を誤差範囲で比較する。
     [[nodiscard]] bool NearlyEqual(
         const float left,
         const float right,
@@ -34,15 +35,19 @@ namespace
         return std::abs(left - right) <= tolerance;
     }
 
+    // TestEasing(): 全イージングの端点、単調性、名前変換を検証する。
     void TestEasing()
     {
         using LamaPon::SceneTransitionEasing;
+        // 全イージング種別を確認する。
         for (auto index = 0;
             index < static_cast<int>(SceneTransitionEasing::Count);
             ++index)
         {
+            // 検査対象のイージング種別
             const auto easing =
                 static_cast<SceneTransitionEasing>(index);
+            // 保存用イージング名
             const auto name = std::string(
                 LamaPon::SceneTransitionEasingName(easing));
             Require(
@@ -57,9 +62,12 @@ namespace
                             1.0f),
                         1.0f),
                 "Easing must start at 0 and end at 1: " + name);
+            // 前回サンプル値
             float previous = 0.0f;
+            // 入力範囲を100段階で調べる。
             for (int step{}; step <= 100; ++step)
             {
+                // 現在入力の評価値
                 const float value =
                     LamaPon::EvaluateSceneTransitionEasing(
                         easing,
@@ -91,9 +99,11 @@ namespace
             "Unknown easing names must fall back to the default.");
     }
 
+    // TestJson(): シーン遷移設定の保存、読込、補正を検証する。
     void TestJson()
     {
         using namespace LamaPon;
+        // JSON往復の入力設定
         SceneTransitionSettings settings;
         settings.easing = SceneTransitionEasing::EaseOutQuad;
         settings.coverDuration = 0.75f;
@@ -103,6 +113,7 @@ namespace
         settings.blockInput = false;
         settings.fadeMusic = false;
 
+        // 設定をシリアライズしたJSON
         const auto json = SceneTransitionToJson(settings);
         Require(
             json.at("easing") == "easeOutQuad",
@@ -110,6 +121,7 @@ namespace
         Require(
             !json.contains("effect") && !json.contains("color"),
             "The engine must not save how a transition looks.");
+        // JSONから復元した設定
         const auto loaded = SceneTransitionFromJson(
             nlohmann::json::parse(json.dump()));
         Require(
@@ -125,6 +137,7 @@ namespace
         // 演出の見た目などのキーは無視し、同じJSONへまとめて保存できます。
         SceneTransitionSettings fallback;
         fallback.coverDuration = 2.0f;
+        // 一部欠落・不正値を含む復元設定
         const auto partial = SceneTransitionFromJson(
             nlohmann::json{
                 { "effect", "iris" },
@@ -149,11 +162,13 @@ namespace
                 2.0f),
             "Non-object JSON must return the fallback.");
 
+        // 不正な時間値を含む設定
         SceneTransitionSettings broken;
         broken.coverDuration =
             std::numeric_limits<float>::quiet_NaN();
         broken.revealDuration = -5.0f;
         broken.holdDuration = 1000.0f;
+        // 不正値を補正した設定
         const auto sanitized = SanitizeSceneTransition(broken);
         Require(
             NearlyEqual(
@@ -163,6 +178,7 @@ namespace
                 && NearlyEqual(sanitized.holdDuration, 30.0f),
             "Non-finite or out-of-range durations must be sanitized.");
 
+        // 指定時間から生成した遷移設定
         const auto made = MakeSceneTransition(0.8f);
         Require(
             NearlyEqual(made.coverDuration, 0.8f)
@@ -178,6 +194,7 @@ namespace
                 && IsInstantSceneTransition(broken) == false
                 && IsInstantSceneTransition(sanitized) == false,
             "Only transitions without any duration are instant.");
+        // 保持時間だけを持つ遷移設定
         SceneTransitionSettings holdOnly;
         holdOnly.holdDuration = 0.3f;
         Require(
@@ -185,14 +202,17 @@ namespace
             "A hold duration alone must keep the screen covered.");
     }
 
+    // TestTimeline(): 遷移の時間、準備待ち、再開動作を検証する。
     void TestTimeline()
     {
         using namespace LamaPon;
+        // 時間付き遷移設定
         auto settings = MakeSceneTransition(
             0.5f,
             0.2f,
             SceneTransitionEasing::Linear);
 
+        // 遷移進行状態
         SceneTransitionTimeline timeline;
         Require(
             !timeline.IsActive()
@@ -204,6 +224,7 @@ namespace
                 && NearlyEqual(timeline.Coverage(), 0.0f),
             "Start must begin covering from zero.");
 
+        // 最初のカバー進行イベント
         auto events = timeline.Advance(0.25f, false);
         Require(
             !events.covered
@@ -216,7 +237,7 @@ namespace
                 && NearlyEqual(timeline.Coverage(), 1.0f),
             "Covering must finish with a covered event.");
 
-        // 準備が整うまでは保持時間を過ぎても開きません。
+        // frame: シーン準備待ち中にカバーを保つ描画フレーム番号。
         for (int frame{}; frame < 10; ++frame)
         {
             events = timeline.Advance(0.1f, false);
@@ -234,8 +255,11 @@ namespace
                 && timeline.Phase() == SceneTransitionPhase::Revealing,
             "Revealing must start after the scene has been ready for two frames.");
 
+        // 直前のカバー率
         float previous = timeline.Coverage();
+        // 解除完了状態
         bool finished = false;
+        // frame: 解除完了まで進める描画フレーム番号。
         for (int frame{}; frame < 100 && !finished; ++frame)
         {
             events = timeline.Advance(0.02f, true);
@@ -251,7 +275,7 @@ namespace
                 && NearlyEqual(timeline.Coverage(), 0.0f),
             "Revealing must finish and return to idle.");
 
-        // 保持時間は準備完了とは別に守ります。
+        // 保持時間がシーン準備完了とは別に適用される。
         timeline.Start(settings);
         static_cast<void>(timeline.Advance(1.0f, true));
         Require(timeline.IsFullyCovered(), "Cover must finish.");
@@ -265,10 +289,11 @@ namespace
             events.revealStarted,
             "Revealing must start once the hold duration has passed.");
 
-        // 覆っている途中で開き直しても、覆い具合は連続します。
+        // 現在のカバー率から解除を続ける。
         timeline.Reset();
         timeline.Start(settings);
         static_cast<void>(timeline.Advance(0.15f, false));
+        // 途中解除を開始した時点のカバー率
         const float partial = timeline.Coverage();
         timeline.Reveal();
         Require(
@@ -276,10 +301,11 @@ namespace
                 && NearlyEqual(timeline.Coverage(), partial, 1.0e-3f),
             "Reveal must continue from the current coverage.");
 
-        // 開いている途中から次の遷移を始めても、覆い具合は連続します。
+        // 解除中に再開始してもカバー率を維持する。
         auto cubic = settings;
         cubic.easing = SceneTransitionEasing::EaseInOutCubic;
         static_cast<void>(timeline.Advance(0.05f, true));
+        // 再開始直前のカバー率
         const float beforeRestart = timeline.Coverage();
         timeline.Start(cubic);
         Require(
@@ -290,7 +316,7 @@ namespace
                     1.0e-3f),
             "Restarting while revealing must continue from the current coverage.");
 
-        // 既定の（時間がすべて0の）遷移は、時間を掛けずに段階だけ進みます。
+        // 時間ゼロの遷移を即時に進める。
         SceneTransitionTimeline instant;
         instant.Start(SceneTransitionSettings{});
         events = instant.Advance(0.0f, false);
@@ -306,7 +332,7 @@ namespace
             events.finished && !instant.IsActive(),
             "An instant transition must finish immediately.");
 
-        // 非有限の経過時間は無視します。
+        // 非有限時間で状態が進まないことを確認する。
         SceneTransitionTimeline guarded;
         guarded.Start(settings);
         static_cast<void>(guarded.Advance(
@@ -321,9 +347,11 @@ namespace
             "Non-finite delta times must not advance the transition.");
     }
 
+    // TestLoadingScreenJson(): 読込画面設定のJSON往復と既定値を検証する。
     void TestLoadingScreenJson()
     {
         using namespace LamaPon;
+        // JSON往復の入力設定
         SceneLoadingScreenSettings settings;
         settings.enabled = false;
         settings.message = "海底都市へ移動中...";
@@ -334,6 +362,7 @@ namespace
         settings.smoothProgress = false;
         settings.fadeDuration = 0.5f;
         settings.barFillColor = { 0.1f, 0.7f, 0.9f, 1.0f };
+        // JSONから復元した読込画面設定
         const auto loaded = SceneLoadingScreenFromJson(
             nlohmann::json::parse(
                 SceneLoadingScreenToJson(settings).dump()));
@@ -349,8 +378,10 @@ namespace
                 && NearlyEqual(loaded.barFillColor.y, 0.7f),
             "Loading screen settings must round-trip through JSON.");
 
-        // 古い形式（追加項目が無い）では、従来の見た目のままにします。
+        // 追加項目のない古いJSONから既定表示を復元する。
+        // 読込画面設定の従来既定値
         const SceneLoadingScreenSettings defaults;
+        // 古い形式から復元した設定
         const auto legacy = SceneLoadingScreenFromJson(
             nlohmann::json{ { "message", "Loading" } });
         Require(
@@ -373,6 +404,7 @@ namespace
 
 }
 
+// main(): シーン遷移の全テストを実行して結果を返す。
 int main()
 {
     TestEasing();
@@ -380,6 +412,7 @@ int main()
     TestTimeline();
     TestLoadingScreenJson();
 
+    // 失敗があれば非成功の終了コードを返す。
     if (g_failures != 0)
     {
         std::cerr << g_failures

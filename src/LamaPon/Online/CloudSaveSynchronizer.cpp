@@ -38,11 +38,16 @@ namespace
     using LamaPon::Detail::LocalPersistenceDocument;
     using LamaPon::Detail::LocalPersistenceDocumentState;
 
+    // 通常再試行の初期待機ms
     constexpr std::uint64_t InitialRetryDelayMilliseconds = 1000u;
+    // 通常再試行の最大待機ms
     constexpr std::uint64_t MaximumRetryDelayMilliseconds = 60000u;
+    // レート制限時の最大待機ms
     constexpr std::uint64_t MaximumRateLimitDelayMilliseconds = 300000u;
+    // アカウントキーの必要文字数
     constexpr std::size_t AccountStorageKeyBytes = 64u;
 
+    // 共通のスロット名規則で同じ保存先かを返す(left: 比較元, right: 比較先)。
     bool SameResource(
         const CloudSaveResource& left,
         const CloudSaveResource& right) noexcept
@@ -64,6 +69,7 @@ namespace
             right.slot);
     }
 
+    // 種別とスロット名が共通の保存先規則を満たすかを返す(resource: 検証する保存先)。
     bool IsValidResource(const CloudSaveResource& resource) noexcept
     {
         if (resource.kind == CloudSaveResourceKind::Preferences)
@@ -74,12 +80,14 @@ namespace
             && LamaPon::Detail::IsValidSaveSlotName(resource.slot);
     }
 
+    // 64桁の小文字の16進アカウントキーかを返す(value: 検証する保存キー)。
     bool IsAccountStorageKey(const std::string_view value) noexcept
     {
         if (value.size() != AccountStorageKeyBytes)
         {
             return false;
         }
+        // 検証するアカウントキーの1文字
         for (const unsigned char character : value)
         {
             if (!((character >= '0' && character <= '9')
@@ -91,6 +99,7 @@ namespace
         return true;
     }
 
+    // 文字列の使用領域をゼロ化して空にする(value: 消去する秘密値)。
     void EraseSecret(std::string& value) noexcept
     {
         if (!value.empty())
@@ -102,24 +111,31 @@ namespace
 
     struct SecretString final
     {
+        // 消去責任を持つ短命tokenを複製する(source: 入力tokenの借用)。
         explicit SecretString(const std::string_view source)
             : value(source)
         {
         }
 
+        // 保持するtokenをゼロ化して破棄する。
         ~SecretString()
         {
             EraseSecret(value);
         }
 
+        // 秘密値の複製を禁止する。
         SecretString(const SecretString&) = delete;
+        // 秘密値のコピー代入を禁止する。
         SecretString& operator=(const SecretString&) = delete;
 
+        // 消去責任を持つ短命token
         std::string value;
     };
 
+    // CNG乱数から小文字UUIDv4の更新IDを作る。
     std::string GenerateMutationId()
     {
+        // UUID生成用の16バイト乱数
         std::array<std::uint8_t, 16> bytes{};
         if (BCryptGenRandom(
                 nullptr,
@@ -136,9 +152,12 @@ namespace
         bytes[8] = static_cast<std::uint8_t>(
             (bytes[8] & 0x3fu) | 0x80u);
 
+        // 小文字の16進数字一覧
         constexpr char Digits[] = "0123456789abcdef";
+        // 小文字UUIDv4の出力文字列
         std::string result;
         result.reserve(36u);
+        // UUIDの処理バイト位置
         for (std::size_t index = 0; index < bytes.size(); ++index)
         {
             if (index == 4u || index == 6u || index == 8u || index == 10u)
@@ -161,32 +180,49 @@ namespace
 
     struct RequestFence final
     {
+        // 接続・token変更ごとの識別世代
         std::uint64_t sessionSerial{};
+        // 公開するアカウントの世代
         std::uint64_t profileEpoch{};
+        // 通信開始時のjournal世代
         std::uint64_t journalGeneration{};
+        // 通信先の小文字アカウントキー
         std::string accountStorageKey;
+        // 結果が対応する保存先
         CloudSaveResource resource;
+        // 応答が対応する未送信更新ID
         std::string mutationId;
+        // Read開始時の一覧のETag
         std::string expectedEtag;
+        // Read開始時にlocal内容があったか
         bool localWasLoadedAtReadStart{};
     };
 
     struct WireResult final
     {
+        // 実行したHTTP通信の種別
         WireOperation operation{ WireOperation::Manifest };
+        // 結果適用前の照合条件
         RequestFence fence;
+        // 保存一覧の取得結果
         CloudSaveManifestResult manifest;
+        // 単一保存先の通信結果
         CloudSaveItemResult item;
     };
 
     struct WireMailbox final
     {
+        // 結果の受け渡し用排他ロック
         std::mutex mutex;
+        // workerから受け取る通信結果
         std::optional<WireResult> result;
+        // 通信workerが完了したか
         bool completed{};
+        // 結果を格納できなかったか
         bool resultLost{};
     };
 
+    // 例外内容を含まない固定の通信失敗を返す。
     CloudSaveWireOutcome FixedTransportFailure()
     {
         return {
@@ -197,6 +233,7 @@ namespace
         };
     }
 
+    // 借用先を捕捉せず通信だけをworkerで実行して結果を渡す(client: 共有する同期HTTP処理, token: 消去責任を共有するtoken, mailbox: 結果の受け渡し先, operation: 通信種別, fence: 結果適用前の照合条件, callback: HTTP処理と結果の格納)。
     template<typename Callback>
     void LaunchDetached(
         std::shared_ptr<const LamaPon::Detail::CloudSaveClient> client,
@@ -214,6 +251,7 @@ namespace
              fence = std::move(fence),
              callback = std::move(callback)]() mutable noexcept
             {
+                // workerから渡す通信結果
                 WireResult result;
                 result.operation = operation;
                 result.fence = std::move(fence);
@@ -233,6 +271,7 @@ namespace
                     }
                 }
 
+                // 結果を受け渡す間の排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 try
                 {
@@ -248,19 +287,24 @@ namespace
 
     struct LocalResource final
     {
+        // 検査したローカル保存先
         CloudSaveResource resource;
+        // ローカルの内容と読み取り状態
         LocalPersistenceDocument document;
     };
 
     struct LocalInventory final
     {
+        // 検査したローカル保存の一覧
         std::vector<LocalResource> resources;
     };
 
+    // 同じ保存先のローカル記録を借用し不在ならnullを返す(inventory: 検査済み一覧, resource: 探す保存先)。
     const LocalResource* FindLocalResource(
         const LocalInventory& inventory,
         const CloudSaveResource& resource) noexcept
     {
+        // 同じローカル保存先を探す(item: 照合する保存記録)。
         const auto iterator = std::find_if(
             inventory.resources.begin(),
             inventory.resources.end(),
@@ -273,19 +317,24 @@ namespace
             : &*iterator;
     }
 
+    // 同じ保存先のローカル文書を借用し不在ならnullを返す(inventory: 検査済み一覧, resource: 探す保存先)。
     const LocalPersistenceDocument* FindLocal(
         const LocalInventory& inventory,
         const CloudSaveResource& resource) noexcept
     {
+        // 一致するローカル保存の検索結果
         const auto* found = FindLocalResource(inventory, resource);
         return found ? &found->document : nullptr;
     }
 
+    // リモート適用後の内容合計が上限内かを返す(inventory: 検査済みローカル一覧, snapshot: 適用する保存状態)。
     bool FitsAccountQuotaAfterApply(
         const LocalInventory& inventory,
         const CloudSaveSnapshot& snapshot) noexcept
     {
+        // 適用前後の保存内容の合計B
         std::uint64_t total{};
+        // ローカル保存の文書または記録
         for (const auto& local : inventory.resources)
         {
             if (local.document.state
@@ -294,6 +343,7 @@ namespace
                 total += local.document.bytes.size();
             }
         }
+        // 現在のローカル保存状態
         if (const auto* current = FindLocal(inventory, snapshot.resource);
             current
             && current->state == LocalPersistenceDocumentState::Loaded)
@@ -312,10 +362,12 @@ namespace
         return total <= LamaPon::CloudSaveAccountMaxBytes;
     }
 
+    // 同じ保存先のリモート管理情報を借用する(manifest: リモート一覧, resource: 探す保存先)。
     const CloudSaveManifestItem* FindManifest(
         const std::vector<CloudSaveManifestItem>& manifest,
         const CloudSaveResource& resource) noexcept
     {
+        // 同じリモート保存先を探す(item: 照合する一覧の管理情報)。
         const auto iterator = std::find_if(
             manifest.begin(),
             manifest.end(),
@@ -326,6 +378,7 @@ namespace
         return iterator == manifest.end() ? nullptr : &*iterator;
     }
 
+    // 不在と削除も含めローカル内容が基準と同じかを返す(local: ローカルの文書, baseline: 同期済みの基準状態)。
     bool LocalMatchesBaseline(
         const LocalPersistenceDocument& local,
         const std::optional<CloudSaveSnapshot>& baseline) noexcept
@@ -338,6 +391,7 @@ namespace
             && local.bytes == baseline->content;
     }
 
+    // ETag・削除・長さ・ハッシュが基準と同じかを返す(remote: リモート管理情報・不在ならnull, baseline: 同期済みの基準状態)。
     bool ManifestMatchesBaseline(
         const CloudSaveManifestItem* remote,
         const std::optional<CloudSaveSnapshot>& baseline) noexcept
@@ -352,6 +406,7 @@ namespace
             && remote->sha256 == baseline->sha256;
     }
 
+    // 設定または保存スロットの完全な文書形式を検証する(snapshot: 検証する保存状態)。
     void ValidateFullSnapshotDocument(
         const CloudSaveSnapshot& snapshot)
     {
@@ -367,6 +422,7 @@ namespace
             }
             return;
         }
+        // JSON文書を検証するバイト列の借用
         const std::string_view bytes(
             reinterpret_cast<const char*>(snapshot.content.data()),
             snapshot.content.size());
@@ -382,6 +438,7 @@ namespace
         }
     }
 
+    // 未送信更新が完全なローカル文書形式を持つかを検証する(pending: 保存または削除の更新)。
     void ValidatePendingDocument(
         const CloudSavePendingMutation& pending)
     {
@@ -397,6 +454,7 @@ namespace
             }
             return;
         }
+        // 検証する未送信の保存状態
         CloudSaveSnapshot snapshot;
         snapshot.resource = pending.resource;
         snapshot.content = pending.content;
@@ -404,6 +462,7 @@ namespace
         ValidateFullSnapshotDocument(snapshot);
     }
 
+    // 保存先を検証し一覧に未登録の場合だけ追加する(resources: 追加先の一覧, resource: 追加する保存先)。
     void AddResource(
         std::vector<CloudSaveResource>& resources,
         const CloudSaveResource& resource)
@@ -412,6 +471,7 @@ namespace
         {
             throw std::runtime_error("Invalid cloud save resource.");
         }
+        // 未登録の保存先かを照合する(existing: 確認済みの保存先)。
         if (std::none_of(
                 resources.begin(),
                 resources.end(),
@@ -424,10 +484,12 @@ namespace
         }
     }
 
+    // 同じ保存先が一覧に含まれるかを返す(resources: 検索する一覧, resource: 探す保存先)。
     bool ContainsResource(
         const std::vector<CloudSaveResource>& resources,
         const CloudSaveResource& resource) noexcept
     {
+        // 同じ保存先を照合する(existing: 一覧に登録した保存先)。
         return std::any_of(
             resources.begin(),
             resources.end(),
@@ -437,6 +499,7 @@ namespace
             });
     }
 
+    // 上限を超える場合は最大値で加算する(left: 加算元, right: 加算する値)。
     std::uint64_t SaturatingAdd(
         const std::uint64_t left,
         const std::uint64_t right) noexcept
@@ -453,11 +516,17 @@ namespace LamaPon::Detail
 {
     struct PreparedCloudSaveAttachment::State final
     {
+        // 準備状態を作った同期層の識別子
         const void* owner{};
+        // 切断まで借用する同期記録
         CloudSaveJournal* journal{};
+        // 公開する小文字アカウントキー
         std::string accountStorageKey;
+        // workerと共有する短命token
         std::shared_ptr<SecretString> token;
+        // 接続前に検証したローカル一覧
         LocalInventory initialInventory;
+        // 準備時に検証した競合数
         std::size_t conflictCount{};
     };
 
@@ -483,6 +552,7 @@ namespace LamaPon::Detail
 
     struct CloudSaveSynchronizer::Implementation final
     {
+        // 借用先と通信処理を保持し操作スレッドを記録する(preferencesValue: 設定データの借用, savesValue: 保存スロットの借用, clientValue: 同期HTTP処理の共有所有先, generatorValue: 更新IDの生成処理)。
         Implementation(
             PlayerPrefs& preferencesValue,
             SaveDataStore& savesValue,
@@ -501,13 +571,15 @@ namespace LamaPon::Detail
             }
         }
 
+        // workerを待たず借用先を切り離して共有状態の所有を解放する。
         ~Implementation()
         {
             DetachNoThrow();
-            // retired workerはshared client/mailbox/secretだけを所有します。
+            // 失効したworkerはshared client・token・mailboxだけで完走します。
             retiredMailbox.reset();
         }
 
+        // 構築時と異なるスレッドからの操作を拒否する。
         void RequireOwner() const
         {
             if (std::this_thread::get_id() != ownerThread)
@@ -517,6 +589,7 @@ namespace LamaPon::Detail
             }
         }
 
+        // 古い結果を失効させ物理的な同時通信を1件に保つ。
         void RetireActiveMailbox() noexcept
         {
             if (activeMailbox)
@@ -529,29 +602,36 @@ namespace LamaPon::Detail
             activeReadInvalidated = false;
         }
 
+        // 失効したworkerが完了した場合だけ結果の所有を解放する。
         void ReapRetiredMailbox() noexcept
         {
             if (!retiredMailbox)
             {
                 return;
             }
+            // workerと共有する結果の受け渡し先
             const auto mailbox = retiredMailbox;
+            // 通信workerが完了したか
             bool completed{};
             {
+                // 結果を受け渡す間の排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 completed = mailbox->completed;
             }
+            // 完了を待たず失効させた通信の結果
             if (completed && retiredMailbox == mailbox)
             {
                 retiredMailbox.reset();
             }
         }
 
+        // 保持するアカウントキーをゼロ化して空にする。
         void ClearAccountStorageKey() noexcept
         {
             EraseSecret(accountStorageKey);
         }
 
+        // 公開先や世代に依存する競合一覧のキャッシュを失効させる。
         void InvalidateConflictDescriptors() noexcept
         {
             conflictDescriptors.clear();
@@ -560,6 +640,7 @@ namespace LamaPon::Detail
             conflictDescriptorProfileEpoch = 0u;
         }
 
+        // 接続世代を進め借用先とアカウントの同期状態を解除する。
         void DetachNoThrow() noexcept
         {
             ++sessionSerial;
@@ -583,6 +664,7 @@ namespace LamaPon::Detail
             status.state = CloudSaveSynchronizerState::Detached;
         }
 
+        // 注入した生成処理またはCNGで新しい更新IDを作る。
         [[nodiscard]] std::string NewMutationId()
         {
             return mutationIdGenerator
@@ -590,8 +672,11 @@ namespace LamaPon::Detail
                 : GenerateMutationId();
         }
 
+        // 現在の接続とjournal世代に結果の照合条件を結び付ける(resource: 通信する保存先, mutationId: 更新ID・一覧とReadは空, expectedEtag: Read時の一覧のETag, localWasLoadedAtReadStart: Read開始時に内容があったか)。
         [[nodiscard]] RequestFence MakeFence(
+            // 同期・検証する保存先
             const CloudSaveResource& resource = {},
+            // この更新へ割り当てる新UUID
             std::string mutationId = {},
             std::string expectedEtag = {},
             const bool localWasLoadedAtReadStart = false) const
@@ -608,6 +693,7 @@ namespace LamaPon::Detail
             };
         }
 
+        // 接続・保存先・世代と必要なら更新IDを照合する(fence: 通信開始時の条件, checkMutation: 未送信更新IDも照合するか)。
         [[nodiscard]] bool FenceMatches(
             const RequestFence& fence,
             const bool checkMutation) const
@@ -624,22 +710,29 @@ namespace LamaPon::Detail
             {
                 return true;
             }
+            // 再送条件を保持した未完了更新
             const auto pending = journal->Pending(fence.resource);
             return pending
                 && pending->mutationId == fence.mutationId;
         }
 
+        // 完了した通信結果を引き取り受け渡し失敗は送出する。
         [[nodiscard]] std::optional<WireResult> PollActive()
         {
             if (!activeMailbox)
             {
                 return std::nullopt;
             }
+            // workerと共有する結果の受け渡し先
             const auto mailbox = activeMailbox;
+            // 完了したworkerの通信結果
             std::optional<WireResult> result;
+            // 通信workerが完了したか
             bool completed{};
+            // 結果の受け渡しに失敗したか
             bool failed{};
             {
+                // 結果を受け渡す間の排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 completed = mailbox->completed;
                 failed = mailbox->resultLost;
@@ -666,15 +759,19 @@ namespace LamaPon::Detail
             return result;
         }
 
+        // 現在のtokenと世代に結び付けて一覧取得を開始する。
         void LaunchManifest()
         {
+            // workerと共有する結果の受け渡し先
             auto mailbox = std::make_shared<WireMailbox>();
+            // 通信結果を照合する世代と保存先
             const auto fence = MakeFence();
             activeMailbox = mailbox;
             activeOperation = WireOperation::Manifest;
             activeFence = fence;
             try
             {
+                // 保存一覧を取得する(cloud: 同期HTTP処理, accessToken: 短命tokenの借用, result: 通信結果の出力)。
                 LaunchDetached(
                     client,
                     token,
@@ -698,12 +795,15 @@ namespace LamaPon::Detail
             status.state = CloudSaveSynchronizerState::Synchronizing;
         }
 
+        // 一覧のETagとローカル有無を記録して内容取得を開始する(resource: 取得する保存先, expectedEtag: 一覧で観測したETag, localState: 取得開始時のローカル状態)。
         void LaunchRead(
             const CloudSaveResource& resource,
             const std::string_view expectedEtag,
             const LocalPersistenceDocumentState localState)
         {
+            // workerと共有する結果の受け渡し先
             auto mailbox = std::make_shared<WireMailbox>();
+            // 通信結果を照合する世代と保存先
             auto fence = MakeFence(
                 resource,
                 {},
@@ -715,6 +815,7 @@ namespace LamaPon::Detail
             activeReadInvalidated = false;
             try
             {
+                // 内容を取得する(cloud: 同期HTTP処理, accessToken: 短命tokenの借用, result: 通信結果の出力)。
                 LaunchDetached(
                     client,
                     token,
@@ -738,12 +839,16 @@ namespace LamaPon::Detail
             status.state = CloudSaveSynchronizerState::Synchronizing;
         }
 
+        // 永続化済みの再送条件をそのまま共有し更新通信を開始する(pending: 未送信の保存または削除)。
         void LaunchMutation(const CloudSavePendingMutation& pending)
         {
+            // workerと共有する結果の受け渡し先
             auto mailbox = std::make_shared<WireMailbox>();
+            // 通信結果を照合する世代と保存先
             auto fence = MakeFence(
                 pending.resource,
                 pending.mutationId);
+            // 保存または削除の通信種別
             const auto operation = pending.kind == CloudSavePendingKind::Put
                 ? WireOperation::Put
                 : WireOperation::Delete;
@@ -752,6 +857,7 @@ namespace LamaPon::Detail
             activeFence = fence;
             try
             {
+                // 記録済み条件で更新する(cloud: 同期HTTP処理, accessToken: 短命tokenの借用, result: 通信結果の出力)。
                 LaunchDetached(
                     client,
                     token,
@@ -791,109 +897,163 @@ namespace LamaPon::Detail
             status.state = CloudSaveSynchronizerState::Synchronizing;
         }
 
+        // 設定と全slotを厳密に検査し未保存値・破損・不確かな読取で停止する。
         [[nodiscard]] LocalInventory ReadLocalInventory();
+        // 再照合を止め理由を含む停止状態へ移る(reason: 停止理由)。
         void Halt(CloudSaveSynchronizerStopReason reason) noexcept;
+        // journalの競合件数を反映し他の停止・待機状態を保つ。
         void RefreshConflictStatus() noexcept;
+        // 古いリモート一覧を破棄して一覧からの再照合を求める。
         void ResetReconcileSession() noexcept;
+        // 上限付きの指数待機またはレート制限待機を設定する(outcome: 通信失敗の種別と待機指示, nowMilliseconds: 単調時計の現在時刻ms)。
         void EnterBackoff(
             const CloudSaveWireOutcome& outcome,
             std::uint64_t nowMilliseconds) noexcept;
+        // 認証・再試行・不正応答を分類し失敗処理済みかを返す(outcome: 通信結果, operation: 通信種別, nowMilliseconds: 単調時計の現在時刻ms)。
         [[nodiscard]] bool HandleWireFailure(
             const CloudSaveWireOutcome& outcome,
             WireOperation operation,
             std::uint64_t nowMilliseconds);
+        // ローカルが観測後に変わっていない場合だけatomicに適用する(snapshot: リモート状態, observed: 比較するローカル文書, localIdentity: 既存slotの綴り・不在ならnull)。
         [[nodiscard]] bool ApplyRemoteSnapshot(
             const CloudSaveSnapshot& snapshot,
             const LocalPersistenceDocument& observed,
             const CloudSaveResource* localIdentity = nullptr);
+        // ローカル削除前に削除意思を記録し対応するReadを失効させる(resource: 削除する保存先)。
         void PrepareLocalDelete(const CloudSaveResource& resource);
+        // リモート削除の適用を観測一覧へ確保なしで反映する(resource: 削除した保存先)。
         void NoteRemoteDeletion(const CloudSaveResource& resource) noexcept;
+        // 観測済み状態から消えた保存先と再作成を操作列にする(inventory: 現在の検査済みローカル一覧)。
         [[nodiscard]] std::vector<CloudSaveDeleteIntentOperation>
             DetermineLocalDeleteIntentOperations(
                 const LocalInventory& inventory);
+        // 確定した操作列をjournalの単一世代で公開する(operations: 保存先ごとの記録・解除)。
         void ApplyLocalDeleteIntentOperations(
             const std::vector<CloudSaveDeleteIntentOperation>& operations);
+        // ローカル状態の検査と削除意思の一括公開後に観測一覧を進める。
         void CaptureDurableLocalDeleteIntents();
+        // 未検証の世代の基準・競合・未送信内容を完全な文書形式で検証する。
         void ValidateJournalDocuments();
+        // ローカル内容と基準ETagから新しい更新を通信前に永続化する(resource: 保存先, local: 検査済みローカル文書, baseline: 同期済みの基準)。
         void QueueLocalMutation(
             const CloudSaveResource& resource,
             const LocalPersistenceDocument& local,
             const std::optional<CloudSaveSnapshot>& baseline);
+        // ACK後にローカルを読み直し成功状態との差分を新しい更新にする(resource: 保存先, snapshot: ACKで確定した状態)。
         void QueueOverlayAfterSuccess(
             const CloudSaveResource& resource,
             const CloudSaveSnapshot& snapshot);
+        // 結果の世代・保存先・容量を検証して照合用の一覧を更新する(result: 一覧取得の結果, nowMilliseconds: 単調時計の現在時刻ms)。
         void HandleManifestResult(
             WireResult result,
             std::uint64_t nowMilliseconds);
+        // 結果と三者の変更状態を照合して適用・CAS・競合を選ぶ(result: 保存内容取得の結果, nowMilliseconds: 単調時計の現在時刻ms)。
         void HandleReadResult(
             WireResult result,
             std::uint64_t nowMilliseconds);
+        // 更新IDとACK内容を検証し競合記録または成功後の差分更新を行う(result: 保存・削除の通信結果, nowMilliseconds: 単調時計の現在時刻ms)。
         void HandleMutationResult(
             WireResult result,
             std::uint64_t nowMilliseconds);
+        // 通信種別に対応する結果処理へ引き渡す(result: workerの通信結果, nowMilliseconds: 単調時計の現在時刻ms)。
         void HandleWireResult(
             WireResult result,
             std::uint64_t nowMilliseconds);
+        // 削除・縮小を優先して永続化済みの更新を1件送信する(inventory: 事前検査済み一覧・この処理では未使用)。
         [[nodiscard]] bool StartPendingMutation(
             const LocalInventory& inventory);
+        // 削除・縮小を優先して三者比較による同期を一段階進める(inventory: 検査済みのローカル一覧)。
         [[nodiscard]] bool ReconcileOne(
             const LocalInventory& inventory);
+        // 古い通信結果を失効させ切断前の削除意思を単一世代で公開する。
         void CheckpointLocalStateForDetach();
+        // 結果反映と厳密な保存検査を行い最大1件の通信を開始する(nowMilliseconds: 単調時計の現在時刻ms)。
         void Tick(std::uint64_t nowMilliseconds);
 
+        // 同じ存続期間の設定データの借用
         PlayerPrefs& preferences;
+        // 同じ存続期間の保存スロットの借用
         SaveDataStore& saves;
+        // 同期HTTP処理の共有所有先
         std::shared_ptr<const CloudSaveClient> client;
+        // 新しい更新IDの生成処理
         CloudSaveMutationIdGenerator mutationIdGenerator;
+        // 操作を許可する構築時のスレッド
         std::thread::id ownerThread;
 
+        // 切断まで借用する同期記録
         CloudSaveJournal* journal{};
+        // 公開するアカウントの世代
         std::uint64_t profileEpoch{};
+        // 接続・token変更ごとの識別世代
         std::uint64_t sessionSerial{};
+        // 公開する小文字アカウントキー
         std::string accountStorageKey;
+        // workerと共有する短命token
         std::shared_ptr<SecretString> token;
 
+        // 現在の通信結果の受け渡し先
         std::shared_ptr<WireMailbox> activeMailbox;
+        // 完了を待たず失効させた通信の結果
         std::shared_ptr<WireMailbox> retiredMailbox;
+        // 現在実行中の通信種別
         std::optional<WireOperation> activeOperation;
+        // 現在の通信結果の照合条件
         std::optional<RequestFence> activeFence;
+        // ローカル変更でReadを失効したか
         bool activeReadInvalidated{};
+        // 照合に使うリモート保存一覧
         std::optional<std::vector<CloudSaveManifestItem>> manifest;
+        // 今回の一覧で照合済みの保存先
         std::vector<CloudSaveResource> processed;
+        // 全文書を検証済みのjournal世代
         std::optional<std::uint64_t> validatedJournalGeneration;
+        // 再照合を要求されたか
         bool reconcileRequested{};
+        // ローカル削除意思を再検査するか
         bool deleteIntentCapturePending{};
+        // 連続する通常再試行の回数
         std::uint32_t retryAttempt{};
+        // 最後の単調時計時刻ms
         std::uint64_t lastTickMilliseconds{};
+        // 停止理由を含む現在の同期状態
         CloudSaveSynchronizerStatus status;
+        // 最後に検査したローカル保存一覧
         LocalInventory lastObservedInventory;
+        // ローカル一覧を観測済みか
         bool hasLastObservedInventory{};
+        // 認可応答の検証完了を通知するか
         bool authorizedWireSuccessPending{};
+        // 切断前の永続化失敗の復旧情報
         CloudSaveDetachCheckpointRecovery failedDetachCheckpointRecovery;
-        // UI照会ごとにjournalのfull conflict contentを複製しないよう、
-        // generation単位で安全なmetadataだけを保持します。
+        // 本文の複製を避け、同じ世代では競合の管理情報を再利用します。
         mutable std::uint64_t conflictDescriptorGeneration{
             (std::numeric_limits<std::uint64_t>::max)()
         };
+        // 競合一覧を作ったアカウントの世代
         mutable std::uint64_t conflictDescriptorProfileEpoch{};
+        // 同じ世代で再利用する競合の管理情報
         mutable std::vector<CloudSaveConflictDescriptor>
             conflictDescriptors;
     };
 
+    // 設定と全slotを厳密に検査し未保存値・破損・不確かな読取で停止する。
     LocalInventory
         CloudSaveSynchronizer::Implementation::ReadLocalInventory()
     {
+        // 検査したローカル保存の一覧
         LocalInventory inventory;
+        // 設定と保存スロットの合計B
         std::uint64_t totalBytes{};
 
-        // dirty memoryやload-failure中のPlayerPrefsをdisk snapshotだけで
-        // 同期すると、remote applyで未保存値を失うため明示Save/repair待ちです。
+        // 未保存値や読取失敗をdiskだけで上書きしないよう、明示Saveまたは修復を待ちます。
         if (preferences.IsDirty() || preferences.HasLoadFailure())
         {
             Halt(CloudSaveSynchronizerStopReason::LocalUnavailable);
             return inventory;
         }
 
+        // 検査した設定データの文書
         auto preferencesDocument =
             LocalPersistenceDocuments::ReadPlayerPrefs(preferences);
         if (preferencesDocument.state
@@ -918,6 +1078,7 @@ namespace LamaPon::Detail
             std::move(preferencesDocument)
         });
 
+        // ローカル保存スロットの列挙結果
         const auto listing = LocalPersistenceDocuments::ListSaveData(saves);
         if (listing.state == LocalPersistenceDocumentState::Unavailable)
         {
@@ -934,12 +1095,13 @@ namespace LamaPon::Detail
             return inventory;
         }
 
+        // 検証済みの保存スロット名
         for (const auto& slot : listing.slots)
         {
+            // 検査した保存スロットの文書
             auto document =
                 LocalPersistenceDocuments::ReadSaveData(saves, slot);
-            // 列挙後に消えた場合も外部processとの競合なので、削除として
-            // 推測せずUnavailableで停止します。
+            // 列挙後に消えた場合も外部processとの競合なので、削除として推測せずUnavailableで停止します。
             if (document.state == LocalPersistenceDocumentState::Unavailable
                 || document.state == LocalPersistenceDocumentState::Missing)
             {
@@ -966,6 +1128,7 @@ namespace LamaPon::Detail
         return inventory;
     }
 
+    // 再照合を止め理由を含む停止状態へ移る(reason: 停止理由)。
     void CloudSaveSynchronizer::Implementation::Halt(
         const CloudSaveSynchronizerStopReason reason) noexcept
     {
@@ -977,13 +1140,16 @@ namespace LamaPon::Detail
         status.retryAtMilliseconds = 0u;
     }
 
+    // journalの競合件数を反映し他の停止・待機状態を保つ。
     void CloudSaveSynchronizer::Implementation::RefreshConflictStatus() noexcept
     {
+        // 現在の競合数
         std::size_t count{};
         try
         {
             if (journal)
             {
+                // 同期・検証する保存先
                 for (const auto& resource : journal->Resources())
                 {
                     if (journal->Conflict(resource))
@@ -1013,6 +1179,7 @@ namespace LamaPon::Detail
         }
     }
 
+    // 古いリモート一覧を破棄して一覧からの再照合を求める。
     void CloudSaveSynchronizer::Implementation::ResetReconcileSession() noexcept
     {
         manifest.reset();
@@ -1020,13 +1187,16 @@ namespace LamaPon::Detail
         reconcileRequested = true;
     }
 
+    // 上限付きの指数待機またはレート制限待機を設定する(outcome: 通信失敗の種別と待機指示, nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::EnterBackoff(
         const CloudSaveWireOutcome& outcome,
         const std::uint64_t nowMilliseconds) noexcept
     {
+        // 再試行までの待機ms
         std::uint64_t delay{};
         if (outcome.status == CloudSaveWireStatus::RateLimited)
         {
+            // レート制限で要求された待機秒数
             const auto seconds = (std::max)(
                 std::uint64_t{ 1u },
                 static_cast<std::uint64_t>(outcome.retryAfterSeconds));
@@ -1036,6 +1206,7 @@ namespace LamaPon::Detail
         }
         else
         {
+            // 指数待機に使う試行回数
             const auto shift = (std::min)(retryAttempt, 6u);
             delay = InitialRetryDelayMilliseconds << shift;
             delay = (std::min)(delay, MaximumRetryDelayMilliseconds);
@@ -1049,6 +1220,7 @@ namespace LamaPon::Detail
         status.retryAtMilliseconds = SaturatingAdd(nowMilliseconds, delay);
     }
 
+    // 認証・再試行・不正応答を分類し失敗処理済みかを返す(outcome: 通信結果, operation: 通信種別, nowMilliseconds: 単調時計の現在時刻ms)。
     bool CloudSaveSynchronizer::Implementation::HandleWireFailure(
         const CloudSaveWireOutcome& outcome,
         const WireOperation operation,
@@ -1097,12 +1269,14 @@ namespace LamaPon::Detail
         return true;
     }
 
+    // ローカルが観測後に変わっていない場合だけatomicに適用する(snapshot: リモート状態, observed: 比較するローカル文書, localIdentity: 既存slotの綴り・不在ならnull)。
     bool CloudSaveSynchronizer::Implementation::ApplyRemoteSnapshot(
         const CloudSaveSnapshot& snapshot,
         const LocalPersistenceDocument& observed,
         const CloudSaveResource* const localIdentity)
     {
         ValidateFullSnapshotDocument(snapshot);
+        // ローカル条件付き適用の結果
         LocalPersistenceConditionalApplyResult result{};
         if (snapshot.resource.kind == CloudSaveResourceKind::Preferences)
         {
@@ -1122,10 +1296,7 @@ namespace LamaPon::Detail
         }
         else
         {
-            // Windows ordinal-ignore-caseで同一なlocal slotが既にある場合、
-            // remote側のcaseではなく検証済みlocal documentの綴りを使います。
-            // `Save`/`save`が同一fileなのにslot identity不一致でCorrupt扱い
-            // したり、case-sensitive volumeで別fileを作ることを防ぎます。
+            // 大小文字だけ異なる同一slotを別ファイルにしないため、検証済みのローカル文書の綴りを使います。
             const std::string_view slot = localIdentity
                     && localIdentity->kind
                         == CloudSaveResourceKind::SaveSlot
@@ -1148,6 +1319,7 @@ namespace LamaPon::Detail
                     snapshot.content);
             }
         }
+        // 観測したローカル状態へ適用済みか
         const bool applied = result
             == LocalPersistenceConditionalApplyResult::Applied;
         if (applied && snapshot.deleted)
@@ -1157,6 +1329,7 @@ namespace LamaPon::Detail
         return applied;
     }
 
+    // リモート削除の適用を観測一覧へ確保なしで反映する(resource: 削除した保存先)。
     void CloudSaveSynchronizer::Implementation::NoteRemoteDeletion(
         const CloudSaveResource& resource) noexcept
     {
@@ -1164,6 +1337,7 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // ローカル保存の文書または記録
         for (auto& local : lastObservedInventory.resources)
         {
             if (SameResource(local.resource, resource))
@@ -1177,6 +1351,7 @@ namespace LamaPon::Detail
         }
     }
 
+    // ローカル削除前に削除意思を記録し対応するReadを失効させる(resource: 削除する保存先)。
     void CloudSaveSynchronizer::Implementation::PrepareLocalDelete(
         const CloudSaveResource& resource)
     {
@@ -1186,6 +1361,7 @@ namespace LamaPon::Detail
             throw std::logic_error(
                 "Cloud save delete checkpoint is not active.");
         }
+        // ローカル保存の文書または記録
         const auto local = resource.kind
                 == CloudSaveResourceKind::Preferences
             ? LocalPersistenceDocuments::ReadPlayerPrefs(preferences)
@@ -1202,8 +1378,7 @@ namespace LamaPon::Detail
                 "Local persistence cannot be checkpointed for deletion.");
         }
 
-        // baselineのstrong ETagは同じjournal entryに残るため、intent処理時に
-        // remote最新版ではなくdelete開始時の既知revisionへCASできます。
+        // baselineのstrong ETagは同じjournal entryに残るため、intent処理時にremote最新版ではなくdelete開始時の既知revisionへCASできます。
         journal->RecordLocalDeleteIntent(resource);
         if (activeOperation == WireOperation::Read
             && activeFence
@@ -1214,17 +1389,20 @@ namespace LamaPon::Detail
         reconcileRequested = true;
     }
 
+    // 観測済み状態から消えた保存先と再作成を操作列にする(inventory: 現在の検査済みローカル一覧)。
     std::vector<CloudSaveDeleteIntentOperation>
         CloudSaveSynchronizer::Implementation::
         DetermineLocalDeleteIntentOperations(
             const LocalInventory& inventory)
     {
+        // 一括記録する削除意思の操作列
         std::vector<CloudSaveDeleteIntentOperation> operations;
         operations.reserve(
             lastObservedInventory.resources.size()
             + inventory.resources.size());
         if (hasLastObservedInventory)
         {
+            // 前回観測したローカル保存状態
             for (const auto& previous : lastObservedInventory.resources)
             {
                 if (previous.document.state
@@ -1232,12 +1410,12 @@ namespace LamaPon::Detail
                 {
                     continue;
                 }
+                // 現在のローカル保存状態
                 const auto* current = FindLocal(inventory, previous.resource);
                 if (!current
                     || current->state == LocalPersistenceDocumentState::Missing)
                 {
-                    // ETag取得済みのimmutable pending Deleteが既にある場合、
-                    // ETag未取得期間用のintentを重ねて復活させません。
+                    // ETag取得済みのimmutable pending Deleteが既にある場合、ETag未取得期間用のintentを重ねて復活させません。
                     if (!journal->Pending(previous.resource))
                     {
                         operations.push_back({
@@ -1248,6 +1426,7 @@ namespace LamaPon::Detail
                 }
             }
         }
+        // 現在のローカル保存状態
         for (const auto& current : inventory.resources)
         {
             if (current.document.state == LocalPersistenceDocumentState::Loaded
@@ -1262,6 +1441,7 @@ namespace LamaPon::Detail
         return operations;
     }
 
+    // 確定した操作列をjournalの単一世代で公開する(operations: 保存先ごとの記録・解除)。
     void CloudSaveSynchronizer::Implementation::
         ApplyLocalDeleteIntentOperations(
             const std::vector<CloudSaveDeleteIntentOperation>& operations)
@@ -1269,14 +1449,17 @@ namespace LamaPon::Detail
         journal->ApplyLocalDeleteIntentOperations(operations);
     }
 
+    // ローカル状態の検査と削除意思の一括公開後に観測一覧を進める。
     void CloudSaveSynchronizer::Implementation::
         CaptureDurableLocalDeleteIntents()
     {
+        // 検査したローカル保存の一覧
         const auto inventory = ReadLocalInventory();
         if (status.state == CloudSaveSynchronizerState::Halted)
         {
             return;
         }
+        // 一括記録する削除意思の操作列
         const auto operations =
             DetermineLocalDeleteIntentOperations(inventory);
         ApplyLocalDeleteIntentOperations(operations);
@@ -1284,23 +1467,29 @@ namespace LamaPon::Detail
         hasLastObservedInventory = true;
     }
 
+    // 未検証の世代の基準・競合・未送信内容を完全な文書形式で検証する。
     void CloudSaveSynchronizer::Implementation::ValidateJournalDocuments()
     {
+        // 検証または一覧照会時の世代
         const auto generation = journal->Generation();
         if (validatedJournalGeneration == generation)
         {
             return;
         }
+        // 同期・検証する保存先
         for (const auto& resource : journal->Resources())
         {
+            // 同期済みの基準状態
             if (const auto baseline = journal->Baseline(resource))
             {
                 ValidateFullSnapshotDocument(*baseline);
             }
+            // 競合時点のリモート保存状態
             if (const auto conflict = journal->Conflict(resource))
             {
                 ValidateFullSnapshotDocument(*conflict);
             }
+            // 再送条件を保持した未完了更新
             if (const auto pending = journal->Pending(resource))
             {
                 ValidatePendingDocument(*pending);
@@ -1309,11 +1498,13 @@ namespace LamaPon::Detail
         validatedJournalGeneration = generation;
     }
 
+    // ローカル内容と基準ETagから新しい更新を通信前に永続化する(resource: 保存先, local: 検査済みローカル文書, baseline: 同期済みの基準)。
     void CloudSaveSynchronizer::Implementation::QueueLocalMutation(
         const CloudSaveResource& resource,
         const LocalPersistenceDocument& local,
         const std::optional<CloudSaveSnapshot>& baseline)
     {
+        // この更新へ割り当てる新UUID
         const auto mutationId = NewMutationId();
         if (local.state == LocalPersistenceDocumentState::Loaded)
         {
@@ -1332,19 +1523,25 @@ namespace LamaPon::Detail
         }
     }
 
+    // ACK後にローカルを読み直し成功状態との差分を新しい更新にする(resource: 保存先, snapshot: ACKで確定した状態)。
     void CloudSaveSynchronizer::Implementation::QueueOverlayAfterSuccess(
         const CloudSaveResource& resource,
         const CloudSaveSnapshot& snapshot)
     {
+        // 検査したローカル保存の一覧
         const auto inventory = ReadLocalInventory();
         if (status.state == CloudSaveSynchronizerState::Halted)
         {
             return;
         }
+        // 不在時のローカル文書の代替値
         LocalPersistenceDocument missing;
         missing.state = LocalPersistenceDocumentState::Missing;
+        // 一致するローカル保存の検索結果
         const auto* found = FindLocal(inventory, resource);
+        // ローカル保存の文書または記録
         const auto& local = found ? *found : missing;
+        // 同期済みの基準状態
         const std::optional<CloudSaveSnapshot> baseline{ snapshot };
         if (!LocalMatchesBaseline(local, baseline))
         {
@@ -1352,6 +1549,7 @@ namespace LamaPon::Detail
         }
     }
 
+    // 結果の世代・保存先・容量を検証して照合用の一覧を更新する(result: 一覧取得の結果, nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::HandleManifestResult(
         WireResult result,
         const std::uint64_t nowMilliseconds)
@@ -1370,9 +1568,13 @@ namespace LamaPon::Detail
         }
         authorizedWireSuccessPending = true;
 
+        // 削除済みも含むリモートslot数
         std::size_t saveSlots{};
+        // 設定と保存スロットの合計B
         std::uint64_t totalBytes{};
+        // 確認済みのリモート保存先一覧
         std::vector<CloudSaveResource> identities;
+        // 検証するリモートの一覧項目
         for (const auto& item : result.manifest.items)
         {
             if (!IsValidResource(item.resource)
@@ -1402,10 +1604,12 @@ namespace LamaPon::Detail
         status.state = CloudSaveSynchronizerState::Synchronizing;
     }
 
+    // 結果と三者の変更状態を照合して適用・CAS・競合を選ぶ(result: 保存内容取得の結果, nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::HandleReadResult(
         WireResult result,
         const std::uint64_t nowMilliseconds)
     {
+        // 通信中のローカル変更で失効したか
         const bool invalidated = std::exchange(
             activeReadInvalidated,
             false);
@@ -1440,6 +1644,7 @@ namespace LamaPon::Detail
             return;
         }
 
+        // 一覧で観測したリモート状態
         const auto* expected = manifest
             ? FindManifest(*manifest, result.fence.resource)
             : nullptr;
@@ -1454,29 +1659,35 @@ namespace LamaPon::Detail
             || expected->byteLength != result.item.snapshot->content.size()
             || expected->sha256 != result.item.snapshot->sha256)
         {
-            // manifest取得後の正当なremote更新競合です。異なるrevisionを
-            // 古い三者比較へ適用せず、bounded backoff後にmanifestから再開します。
+            // 一覧取得後にリモートが更新されたため、異なる世代を適用せず待機後に一覧から再開します。
             ResetReconcileSession();
+            // 一覧取得後の更新競合の再試行結果
             CloudSaveWireOutcome race;
             race.status = CloudSaveWireStatus::RetryableServiceError;
             EnterBackoff(race, nowMilliseconds);
             return;
         }
 
+        // 検査したローカル保存の一覧
         const auto inventory = ReadLocalInventory();
         if (status.state == CloudSaveSynchronizerState::Halted)
         {
             return;
         }
+        // 不在時のローカル文書の代替値
         LocalPersistenceDocument missing;
         missing.state = LocalPersistenceDocumentState::Missing;
+        // 実際のslot表記を持つlocal記録
         const auto* localResource = FindLocalResource(
             inventory,
             result.fence.resource);
+        // ローカル保存の文書または記録
         const auto& local = localResource
             ? localResource->document
             : missing;
+        // 同期済みの基準状態
         const auto baseline = journal->Baseline(result.fence.resource);
+        // 一覧またはReadで得た保存状態
         const std::optional<CloudSaveSnapshot> remote{
             *result.item.snapshot
         };
@@ -1486,9 +1697,7 @@ namespace LamaPon::Detail
             if (journal->HasLocalDeleteIntent(result.fence.resource)
                 && local.state == LocalPersistenceDocumentState::Missing)
             {
-                // pre-delete WALを検証済みRead revisionでpendingへ昇格します。
-                // 既存baselineがあればdelete開始時に観測したETagを優先し、
-                // Read中のremote更新は412 conflictとして保持します。
+                // 既存の基準ETagを優先して削除意思をpendingへ昇格し、Read中の更新は412競合として保持します。
                 journal->QueueDelete(
                     result.fence.resource,
                     NewMutationId(),
@@ -1498,9 +1707,7 @@ namespace LamaPon::Detail
                 && result.fence.localWasLoadedAtReadStart
                 && local.state == LocalPersistenceDocumentState::Missing)
             {
-                // baseline未作成のRead中に発生した明示deleteを「新端末の
-                // 初期Missing」と混同しません。検証済みremote ETagへの
-                // DeleteをWALへ記録してからwireへ進めます。
+                // Read中の明示削除を初期Missingと区別し、検証済みETagへの削除を通信前に永続化します。
                 QueueLocalMutation(result.fence.resource, local, remote);
             }
             // それ以外のlocal commitも旧判断では適用せず再manifestします。
@@ -1551,6 +1758,7 @@ namespace LamaPon::Detail
             }
             // 初回にlocal/remote双方が存在する場合は勝手に上書きしません。
             QueueLocalMutation(result.fence.resource, local, std::nullopt);
+            // 再送条件を保持した未完了更新
             const auto pending = journal->Pending(result.fence.resource);
             if (!pending)
             {
@@ -1563,14 +1771,14 @@ namespace LamaPon::Detail
         }
         else
         {
-            // Read中にlocal overlayが進んだ場合も古いremoteを適用せず、
-            // baseline ETagに対するCASとしてjournalへ先に記録します。
+            // Read中にlocal overlayが進んだ場合も古いremoteを適用せず、baseline ETagに対するCASとしてjournalへ先に記録します。
             QueueLocalMutation(result.fence.resource, local, baseline);
         }
         ResetReconcileSession();
         RefreshConflictStatus();
     }
 
+    // 更新IDとACK内容を検証し競合記録または成功後の差分更新を行う(result: 保存・削除の通信結果, nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::HandleMutationResult(
         WireResult result,
         const std::uint64_t nowMilliseconds)
@@ -1629,6 +1837,7 @@ namespace LamaPon::Detail
             return;
         }
 
+        // 再送条件を保持した未完了更新
         const auto pending = journal->Pending(result.fence.resource);
         try
         {
@@ -1655,7 +1864,7 @@ namespace LamaPon::Detail
             result.fence.resource,
             result.fence.mutationId,
             *result.item.snapshot);
-        // P1 ack後にdiskを再読し、P2 overlayだけを新UUID/P1 ETagでqueueします。
+        // ACK後にローカルを再読し、次の差分を新しいUUIDとACKのETagで記録します。
         QueueOverlayAfterSuccess(
             result.fence.resource,
             *result.item.snapshot);
@@ -1663,6 +1872,7 @@ namespace LamaPon::Detail
         RefreshConflictStatus();
     }
 
+    // 通信種別に対応する結果処理へ引き渡す(result: workerの通信結果, nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::HandleWireResult(
         WireResult result,
         const std::uint64_t nowMilliseconds)
@@ -1685,15 +1895,18 @@ namespace LamaPon::Detail
         }
     }
 
+    // 削除・縮小を優先して永続化済みの更新を1件送信する(inventory: 事前検査済み一覧・この処理では未使用)。
     bool CloudSaveSynchronizer::Implementation::StartPendingMutation(
         const LocalInventory& inventory)
     {
         (void)inventory;
+        // 再送条件を保持した未完了更新
         auto pending = journal->Dispatchable();
         if (pending.empty())
         {
             return false;
         }
+        // 削除・縮小を先に送信する順位を返す(mutation: 未送信更新)。
         const auto priority = [this](
             const CloudSavePendingMutation& mutation)
         {
@@ -1701,10 +1914,13 @@ namespace LamaPon::Detail
             {
                 return 0;
             }
+            // 同期済みの基準状態
             const auto baseline = journal->Baseline(mutation.resource);
+            // 変更先の適用前の内容バイト数
             const auto before = baseline && !baseline->deleted
                 ? baseline->content.size()
                 : 0u;
+            // 変更先の適用後の内容バイト数
             const auto after = mutation.content.size();
             if (after < before)
             {
@@ -1712,6 +1928,7 @@ namespace LamaPon::Detail
             }
             return after > before ? 2 : 1;
         };
+        // 容量を減らす順に比較する(left: 比較元の更新, right: 比較先の更新)。
         std::stable_sort(
             pending.begin(),
             pending.end(),
@@ -1728,6 +1945,7 @@ namespace LamaPon::Detail
         return true;
     }
 
+    // 削除・縮小を優先して三者比較による同期を一段階進める(inventory: 検査済みのローカル一覧)。
     bool CloudSaveSynchronizer::Implementation::ReconcileOne(
         const LocalInventory& inventory)
     {
@@ -1737,52 +1955,65 @@ namespace LamaPon::Detail
             return true;
         }
 
+        // local・remote・journalの保存先
         std::vector<CloudSaveResource> resources;
         AddResource(resources, CloudSaveResource::Preferences());
+        // ローカル保存の文書または記録
         for (const auto& local : inventory.resources)
         {
             AddResource(resources, local.resource);
         }
+        // 一覧またはReadで得た保存状態
         for (const auto& remote : *manifest)
         {
             AddResource(resources, remote.resource);
         }
+        // journalに記録した保存先
         for (const auto& persisted : journal->Resources())
         {
             AddResource(resources, persisted);
         }
 
-        // remote削除/縮小をgrowthより先に適用します。remote/local双方の
-        // 最終総量がquota内でも、名前順でgrowthを先に適用すると一時的に
-        // quotaを越えて停止するためです。各適用後はmanifestから再開します。
+        // 一時的な容量超過を避け削除・縮小を優先する(resource: 比較する保存先)。
         const auto quotaTransitionPriority =
             [&inventory, this](const CloudSaveResource& resource)
             {
+                // 一覧またはReadで得た保存状態
                 const auto* remote = FindManifest(*manifest, resource);
                 if (journal->HasLocalDeleteIntent(resource)
                     && remote && !remote->deleted)
                 {
                     return 0;
                 }
+                // ローカル保存の文書または記録
                 const auto* local = FindLocal(inventory, resource);
+                // ローカル内容のバイト数
                 const auto localBytes = local
                         && local->state
                             == LocalPersistenceDocumentState::Loaded
                     ? local->bytes.size()
                     : 0u;
+                // リモート内容のバイト数
                 const auto remoteBytes = remote && !remote->deleted
                     ? remote->byteLength
                     : 0u;
+                // 不在時のローカル文書の代替値
                 LocalPersistenceDocument missing;
                 missing.state = LocalPersistenceDocumentState::Missing;
+                // 不在時の代替を含むローカル文書
                 const auto& effectiveLocal = local ? *local : missing;
+                // 同期済みの基準状態
                 const auto baseline = journal->Baseline(resource);
+                // ローカルが同期済み基準と同じか
                 const bool localMatches =
                     LocalMatchesBaseline(effectiveLocal, baseline);
+                // リモートが同期済み基準と同じか
                 const bool remoteMatches =
                     ManifestMatchesBaseline(remote, baseline);
 
+                // 変更先の適用前の内容バイト数
                 std::uint64_t before{};
+                // 変更先の適用後の内容バイト数
                 std::uint64_t after{};
                 if (localMatches && !remoteMatches)
                 {
@@ -1812,6 +2043,7 @@ namespace LamaPon::Detail
                 }
                 return after > before ? 2 : 1;
             };
+        // 容量を減らす順に比較する(left: 比較元の保存先, right: 比較先の保存先)。
         std::stable_sort(
             resources.begin(),
             resources.end(),
@@ -1823,6 +2055,7 @@ namespace LamaPon::Detail
                     < quotaTransitionPriority(right);
             });
 
+        // 同期・検証する保存先
         for (const auto& resource : resources)
         {
             if (ContainsResource(processed, resource))
@@ -1841,22 +2074,26 @@ namespace LamaPon::Detail
                 return false;
             }
 
+            // 不在時のローカル文書の代替値
             LocalPersistenceDocument missing;
             missing.state = LocalPersistenceDocumentState::Missing;
+            // 実際のslot表記を持つlocal記録
             const auto* localResource = FindLocalResource(
                 inventory,
                 resource);
+            // ローカル保存の文書または記録
             const auto& local = localResource
                 ? localResource->document
                 : missing;
+            // 同期済みの基準状態
             const auto baseline = journal->Baseline(resource);
+            // 一覧またはReadで得た保存状態
             const auto* remote = FindManifest(*manifest, resource);
             if (journal->HasLocalDeleteIntent(resource))
             {
                 if (local.state == LocalPersistenceDocumentState::Loaded)
                 {
-                    // delete後の再作成が既にdurableなら古いintentを破棄し、
-                    // 通常の三者比較（必要なら初回conflict）へ戻します。
+                    // delete後の再作成が既にdurableなら古いintentを破棄し、通常の三者比較（必要なら初回conflict）へ戻します。
                     journal->ClearLocalDeleteIntent(resource);
                     ResetReconcileSession();
                     return true;
@@ -1876,8 +2113,7 @@ namespace LamaPon::Detail
                 }
                 if (!remote->deleted)
                 {
-                    // ETag取得前に記録したintentを同じjournal publishで
-                    // immutable pending Deleteへ昇格します。
+                    // ETag取得前に記録したintentを同じjournal publishでimmutable pending Deleteへ昇格します。
                     journal->QueueDelete(
                         resource,
                         NewMutationId(),
@@ -1887,6 +2123,7 @@ namespace LamaPon::Detail
                     ResetReconcileSession();
                     return true;
                 }
+                // リモートのETag付き削除状態
                 const CloudSaveSnapshot tombstone{
                     resource,
                     remote->etag,
@@ -1909,9 +2146,7 @@ namespace LamaPon::Detail
                 && local.state == LocalPersistenceDocumentState::Missing
                 && !ManifestMatchesBaseline(remote, baseline))
             {
-                // remote tombstoneのlocal適用後、baseline publish前にcrashしても
-                // Missing同士は収束済みです。旧baseline ETagでDELETEを再送せず、
-                // 検証済みremote revisionへidempotentにbaselineを進めます。
+                // 削除のローカル適用後にcrashした場合も削除状態同士は収束済みとし、基準ETagだけを冪等に進めます。
                 const CloudSaveSnapshot tombstone{
                     resource,
                     remote->etag,
@@ -1923,7 +2158,9 @@ namespace LamaPon::Detail
                 ResetReconcileSession();
                 return true;
             }
+            // ローカルが同期済み基準と同じか
             const bool localMatches = LocalMatchesBaseline(local, baseline);
+            // リモートが同期済み基準と同じか
             const bool remoteMatches =
                 ManifestMatchesBaseline(remote, baseline);
 
@@ -1937,8 +2174,7 @@ namespace LamaPon::Detail
             {
                 if (!remote)
                 {
-                    // serverは削除をstrong ETag付きtombstoneで返す契約です。
-                    // 既知baselineをmanifestから無言で消す応答は適用しません。
+                    // 既知の保存先は強いETag付きの削除状態で残るため、一覧から消えた応答を拒否します。
                     Halt(
                         CloudSaveSynchronizerStopReason::InvalidRemoteResponse);
                     return false;
@@ -1948,6 +2184,7 @@ namespace LamaPon::Detail
                     LaunchRead(resource, remote->etag, local.state);
                     return true;
                 }
+                // リモートのETag付き削除状態
                 CloudSaveSnapshot tombstone{
                     resource,
                     remote->etag,
@@ -1980,19 +2217,20 @@ namespace LamaPon::Detail
 
             if (!baseline && remote)
             {
-                // 初回localとremoteの双方が変化済みです。live remoteはfull
-                // snapshotをReadしてから、tombstoneは今ここでconflict化します。
+                // 初回に両側の内容が存在した場合も、全文書のReadまたは削除状態の検証後に競合として記録します。
                 if (!remote->deleted)
                 {
                     LaunchRead(resource, remote->etag, local.state);
                     return true;
                 }
                 QueueLocalMutation(resource, local, std::nullopt);
+                // 再送条件を保持した未完了更新
                 const auto pending = journal->Pending(resource);
                 if (!pending)
                 {
                     throw std::runtime_error("Initial conflict queue failed.");
                 }
+                // リモートのETag付き削除状態
                 const CloudSaveSnapshot tombstone{
                     resource,
                     remote->etag,
@@ -2011,15 +2249,12 @@ namespace LamaPon::Detail
 
             if (!remoteMatches && remote && !remote->deleted)
             {
-                // 両側変更でもfull snapshotを検証します。localが既にremoteと
-                // 同一なら、直前のlocal apply後journal publish失敗から安全に
-                // baselineだけを回復できます。異なればRead完了後にCASします。
+                // 両側変更は全文書をReadし、適用後の復旧で内容が一致すれば基準だけを進め、異なればCASします。
                 LaunchRead(resource, remote->etag, local.state);
                 return true;
             }
 
-            // remote==baselineならlocalだけの変更、双方変更なら古いbaseline
-            // ETagへのCASです。いずれもnetworkより先にWALをpublishします。
+            // ローカル変更を旧基準ETagへのCASとして、通信前に永続化します。
             QueueLocalMutation(resource, local, baseline);
             if (!journal->Pending(resource))
             {
@@ -2038,6 +2273,7 @@ namespace LamaPon::Detail
         return false;
     }
 
+    // 古い通信結果を失効させ切断前の削除意思を単一世代で公開する。
     void CloudSaveSynchronizer::Implementation::
         CheckpointLocalStateForDetach()
     {
@@ -2048,26 +2284,25 @@ namespace LamaPon::Detail
             return;
         }
 
-        // 完了待ちせず世代を進め、以降のmailbox結果がjournal/localへ
-        // 触れないようにします。workerはshared client/mailboxだけで完走します。
+        // 接続世代を進め、以降のworker結果をローカル保存とjournalへ適用しません。
         ++sessionSerial;
         RetireActiveMailbox();
 
-        // remote由来の停止状態でもsign-out時のlocal deleteは失えません。
-        // strict scanで新たなlocal異常を検出した場合だけ下で失敗させます。
+        // 通信由来の停止状態も解除して厳密なローカル検査を行い、切断時の削除意思を残します。
         status.state = CloudSaveSynchronizerState::Synchronizing;
         status.stopReason = CloudSaveSynchronizerStopReason::None;
         status.retryAtMilliseconds = 0u;
+        // 検査したローカル保存の一覧
         const auto inventory = ReadLocalInventory();
         if (status.state == CloudSaveSynchronizerState::Halted)
         {
             throw std::runtime_error(
                 "Local persistence could not be checkpointed.");
         }
+        // 一括記録する削除意思の操作列
         auto operations =
             DetermineLocalDeleteIntentOperations(inventory);
-        // ここから先は操作列全体を1世代でpublishします。失敗した場合も
-        // 全操作をcallerへ移し、新しいjournal instanceへ冪等再適用します。
+        // 操作列を単一世代で公開し、失敗時は呼出し側へ移して新しいjournalに冪等に再適用します。
         failedDetachCheckpointRecovery.operations =
             std::move(operations);
         failedDetachCheckpointRecovery.operationsDetermined = true;
@@ -2080,6 +2315,7 @@ namespace LamaPon::Detail
         failedDetachCheckpointRecovery = {};
     }
 
+    // 結果反映と厳密な保存検査を行い最大1件の通信を開始する(nowMilliseconds: 単調時計の現在時刻ms)。
     void CloudSaveSynchronizer::Implementation::Tick(
         const std::uint64_t nowMilliseconds)
     {
@@ -2113,6 +2349,7 @@ namespace LamaPon::Detail
 
         try
         {
+            // 通信結果または適用の結果
             if (const auto result = PollActive())
             {
                 HandleWireResult(
@@ -2141,8 +2378,7 @@ namespace LamaPon::Detail
                 deleteIntentCapturePending = false;
             }
 
-            // 書込み系wireを始める前にprefs・全slot・account quotaを
-            // strict scanします。Unavailable/Corrupt時はupload/deleteしません。
+            // 設定・全slot・合計容量を検査し、不確かな読取や破損があればアップロードと削除を開始しません。
             const auto inventory = ReadLocalInventory();
             if (status.state == CloudSaveSynchronizerState::Halted)
             {
@@ -2169,6 +2405,7 @@ namespace LamaPon::Detail
         {
             deleteIntentCapturePending = true;
             ResetReconcileSession();
+            // journalの排他競合の再試行結果
             CloudSaveWireOutcome busy;
             busy.status = CloudSaveWireStatus::RetryableServiceError;
             EnterBackoff(busy, nowMilliseconds);
@@ -2208,6 +2445,7 @@ namespace LamaPon::Detail
         std::string accountStorageKey,
         std::string accessToken)
     {
+        // 切替前に検証した接続準備
         auto prepared = PrepareAttachment(
             journal,
             m_implementation->preferences.FilePath(),
@@ -2224,6 +2462,7 @@ namespace LamaPon::Detail
         std::string accountStorageKey,
         std::string accessToken)
     {
+        // main threadの同期状態の借用
         auto& implementation = *m_implementation;
         implementation.RequireOwner();
         if (!IsAccountStorageKey(accountStorageKey)
@@ -2234,14 +2473,20 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "Invalid cloud save synchronizer binding.");
         }
+        // journalとアカウント保存先が一致か
         bool bindingMatches{};
         try
         {
+            // 正規化したjournal本体のパス
             const auto journalPath =
                 journal.FilePath().lexically_normal();
+            // アカウントキーのjournal保存先
             const auto keyDirectory = journalPath.parent_path();
+            // 全アカウントのjournal保存先
             const auto stateRoot = keyDirectory.parent_path();
+            // エンジンの利用者データ保存先
             const auto engineRoot = stateRoot.parent_path();
+            // キーから導出したアカウント保存先
             const auto accountRoot = (
                 engineRoot
                 / L"OnlineProfiles"
@@ -2271,6 +2516,7 @@ namespace LamaPon::Detail
                 "Invalid cloud save synchronizer binding.");
         }
 
+        // 消去責任を共有する準備済みtoken
         std::shared_ptr<SecretString> preparedToken;
         try
         {
@@ -2283,19 +2529,24 @@ namespace LamaPon::Detail
             throw;
         }
         EraseSecret(accessToken);
-        // publish前にtarget journalと初期local snapshotを完全検証します。
+        // 公開前に対象journalと初期ローカル保存を完全に検証します。
         std::size_t conflictCount{};
+        // 接続前に検証したローカル一覧
         LocalInventory initialInventory;
         try
         {
+            // 検証または一覧照会時の世代
             const auto generation = journal.Generation();
             (void)generation;
+            // 同期・検証する保存先
             for (const auto& resource : journal.Resources())
             {
+                // 同期済みの基準状態
                 if (const auto baseline = journal.Baseline(resource))
                 {
                     ValidateFullSnapshotDocument(*baseline);
                 }
+                // 再送条件を保持した未完了更新
                 if (const auto pending = journal.Pending(resource))
                 {
                     ValidatePendingDocument(*pending);
@@ -2308,7 +2559,9 @@ namespace LamaPon::Detail
                 }
             }
 
+            // 切替前の設定データ検証用の読取先
             PlayerPrefs preparedPreferences(accountPreferencesPath);
+            // 検査した設定データの文書
             auto preferencesDocument =
                 LocalPersistenceDocuments::ReadPlayerPrefs(
                     preparedPreferences);
@@ -2320,6 +2573,7 @@ namespace LamaPon::Detail
                 throw std::runtime_error(
                     "Cloud save local persistence is unavailable.");
             }
+            // 設定と保存スロットの合計B
             std::uint64_t totalBytes =
                 preferencesDocument.state
                         == LocalPersistenceDocumentState::Loaded
@@ -2330,7 +2584,9 @@ namespace LamaPon::Detail
                 std::move(preferencesDocument)
             });
 
+            // 切替前の保存スロットの検証用読取先
             SaveDataStore preparedSaves(accountSaveDirectory);
+            // ローカル保存スロットの列挙結果
             const auto listing =
                 LocalPersistenceDocuments::ListSaveData(preparedSaves);
             if (listing.state == LocalPersistenceDocumentState::Unavailable
@@ -2341,8 +2597,10 @@ namespace LamaPon::Detail
             }
             if (listing.state == LocalPersistenceDocumentState::Loaded)
             {
+                // 検証済みの保存スロット名
                 for (const auto& slot : listing.slots)
                 {
+                    // 検査した保存スロットの文書
                     auto document = LocalPersistenceDocuments::ReadSaveData(
                         preparedSaves,
                         slot);
@@ -2372,6 +2630,7 @@ namespace LamaPon::Detail
             throw;
         }
 
+        // 公開前に保持する接続準備状態
         auto state = std::make_unique<PreparedCloudSaveAttachment::State>();
         state->owner = &implementation;
         state->journal = &journal;
@@ -2395,12 +2654,14 @@ namespace LamaPon::Detail
         PreparedCloudSaveAttachment&& prepared,
         const std::uint64_t profileEpoch) noexcept
     {
+        // main threadの同期状態の借用
         auto& implementation = *m_implementation;
         if (!CanCommitPreparedAttachment(prepared) || profileEpoch == 0u)
         {
             implementation.DetachNoThrow();
             return;
         }
+        // 公開前に保持する接続準備状態
         auto state = std::move(prepared.m_state);
         ++implementation.sessionSerial;
         implementation.RetireActiveMailbox();
@@ -2448,6 +2709,7 @@ namespace LamaPon::Detail
 
     void CloudSaveSynchronizer::UpdateAccessToken(std::string accessToken)
     {
+        // main threadの同期状態の借用
         auto& implementation = *m_implementation;
         implementation.RequireOwner();
         if (!implementation.journal
@@ -2457,6 +2719,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "Invalid cloud save access token update.");
         }
+        // 消去責任を共有する準備済みtoken
         std::shared_ptr<SecretString> preparedToken;
         try
         {
@@ -2484,6 +2747,7 @@ namespace LamaPon::Detail
 
     void CloudSaveSynchronizer::RequestReconcile()
     {
+        // main threadの同期状態の借用
         auto& implementation = *m_implementation;
         implementation.RequireOwner();
         if (!implementation.journal)
@@ -2523,6 +2787,7 @@ namespace LamaPon::Detail
             {
                 implementation.ResetReconcileSession();
             }
+            // journalの排他競合の再試行結果
             CloudSaveWireOutcome busy;
             busy.status = CloudSaveWireStatus::RetryableServiceError;
             implementation.EnterBackoff(
@@ -2548,9 +2813,7 @@ namespace LamaPon::Detail
                 == WireOperation::Read)
             {
                 implementation.activeReadInvalidated = true;
-                // baseline無しのRead中にLoaded→Missingとなったdeleteは、
-                // 次回起動で「初期Missing」と区別できません。manifestで既に
-                // 得たstrong ETagを使い、このsignal処理中にWAL化します。
+                // 初回Read中の明示削除を初期Missingと区別するため、一覧のETagでこの通知処理中に永続化します。
                 try
                 {
                     if (implementation.activeFence
@@ -2559,8 +2822,10 @@ namespace LamaPon::Detail
                         && !implementation.journal->Baseline(
                             implementation.activeFence->resource))
                     {
+                        // 同期・検証する保存先
                         const auto& resource =
                             implementation.activeFence->resource;
+                        // ローカル保存の文書または記録
                         const auto local = resource.kind
                                 == CloudSaveResourceKind::Preferences
                             ? LocalPersistenceDocuments::ReadPlayerPrefs(
@@ -2581,8 +2846,7 @@ namespace LamaPon::Detail
                 }
                 catch (...)
                 {
-                    // active Read完了後のmain-thread再評価でfail-closedにします。
-                    // local commit自体は既にdurableなのでここから例外を出しません。
+                    // ローカルcommitは完了済みなので例外を出さず、Read完了後に再評価して不確かなら停止します。
                 }
             }
         }
@@ -2619,6 +2883,7 @@ namespace LamaPon::Detail
         const std::string_view expectedMutationId,
         const CloudSaveConflictResolution resolution)
     {
+        // main threadの同期状態の借用
         auto& implementation = *m_implementation;
         implementation.RequireOwner();
         if (!implementation.journal || !IsValidResource(resource))
@@ -2626,13 +2891,14 @@ namespace LamaPon::Detail
             throw std::logic_error(
                 "Cloud save synchronizer is not attached.");
         }
+        // 再送条件を保持した未完了更新
         const auto pending = implementation.journal->Pending(resource);
+        // 競合時点のリモート保存状態
         const auto conflict = implementation.journal->Conflict(resource);
         if (!pending || !conflict
             || pending->mutationId != expectedMutationId)
         {
-            // stale UI操作はwire busyより先に判定します。古いopaque IDを
-            // 待てば有効になる操作として扱いません。
+            // 古いUIの更新IDは通信中かの判定より先に拒否し、待機すれば有効になる操作として扱いません。
             throw std::logic_error("Cloud save conflict is stale.");
         }
         if (implementation.activeMailbox || implementation.retiredMailbox)
@@ -2641,6 +2907,7 @@ namespace LamaPon::Detail
                 "Cloud save conflict resolution requires an idle wire lane.");
         }
 
+        // 検査したローカル保存の一覧
         const auto inventory = implementation.ReadLocalInventory();
         if (implementation.status.state
                 == CloudSaveSynchronizerState::Halted
@@ -2671,11 +2938,14 @@ namespace LamaPon::Detail
                 throw std::runtime_error(
                     "Remote conflict exceeds the local account quota.");
             }
+            // 観測したローカル状態へ適用済みか
             bool applied{};
             try
             {
+                // 不在時のローカル文書の代替値
                 LocalPersistenceDocument missing;
                 missing.state = LocalPersistenceDocumentState::Missing;
+                // 一致するローカル保存の検索結果
                 const auto* found = FindLocalResource(inventory, resource);
                 applied = implementation.ApplyRemoteSnapshot(
                     *conflict,
@@ -2694,7 +2964,7 @@ namespace LamaPon::Detail
                 throw std::runtime_error(
                     "Local persistence changed during conflict resolution.");
             }
-            // crash時に再実行可能な順序: local remote適用 -> journal finalize。
+            // crash後も再実行できるよう、ローカルへ適用してからjournalを確定します。
             try
             {
                 implementation.journal->ResolveConflict(
@@ -2739,13 +3009,16 @@ namespace LamaPon::Detail
     std::vector<CloudSaveConflictDescriptor>
         CloudSaveSynchronizer::Conflicts() const
     {
+        // main threadの同期状態の借用
         const auto& implementation = *m_implementation;
         implementation.RequireOwner();
+        // 本文を含まない公開用の競合一覧
         std::vector<CloudSaveConflictDescriptor> result;
         if (!implementation.journal)
         {
             return result;
         }
+        // 検証または一覧照会時の世代
         const auto generation = implementation.journal->Generation();
         if (implementation.conflictDescriptorGeneration == generation
             && implementation.conflictDescriptorProfileEpoch
@@ -2753,9 +3026,11 @@ namespace LamaPon::Detail
         {
             return implementation.conflictDescriptors;
         }
+        // 本文を持たないjournalの競合一覧
         const auto summaries =
             implementation.journal->ConflictSummaries();
         result.reserve(summaries.size());
+        // 公開用に変換する競合の管理情報
         for (const auto& summary : summaries)
         {
             result.push_back({

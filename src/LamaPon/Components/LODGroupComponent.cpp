@@ -76,6 +76,7 @@ namespace LamaPon
         {
             return 0;
         }
+        // 距離上限と描画対象の段階
         for (const auto& level : m_levels)
         {
             if (distance
@@ -93,6 +94,7 @@ namespace LamaPon
         {
             m_levels.resize(8);
         }
+        // 距離上限と描画対象の段階
         for (auto& level : m_levels)
         {
             level.maximumDistance =

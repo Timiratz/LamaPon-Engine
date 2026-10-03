@@ -28,13 +28,14 @@
 
 namespace
 {
+    // volatile書き込みで秘密値の使用領域をゼロ化して空にする(value: 消去する文字列)。
     void EraseSecret(std::string& value) noexcept
     {
-        // clear()だけではcapacity内に認証情報が残るため、破棄前に
-        // volatile書き込みで使用中の領域を消します。
+        // 文字列の使用領域をゼロ化してからclearします。
         volatile char* bytes = value.empty()
             ? nullptr
             : value.data();
+        // 消去または16進変換の処理位置
         for (std::size_t index = 0;
             index < value.size();
             ++index)
@@ -44,6 +45,7 @@ namespace
         value.clear();
     }
 
+    // access・refresh tokenを消去し公開前のセッション情報を空にする(session: 消去する認証結果)。
     void EraseSession(
         LamaPon::Detail::OnlineSession& session) noexcept
     {
@@ -53,6 +55,7 @@ namespace
         session.player = {};
     }
 
+    // 認証確認tokenを消去し認証取引を初期状態にする(transaction: 消去する認証取引)。
     void EraseTransaction(
         LamaPon::Detail::DiscordLoginTransaction& transaction) noexcept
     {
@@ -63,6 +66,7 @@ namespace
         transaction.pollIntervalSeconds = 1;
     }
 
+    // 公開してよい固定エラー識別子かを返す(code: 内部のエラー識別子)。
     bool IsKnownErrorCode(const std::string_view code) noexcept
     {
         return code == "network_error"
@@ -84,6 +88,7 @@ namespace
             || code == "persistence_recovery_required";
     }
 
+    // 許可外の診断識別子を固定のservice_errorへ置き換える(code: 内部のエラー識別子)。
     std::string PublicErrorCode(const std::string_view code)
     {
         return IsKnownErrorCode(code)
@@ -91,6 +96,7 @@ namespace
             : std::string("service_error");
     }
 
+    // 固定エラー識別子に対応する表示用の日本語を返す(code: 公開用エラー識別子)。
     std::string PublicErrorMessage(const std::string_view code)
     {
         if (code == "network_error")
@@ -160,16 +166,20 @@ namespace
         return "オンライン認証に失敗しました。";
     }
 
+    // 単調時計の現在時刻を0以上のミリ秒で返す。
     [[nodiscard]] std::uint64_t SteadyMilliseconds() noexcept
     {
+        // 単調時計の経過ms
         const auto count = std::chrono::duration_cast<
             std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         return count > 0 ? static_cast<std::uint64_t>(count) : 0u;
     }
 
+    // CNGでprocess内だけの128ビット競合IDを生成する。
     [[nodiscard]] std::string GenerateOpaqueConflictId()
     {
+        // 公開用競合IDの16バイト乱数
         std::array<unsigned char, 16> randomBytes{};
         if (BCryptGenRandom(
                 nullptr,
@@ -180,8 +190,11 @@ namespace
             throw std::runtime_error(
                 "Opaque conflict identifier generation failed.");
         }
+        // 小文字の16進数字一覧
         static constexpr char Hex[] = "0123456789abcdef";
+        // 公開用競合IDの小文字16進表記
         std::string result(randomBytes.size() * 2u, '0');
+        // 消去または16進変換の処理位置
         for (std::size_t index = 0; index < randomBytes.size(); ++index)
         {
             result[index * 2u] = Hex[randomBytes[index] >> 4u];
@@ -191,6 +204,7 @@ namespace
         return result;
     }
 
+    // 保存済みtokenを削除すべき認証失敗かを返す(code: バックエンドの固定エラー識別子)。
     bool InvalidRefreshTokenError(
         const std::string_view code) noexcept
     {
@@ -203,19 +217,24 @@ namespace
 
     struct SecretText final
     {
+        // 消去責任を持つ秘密値を複製する(value: 入力tokenの借用)。
         explicit SecretText(const std::string_view value)
             : text(value)
         {
         }
 
+        // 保持する秘密値をゼロ化して破棄する。
         ~SecretText()
         {
             EraseSecret(text);
         }
 
+        // 秘密値の複製を禁止する。
         SecretText(const SecretText&) = delete;
+        // 秘密値のコピー代入を禁止する。
         SecretText& operator=(const SecretText&) = delete;
 
+        // 消去責任を持つtokenの文字列
         std::string text;
     };
 }
@@ -235,25 +254,40 @@ namespace LamaPon
 
         struct AsyncResult final
         {
+            // 認証開始の通信結果
             Detail::DiscordLoginStartResult loginStart;
+            // 認証状態確認の通信結果
             Detail::DiscordLoginPollResult loginPoll;
+            // セッション復元・更新の通信結果
             Detail::OnlineSessionResult sessionRefresh;
+            // サーバーのセッション失効が成功か
             bool logoutSucceeded{};
         };
 
         struct AsyncMailbox final
         {
+            // 認証通信の処理種別
             TaskKind kind{};
+            // 古い結果を失効する接続世代
             std::uint64_t generation{};
+            // 認証結果の受け渡し用排他ロック
             std::mutex mutex;
+            // 非同期認証または公開APIの結果
             AsyncResult result;
+            // 遅延セッション失効の共有client
             std::shared_ptr<Detail::DiscordAuthClient> cleanupClient;
+            // 後処理まで利用ロックを保つstore
             std::shared_ptr<Detail::IRefreshTokenStore> usageLeaseStore;
+            // 認証HTTPの完了時刻
             std::chrono::steady_clock::time_point completedAt{};
+            // 認証workerが完了したか
             bool completed{};
+            // 認証workerが例外で失敗したか
             bool failed{};
+            // 所有サービスが結果を放棄したか
             bool abandoned{};
 
+            // 新しく発行され失効処理が必要なセッションを借用する(taskKind: 処理種別, taskFailed: workerが失敗したか, taskResult: 通信結果)。
             [[nodiscard]] static Detail::OnlineSession*
                 RevocableSession(
                     const TaskKind taskKind,
@@ -279,6 +313,7 @@ namespace LamaPon
                 return nullptr;
             }
 
+            // 放棄した受領セッションの失効を試し全tokenを消去する(taskKind: 処理種別, taskFailed: workerの失敗, authClient: 認証clientの共有所有先, taskResult: 後処理する通信結果)。
             static void CleanupAbandonedResult(
                 const TaskKind taskKind,
                 const bool taskFailed,
@@ -286,6 +321,7 @@ namespace LamaPon
                     authClient,
                 AsyncResult& taskResult) noexcept
             {
+                // 後処理で失効する受領セッション
                 auto* const receivedSession = RevocableSession(
                     taskKind,
                     taskFailed,
@@ -308,6 +344,7 @@ namespace LamaPon
                 EraseSession(taskResult.sessionRefresh.session);
             }
 
+            // 受領セッションの失効を別workerへ渡し利用ロックを保持する(taskKind: 処理種別, taskFailed: workerの失敗, authClient: 認証client, usageLeaseStore: 利用ロックを保持するstore, taskResult: 所有を移す通信結果)。
             static void DispatchAbandonedCleanup(
                 const TaskKind taskKind,
                 const bool taskFailed,
@@ -328,11 +365,13 @@ namespace LamaPon
                     return;
                 }
 
+                // 後処理まで保持する認証結果
                 std::shared_ptr<AsyncResult> cleanupResult;
                 try
                 {
                     cleanupResult = std::make_shared<AsyncResult>(
                         std::move(taskResult));
+                    // 放棄した結果を失効して利用ロックを保つworker
                     std::thread cleanupWorker(
                         [taskKind,
                             taskFailed,
@@ -371,17 +410,24 @@ namespace LamaPon
                 }
             }
 
+            // 結果を放棄し完了済みなら受領セッションの後処理を開始する。
             void Abandon() noexcept
             {
+                // 放棄時に引き取る完了結果
                 AsyncResult completedResult;
+                // 完了後の失効処理用クライアント
                 std::shared_ptr<Detail::DiscordAuthClient>
                     completedClient;
+                // 後処理完了までの資格情報ロック
                 std::shared_ptr<Detail::IRefreshTokenStore>
                     completedUsageLeaseStore;
+                // 完了した認証結果を後処理するか
                 bool dispatchCleanup{};
+                // 放棄する認証通信が失敗したか
                 bool taskFailed{};
                 try
                 {
+                    // 放棄と完了結果の引き取り用排他ロック
                     std::scoped_lock lock(mutex);
                     abandoned = true;
                     if (completed)
@@ -409,16 +455,17 @@ namespace LamaPon
                 }
             }
 
+            // ownerよりworkerが長く存続した場合も受領結果のtokenを消去する。
             ~AsyncMailbox()
             {
-                // OnlineServicesが先に破棄された場合も、workerが最後の
-                // shared_ptrを解放した時点で結果内のtokenを消します。
+
                 EraseTransaction(result.loginStart.transaction);
                 EraseSession(result.loginPoll.session);
                 EraseSession(result.sessionRefresh.session);
             }
         };
 
+        // テスト用の通信・保存・URL起動境界を受け取る(sender: HTTP送信処理, store: 資格情報保存の所有先, launcher: URL起動処理の所有先, useWindowsDefaults: 標準の保存と起動を使うか)。
         explicit Implementation(
             Detail::OnlineServicesTestAccess::HttpSender sender = {},
             std::unique_ptr<Detail::IRefreshTokenStore> store = {},
@@ -431,30 +478,28 @@ namespace LamaPon
         {
         }
 
+        // 通信を待たず結果を放棄し必要な資格情報削除とguest切替を行う。
         ~Implementation()
         {
             AdvanceGeneration();
-            // workerはmailboxと認証clientだけを所有します。ここでは
-            // joinせず参照を手放すため、未完了HTTP通信を待ちません。
+            // workerと後処理は共有client・token・mailbox・利用ロックを所有し、ここでは通信の完了を待ちません。
             bool credentialDeleteAttempted{};
             if (localRefreshTokenDeleteFailed)
             {
-                // SignOut等の同期削除が失敗した後にownerが破棄されても、
-                // 残った資格情報を次回起動へ持ち越さないよう再試行します。
+                // 削除失敗の資格情報を次回起動へ残さないよう、owner破棄時にも再試行します。
                 (void)DeleteRefreshTokenTracked();
                 credentialDeleteAttempted = true;
             }
             if (inFlight)
             {
+                // 破棄時に実行中の認証処理種別
                 const auto taskKind = inFlight->kind;
                 if ((taskKind == TaskKind::RestoreSession
                         || taskKind == TaskKind::RefreshSession)
                     && state != OnlineAccountState::SigningOut
                     && !credentialDeleteAttempted)
                 {
-                    // refresh token rotationの成否がowner破棄後まで
-                    // 確定しないため、旧資格情報を同期的にfail-closedで
-                    // 削除します。明示SignOut済みなら二重削除しません。
+                    // 更新の成否がowner破棄後に確定する場合は旧資格情報を削除し、明示SignOut済みなら重複削除しません。
                     (void)DeleteRefreshTokenTracked();
                 }
                 inFlight->Abandon();
@@ -466,6 +511,7 @@ namespace LamaPon
             EraseSecret(pendingLogoutAccessToken);
         }
 
+        // 古い認証結果を失効させる世代を0以外へ進める。
         void AdvanceGeneration() noexcept
         {
             ++generation;
@@ -475,6 +521,7 @@ namespace LamaPon
             }
         }
 
+        // 認証・復元・更新・サインアウトが進行中かを返す。
         [[nodiscard]] bool IsBusy() const noexcept
         {
             return state == OnlineAccountState::StartingSignIn
@@ -489,11 +536,15 @@ namespace LamaPon
 
         struct CloudConflictBinding final
         {
+            // process内だけで有効な公開用競合ID
             std::string opaqueId;
+            // 公開するアカウントの識別世代
             std::uint64_t profileEpoch{};
+            // 内部の競合識別値と管理情報
             Detail::CloudSaveConflictDescriptor descriptor;
         };
 
+        // 共通のスロット名規則で保存先を照合する(left: 比較元の保存先, right: 比較先の保存先)。
         [[nodiscard]] static bool SameResource(
             const CloudSaveResource& left,
             const CloudSaveResource& right) noexcept
@@ -509,6 +560,7 @@ namespace LamaPon
                     right.slot);
         }
 
+        // 公開先と保存先と更新IDで競合の同一性を照合する(binding: 公開用IDとの対応記録, profileEpoch: 現在の公開先の世代, descriptor: 現在の内部競合)。
         [[nodiscard]] static bool SameConflictIdentity(
             const CloudConflictBinding& binding,
             const std::uint64_t profileEpoch,
@@ -522,8 +574,10 @@ namespace LamaPon
                     == descriptor.expectedMutationId;
         }
 
+        // 内部の更新IDを消去して公開用競合IDを失効させる。
         void ClearCloudConflictRegistry() noexcept
         {
+            // 公開用IDと内部競合の対応記録
             for (auto& binding : cloudConflictRegistry)
             {
                 EraseSecret(binding.descriptor.expectedMutationId);
@@ -531,6 +585,7 @@ namespace LamaPon
             cloudConflictRegistry.clear();
         }
 
+        // 有効な競合だけに公開用IDを引き継ぎ管理情報を返す。
         [[nodiscard]] std::vector<OnlineCloudConflict>
             RefreshCloudConflictRegistry()
         {
@@ -540,6 +595,7 @@ namespace LamaPon
                 ClearCloudConflictRegistry();
                 return {};
             }
+            // 現在のアカウント同期処理の借用
             auto* const synchronizer =
                 persistenceCoordinator->Synchronizer();
             if (!synchronizer || !synchronizer->IsAttached())
@@ -548,15 +604,22 @@ namespace LamaPon
                 return {};
             }
 
+            // 現在のアカウントの公開世代
             const auto epoch = persistenceCoordinator->ProfileEpoch();
+            // 本文を含まない内部競合の一覧
             const auto descriptors = synchronizer->Conflicts();
+            // 同じ競合IDを引き継ぐ次の対応表
             std::vector<CloudConflictBinding> nextRegistry;
+            // ゲームへ公開する競合一覧
             std::vector<OnlineCloudConflict> publicConflicts;
             nextRegistry.reserve(descriptors.size());
             publicConflicts.reserve(descriptors.size());
+            // 内部の競合識別値と管理情報
             for (const auto& descriptor : descriptors)
             {
+                // process内だけで有効な公開用競合ID
                 std::string opaqueId;
+                // 同じ内部競合のIDを引き継ぐ(binding: 照合する対応記録)。
                 const auto existing = std::find_if(
                     cloudConflictRegistry.begin(),
                     cloudConflictRegistry.end(),
@@ -573,9 +636,11 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 競合ID衝突時の再生成回数
                     for (unsigned int attempt = 0; attempt < 16u; ++attempt)
                     {
                         opaqueId = GenerateOpaqueConflictId();
+                        // 公開用IDの重複を検出する(binding: 確認済みの競合対応記録)。
                         const auto collision = [&](const auto& binding)
                         {
                             return binding.opaqueId == opaqueId;
@@ -600,6 +665,7 @@ namespace LamaPon
                     }
                 }
 
+                // ゲームへ公開する保存先の種別
                 const auto publicKind = descriptor.resource.kind
                         == CloudSaveResourceKind::Preferences
                     ? OnlineCloudResourceKind::Preferences
@@ -620,9 +686,11 @@ namespace LamaPon
             return publicConflicts;
         }
 
+        // 公開用IDの対応記録を借用し不在ならnullを返す(opaqueId: process内の競合ID)。
         [[nodiscard]] CloudConflictBinding* FindConflictBinding(
             const std::string_view opaqueId) noexcept
         {
+            // 公開用IDを内部競合と照合する(binding: 比較する対応記録)。
             const auto found = std::find_if(
                 cloudConflictRegistry.begin(),
                 cloudConflictRegistry.end(),
@@ -635,9 +703,11 @@ namespace LamaPon
                 : &*found;
         }
 
+        // 内部更新IDを消去して対応する公開用競合IDを失効させる(opaqueId: 解決・失効した競合ID)。
         void EraseCloudConflictBinding(
             const std::string_view opaqueId) noexcept
         {
+            // 公開用IDを内部競合と照合する(binding: 比較する対応記録)。
             const auto found = std::find_if(
                 cloudConflictRegistry.begin(),
                 cloudConflictRegistry.end(),
@@ -652,16 +722,19 @@ namespace LamaPon
             }
         }
 
+        // 公開用の診断識別子と表示文を空にする。
         void ClearError() noexcept
         {
             errorCode.clear();
             errorMessage.clear();
         }
 
+        // 固定診断を設定し認証失敗なら結果の世代とセッションを失効する(code: 内部のエラー識別子, signInFailure: 認証開始・確認の失敗か)。
         void SetError(
             const std::string_view code,
             const bool signInFailure)
         {
+            // 公開を許可した固定のエラー識別子
             const auto publicCode = PublicErrorCode(code);
             errorCode = publicCode;
             errorMessage = PublicErrorMessage(publicCode);
@@ -675,6 +748,7 @@ namespace LamaPon
             }
         }
 
+        // 認証確認tokenとURLを消去し待機時間と起動状態を初期化する。
         void ClearLoginTransaction() noexcept
         {
             EraseTransaction(loginTransaction);
@@ -685,6 +759,7 @@ namespace LamaPon
             browserLaunchFailed = false;
         }
 
+        // tokenを消去しセッションの期限と再試行状態を初期化する。
         void ClearSession() noexcept
         {
             EraseSession(session);
@@ -693,6 +768,7 @@ namespace LamaPon
             sessionRefreshRetrySeconds = 0.0f;
         }
 
+        // 認証結果に含まれる取引・セッションのtokenを消去する(result: 処理済みの通信結果)。
         static void EraseAsyncResult(AsyncResult& result) noexcept
         {
             EraseTransaction(result.loginStart.transaction);
@@ -700,13 +776,16 @@ namespace LamaPon
             EraseSession(result.sessionRefresh.session);
         }
 
+        // 公開可能な固定診断だけを設定する(code: 内部のエラー識別子)。
         void SetFixedError(const std::string_view code)
         {
+            // 公開を許可した固定のエラー識別子
             const auto publicCode = PublicErrorCode(code);
             errorCode = publicCode;
             errorMessage = PublicErrorMessage(publicCode);
         }
 
+        // 利用ロックを確保して次回起動用tokenを保存し例外もfalseとする(refreshToken: 保存する更新用token)。
         [[nodiscard]] bool SaveRefreshToken(
             const std::string_view refreshToken) noexcept
         {
@@ -729,6 +808,7 @@ namespace LamaPon
             }
         }
 
+        // 利用ロック下で端末tokenを削除し例外もfalseとする。
         [[nodiscard]] bool DeleteRefreshToken() noexcept
         {
             if (!refreshTokenStore)
@@ -749,6 +829,7 @@ namespace LamaPon
             }
         }
 
+        // 端末tokenの削除を試し未解決の失敗を記録する。
         [[nodiscard]] bool DeleteRefreshTokenTracked() noexcept
         {
             localRefreshTokenDeleteFailed =
@@ -756,12 +837,14 @@ namespace LamaPon
             return !localRefreshTokenDeleteFailed;
         }
 
+        // 端末tokenの削除失敗が残っている場合だけ再試行する。
         [[nodiscard]] bool ResolvePendingRefreshTokenDelete() noexcept
         {
             return !localRefreshTokenDeleteFailed
                 || DeleteRefreshTokenTracked();
         }
 
+        // 資格情報storeの利用ロックを未取得なら確保する。
         [[nodiscard]] bool EnsureCredentialUsageLease() noexcept
         {
             if (!refreshTokenStore || credentialUsageLeaseHeld)
@@ -770,6 +853,7 @@ namespace LamaPon
             }
             try
             {
+                // 資格情報の利用ロック取得結果
                 const auto result = refreshTokenStore->AcquireUsageLease();
                 if (!result.succeeded)
                 {
@@ -784,6 +868,7 @@ namespace LamaPon
             }
         }
 
+        // 認証・後処理・未解決の削除が残っていない場合だけ利用ロックを解放する。
         void ReleaseCredentialUsageLeaseIfSafe() noexcept
         {
             if (!credentialUsageLeaseHeld || !refreshTokenStore
@@ -804,6 +889,7 @@ namespace LamaPon
             credentialUsageLeaseHeld = false;
         }
 
+        // 受領した新tokenを遅延失効へ引き渡し旧値を消去する(completedSession: tokenを取り出して消去する結果)。
         [[nodiscard]] bool ReplacePendingLogoutAccessToken(
             Detail::OnlineSession& completedSession)
         {
@@ -813,14 +899,14 @@ namespace LamaPon
                 return false;
             }
 
-            // swap後に完了結果側へ移った旧tokenもEraseSessionで消し、
-            // 新tokenだけを次のlogout workerへ引き渡します。
+            // 旧tokenは完了結果側へ移して消去し、新tokenだけを失効workerへ渡します。
             pendingLogoutAccessToken.swap(
                 completedSession.accessToken);
             EraseSession(completedSession);
             return true;
         }
 
+        // 未実行時だけ認証workerを起動し共有する結果受け口へ渡す(kind: 認証通信の種別, work: thisを捕捉しない通信処理)。
         template<class Work>
         [[nodiscard]] bool Launch(
             const TaskKind kind,
@@ -831,24 +917,27 @@ namespace LamaPon
                 return false;
             }
 
+            // 認証workerの結果を共有する受け口
             auto mailbox = std::make_shared<AsyncMailbox>();
             mailbox->kind = kind;
             mailbox->generation = generation;
             mailbox->cleanupClient = client;
             if (credentialUsageLeaseHeld)
             {
-                // ownerが先に破棄されてもrestore/refresh/logoutと遅延cleanupが
-                // 終わるまでstore dtor（lease解放）を遅らせます。
+                // owner破棄後も通信と後処理が終わるまでstoreを保持し、資格情報の利用ロックを解放しません。
                 mailbox->usageLeaseStore = refreshTokenStore;
             }
             inFlight = mailbox;
             try
             {
+                // 認証結果を受け口へ渡すworker
                 std::thread worker(
                     [mailbox,
                         work = std::forward<Work>(work)]() mutable noexcept
                     {
+                        // workerから渡す認証結果
                         AsyncResult result;
+                        // 認証workerが例外で失敗したか
                         bool failed{};
                         try
                         {
@@ -858,14 +947,17 @@ namespace LamaPon
                         {
                             failed = true;
                         }
+                        // 認証HTTPの完了時刻
                         const auto completedAt =
                             std::chrono::steady_clock::now();
 
+                        // 所有者放棄後に後処理するか
                         bool cleanupAbandoned{};
                         std::shared_ptr<Detail::DiscordAuthClient>
                             cleanupClient;
                         try
                         {
+                            // 完了結果の受け渡し用排他ロック
                             std::scoped_lock lock(mailbox->mutex);
                             if (mailbox->abandoned)
                             {
@@ -882,11 +974,10 @@ namespace LamaPon
                         }
                         catch (...)
                         {
-                            // 認証情報を含む可能性がある例外本文は保存
-                            // しません。通常到達しない割当失敗時も、可能
-                            // なら失敗完了だけを通知します。
+                            // 秘密値を含む例外本文を保存せず、可能なら失敗完了だけを通知します。
                             try
                             {
+                                // 完了結果の受け渡し用排他ロック
                                 std::scoped_lock lock(mailbox->mutex);
                                 if (mailbox->abandoned)
                                 {
@@ -928,24 +1019,31 @@ namespace LamaPon
             }
         }
 
+        // 共有する認証clientで新しい認証取引を非同期に開始する。
         [[nodiscard]] bool LaunchLoginStart()
         {
+            // workerで使用する認証client
             const auto authClient = client;
             return Launch(
                 TaskKind::StartLogin,
                 [authClient]
                 {
+                    // 認証取引の開始結果
                     AsyncResult result;
                     result.loginStart = authClient->BeginLogin();
                     return result;
                 });
         }
 
+        // 取引IDと消去責任付き確認tokenで認証状態を非同期に取得する。
         [[nodiscard]] bool LaunchLoginPoll()
         {
+            // workerで使用する認証client
             const auto authClient = client;
+            // 確認する認証トランザクションID
             const auto transactionId =
                 loginTransaction.transactionId;
+            // 共有して消去する認証確認token
             const auto pollToken =
                 std::make_shared<SecretText>(
                     loginTransaction.pollToken);
@@ -955,6 +1053,7 @@ namespace LamaPon
                     transactionId,
                     pollToken]
                 {
+                    // 認証状態確認の結果
                     AsyncResult result;
                     result.loginPoll = authClient->PollLogin(
                         transactionId,
@@ -963,6 +1062,7 @@ namespace LamaPon
                 });
         }
 
+        // 復元または更新へtokenを引き渡し呼出し元の値を消去する(refreshToken: 引き渡して消去するtoken, kind: 復元または期限前更新の種別)。
         [[nodiscard]] bool LaunchSessionRefresh(
             std::string& refreshToken,
             const TaskKind kind)
@@ -973,7 +1073,9 @@ namespace LamaPon
                 EraseSecret(refreshToken);
                 return false;
             }
+            // workerで使用する認証client
             const auto authClient = client;
+            // workerへ渡して消去するtoken
             const auto secret = std::make_shared<SecretText>(
                 refreshToken);
             EraseSecret(refreshToken);
@@ -981,6 +1083,7 @@ namespace LamaPon
                 kind,
                 [authClient, secret]
                 {
+                    // セッション復元または更新の結果
                     AsyncResult result;
                     result.sessionRefresh =
                         authClient->RefreshSession(secret->text);
@@ -988,9 +1091,12 @@ namespace LamaPon
                 });
         }
 
+        // tokenを消去責任付きでworkerへ渡し失効を開始する(accessToken: 引き渡して消去するtoken)。
         [[nodiscard]] bool LaunchLogout(std::string& accessToken)
         {
+            // workerで使用する認証client
             const auto authClient = client;
+            // workerへ渡して消去するtoken
             const auto secret = std::make_shared<SecretText>(
                 accessToken);
             EraseSecret(accessToken);
@@ -998,6 +1104,7 @@ namespace LamaPon
                 TaskKind::Logout,
                 [authClient, secret]
                 {
+                    // サーバー上の失効処理の結果
                     AsyncResult result;
                     result.logoutSucceeded = authClient->Logout(
                         secret->text);
@@ -1005,6 +1112,7 @@ namespace LamaPon
                 });
         }
 
+        // 処理の開始世代と現在の公開状態が一致するかを返す(kind: 認証処理の種別, taskGeneration: 処理の開始世代)。
         [[nodiscard]] bool IsCurrentTask(
             const TaskKind kind,
             const std::uint64_t taskGeneration) const noexcept
@@ -1030,6 +1138,7 @@ namespace LamaPon
             return false;
         }
 
+        // 設定された認証URLの自動起動を一度だけ試し失敗を固定診断で記録する。
         void TryOpenAuthorizationUrl()
         {
             if (browserLaunchAttempted
@@ -1041,6 +1150,7 @@ namespace LamaPon
             }
 
             browserLaunchAttempted = true;
+            // 認証URLをブラウザーで開けたか
             bool launched{};
             try
             {
@@ -1060,6 +1170,7 @@ namespace LamaPon
             }
         }
 
+        // ゲームへ公開可能なプロフィールだけを複製する(source: バックエンドのプロフィール)。
         [[nodiscard]] OnlinePlayerProfile MakePublicProfile(
             const Detail::OnlinePlayerProfile& source) const
         {
@@ -1071,6 +1182,7 @@ namespace LamaPon
             };
         }
 
+        // 公開用競合IDを失効しguestへ戻して保存失敗を記録する。
         void DetachAccountPersistence() noexcept
         {
             // UIへ渡したopaque IDはsign-out/Detach開始時点で失効します。
@@ -1079,6 +1191,7 @@ namespace LamaPon
             {
                 return;
             }
+            // guest切替時の保存・隔離の結果
             const auto result =
                 persistenceCoordinator->DetachToGuest();
             accountPersistenceSaveFailed =
@@ -1088,6 +1201,7 @@ namespace LamaPon
                 || accountPersistenceSaveFailed;
         }
 
+        // 認証拒否でtoken更新を要求し検証済み成功で待機系列を解除する(elapsedSeconds: 前回からの経過秒数)。
         void ConsumeCloudSaveSignals(const float elapsedSeconds) noexcept
         {
             if (!persistenceCoordinator)
@@ -1100,6 +1214,7 @@ namespace LamaPon
                 cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
                 cloudUnauthorizedRefreshQueued = false;
             }
+            // クラウド同期が認証を拒否したか
             const bool unauthorized = persistenceCoordinator
                 ->ConsumeCloudSaveUnauthorizedSignal();
             if (unauthorized
@@ -1108,8 +1223,7 @@ namespace LamaPon
             {
                 if (cloudUnauthorizedRefreshAttempts == 0u)
                 {
-                    // 系列の最初だけ即時refreshします。既にproactive refresh中
-                    // なら、その要求を系列の1回目として数えます。
+                    // 認証拒否の系列の最初だけ即時更新し、進行中の期限前更新も一回目として数えます。
                     cloudUnauthorizedRefreshAttempts = 1u;
                     if (state == OnlineAccountState::SignedIn)
                     {
@@ -1119,7 +1233,9 @@ namespace LamaPon
                 }
                 else if (!cloudUnauthorizedRefreshQueued)
                 {
+                    // 認証拒否後の最大更新待機秒数
                     constexpr float MaximumCooldownSeconds = 300.0f;
+                    // 認証拒否後の指数待機の回数
                     const auto shift = (std::min)(
                         cloudUnauthorizedRefreshAttempts - 1u,
                         6u);
@@ -1152,11 +1268,13 @@ namespace LamaPon
             }
         }
 
+        // HTTP完了から現在までの時間をtoken期限から引く(receivedSession: 受領したセッション, completedAt: HTTP完了の単調時計時刻)。
         [[nodiscard]] static float RemainingReceivedSessionSeconds(
             const Detail::OnlineSession& receivedSession,
             const std::chrono::steady_clock::time_point
                 completedAt) noexcept
         {
+            // HTTP完了から公開までの経過秒数
             const auto ageSeconds = std::max(
                 0.0,
                 std::chrono::duration<double>(
@@ -1169,15 +1287,14 @@ namespace LamaPon
                     - ageSeconds));
         }
 
+        // 公開直前に期限を再確認しtokenとプロフィールを例外なく入れ替える(nextSession: 引き取るセッション, nextPlayer: 準備済みプロフィール, completedAt: HTTP完了の単調時計時刻)。
         [[nodiscard]] bool PublishSession(
             Detail::OnlineSession& nextSession,
             OnlinePlayerProfile nextPlayer,
             const std::chrono::steady_clock::time_point
                 completedAt) noexcept
         {
-            // HTTP完了後にmain threadが停止・suspendしていた時間もtokenの
-            // 有効時間です。公開直前に再計算し、既に失効したsessionは
-            // 呼出し側のrevoke経路へ返します。
+            // main threadの停止時間も有効期限から引き、公開直前に失効済みなら呼出し側の失効処理へ戻します。
             const auto remainingSeconds =
                 RemainingReceivedSessionSeconds(
                     nextSession,
@@ -1207,6 +1324,7 @@ namespace LamaPon
             return true;
         }
 
+        // 採用できないセッションをguest切替と遅延失効で処理する(rejectedSession: 消去する受領結果, code: 固定の拒否理由, deleteStoredCredential: 端末tokenも削除するか)。
         void RejectReceivedSession(
             Detail::OnlineSession& rejectedSession,
             const std::string_view code,
@@ -1241,6 +1359,7 @@ namespace LamaPon
             TickPendingLogout();
         }
 
+        // 保存先の切替とtoken保存を終えて期限内の初回セッションを公開する(nextSession: 初回の受領結果, restoring: 保存済みtokenからの復元か, completedAt: HTTP完了時刻)。
         void AdoptInitialSession(
             Detail::OnlineSession& nextSession,
             const bool restoring,
@@ -1257,6 +1376,7 @@ namespace LamaPon
                     restoring);
                 return;
             }
+            // 公開前に準備するプロフィール
             OnlinePlayerProfile nextPlayer;
             try
             {
@@ -1264,6 +1384,7 @@ namespace LamaPon
                 if (persistenceCoordinator
                     && persistenceCoordinator->IsNamespaceEnabled())
                 {
+                    // 切替前に検証した保存先の状態
                     auto prepared =
                         persistenceCoordinator->PrepareAccount(
                             nextSession.player.playerId,
@@ -1297,9 +1418,7 @@ namespace LamaPon
                 return;
             }
 
-            // refresh tokenはaccount profileがactiveになった後だけ保存します。
-            // 保存の成否が曖昧な場合はguestへ戻し、store削除とsession失効を
-            // 行って、次回起動に半端なsessionを残しません。
+            // アカウントの保存先切替後だけtokenを保存し、失敗時はguestに戻して資格情報削除と受領セッションの失効を試します。
             if (!SaveRefreshToken(nextSession.refreshToken))
             {
                 RejectReceivedSession(
@@ -1313,8 +1432,7 @@ namespace LamaPon
                     std::move(nextPlayer),
                     completedAt))
             {
-                // Save成功後に期限切れとなった場合は、今保存した資格情報も
-                // rollbackして受領sessionを失効します。
+                // 保存後に期限切れになった場合も資格情報を削除し、受領セッションの失効を試します。
                 RejectReceivedSession(
                     nextSession,
                     "request_failed",
@@ -1323,6 +1441,7 @@ namespace LamaPon
             }
         }
 
+        // 所有者を照合しtoken保存と同期先更新後に新セッションを公開する(nextSession: 更新の受領結果, completedAt: HTTP完了時刻)。
         void AdoptRefreshedSession(
             Detail::OnlineSession& nextSession,
             const std::chrono::steady_clock::time_point
@@ -1337,6 +1456,7 @@ namespace LamaPon
                 return;
             }
 
+            // 公開前に準備するプロフィール
             OnlinePlayerProfile nextPlayer;
             try
             {
@@ -1374,8 +1494,7 @@ namespace LamaPon
                     && persistenceCoordinator->Synchronizer()
                     && persistenceCoordinator->IsAccountActive())
                 {
-                    // 新access tokenをcloud fenceへ先に適用します。ここで
-                    // allocation/validationが失敗したsessionは公開しません。
+                    // 公開前にクラウド同期のtokenと世代を更新し、検証・確保の失敗時は採用しません。
                     persistenceCoordinator->UpdateCloudSaveAccessToken(
                         nextSession.accessToken);
                 }
@@ -1402,6 +1521,7 @@ namespace LamaPon
             cloudRefreshRequested = false;
         }
 
+        // 利用ロック下で保存済みtokenを読み込み非同期復元を開始する。
         void RestoreStoredSession()
         {
             if (!client || !refreshTokenStore)
@@ -1414,6 +1534,7 @@ namespace LamaPon
                 return;
             }
 
+            // 端末の更新用tokenの読み込み結果
             Detail::RefreshTokenLoadResult loaded;
             try
             {
@@ -1425,6 +1546,7 @@ namespace LamaPon
                     Detail::RefreshTokenLoadStatus::Unavailable;
             }
 
+            // 通信へ引き渡す更新用token
             std::string refreshToken;
             refreshToken.swap(loaded.refreshToken);
             EraseSecret(loaded.refreshToken);
@@ -1479,6 +1601,7 @@ namespace LamaPon
             }
         }
 
+        // 認証開始の結果を公開し確認待機とブラウザー起動を設定する(result: 認証取引の開始結果)。
         void CompleteLoginStart(
             Detail::DiscordLoginStartResult& result)
         {
@@ -1501,6 +1624,7 @@ namespace LamaPon
             TryOpenAuthorizationUrl();
         }
 
+        // 確認結果から待機・採用・拒否・期限切れへ遷移する(result: 認証状態の結果, completedAt: HTTP完了時刻)。
         void CompleteLoginPoll(
             Detail::DiscordLoginPollResult& result,
             const std::chrono::steady_clock::time_point
@@ -1539,6 +1663,7 @@ namespace LamaPon
             }
         }
 
+        // 復元・更新の結果を採用し失敗を期限と再試行可能性で処理する(result: セッション更新の結果, restoring: 起動時の復元か, completedAt: HTTP完了時刻)。
         void CompleteSessionRefresh(
             Detail::OnlineSessionResult& result,
             const bool restoring,
@@ -1565,6 +1690,7 @@ namespace LamaPon
 
             if (InvalidRefreshTokenError(result.errorCode))
             {
+                // 端末の資格情報を削除できたか
                 const bool deleted = DeleteRefreshTokenTracked();
                 if (!restoring)
                 {
@@ -1584,8 +1710,7 @@ namespace LamaPon
 
             if (restoring)
             {
-                // 一時的な通信失敗で端末のrefresh tokenを
-                // 削除しません。次回起動で再試行できます。
+                // 一時的な通信失敗では更新用tokenを残し、次回起動で復元を再試行できます。
                 state = OnlineAccountState::Error;
                 SetError(result.errorCode, false);
                 return;
@@ -1593,8 +1718,7 @@ namespace LamaPon
 
             if (sessionRemainingSeconds > 0.0f)
             {
-                // access tokenがまだ有効な間は現在のセッションを
-                // 保持し、5秒後にrefreshを再試行します。
+                // access tokenがまだ有効な間は現在のセッションを保持し、5秒後にrefreshを再試行します。
                 state = OnlineAccountState::SignedIn;
                 sessionRefreshRetrySeconds = std::min(
                     5.0f,
@@ -1603,8 +1727,7 @@ namespace LamaPon
                 return;
             }
 
-            // セッションは失効していますが、ネットワーク
-            // 障害で保存済みtokenを消すと復旧できなくなります。
+            // セッションは失効していますが、ネットワーク障害で保存済みtokenを消すと復旧できなくなります。
             DetachAccountPersistence();
             ClearSession();
             player = {};
@@ -1612,21 +1735,26 @@ namespace LamaPon
             SetError(result.errorCode, false);
         }
 
+        // tokenを消去し端末削除や保存失敗を優先して終了状態を公開する(succeeded: サーバーの失効が成功したか)。
         void CompleteLogout(const bool succeeded)
         {
             EraseSecret(pendingLogoutAccessToken);
             awaitingCancelledTask = false;
+            // 取消後に期限切れの表示へ戻すか
             const bool returnToExpiredLoginError =
                 std::exchange(cancelledPollExpired, false);
+            // 端末tokenの削除が未完了か
             const bool deleteFailed =
                 localRefreshTokenDeleteFailed;
+            // アカウントのローカル保存が失敗か
             const bool persistenceSaveFailed =
                 std::exchange(accountPersistenceSaveFailed, false);
+            // セッション採用失敗の診断を保つか
             const bool preserveFailure =
                 std::exchange(preserveErrorAfterLogout, false);
             if (preserveFailure)
             {
-                // failed adoptionの主原因をlogout成否で上書きしません。
+                // セッション採用失敗の主因を、後処理の失効結果で上書きしません。
                 state = OnlineAccountState::Error;
                 return;
             }
@@ -1657,6 +1785,7 @@ namespace LamaPon
             }
         }
 
+        // 取消後の受領セッションを公開せず遅延失効へ引き渡す(kind: 取消した処理種別, failed: workerの失敗, result: 遅れて届いた通信結果)。
         [[nodiscard]] bool CompleteCancelledTask(
             const TaskKind kind,
             const bool failed,
@@ -1676,13 +1805,11 @@ namespace LamaPon
                     && ReplacePendingLogoutAccessToken(
                         result.sessionRefresh.session))
                 {
-                    // Update末尾のTickPendingLogoutが、復元で新規発行
-                    // されたaccess tokenを使って失効要求を開始します。
+                    // Update末尾で、復元時に新しく発行されたaccess tokenの失効を開始します。
                     return true;
                 }
 
-                // 復元失敗ならサーバー側に新しいセッションはなく、
-                // ローカル削除だけでサインアウト完了です。
+                // 復元でセッションを受領しなかった場合は、端末資格情報の削除だけで終了します。
                 CompleteLogout(true);
                 return true;
             }
@@ -1691,13 +1818,11 @@ namespace LamaPon
             {
                 if (!failed && result.sessionRefresh.Succeeded())
                 {
-                    // rotation後は旧access tokenが無効な可能性があるため、
-                    // 完了結果の新tokenを優先します。
+                    // 更新後は旧access tokenが無効になり得るため、受領した新tokenを失効に使います。
                     (void)ReplacePendingLogoutAccessToken(
                         result.sessionRefresh.session);
                 }
-                // refresh失敗時はSignOut時に退避した旧tokenを維持し、
-                // 成功時は上で置き換えた新tokenを使います。
+                // 更新失敗時はSignOutで退避した旧tokenを保ち、成功時は受領した新tokenを使います。
                 if (pendingLogoutAccessToken.empty())
                 {
                     CompleteLogout(false);
@@ -1711,8 +1836,7 @@ namespace LamaPon
                     && result.loginPoll.status
                         == Detail::DiscordLoginPollStatus::Authorized)
                 {
-                    // Cancelと認証完了が競合した場合も、受け取った
-                    // セッションを公開せず直ちにサーバーで失効します。
+                    // 取消と認証完了が競合した場合も、受領したセッションを公開せず失効を試します。
                     state = OnlineAccountState::SigningOut;
                     if (ReplacePendingLogoutAccessToken(
                             result.loginPoll.session))
@@ -1725,8 +1849,7 @@ namespace LamaPon
 
                 if (cancelledPollExpired)
                 {
-                    // 期限切れの公開状態とエラーを維持します。遅延応答が
-                    // Authorizedでなければ失効すべきsessionはありません。
+                    // 期限切れの表示を保ち、認証成功以外の遅延結果ではセッション失効を行いません。
                     cancelledPollExpired = false;
                     return true;
                 }
@@ -1737,6 +1860,7 @@ namespace LamaPon
             return false;
         }
 
+        // 取消した処理の例外時に利用可能なtokenで後処理を続ける(kind: 取消した処理種別)。
         void CompleteCancelledTaskException(
             const TaskKind kind)
         {
@@ -1757,6 +1881,7 @@ namespace LamaPon
                 || kind == TaskKind::PollLogin);
         }
 
+        // 処理種別に対応する認証結果の反映へ引き渡す(kind: 完了した処理種別, result: 認証の通信結果, completedAt: HTTP完了時刻)。
         void CompleteTask(
             const TaskKind kind,
             AsyncResult& result,
@@ -1789,10 +1914,10 @@ namespace LamaPon
             }
         }
 
+        // 秘密値を含み得る例外本文を公開せず固定診断と期限で処理する(kind: 失敗した処理種別)。
         void CompleteTaskException(const TaskKind kind)
         {
-            // exception.what()には注入sender由来のtoken等が含まれる
-            // 可能性があるため、公開エラーへ転記しません。
+            // 例外本文にはtokenが含まれ得るため、公開診断には固定の失敗理由だけを使います。
             if (kind == TaskKind::Logout)
             {
                 CompleteLogout(false);
@@ -1816,8 +1941,7 @@ namespace LamaPon
                 }
                 else
                 {
-                    // worker例外はserver応答後のparse/allocation失敗も
-                    // 含みrotation成否が曖昧なため、旧資格情報を残しません。
+                    // 応答後の解析・確保失敗でも更新の成否が不確かになるため、期限切れ時は旧資格情報を残しません。
                     static_cast<void>(DeleteRefreshTokenTracked());
                     DetachAccountPersistence();
                     ClearSession();
@@ -1830,20 +1954,28 @@ namespace LamaPon
             SetError("request_failed", true);
         }
 
+        // 完了結果を引き取り世代と状態を照合し公開状態が変わったかを返す。
         [[nodiscard]] bool ReapCompletedTask()
         {
+            // 認証workerの結果を共有する受け口
             const auto mailbox = inFlight;
             if (!mailbox)
             {
                 return false;
             }
 
+            // 完了した認証workerの結果
             AsyncResult result;
+            // 認証通信の処理種別
             TaskKind kind{};
+            // 完了した認証処理の開始世代
             std::uint64_t taskGeneration{};
+            // 認証HTTPの完了時刻
             std::chrono::steady_clock::time_point completedAt{};
+            // 認証workerが例外で失敗したか
             bool failed{};
             {
+                // 完了結果の引き取り・確認用排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 if (!mailbox->completed)
                 {
@@ -1857,6 +1989,7 @@ namespace LamaPon
             }
             inFlight.reset();
 
+            // 通信結果を反映する前の公開状態
             const auto stateBefore = state;
             if (IsCurrentTask(kind, taskGeneration))
             {
@@ -1894,8 +2027,10 @@ namespace LamaPon
             return state != stateBefore;
         }
 
+        // 認証期限と確認間隔を進め期限内なら次の確認を開始する(elapsedSeconds: 前回からの経過秒数)。
         void TickLogin(const float elapsedSeconds)
         {
+            // 認証の待機または確認が進行中か
             const bool loginActive =
                 state == OnlineAccountState::WaitingForAuthorization
                 || state
@@ -1939,11 +2074,11 @@ namespace LamaPon
             state = OnlineAccountState::PollingAuthorization;
         }
 
+        // 更新中の期限切れをguest切替と旧資格情報削除と遅延失効で処理する。
         void ExpireRefreshingSession()
         {
             DetachAccountPersistence();
-            // refresh中はserver側でrotation済みか判別できないため、
-            // 旧refresh tokenを次回起動へ残しません。
+            // 更新中はサーバーでtokenを置換済みか分からないため、旧資格情報を次回起動へ残しません。
             static_cast<void>(DeleteRefreshTokenTracked());
             awaitingCancelledTask = inFlight != nullptr;
             cancelledTaskKind = TaskKind::RefreshSession;
@@ -1966,6 +2101,7 @@ namespace LamaPon
             TickPendingLogout();
         }
 
+        // 残り期限と再試行を進め必要ならtoken更新を開始する(elapsedSeconds: この状態で経過した秒数)。
         void TickSession(const float elapsedSeconds)
         {
             if (state == OnlineAccountState::RefreshingSession)
@@ -1998,6 +2134,7 @@ namespace LamaPon
                 return;
             }
 
+            // 通信へ引き渡す更新用token
             auto refreshToken = session.refreshToken;
             if (refreshToken.empty()
                 || !LaunchSessionRefresh(
@@ -2028,6 +2165,7 @@ namespace LamaPon
             }
         }
 
+        // 取消した処理が終わりtokenが利用可能なら失効通信を開始する。
         void TickPendingLogout()
         {
             if (state != OnlineAccountState::SigningOut
@@ -2043,50 +2181,89 @@ namespace LamaPon
             }
         }
 
+        // テスト等で注入するHTTP送信処理
         Detail::OnlineServicesTestAccess::HttpSender senderOverride;
+        // 非同期認証clientの共有所有先
         std::shared_ptr<Detail::DiscordAuthClient> client;
+        // 同期HTTP処理の共有所有先
         std::shared_ptr<const Detail::CloudSaveClient> cloudSaveClient;
+        // 実行中の認証結果の受け渡し先
         std::shared_ptr<AsyncMailbox> inFlight;
+        // guestとアカウントの保存先切替の所有先
         std::unique_ptr<Detail::OnlinePersistenceCoordinator>
             persistenceCoordinator;
+        // 公開用IDと内部の競合の対応一覧
         std::vector<CloudConflictBinding> cloudConflictRegistry;
+        // 利用ロックも持つ資格情報store
         std::shared_ptr<Detail::IRefreshTokenStore> refreshTokenStore;
+        // 認証URLのブラウザー起動処理の所有先
         std::unique_ptr<Detail::IAuthorizationLauncher>
             authorizationLauncher;
+        // 確認用tokenを保持する認証取引
         Detail::DiscordLoginTransaction loginTransaction;
+        // 短命・更新用tokenを持つ認証状態
         Detail::OnlineSession session;
+        // ゲームへ公開するプロフィール
         OnlinePlayerProfile player;
+        // 遅延して失効するaccess token
         std::string pendingLogoutAccessToken;
+        // ブラウザーで開く認証URL
         std::string authorizationUrl;
+        // 秘密値を含まない診断識別子
         std::string errorCode;
+        // 秘密値を含まない表示用診断
         std::string errorMessage;
+        // 現在のゲームの名前空間ID
         std::string configuredGameId;
+        // 現在の環境の名前空間ID
         std::string configuredEnvironmentId;
+        // 現在のオンラインアカウント状態
         OnlineAccountState state{ OnlineAccountState::Unconfigured };
+        // 古い結果を失効する接続世代
         std::uint64_t generation{ 1 };
+        // 認証取引の残り有効秒数
         float loginRemainingSeconds{};
+        // 次の認証状態確認までの秒数
         float pollRemainingSeconds{};
+        // access tokenの残り有効秒数
         float sessionRemainingSeconds{};
+        // 期限前に更新を始める猶予秒数
         float sessionRefreshLeadSeconds{};
+        // token更新の再試行までの秒数
         float sessionRefreshRetrySeconds{};
+        // Windows標準の保存と起動を使うか
         bool useWindowsPlatformDefaults{ true };
+        // ローカルHTTPを許可するか
         bool allowInsecureLoopback{};
+        // 認証URLを自動起動するか
         bool openAuthorizationBrowser{ true };
+        // ブラウザー起動を試したか
         bool browserLaunchAttempted{};
+        // ブラウザー起動が失敗したか
         bool browserLaunchFailed{};
+        // 端末の更新用tokenの削除が失敗か
         bool localRefreshTokenDeleteFailed{};
+        // guest切替時の保存が失敗したか
         bool accountPersistenceSaveFailed{};
+        // 遅延失効後も採用失敗の診断を保つか
         bool preserveErrorAfterLogout{};
+        // 失効した認証workerの完了待ちか
         bool awaitingCancelledTask{};
+        // 認証確認の取消が期限切れ由来か
         bool cancelledPollExpired{};
+        // クラウド同期からtoken更新要求か
         bool cloudRefreshRequested{};
+        // 認証拒否の系列のtoken更新回数
         std::uint32_t cloudUnauthorizedRefreshAttempts{};
+        // 認証拒否後のtoken更新待機秒数
         float cloudUnauthorizedRefreshCooldownSeconds{};
+        // 待機後のtoken更新を予約済みか
         bool cloudUnauthorizedRefreshQueued{};
+        // 資格情報の利用ロックを保持中か
         bool credentialUsageLeaseHeld{};
+        // 失効した認証workerの処理種別
         TaskKind cancelledTaskKind{ TaskKind::StartLogin };
-        // Rich Presenceはアカウント連携から独立しています。
-        // Configure()やSignOut()はここへ触れません。
+        // アカウント認証から独立した表示機能
         DiscordPresence presence;
     };
 
@@ -2125,13 +2302,13 @@ namespace LamaPon
     void OnlineServices::Configure(
         OnlineServiceConfiguration configuration)
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (implementation.persistenceCoordinator
             && implementation.persistenceCoordinator
                 ->HasPendingRecovery())
         {
-            // empty configurationを含め、binding材料や資格情報へ触れる前に
-            // fail-closedで拒否します。
+            // 空設定も含め、未解決の保存復旧があれば資格情報や名前空間を変更する前に拒否します。
             throw std::logic_error(
                 "Resolve pending persistence recovery before configuring.");
         }
@@ -2157,13 +2334,17 @@ namespace LamaPon
                 "Credential usage lease could not be released.");
         }
 
+        // 切替前に準備するゲームの名前空間
         auto nextGameId = configuration.gameId;
+        // 切替前に準備する環境の名前空間
         auto nextEnvironmentId = configuration.environmentId;
+        // 切替前に準備する認証client
         std::shared_ptr<Detail::DiscordAuthClient> nextClient;
+        // 切替前に準備する同期HTTP処理
         std::shared_ptr<const Detail::CloudSaveClient> nextCloudSaveClient;
-        // unique_ptr -> shared_ptr のcontrol block割当までnamespace commit前に
-        // 完了し、commit後をnoexcept moveだけにします。
+        // namespace公開後をnoexceptの移動だけにするため、共有所有先の確保も先に終えます。
         std::shared_ptr<Detail::IRefreshTokenStore> nextStore;
+        // 切替前に準備する認証URL起動処理
         std::unique_ptr<Detail::IAuthorizationLauncher> nextLauncher;
         if (!configuration.serviceBaseUrl.empty())
         {
@@ -2175,8 +2356,7 @@ namespace LamaPon
                 nextEnvironmentId);
             if (!nextGameId.empty())
             {
-                // auth/cloud両clientを完全に構築してからCoordinatorと公開
-                // configurationを切り替え、片方だけ更新される状態を作りません。
+                // 認証とクラウドのclientを両方構築してから保存先と公開設定を切り替えます。
                 nextCloudSaveClient =
                     std::make_shared<Detail::CloudSaveClient>(
                         nextClient->ServiceBaseUrl(),
@@ -2220,9 +2400,7 @@ namespace LamaPon
             }
         }
 
-        // Coordinator namespace commitが成功した後だけ旧profile由来の
-        // process-local conflict IDを失効させます。失敗したConfigureでは
-        // registryを維持します。
+        // 保存先の名前空間変更が成功した後だけ公開用競合IDを失効し、設定失敗時は保ちます。
         implementation.ClearCloudConflictRegistry();
 
         implementation.AdvanceGeneration();
@@ -2268,26 +2446,23 @@ namespace LamaPon
 
     void OnlineServices::Update(float elapsedSeconds)
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (!std::isfinite(elapsedSeconds)
             || elapsedSeconds < 0.0f)
         {
             elapsedSeconds = 0.0f;
         }
-        // アカウント状態に関係なく毎フレーム進めます。以降の
-        // 早期returnより前に置き、ログインの進行がPresenceの
-        // 再接続を止めないようにします。
+        // 早期returnより先にPresenceを進め、認証処理が表示の再接続を止めないようにします。
         implementation.presence.Tick(elapsedSeconds);
         implementation.ConsumeCloudSaveSignals(elapsedSeconds);
+        // 旧tokenの時間を減算済みか
         const bool refreshElapsedApplied =
             implementation.state
                 == OnlineAccountState::RefreshingSession;
         if (refreshElapsedApplied)
         {
-            // 完了mailboxをreapする前に旧access tokenの残存時間へ
-            // このframe分を一度だけ適用します。成功ならPublishSessionが
-            // 新期限へ置換し、失敗なら0を見て同じframeでfail-closedに
-            // できます。
+            // 完了結果の反映前に旧tokenの時間を一度だけ減算し、失敗時も同じフレームで失効を判定します。
             implementation.sessionRemainingSeconds = std::max(
                 0.0f,
                 implementation.sessionRemainingSeconds
@@ -2296,8 +2471,7 @@ namespace LamaPon
         if (implementation.ReapCompletedTask())
         {
             implementation.ReleaseCredentialUsageLeaseIfSafe();
-            // 完了によって遷移したばかりの状態へ、前状態で経過した
-            // elapsedSecondsを同じフレーム中に適用しません。
+            // 完了によって遷移したばかりの状態へ、前状態で経過したelapsedSecondsを同じフレーム中に適用しません。
             return;
         }
         implementation.TickLogin(elapsedSeconds);
@@ -2309,6 +2483,7 @@ namespace LamaPon
 
     bool OnlineServices::BeginDiscordSignIn()
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (!implementation.client)
         {
@@ -2380,7 +2555,9 @@ namespace LamaPon
 
     void OnlineServices::CancelDiscordSignIn() noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
+        // 認証の開始・待機・確認が進行中か
         const bool signingIn =
             implementation.state == OnlineAccountState::StartingSignIn
             || implementation.state
@@ -2402,8 +2579,7 @@ namespace LamaPon
                 Implementation::TaskKind::PollLogin;
         }
 
-        // WinHTTP要求自体は同期APIのため途中で破棄せず、世代を進めて
-        // 完了結果だけを無視します。ゲームループは待ちません。
+        // 同期HTTPを途中で破棄せず、接続世代で結果を失効させてゲームループは完了を待ちません。
         implementation.AdvanceGeneration();
         implementation.ClearLoginTransaction();
         implementation.ClearSession();
@@ -2417,6 +2593,7 @@ namespace LamaPon
 
     void OnlineServices::SignOut()
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         implementation.cloudRefreshRequested = false;
         implementation.cloudUnauthorizedRefreshAttempts = 0u;
@@ -2427,12 +2604,11 @@ namespace LamaPon
             implementation.AdvanceGeneration();
         }
         implementation.DetachAccountPersistence();
-        // failed adoption cleanup中でも、明示操作は最終SignedOutを優先します。
+        // 採用失敗の後処理中でも明示SignOutはSignedOutの終了を優先します。
         implementation.preserveErrorAfterLogout = false;
         if (implementation.state == OnlineAccountState::SigningOut)
         {
-            // 内部cleanup中に明示SignOutされた場合も、端末tokenの削除を
-            // 必ず試します。前回失敗していればこの呼び出しが再試行です。
+            // 後処理中の明示SignOutでも端末tokenの削除を試し、前回失敗していれば再試行します。
             static_cast<void>(
                 implementation.DeleteRefreshTokenTracked());
             implementation.cancelledPollExpired = false;
@@ -2446,8 +2622,7 @@ namespace LamaPon
             return;
         }
 
-        // 通信の完了を待たず、端末の再ログイン情報は
-        // この呼び出し中に削除します。
+        // 通信の完了を待たず、端末の再ログイン情報はこの呼び出し中に削除します。
         static_cast<void>(
             implementation.DeleteRefreshTokenTracked());
         if (implementation.awaitingCancelledTask
@@ -2510,6 +2685,7 @@ namespace LamaPon
             return;
         }
 
+        // サインアウト時にtoken更新中か
         const bool refreshInProgress = implementation.state
             == OnlineAccountState::RefreshingSession;
         implementation.awaitingCancelledTask = refreshInProgress;
@@ -2593,12 +2769,14 @@ namespace LamaPon
 
     OnlineCloudSyncStatus OnlineServices::CloudSyncStatus() const noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         const auto& implementation = *m_implementation;
         if (!implementation.persistenceCoordinator
             || !implementation.persistenceCoordinator->IsAccountActive())
         {
             return {};
         }
+        // 現在のアカウント同期処理の借用
         auto* const synchronizer =
             implementation.persistenceCoordinator->Synchronizer();
         if (!synchronizer || !synchronizer->IsAttached())
@@ -2606,7 +2784,9 @@ namespace LamaPon
             return {};
         }
 
+        // 公開用に変換する内部の状態
         const auto internal = synchronizer->Status();
+        // 内部識別値を含まない同期状態
         OnlineCloudSyncStatus result;
         switch (internal.state)
         {
@@ -2657,9 +2837,11 @@ namespace LamaPon
             result.stopReason = OnlineCloudSyncStopReason::InternalFailure;
             break;
         }
+        // 単調時計の現在時刻ms
         const auto now = SteadyMilliseconds();
         if (internal.retryAtMilliseconds > now)
         {
+            // 再試行までの残り待機ms
             const auto remainingMilliseconds =
                 internal.retryAtMilliseconds - now;
             result.retryAfterSeconds = static_cast<float>(
@@ -2678,7 +2860,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // path/token/ETag/mutation IDを含み得る内部例外を公開しません。
+            // 内部の保存先・token・ETag・更新IDを含み得る例外を公開しません。
             throw std::runtime_error(
                 "Cloud conflict enumeration failed.");
         }
@@ -2687,12 +2869,14 @@ namespace LamaPon
     OnlinePersistenceOperationResult
         OnlineServices::RequestCloudSync() noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (!implementation.persistenceCoordinator
             || !implementation.persistenceCoordinator->IsAccountActive())
         {
             return OnlinePersistenceOperationResult::Unavailable;
         }
+        // 現在のアカウント同期処理の借用
         auto* const synchronizer =
             implementation.persistenceCoordinator->Synchronizer();
         if (!synchronizer || !synchronizer->IsAttached())
@@ -2724,7 +2908,9 @@ namespace LamaPon
         const std::string_view conflictId,
         const OnlineCloudConflictResolution resolution) noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
+        // 公開用IDと内部競合の対応記録
         auto* const binding =
             implementation.FindConflictBinding(conflictId);
         if (!binding
@@ -2733,6 +2919,7 @@ namespace LamaPon
         {
             return OnlinePersistenceOperationResult::Stale;
         }
+        // 現在のアカウント同期処理の借用
         auto* const synchronizer =
             implementation.persistenceCoordinator->Synchronizer();
         if (!synchronizer || !synchronizer->IsAttached())
@@ -2743,7 +2930,9 @@ namespace LamaPon
         try
         {
             // stale判定をwire/auth Busyより先に行います。
+            // 現在のアカウントの競合管理一覧
             const auto currentConflicts = synchronizer->Conflicts();
+            // 現在の公開先と競合IDを照合する(descriptor: 現在の競合の内部管理情報)。
             const auto current = std::find_if(
                 currentConflicts.begin(),
                 currentConflicts.end(),
@@ -2767,6 +2956,7 @@ namespace LamaPon
                 return OnlinePersistenceOperationResult::Busy;
             }
 
+            // journalへ渡す競合解決方針
             Detail::CloudSaveConflictResolution internalResolution;
             switch (resolution)
             {
@@ -2782,7 +2972,9 @@ namespace LamaPon
                 return OnlinePersistenceOperationResult::Failed;
             }
             // Resolve中のvector変更に備え、参照は呼出し後に使いません。
+            // 解決中の競合に対応する保存先
             const auto resource = binding->descriptor.resource;
+            // 解決する競合の内部更新ID
             const auto mutationId =
                 binding->descriptor.expectedMutationId;
             synchronizer->ResolveConflict(
@@ -2801,13 +2993,16 @@ namespace LamaPon
     OnlinePersistenceRecoveryStatus
         OnlineServices::PersistenceRecoveryStatus() const noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         const auto& implementation = *m_implementation;
         if (!implementation.persistenceCoordinator)
         {
             return {};
         }
+        // 公開用に変換する内部の状態
         const auto internal =
             implementation.persistenceCoordinator->RecoveryStatus();
+        // 公開する復旧状態と識別版
         OnlinePersistenceRecoveryStatus result;
         result.revision = internal.revision;
         switch (internal.state)
@@ -2832,6 +3027,7 @@ namespace LamaPon
 
     namespace
     {
+        // 内部の復旧操作結果を公開用の結果種別へ変換する(result: 内部の操作結果)。
         [[nodiscard]] OnlinePersistenceOperationResult MapRecoveryResult(
             const Detail::OnlinePersistenceRecoveryOperationResult result)
                 noexcept
@@ -2856,11 +3052,13 @@ namespace LamaPon
     OnlinePersistenceOperationResult OnlineServices::RestorePersistence(
         const std::uint64_t expectedRevision) noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (!implementation.persistenceCoordinator)
         {
             return OnlinePersistenceOperationResult::Unavailable;
         }
+        // 明示復旧前に照合する復旧対象の状態
         const auto status =
             implementation.persistenceCoordinator->RecoveryStatus();
         if (expectedRevision == 0
@@ -2880,11 +3078,13 @@ namespace LamaPon
     OnlinePersistenceOperationResult OnlineServices::DiscardPersistence(
         const std::uint64_t expectedRevision) noexcept
     {
+        // 非同期認証と保存連携の状態の借用
         auto& implementation = *m_implementation;
         if (!implementation.persistenceCoordinator)
         {
             return OnlinePersistenceOperationResult::Unavailable;
         }
+        // 明示復旧前に照合する復旧対象の状態
         const auto status =
             implementation.persistenceCoordinator->RecoveryStatus();
         if (expectedRevision == 0
@@ -2903,6 +3103,7 @@ namespace LamaPon
 
     namespace Detail
     {
+        // テスト用の依存処理でサービスを作る(configuration: 認証設定, sender: 必須のHTTP送信処理, refreshTokenStore: 資格情報保存の所有先, authorizationLauncher: URL起動処理の所有先)。
         std::unique_ptr<OnlineServices>
             OnlineServicesTestAccess::Create(
                 OnlineServiceConfiguration configuration,
@@ -2916,6 +3117,7 @@ namespace LamaPon
                 throw std::invalid_argument(
                     "OnlineServices test sender is required.");
             }
+            // テストで構築するサービスの所有先
             auto services = std::unique_ptr<OnlineServices>(
                 new OnlineServices(
                     std::make_unique<OnlineServices::Implementation>(
@@ -2927,9 +3129,11 @@ namespace LamaPon
             return services;
         }
 
+        // 結果を反映せずworkerの完了を確認する(services: 検査するサービス)。
         bool OnlineServicesTestAccess::CurrentTaskCompleted(
             const OnlineServices& services) noexcept
         {
+            // 認証workerの結果を共有する受け口
             const auto mailbox = services.m_implementation->inFlight;
             if (!mailbox)
             {
@@ -2937,6 +3141,7 @@ namespace LamaPon
             }
             try
             {
+                // 完了結果の引き取り・確認用排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 return mailbox->completed;
             }
@@ -2946,6 +3151,7 @@ namespace LamaPon
             }
         }
 
+        // 完了時刻だけを過去へずらす(services: 操作するサービス, elapsedSeconds: 遡る秒数・0以上1年以内)。
         bool OnlineServicesTestAccess::AgeCurrentTaskCompletion(
             OnlineServices& services,
             const float elapsedSeconds) noexcept
@@ -2956,6 +3162,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // 認証workerの結果を共有する受け口
             const auto mailbox = services.m_implementation->inFlight;
             if (!mailbox)
             {
@@ -2963,6 +3170,7 @@ namespace LamaPon
             }
             try
             {
+                // 完了結果の引き取り・確認用排他ロック
                 std::scoped_lock lock(mailbox->mutex);
                 if (!mailbox->completed)
                 {
@@ -2981,12 +3189,14 @@ namespace LamaPon
             }
         }
 
+        // 認証開始前に保存先切替を接続する(services: 接続先, preferences: 存続する設定の借用, saves: 存続する保存領域の借用, trustedUserDataDirectory: 信頼済みUserDataの絶対パス)。
         void OnlinePersistenceAccess::Attach(
             OnlineServices& services,
             PlayerPrefs& preferences,
             SaveDataStore& saves,
             std::filesystem::path trustedUserDataDirectory)
         {
+            // 非同期認証と保存連携の状態の借用
             auto& implementation = *services.m_implementation;
             if (implementation.persistenceCoordinator)
             {
@@ -3001,6 +3211,7 @@ namespace LamaPon
                     "Attach online persistence before signing in.");
             }
 
+            // アカウントの保存先切替処理の借用
             auto coordinator =
                 std::make_unique<OnlinePersistenceCoordinator>(
                     preferences,
@@ -3020,10 +3231,12 @@ namespace LamaPon
                 std::move(coordinator);
         }
 
+        // 競合IDを失効させてguestの保存先へ戻す(services: 切替対象)。
         OnlinePersistenceDetachResult OnlinePersistenceAccess::Detach(
             OnlineServices& services) noexcept
         {
             services.m_implementation->ClearCloudConflictRegistry();
+            // アカウントの保存先切替処理の借用
             auto* const coordinator =
                 services.m_implementation->persistenceCoordinator.get();
             return coordinator
@@ -3031,9 +3244,11 @@ namespace LamaPon
                 : OnlinePersistenceDetachResult::AlreadyGuest;
         }
 
+        // フレーム終端で隔離中の保存を再試行する(services: 再試行対象)。
         void OnlinePersistenceAccess::EndFrame(
             OnlineServices& services) noexcept
         {
+            // アカウントの保存先切替処理の借用
             if (auto* const coordinator =
                     services.m_implementation
                         ->persistenceCoordinator.get())
@@ -3042,6 +3257,7 @@ namespace LamaPon
             }
         }
 
+        // 保存先切替処理を借用し未接続ならnullを返す(services: 参照対象)。
         OnlinePersistenceCoordinator*
             OnlinePersistenceAccess::Coordinator(
                 OnlineServices& services) noexcept
@@ -3053,6 +3269,7 @@ namespace LamaPon
 
     namespace
     {
+        // Application所有の現在のサービス
         OnlineServices* g_activeOnlineServices{};
     }
 

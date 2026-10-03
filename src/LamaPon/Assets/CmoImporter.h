@@ -8,14 +8,14 @@ namespace LamaPon
     class AssetManager;
     class SkeletalModel;
 
-    // Visual Studio 3D Starter KitのCMOを、D3D11 Deviceに依存しない
-    // CPU modelへ読み込みます。DirectXTK11経路は従来loaderを維持し、
-    // D3D12などのBackendだけがこのImporterを使用します。
+    // CMOを描画APIに依存しないCPUモデルへ変換する。
     class CmoImporter final
     {
     public:
+        // メッシュとスキンを読み込む(assets: ファイルの取得元, path: 元CMOのパス)。
         [[nodiscard]] static std::shared_ptr<SkeletalModel> Load(
             AssetManager& assets,
             const std::filesystem::path& path);
+        // CMOのアニメーションクリップは再生用データへ変換しない。
     };
 }

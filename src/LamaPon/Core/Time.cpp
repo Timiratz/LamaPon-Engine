@@ -5,12 +5,17 @@
 
 namespace
 {
-    // 時間の更新はメインスレッドからのみ行われます。
+    // ゲーム時間の進行倍率
     float g_timeScale{ 1.0f };
+    // 倍率適用後の経過秒数
     float g_deltaTime{};
+    // 倍率適用前の経過秒数
     float g_unscaledDeltaTime{};
+    // 倍率適用後の累積秒数
     double g_timeSinceStartup{};
+    // 倍率適用前の累積秒数
     double g_unscaledTimeSinceStartup{};
+    // 起動後の更新フレーム数
     std::uint64_t g_frameCount{};
 }
 
@@ -61,6 +66,7 @@ namespace LamaPon::Time
         void AdvanceFrame(
             const float unscaledDeltaTime) noexcept
         {
+            // 負の経過時間を除いた秒数
             const float safeDelta =
                 std::max(unscaledDeltaTime, 0.0f);
             g_unscaledDeltaTime = safeDelta;

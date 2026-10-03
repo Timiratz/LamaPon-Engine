@@ -26,9 +26,11 @@ namespace
     using LamaPon::Detail::LocalPersistenceDocumentIdentity;
     using LamaPon::Detail::LocalPersistenceDocumentState;
 
+    // 次回復旧検証で再現する失敗段階
     std::atomic<LamaPon::Detail::OnlinePersistenceRecoveryTestFailPoint>
         RecoveryTestFailPoint{};
 
+    // 正常読込または不在として扱える状態かを返す(state: 文書の読込状態)。
     [[nodiscard]] bool IsReadableLocalState(
         const LocalPersistenceDocumentState state) noexcept
     {
@@ -36,6 +38,7 @@ namespace
             || state == LocalPersistenceDocumentState::Missing;
     }
 
+    // 状態と完全バイト、取得不能ならファイル識別情報で復旧文書を照合する(leftState: 前の観測状態, leftBytes: 前の全バイト, leftIdentity: 前のファイル識別情報, rightState: 新しい観測状態, rightBytes: 新しい全バイト, rightIdentity: 新しいファイル識別情報)。
     [[nodiscard]] bool SameRecoveryObservation(
         const LocalPersistenceDocumentState leftState,
         const std::vector<std::uint8_t>& leftBytes,
@@ -62,21 +65,23 @@ namespace
             && leftIdentity == rightIdentity;
     }
 
+    // 保存文書の検証失敗を内部情報を含まない固定エラーで通知する。
     [[noreturn]] void ThrowUnavailableAccountDocument()
     {
-        // path、playerId、server由来本文を上位の公開errorへ渡しません。
+        // 公開エラーへパスやプレイヤーID、サーバー本文を含めない。
         throw std::runtime_error(
             "An account persistence document is unavailable or corrupt.");
     }
 
+    // account内の短い固定名の復旧パスを返す(profile: 対象accountの保存先)。
     [[nodiscard]] std::filesystem::path MakeRecoverySidecarPath(
         const LamaPon::PersistenceProfilePaths& profile)
     {
-        // Stage7Aの`.lock`/`.writing` suffix込みでも従来Win32 path上限を
-        // 不必要に圧迫しない、account hash root直下の短い固定名です。
+        // 派生する.lock・.writingもWindowsのパス上限に収まるよう短い固定名を使う。
         return profile.rootDirectory / L"Recovery.prefs";
     }
 
+    // 文字列の使用済みバイトを消去して空にする(secret: 消去する秘密文字列)。
     void EraseSecret(std::string& secret) noexcept
     {
         if (!secret.empty())
@@ -88,15 +93,19 @@ namespace
 
     struct ScopedSecretErase final
     {
+        // 借用した秘密文字列を消去する。
         ~ScopedSecretErase()
         {
             EraseSecret(value);
         }
+        // 終了時に消去する文字列の借用
         std::string& value;
     };
 
+    // 同期に使う非負の単調時刻をミリ秒で返す。
     [[nodiscard]] std::uint64_t MonotonicMilliseconds() noexcept
     {
+        // 単調時計の経過ミリ秒
         const auto count = std::chrono::duration_cast<
             std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -114,16 +123,27 @@ namespace LamaPon::Detail
 
     struct PreparedOnlineAccount::State final
     {
+        // 準備を適用できる切替処理の借用
         OnlinePersistenceCoordinator* owner{};
+        // 準備時の保存先の世代
         std::uint64_t profileEpoch{};
+        // 検証済みaccount保存先の所有先
         std::unique_ptr<PersistenceProfilePaths> profile;
+        // 検証済みaccount設定の所有先
         std::unique_ptr<PlayerPrefs> preferences;
+        // 回復済みjournalの所有先
         std::unique_ptr<CloudSaveJournal> journal;
+        // 準備中accountの使用ロック
         std::unique_ptr<CloudSaveProfileSessionLease> profileSessionLease;
+        // 検証済みクラウド接続の準備
         std::unique_ptr<PreparedCloudSaveAttachment> cloudAttachment;
+        // commitで移すaccount保存先
         std::filesystem::path accountSaveDirectory;
+        // guestへ戻すための保存先
         std::filesystem::path guestSaveDirectory;
+        // 復旧文書の切替先パス
         std::filesystem::path recoverySidecarPath;
+        // 切替準備時に観測した復旧文書
         LocalPersistenceDocument recoverySidecarObservation;
     };
 
@@ -147,6 +167,7 @@ namespace LamaPon::Detail
 
     struct OnlinePersistenceCoordinator::Implementation final
     {
+        // guest保存先の一致と未使用状態を検証して構築元スレッドを記録する(activePreferences: 存続する設定の借用, activeSaves: 存続する保存領域の借用, userDataDirectory: 信頼済みUserDataの絶対パス)。
         Implementation(
             PlayerPrefs& activePreferences,
             SaveDataStore& activeSaves,
@@ -162,8 +183,10 @@ namespace LamaPon::Detail
                     "Online persistence user data directory is required.");
             }
 
+            // 必須のguest設定ファイルのパス
             const auto expectedPreferences =
                 trustedUserDataDirectory / L"PlayerPrefs.json";
+            // 必須のguest保存領域のパス
             const auto expectedSaves =
                 trustedUserDataDirectory / L"Saves";
             if (preferences->FilePath() != expectedPreferences
@@ -176,19 +199,18 @@ namespace LamaPon::Detail
             }
         }
 
+        // guestへ戻し同期処理の破棄後に隔離中の保存を一度再試行する。
         ~Implementation()
         {
             static_cast<void>(DetachToGuest());
-            // detached workerはshared client/mailboxだけを保持します。journal
-            // fieldより先にsynchronizer本体を破棄してraw bindingを残しません。
+            // workerは共有clientとmailboxだけを所有し、同期処理をjournalより先に破棄する。
             synchronizer.reset();
-            // Application終了時にもquarantineを一度だけ再試行します。
-            // 失敗が続く場合はmemory snapshotを破棄するほかありませんが、
-            // Application側が破棄前に残留を検知して明示ログします。
+            // 終了時にも隔離中の保存を一度再試行し、残ったメモリの破棄はApplication側で記録する。
             EndFrame();
             DetachObserver();
         }
 
+        // ローカル保存監視を解除して登録IDを失効させる。
         void DetachObserver() noexcept
         {
             if (observerToken != 0)
@@ -199,6 +221,7 @@ namespace LamaPon::Detail
             }
         }
 
+        // 構築元以外のスレッドなら例外を出す。
         void RequireOwnerThread() const
         {
             if (std::this_thread::get_id() != ownerThread)
@@ -208,11 +231,13 @@ namespace LamaPon::Detail
             }
         }
 
+        // 構築元のスレッドから呼ばれたかを返す。
         [[nodiscard]] bool IsOwnerThread() const noexcept
         {
             return std::this_thread::get_id() == ownerThread;
         }
 
+        // 0を飛ばして保存先の世代を更新する。
         void AdvanceEpoch() noexcept
         {
             ++profileEpoch;
@@ -222,6 +247,7 @@ namespace LamaPon::Detail
             }
         }
 
+        // 0を飛ばして復旧操作の世代を採番する。
         void AdvanceRecoveryRevision() noexcept
         {
             ++recoveryRevisionCounter;
@@ -232,6 +258,7 @@ namespace LamaPon::Detail
             recoveryRevision = recoveryRevisionCounter;
         }
 
+        // 復旧文書の観測が変わったときだけ保持内容と操作世代を更新する(state: 新しい読込状態, bytes: 観測した全バイトの所有先, identity: 文書のファイル識別情報)。
         [[nodiscard]] bool SetLastRecoveryObservation(
             const LocalPersistenceDocumentState state,
             std::vector<std::uint8_t> bytes,
@@ -254,11 +281,13 @@ namespace LamaPon::Detail
             return true;
         }
 
+        // guest設定の退避がありaccount保存先を使用中かを返す。
         [[nodiscard]] bool AccountActive() const noexcept
         {
             return suspendedGuestPreferences != nullptr;
         }
 
+        // 公開オブジェクトの保存先が未使用のguest領域と一致するかを返す。
         [[nodiscard]] bool GuestBindingIsCurrent() const noexcept
         {
             if (!profiles || AccountActive())
@@ -267,6 +296,7 @@ namespace LamaPon::Detail
             }
             try
             {
+                // guestの保存先の構成
                 const auto guest = profiles->Guest();
                 return !preferences->IsBindingLeased()
                     && !saves->IsBindingLeased()
@@ -279,6 +309,7 @@ namespace LamaPon::Detail
             }
         }
 
+        // 公開前に保存領域と同期処理を準備し未解決の復旧があれば拒否する(gameId: ゲーム固有のID, environmentId: 保存領域を分ける環境ID, normalizedBackendBaseUrl: 正規化済み認証サービスURL, insecureLoopback: loopbackのHTTPを許可するか, cloudSaveClient: 同期用クライアントの共有所有先)。
         void ConfigureNamespace(
             std::string gameId,
             std::string environmentId,
@@ -312,12 +343,13 @@ namespace LamaPon::Detail
                     "Online persistence backend URL is required.");
             }
 
-            // 以降のpublish前に、validationとallocationを完了します。
+            // 失敗時に旧領域を維持できるよう新領域の検証と割当は公開前に終える。
             auto replacementProfiles =
                 std::make_unique<PersistenceProfiles>(
                     trustedUserDataDirectory,
                     gameId,
                     environmentId);
+            // 公開前に準備する新しい同期処理
             std::unique_ptr<CloudSaveSynchronizer> replacementSynchronizer;
             if (cloudSaveClient)
             {
@@ -327,8 +359,11 @@ namespace LamaPon::Detail
                         *saves,
                         std::move(cloudSaveClient));
             }
+            // 公開前に準備するゲームID
             auto replacementGameId = std::move(gameId);
+            // 公開前に準備する環境ID
             auto replacementEnvironmentId = std::move(environmentId);
+            // 公開前に準備する認証サービスURL
             auto replacementBackendBaseUrl =
                 std::move(normalizedBackendBaseUrl);
 
@@ -348,14 +383,14 @@ namespace LamaPon::Detail
             AdvanceEpoch();
         }
 
+        // 復旧待ちの対象を保持し、解決済みならguestへ戻して保存領域を無効化する。
         void DisableNamespace() noexcept
         {
             if (!IsOwnerThread())
             {
                 return;
             }
-            // recoveryのbinding材料を消すと明示restore/discardが不能になる
-            // ため、解決前のnamespace無効化は何も変更しません。
+            // 復旧の対象を失わないよう解決前はnamespaceを無効化しない。
             if (HasPendingRecovery())
             {
                 return;
@@ -380,11 +415,13 @@ namespace LamaPon::Detail
             AdvanceEpoch();
         }
 
+        // guestを保存しaccountの全文書とjournalを検証して切替状態を準備する(playerId: サービスの公開プレイヤーID, accessToken: 同期用tokenの所有先)。
         [[nodiscard]] std::unique_ptr<PreparedOnlineAccount::State>
             PrepareAccount(
             const std::string_view playerId,
             std::string accessToken)
         {
+            // 引数tokenを終了時に消去する番人
             const ScopedSecretErase eraseAccessToken{ accessToken };
             RequireOwnerThread();
             if (!profiles)
@@ -422,15 +459,16 @@ namespace LamaPon::Detail
                 ThrowUnavailableAccountDocument();
             }
 
-            // accountへ切り替えている間にguest dirty memoryがprocess終了で
-            // 消えないよう、切替より前にdurable化します。
+            // process終了時にもguestの未保存設定が残るよう切替前に保存する。
             if (preferences->IsDirty())
             {
                 preferences->Save();
             }
 
+            // 切替先アカウントの保存先
             auto profile = std::make_unique<PersistenceProfilePaths>(
                 profiles->Account(playerId));
+            // 切替前に回復したjournal
             auto preparedJournal = std::make_unique<CloudSaveJournal>(
                 trustedUserDataDirectory,
                 *profile,
@@ -438,23 +476,27 @@ namespace LamaPon::Detail
                 configuredEnvironmentId,
                 backendBaseUrl,
                 allowInsecureLoopback);
+            // 切替先accountの使用ロック
             auto profileSessionLease =
                 std::make_unique<CloudSaveProfileSessionLease>(
                     *preparedJournal);
+            // 切替先の復旧ファイルのパス
             auto recoveryPath = MakeRecoverySidecarPath(*profile);
+            // 切替時に検証する復旧文書
             PlayerPrefs recoveryDocument(recoveryPath);
+            // 復旧ファイルの厳格な読込結果
             const auto recovered =
                 LocalPersistenceDocuments::ReadPlayerPrefs(
                     recoveryDocument);
             if (recovered.state
                 != LocalPersistenceDocumentState::Missing)
             {
-                // process再起動後もsidecarを無視してaccountを公開しません。
-                // strict read結果を状態へ載せ、明示restore/discardだけを
-                // 許可します。
+                // 再起動後もaccountを公開せず明示的解決を待つため復旧対象の保存先を保持する。
                 auto pendingProfile =
                     std::make_unique<PersistenceProfilePaths>(*profile);
+                // 保持用に複製した観測バイト
                 auto observedBytes = recovered.bytes;
+                // 直近の観測用に複製した全バイト
                 auto lastObservedBytes = observedBytes;
                 quarantinedProfile = std::move(pendingProfile);
                 quarantinedJournal = std::move(preparedJournal);
@@ -471,9 +513,11 @@ namespace LamaPon::Detail
                 AdvanceRecoveryRevision();
                 ThrowUnavailableAccountDocument();
             }
+            // 切替先または退避したaccount設定
             auto accountPreferences =
                 std::make_unique<PlayerPrefs>(profile->playerPrefsFile);
 
+            // account設定の厳格な読込結果
             const auto preferencesDocument =
                 LocalPersistenceDocuments::ReadPlayerPrefs(
                     *accountPreferences);
@@ -485,7 +529,9 @@ namespace LamaPon::Detail
                 *accountPreferences,
                 preferencesDocument);
 
+            // 切替前に検証するaccount保存領域
             SaveDataStore accountSaves(profile->saveDataDirectory);
+            // account保存スロットの一覧
             const auto slots =
                 LocalPersistenceDocuments::ListSaveData(accountSaves);
             if (!IsReadableLocalState(slots.state))
@@ -494,13 +540,15 @@ namespace LamaPon::Detail
             }
             if (slots.state == LocalPersistenceDocumentState::Loaded)
             {
+                // 切替前に検証する保存スロット名
                 for (const auto& slot : slots.slots)
                 {
+                    // 復旧文書・保存文書の読込結果
                     const auto document =
                         LocalPersistenceDocuments::ReadSaveData(
                             accountSaves,
                             slot);
-                    // List後に消えたfileもraceとしてfail-closedです。
+                    // 一覧取得後の消失も競合として切替を拒否する。
                     if (document.state
                         != LocalPersistenceDocumentState::Loaded)
                     {
@@ -509,6 +557,7 @@ namespace LamaPon::Detail
                 }
             }
 
+            // 切替前に検証した同期の接続準備
             std::unique_ptr<PreparedCloudSaveAttachment> cloudAttachment;
             if (synchronizer)
             {
@@ -522,10 +571,11 @@ namespace LamaPon::Detail
                             std::move(accessToken)));
             }
 
+            // 所有者と世代を持つ切替準備
             auto state = std::make_unique<PreparedOnlineAccount::State>();
             state->owner = owner;
             state->profileEpoch = profileEpoch;
-            // noexcept commit用のpath複製はここで済ませます。
+            // commit中の割当を避けるためパスの複製は準備時に済ませる。
             state->accountSaveDirectory = profile->saveDataDirectory;
             state->guestSaveDirectory = saves->Directory();
             state->recoverySidecarPath =
@@ -540,6 +590,7 @@ namespace LamaPon::Detail
             return state;
         }
 
+        // 所有者・世代・保存先を照合しロックを取得して割当なしでaccountへ切り替える(state: 消費する切替準備)。
         [[nodiscard]] bool CommitPrepared(
             std::unique_ptr<PreparedOnlineAccount::State> state) noexcept
         {
@@ -634,6 +685,7 @@ namespace LamaPon::Detail
             return true;
         }
 
+        // 設定保存と削除意図の確定を試してguestへ戻し未保存分をロック付きで隔離する。
         [[nodiscard]] OnlinePersistenceDetachResult
             DetachToGuest() noexcept
         {
@@ -642,9 +694,8 @@ namespace LamaPon::Detail
                 return OnlinePersistenceDetachResult::AlreadyGuest;
             }
 
-            // 全操作は同じmain thread上なのでmailbox結果はTickまでlocalへ
-            // 適用されません。dirty prefsを先にdurable化し、その直後にworker
-            // fenceとdelete-intent checkpointを確定します。
+            // main threadで設定保存後にworker応答を失効させ削除意図を確定する。
+            // account設定の保存が失敗したか
             bool saveFailed{};
             try
             {
@@ -658,25 +709,22 @@ namespace LamaPon::Detail
                 saveFailed = true;
             }
 
+            // 削除意図の確定を別途保留するか
             bool cloudCheckpointFailed{};
+            // 確定に失敗した削除意図の操作列
             CloudSaveDetachCheckpointRecovery cloudCheckpointRecovery;
             if (synchronizer)
             {
                 try
                 {
-                    // networkを開始せず、baseline確立前を含むlocal deleteを
-                    // journalへwrite-aheadしてからbindingをguestへ戻します。
+                    // 通信を始めず、baseline未確立のローカル削除もjournalに先行記録してからguestへ戻す。
                     synchronizer->CheckpointLocalStateForDetach();
                 }
                 catch (...)
                 {
                     cloudCheckpointRecovery = synchronizer
                         ->TakeFailedDetachCheckpointRecovery();
-                    // dirty PlayerPrefsのpublish自体が失敗した場合はmemory
-                    // quarantineがaccount leaseを保持し、EndFrame Save成功後に
-                    // 解決できます。deleteはcommit前WAL済みなので、同じdirty
-                    // 状態をstrict scanできないことを別の永久checkpoint失敗へ
-                    // 二重化しません。
+                    // 設定の保存失敗は隔離メモリで再試行し、同じ未保存状態の走査失敗を別のcheckpoint失敗にしない。
                     cloudCheckpointFailed = !saveFailed;
                 }
                 synchronizer->Detach();
@@ -695,6 +743,7 @@ namespace LamaPon::Detail
             DetachObserver();
             AdvanceEpoch();
 
+            // 切替先または退避したaccount設定
             auto accountPreferences =
                 std::move(suspendedGuestPreferences);
             LocalPersistenceDocuments::SwapPlayerPrefsLoadedState(
@@ -710,20 +759,23 @@ namespace LamaPon::Detail
             static_cast<void>(
                 saves->ReleaseBindingLease(owner));
 
+            // guest切替後のaccount保存先
             auto detachedProfile = std::move(activeProfile);
+            // 切替後のaccount journal
             auto detachedJournal = std::move(journal);
+            // 切替後のaccount使用ロック
             auto detachedProfileSessionLease =
                 std::move(activeProfileSessionLease);
+            // guest切替後の復旧ファイルのパス
             auto detachedRecoveryPath =
                 std::move(activeRecoverySidecarPath);
+            // 切替準備時に観測した復旧文書
             auto detachedRecoveryObservation =
                 std::move(activeRecoverySidecarObservation);
             localCommitObserved = false;
             observerFailed = false;
 
-            // clean load failureには失われる未保存差分がありません。
-            // diskは一切変更せずpimplを解放し、次回activationのstrict
-            // readで修復済みかを改めて判定します。
+            // 読込失敗だけで未保存差分がなければdiskを変えず解放し、次の切替準備で再検証する。
             if (!cloudCheckpointFailed
                 && accountPreferences->HasLoadFailure()
                 && !accountPreferences->IsDirty())
@@ -731,21 +783,20 @@ namespace LamaPon::Detail
                 return OnlinePersistenceDetachResult::SavedAccount;
             }
 
+            // 未保存データを隔離する必要があるか
             const bool needsQuarantine = cloudCheckpointFailed
                 || saveFailed
                 || accountPreferences->IsDirty();
             if (needsQuarantine)
             {
-                // PrepareAccountは既存quarantine中のactivationを拒否するため、
-                // ここで未保存accountを上書きすることはありません。
+                // 復旧中の切替を拒否しているため保持済みの未保存設定を上書きしない。
                 quarantinedPreferences = std::move(accountPreferences);
                 quarantinedProfile = std::move(detachedProfile);
                 quarantinedProfileSessionLease =
                     std::move(detachedProfileSessionLease);
                 if (cloudCheckpointFailed)
                 {
-                    // checkpoint不能を「初期Missing」として再ログインさせず、
-                    // 明示discardまでjournalとaccount leaseを保持します。
+                    // 削除意図が確定できなければjournalと使用ロックを保持して再試行または明示的破棄を待つ。
                     quarantinedJournal = std::move(detachedJournal);
                     quarantinedCloudCheckpointRecovery =
                         std::move(cloudCheckpointRecovery);
@@ -779,6 +830,7 @@ namespace LamaPon::Detail
             return OnlinePersistenceDetachResult::SavedAccount;
         }
 
+        // 使用ロック下でjournalを回復し確定済みの削除意図だけを一括再適用する。
         [[nodiscard]] bool RetryQuarantinedCloudCheckpoint() noexcept
         {
             if (!quarantinedCloudCheckpointFailure)
@@ -790,17 +842,12 @@ namespace LamaPon::Detail
                 || !quarantinedCloudCheckpointRecovery
                     .operationsDetermined)
             {
-                // strict inventoryから操作列を確定できなかった
-                // incidentは自動で解放しません。明示discardだけが
-                // account leaseを放棄できます。
+                // 操作列を確定できなければ自動解放せず、明示的破棄までaccount使用ロックを保持する。
                 return false;
             }
             try
             {
-                // Persistが曖昧に失敗したjournal instanceはblockedになる
-                // ため再利用しません。保持中のprofile session lease下で
-                // diskからfresh instanceを構築し、batch全件成功後にだけ
-                // quarantineのjournalを差し替えます。
+                // 不確かな失敗で使用不能になったjournalはロック下でdiskから作り直し、一括確定後に差し替える。
                 auto retryJournal = std::make_unique<CloudSaveJournal>(
                     trustedUserDataDirectory,
                     *quarantinedProfile,
@@ -814,9 +861,7 @@ namespace LamaPon::Detail
             }
             catch (...)
             {
-                // batchは1generationでpublishされるため、失敗時は
-                // 0件か全件です。曖昧成功も同じ列の再適用で
-                // 冪等に回復します。
+                // 一括確定は全件か0件なので同じ操作列を再適用して不確かな成功も回復する。
                 return false;
             }
             quarantinedCloudCheckpointFailure = false;
@@ -824,12 +869,14 @@ namespace LamaPon::Detail
             return true;
         }
 
+        // 監視通知と30秒間隔の照合を同期へ渡し隔離中の保存とcheckpointを再試行する。
         void EndFrame() noexcept
         {
             if (!IsOwnerThread())
             {
                 return;
             }
+            // 再走査が必要なローカル変更があるか
             bool localCommitSignalled{};
             if (observerToken != 0)
             {
@@ -841,7 +888,9 @@ namespace LamaPon::Detail
             }
             if (synchronizer && synchronizer->IsAttached())
             {
+                // 同期を進める単調時刻・ミリ秒
                 const auto now = MonotonicMilliseconds();
+                // 定期照合の開始時刻に達したか
                 const bool periodic = now >= nextPeriodicReconcileMilliseconds;
                 try
                 {
@@ -869,8 +918,7 @@ namespace LamaPon::Detail
                 }
                 catch (...)
                 {
-                    // local commit自体は既にdurableです。次frameのperiodic
-                    // reconcileへ残し、例外本文やpathを公開しません。
+                    // ローカル保存は完了済みなので次のフレームで照合を再試行し例外本文やパスは公開しない。
                     nextPeriodicReconcileMilliseconds = now;
                 }
             }
@@ -908,12 +956,14 @@ namespace LamaPon::Detail
             }
             catch (...)
             {
-                // memory snapshotを維持し、次のframeで再試行します。
+                // 隔離メモリを保持して次のフレームで保存を再試行する。
             }
         }
 
+        // token更新で旧応答を失効させ次の検証済み通信成功を待つ(accessToken: 新しい同期用token)。
         void UpdateCloudSaveAccessToken(std::string accessToken)
         {
+            // 引数tokenを終了時に消去する番人
             const ScopedSecretErase eraseAccessToken{ accessToken };
             RequireOwnerThread();
             if (!synchronizer || !AccountActive()
@@ -930,6 +980,7 @@ namespace LamaPon::Detail
             nextPeriodicReconcileMilliseconds = 0u;
         }
 
+        // 未通知の同期認証失敗を一度だけ取り出す。
         [[nodiscard]] bool ConsumeCloudSaveUnauthorizedSignal() noexcept
         {
             if (!IsOwnerThread())
@@ -939,6 +990,7 @@ namespace LamaPon::Detail
             return std::exchange(cloudUnauthorizedPending, false);
         }
 
+        // token更新後の検証済み通信成功を一度だけ取り出す。
         [[nodiscard]] bool ConsumeCloudSaveHealthySignal() noexcept
         {
             if (!IsOwnerThread())
@@ -948,6 +1000,7 @@ namespace LamaPon::Detail
             return std::exchange(cloudHealthyPending, false);
         }
 
+        // 読込失敗した設定の隔離メモリを観測一致時だけ復旧ファイルへ保存し再読後に解放する。
         [[nodiscard]] bool PersistRecoverySidecar() noexcept
         {
             if (!quarantinedPreferences
@@ -957,11 +1010,13 @@ namespace LamaPon::Detail
             {
                 return false;
             }
+            // 隔離設定を保存する完全なJSON
             std::string snapshot;
             try
             {
                 snapshot = quarantinedPreferences->SerializeToJson();
                 ValidatePlayerPrefsFullDocument(snapshot);
+                // 観測一致時の復旧文書の書込結果
                 const auto publishResult =
                     DurablePublishLocalDocumentIfUnchanged(
                         recoverySidecarPath,
@@ -971,8 +1026,7 @@ namespace LamaPon::Detail
                 if (publishResult
                     == LocalPersistenceConditionalApplyResult::Applied)
                 {
-                    // publish後のstrict再読だけが一時失敗した場合に限り、
-                    // 次回同一bytesを自分の曖昧成功として採用できます。
+                    // 書込後の再読が失敗した場合だけ、次回一致する全バイトを自分の不確かな成功として扱う。
                     recoverySidecarPublicationPending = true;
                     if (RecoveryTestFailPoint.exchange(
                             OnlinePersistenceRecoveryTestFailPoint::None,
@@ -988,10 +1042,11 @@ namespace LamaPon::Detail
                         == LocalPersistenceConditionalApplyResult::LocalChanged
                     && !recoverySidecarPublicationPending)
                 {
-                    // activation時のMissing観測後に別fileが現れた場合は、
-                    // 内容が偶然同じでも所有物とはみなさずmemoryを保持します。
+                    // 切替時の不在観測後に他の文書が現れたら内容が同じでも上書きせず隔離メモリを保持する。
                     recoverySidecarCreationBlocked = true;
+                    // 再読する現在の復旧文書
                     PlayerPrefs currentSidecar(recoverySidecarPath);
+                    // 復旧ファイルの再読結果
                     auto current = LocalPersistenceDocuments::ReadPlayerPrefs(
                         currentSidecar);
                     static_cast<void>(SetLastRecoveryObservation(
@@ -1001,10 +1056,9 @@ namespace LamaPon::Detail
                     return false;
                 }
 
-                // publish後もStage7Aのsecure strict readerでfull bytesを
-                // 再検証し、書いたsnapshotと一致する場合だけmemoryを
-                // 解放します。
+                // 書込後の復旧文書の検証用設定
                 PlayerPrefs verification(recoverySidecarPath);
+                // 復旧文書・保存文書の読込結果
                 const auto document =
                     LocalPersistenceDocuments::ReadPlayerPrefs(
                         verification);
@@ -1031,7 +1085,9 @@ namespace LamaPon::Detail
                         document.identity));
                     return false;
                 }
+                // 復元候補として固定する全バイト
                 auto expectedBytes = document.bytes;
+                // 保持用に複製した観測バイト
                 auto observedBytes = document.bytes;
                 recoverySidecarState =
                     LocalPersistenceDocumentState::Loaded;
@@ -1044,27 +1100,27 @@ namespace LamaPon::Detail
                 recoverySidecarCreationBlocked = false;
                 recoverySidecarPublicationPending = false;
                 quarantinedPreferences.reset();
-                // strictに再読できるdurable sidecarへsnapshotを退避した時点で、
-                // 元account fileを旧memoryから自動更新する経路はなくなります。
+                // 復旧ファイルの再読確認後は元の設定へ自動反映しないため、checkpoint待ちでなければ使用ロックを解放する。
                 if (!quarantinedCloudCheckpointFailure)
                 {
                     quarantinedProfileSessionLease.reset();
                 }
                 quarantinedLoadFailure = false;
-                // expected bytesを固定したままmemory snapshotからdurable
-                // sidecarへ状態が変わりました。
+                // 復元候補のバイトを固定してメモリ隔離から復旧ファイルへ移行したため操作世代を更新する。
                 AdvanceRecoveryRevision();
                 return true;
             }
             catch (...)
             {
-                // 元fileは保護したままmemory snapshotを維持し、sidecarの
-                // 現在状態だけをbounded strict readで更新します。
+                // 元の設定と隔離メモリを保持して復旧ファイルの観測だけを制限付きで更新する。
                 try
                 {
+                    // 再読する現在の復旧文書
                     PlayerPrefs currentSidecar(recoverySidecarPath);
+                    // 復旧ファイルの再読結果
                     auto current = LocalPersistenceDocuments::ReadPlayerPrefs(
                         currentSidecar);
+                    // 書込済みの未検証文書と一致するか
                     const bool pendingSnapshotMatches =
                         recoverySidecarPublicationPending
                         && current.state
@@ -1100,12 +1156,14 @@ namespace LamaPon::Detail
             }
         }
 
+        // 未解決の隔離メモリまたは復旧ファイルがあるかを返す。
         [[nodiscard]] bool HasPendingRecovery() const noexcept
         {
             return quarantinedPreferences != nullptr
                 || quarantinedProfile != nullptr;
         }
 
+        // 復元候補と最新の観測が一致するかに応じて復旧状態を返す。
         [[nodiscard]] OnlinePersistenceRecoveryState
             RecoveryState() const noexcept
         {
@@ -1135,6 +1193,7 @@ namespace LamaPon::Detail
                 : OnlinePersistenceRecoveryState::UnavailableSidecar;
         }
 
+        // 復旧文書を再読し変更に応じて状態と操作世代を更新する。
         [[nodiscard]] OnlinePersistenceRecoverySnapshot
             RecoveryStatus() noexcept
         {
@@ -1157,15 +1216,19 @@ namespace LamaPon::Detail
                 {
                     try
                     {
+                        // 操作世代を検証する復旧文書
                         PlayerPrefs sidecar(recoverySidecarPath);
+                        // 復旧文書・保存文書の読込結果
                         auto document =
                             LocalPersistenceDocuments::ReadPlayerPrefs(
                                 sidecar);
+                        // 書込済みの未検証文書と一致するか
                         bool pendingSnapshotMatches{};
                         if (recoverySidecarPublicationPending
                             && document.state
                                 == LocalPersistenceDocumentState::Loaded)
                         {
+                            // 隔離設定を保存する完全なJSON
                             const auto snapshot =
                                 quarantinedPreferences->SerializeToJson();
                             pendingSnapshotMatches =
@@ -1214,7 +1277,9 @@ namespace LamaPon::Detail
                 }
                 else
                 {
+                    // 操作世代を検証する復旧文書
                     PlayerPrefs sidecar(recoverySidecarPath);
+                    // 復旧文書・保存文書の読込結果
                     auto document =
                         LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
                     static_cast<void>(SetLastRecoveryObservation(
@@ -1232,6 +1297,7 @@ namespace LamaPon::Detail
             return { RecoveryState(), recoveryRevision };
         }
 
+        // 隔離データと使用ロックを解放して復旧状態と操作世代を初期化する。
         void ClearPendingRecovery() noexcept
         {
             quarantinedPreferences.reset();
@@ -1256,6 +1322,7 @@ namespace LamaPon::Detail
             quarantinedCloudCheckpointFailure = false;
         }
 
+        // 指定世代の復旧を再試行し元の設定への適用後に同じ復旧文書を削除する(expectedRevision: 表示時に取得した非0の世代)。
         [[nodiscard]] OnlinePersistenceRecoveryOperationResult
             RestorePendingRecovery(
             const std::uint64_t expectedRevision) noexcept
@@ -1272,9 +1339,7 @@ namespace LamaPon::Detail
             if (quarantinedPreferences)
             {
                 EndFrame();
-                // この明示Restoreがmemory Save/checkpoint再適用を完了し
-                // quarantineを解放した場合は、Clearによるrevision=0を
-                // staleとせずこの操作の成功として返します。
+                // この復元要求で保存とcheckpointが完了したなら世代0への解放はStaleではなく成功とする。
                 if (!HasPendingRecovery())
                 {
                     return OnlinePersistenceRecoveryOperationResult::Succeeded;
@@ -1294,10 +1359,9 @@ namespace LamaPon::Detail
             }
             try
             {
-                // Prepareでsidecarを検出したleaseはthrowと共に解放されます。
-                // 明示解決時に同じaccount leaseを再取得し、別Coordinatorが
-                // accountを公開中ならcached pathから書換えません。
+                // 別Coordinatorが使用中のaccountを書き換えないよう復旧用journalから使用ロックを再取得する。
                 std::unique_ptr<CloudSaveJournal> recoveryJournal;
+                // 復旧操作中のaccount使用ロック
                 std::unique_ptr<CloudSaveProfileSessionLease> recoveryLease;
                 if (!quarantinedProfileSessionLease)
                 {
@@ -1312,7 +1376,9 @@ namespace LamaPon::Detail
                         std::make_unique<CloudSaveProfileSessionLease>(
                             *recoveryJournal);
                 }
+                // 明示的操作で検証する復旧文書
                 PlayerPrefs sidecar(recoverySidecarPath);
+                // 復旧文書・保存文書の読込結果
                 const auto document =
                     LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
                 if (document.state
@@ -1327,6 +1393,7 @@ namespace LamaPon::Detail
                         document.bytes,
                         document.identity))
                 {
+                    // 再読で復旧文書の観測が変わったか
                     const bool changed = SetLastRecoveryObservation(
                         document.state,
                         std::move(document.bytes),
@@ -1336,9 +1403,7 @@ namespace LamaPon::Detail
                         : OnlinePersistenceRecoveryOperationResult::Failed;
                 }
 
-                // 明示操作だけが元fileを更新します。適用が成功した後に
-                // sidecarを削除し、削除失敗時は状態を残して再実行可能に
-                // します。
+                // 明示的に復元するaccount設定
                 PlayerPrefs target(quarantinedProfile->playerPrefsFile);
                 LocalPersistenceDocuments::ApplyPlayerPrefs(
                     target,
@@ -1368,6 +1433,7 @@ namespace LamaPon::Detail
             }
         }
 
+        // 指定世代の隔離メモリまたは観測一致の復旧文書を明示的に破棄する(expectedRevision: 表示時に取得した非0の世代)。
         [[nodiscard]] OnlinePersistenceRecoveryOperationResult
             DiscardPendingRecovery(
             const std::uint64_t expectedRevision) noexcept
@@ -1387,7 +1453,9 @@ namespace LamaPon::Detail
             }
             try
             {
+                // 復旧操作用journalの所有先
                 std::unique_ptr<CloudSaveJournal> recoveryJournal;
+                // 復旧操作中のaccount使用ロック
                 std::unique_ptr<CloudSaveProfileSessionLease> recoveryLease;
                 if (!quarantinedProfileSessionLease)
                 {
@@ -1404,9 +1472,12 @@ namespace LamaPon::Detail
                 }
                 if (!recoverySidecarPath.empty())
                 {
+                    // 操作世代を検証する復旧文書
                     PlayerPrefs sidecar(recoverySidecarPath);
+                    // 復旧文書・保存文書の読込結果
                     auto document =
                         LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
+                    // 最新の復旧文書の観測と一致するか
                     const bool matchesLatestObservation =
                         SameRecoveryObservation(
                             lastRecoverySidecarState,
@@ -1417,6 +1488,7 @@ namespace LamaPon::Detail
                             document.identity);
                     if (!matchesLatestObservation)
                     {
+                        // 再読で復旧文書の観測が変わったか
                         const bool changed = SetLastRecoveryObservation(
                             document.state,
                             std::move(document.bytes),
@@ -1429,8 +1501,7 @@ namespace LamaPon::Detail
                     if (document.state
                         == LocalPersistenceDocumentState::Missing)
                     {
-                        // 別process等が既にsidecarを削除済みなら、最新revision
-                        // での明示discardは冪等にquarantineだけを解放します。
+                        // 復旧ファイルが削除済みなら最新世代の破棄要求で隔離状態だけを解放する。
                     }
                     else if (document.state
                             == LocalPersistenceDocumentState::Loaded
@@ -1439,11 +1510,7 @@ namespace LamaPon::Detail
                     {
                         if (quarantinedPreferences)
                         {
-                            // memory snapshotの保護中にsidecarが現れた場合、
-                            // 最初のDiscardはmemoryだけを破棄し、外部fileを
-                            // 消さず新しいrecovery incidentとして昇格します。
-                            // publicationPendingの自分のsnapshotも同じ二段階
-                            // 解決とし、曖昧成功時に誤削除しません。
+                            // 隔離中に復旧文書が現れたら最初の破棄ではメモリだけを捨て、不確かな自分の書込も新しい復旧案件として残す。
                             quarantinedPreferences.reset();
                             quarantinedLoadFailure = false;
                             recoverySidecarState = document.state;
@@ -1457,12 +1524,7 @@ namespace LamaPon::Detail
                             return OnlinePersistenceRecoveryOperationResult::Succeeded;
                         }
 
-                        // durable incidentの外部置換も、最新revisionが現在の
-                        // documentを観測した後の明示Discardなら、その同一
-                        // handleだけを条件付き削除します。Restoreは依然として
-                        // original snapshotと一致しない置換を採用しません。
-                        // emptyを含む完全raw bytes、またはoversizeの固定size
-                        // file identityが一致する対象だけを同一handleで削除します。
+                        // 復元は元のsnapshotとの一致を要求し、破棄は最新世代で観測した全バイトまたは大容量文書の識別情報が同じhandleだけを削除する。
                         if (DurableDeleteLocalDocumentIfUnchanged(
                                 recoverySidecarPath,
                                 document,
@@ -1494,27 +1556,33 @@ namespace LamaPon::Detail
             }
         }
 
+        // 最新の復旧世代を取得して復元を試す。
         [[nodiscard]] bool RestorePendingRecovery() noexcept
         {
+            // 操作に使用する最新の復旧状態
             const auto status = RecoveryStatus();
             return status.revision != 0
                 && RestorePendingRecovery(status.revision)
                     == OnlinePersistenceRecoveryOperationResult::Succeeded;
         }
 
+        // 最新の復旧世代を取得して破棄を試す。
         [[nodiscard]] bool DiscardPendingRecovery() noexcept
         {
+            // 操作に使用する最新の復旧状態
             const auto status = RecoveryStatus();
             return status.revision != 0
                 && DiscardPendingRecovery(status.revision)
                     == OnlinePersistenceRecoveryOperationResult::Succeeded;
         }
 
+        // ローカル保存完了を切替状態へ渡す(context: 切替状態の借用, eventEpoch: 登録時の保存先の世代, event: 保存完了した文書の通知)。
         [[nodiscard]] static bool ObserveLocalCommit(
             void* context,
             const std::uint64_t eventEpoch,
             const LocalPersistenceCommitEvent& event) noexcept
         {
+            // コールバック先の切替状態の借用
             auto* implementation =
                 static_cast<Implementation*>(context);
             if (!implementation)
@@ -1524,11 +1592,13 @@ namespace LamaPon::Detail
             return implementation->OnLocalCommit(eventEpoch, event);
         }
 
+        // 削除前に切替状態へ通知して削除意図を先行確定する(context: 切替状態の借用, eventEpoch: 登録時の保存先の世代, event: 削除予定の文書の通知)。
         [[nodiscard]] static bool PrepareLocalDelete(
             void* context,
             const std::uint64_t eventEpoch,
             const LocalPersistenceCommitEvent& event) noexcept
         {
+            // コールバック先の切替状態の借用
             auto* implementation =
                 static_cast<Implementation*>(context);
             if (!implementation)
@@ -1538,6 +1608,7 @@ namespace LamaPon::Detail
             return implementation->OnLocalPreDelete(eventEpoch, event);
         }
 
+        // 所有者・世代・保存先の一致を確認して削除意図を先行記録する(eventEpoch: 登録時の保存先の世代, event: 削除予定の文書の通知)。
         [[nodiscard]] bool OnLocalPreDelete(
             const std::uint64_t eventEpoch,
             const LocalPersistenceCommitEvent& event) noexcept
@@ -1552,6 +1623,7 @@ namespace LamaPon::Detail
             }
             try
             {
+                // 削除意図を先に記録する保存対象
                 CloudSaveResource resource;
                 if (event.kind
                     == LocalPersistenceResourceKind::PlayerPrefs)
@@ -1586,11 +1658,12 @@ namespace LamaPon::Detail
             }
             catch (...)
             {
-                // WALを先に確定できないdeleteはdisk commitへ進めません。
+                // 削除意図をjournalへ先行確定できなければローカル削除を中止する。
                 return false;
             }
         }
 
+        // 使用中の文書の保存完了だけを受理して次の照合を要求する(eventEpoch: 登録時の保存先の世代, event: 保存完了した文書の通知)。
         [[nodiscard]] bool OnLocalCommit(
             const std::uint64_t eventEpoch,
             const LocalPersistenceCommitEvent& event) noexcept
@@ -1604,6 +1677,7 @@ namespace LamaPon::Detail
             }
             try
             {
+                // 使用中の保存先の通知と一致するか
                 bool matches{};
                 if (event.kind
                     == LocalPersistenceResourceKind::PlayerPrefs)
@@ -1634,58 +1708,104 @@ namespace LamaPon::Detail
             }
         }
 
+        // 公開する切替処理の借用
         OnlinePersistenceCoordinator* owner{};
+        // 存続する公開設定の借用
         PlayerPrefs* preferences{};
+        // 存続する公開保存領域の借用
         SaveDataStore* saves{};
+        // 信頼済みUserDataの絶対パス
         std::filesystem::path trustedUserDataDirectory;
+        // 全操作を行う構築元スレッド
         std::thread::id ownerThread;
+        // guestとaccountの保存先
         std::unique_ptr<PersistenceProfiles> profiles;
+        // クラウド同期処理の所有先
         std::unique_ptr<CloudSaveSynchronizer> synchronizer;
+        // 保存領域を識別するゲームID
         std::string configuredGameId;
+        // 保存領域を分ける環境ID
         std::string configuredEnvironmentId;
+        // 正規化済み認証サービスURL
         std::string backendBaseUrl;
+        // 保存先切替を識別する非0の世代
         std::uint64_t profileEpoch{ 1 };
+        // ローカル保存監視の登録ID
         LocalPersistenceObserverToken observerToken{};
+        // 使用中のアカウント保存先
         std::unique_ptr<PersistenceProfilePaths> activeProfile;
+        // 切替中に保持するguestの設定
         std::unique_ptr<PlayerPrefs> suspendedGuestPreferences;
+        // guestへ戻す保存領域のパス
         std::filesystem::path guestSaveDirectory;
+        // 使用中アカウントの復旧パス
         std::filesystem::path activeRecoverySidecarPath;
+        // 切替準備時の復旧文書の観測
         LocalPersistenceDocument activeRecoverySidecarObservation;
+        // 使用中のjournalの所有先
         std::unique_ptr<CloudSaveJournal> journal;
+        // 使用中accountのprocess間ロック
         std::unique_ptr<CloudSaveProfileSessionLease>
             activeProfileSessionLease;
+        // 解決待ちアカウントの保存先
         std::unique_ptr<PersistenceProfilePaths> quarantinedProfile;
+        // 保存失敗した設定メモリの所有先
         std::unique_ptr<PlayerPrefs> quarantinedPreferences;
+        // 再試行用journalの所有先
         std::unique_ptr<CloudSaveJournal> quarantinedJournal;
+        // 再試行する削除意図の確定済み操作列
         CloudSaveDetachCheckpointRecovery
             quarantinedCloudCheckpointRecovery;
+        // 隔離中accountのprocess間ロック
         std::unique_ptr<CloudSaveProfileSessionLease>
             quarantinedProfileSessionLease;
+        // 解決待ち復旧ファイルのパス
         std::filesystem::path recoverySidecarPath;
+        // 復旧作成前の文書の観測
         LocalPersistenceDocument recoverySidecarCreationObservation;
+        // 復元候補として固定した全バイト
         std::vector<std::uint8_t> recoverySidecarObservedBytes;
+        // 復元候補のファイル識別情報
         LocalPersistenceDocumentIdentity recoverySidecarIdentity;
+        // 復元候補を検出したときの状態
         LocalPersistenceDocumentState recoverySidecarState{
             LocalPersistenceDocumentState::Missing
         };
+        // 直近に観測した復旧文書の全バイト
         std::vector<std::uint8_t> lastRecoverySidecarObservedBytes;
+        // 直近の復旧ファイル識別情報
         LocalPersistenceDocumentIdentity lastRecoverySidecarIdentity;
+        // 直近に観測した復旧文書の状態
         LocalPersistenceDocumentState lastRecoverySidecarState{
             LocalPersistenceDocumentState::Missing
         };
+        // 復旧操作の世代の採番値
         std::uint64_t recoveryRevisionCounter{};
+        // 現在の復旧世代・解決後は0
         std::uint64_t recoveryRevision{};
+        // loopbackのHTTPを許可するか
         bool allowInsecureLoopback{};
+        // ローカル保存の完了を観測したか
         bool localCommitObserved{};
+        // 保存監視の失敗で再走査するか
         bool observerFailed{};
+        // 未通知の同期認証失敗があるか
         bool cloudUnauthorizedPending{};
+        // 同じ認証失敗を通知済みか
         bool cloudUnauthorizedLatched{};
+        // 未通知の同期認証成功があるか
         bool cloudHealthyPending{};
+        // token更新後の通信成功を待つか
         bool cloudAwaitingHealthyAfterTokenUpdate{};
+        // 次の定期照合を始める単調時刻
         std::uint64_t nextPeriodicReconcileMilliseconds{};
+        // 隔離メモリに読込失敗があるか
         bool quarantinedLoadFailure{};
+        // 削除意図のjournal確定待ちか
         bool quarantinedCloudCheckpointFailure{};
+        // 復旧作成前の文書が変わったか
         bool recoverySidecarCreationBlocked{};
+        // 復旧文書の書込後の検証待ちか
         bool recoverySidecarPublicationPending{};
     };
 
@@ -1840,12 +1960,14 @@ namespace LamaPon::Detail
             std::move(accessToken));
     }
 
+    // 未通知の同期認証失敗を一度だけ取り出す。
     bool OnlinePersistenceCoordinator::
         ConsumeCloudSaveUnauthorizedSignal() noexcept
     {
         return m_implementation->ConsumeCloudSaveUnauthorizedSignal();
     }
 
+    // token更新後の検証済み通信成功を一度だけ取り出す。
     bool OnlinePersistenceCoordinator::
         ConsumeCloudSaveHealthySignal() noexcept
     {
@@ -1860,12 +1982,14 @@ namespace LamaPon::Detail
 
     bool OnlinePersistenceCoordinator::ConsumeLocalCommitSignal() noexcept
     {
+        // コールバック先の切替状態の借用
         auto& implementation = *m_implementation;
         if (implementation.observerToken != 0)
         {
             implementation.observerFailed = implementation.observerFailed
                 || ConsumeLocalPersistenceObserverFailure();
         }
+        // ローカル変更または監視失敗があるか
         const bool signalled = implementation.localCommitObserved
             || implementation.observerFailed;
         implementation.localCommitObserved = false;

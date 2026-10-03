@@ -12,12 +12,14 @@
 
 namespace
 {
+    // 正の長さを持つクリップの時刻を進め、末尾で周回または停止する(time: 現在の再生秒数, delta: 進める有限な秒数, duration: クリップ長の正の秒数, loop: 末尾で周回する指定)。
     float AdvanceAnimationTime(
         const float time,
         const float delta,
         const float duration,
         const bool loop) noexcept
     {
+        // 進行後の再生秒数
         const float advanced = time + delta;
         if (advanced < duration)
         {
@@ -28,6 +30,7 @@ namespace
             : duration;
     }
 
+    // 二つの値を指定割合で線形補間する(from: 補間元の値, to: 補間先の値, amount: 補間の割合)。
     float Lerp(
         const float from,
         const float to,
@@ -36,6 +39,7 @@ namespace
         return from + (to - from) * amount;
     }
 
+    // 三次元の各成分を線形補間する(from: 補間元の値, to: 補間先の値, amount: 補間の割合)。
     DirectX::XMFLOAT3 LerpFloat3(
         const DirectX::XMFLOAT3& from,
         const DirectX::XMFLOAT3& to,
@@ -48,11 +52,13 @@ namespace
         };
     }
 
+    // ラジアン角の差を最短の一周内に収めて補間する(from: 補間元のラジアン角, to: 補間先のラジアン角, amount: 補間の割合)。
     float LerpAngle(
         const float from,
         const float to,
         const float amount) noexcept
     {
+        // ラジアンでの一周
         constexpr float TwoPi =
             std::numbers::pi_v<float> * 2.0f;
         return from
@@ -60,6 +66,7 @@ namespace
                 * amount;
     }
 
+    // オイラー角の各軸を最短の一周内で補間する(from: 補間元のラジアン角, to: 補間先のラジアン角, amount: 補間の割合)。
     DirectX::XMFLOAT3 LerpRotation(
         const DirectX::XMFLOAT3& from,
         const DirectX::XMFLOAT3& to,
@@ -99,6 +106,7 @@ namespace LamaPon
         {
             return;
         }
+        // 切り替え前に読む新クリップ
         std::shared_ptr<const AnimationClip> newClip;
         if (m_assets != nullptr && !path.empty())
         {
@@ -125,8 +133,10 @@ namespace LamaPon
         }
         if (m_assets != nullptr && !path.empty())
         {
+            // 切り替え前に読む制御器
             const auto controller =
                 m_assets->LoadAnimatorController(path);
+            // 制御器の入口状態
             const auto* entry =
                 controller->FindState(
                     controller->EntryState());
@@ -135,6 +145,7 @@ namespace LamaPon
                 throw std::runtime_error(
                     "Animator entry state is missing.");
             }
+            // 切り替え前に読む入口クリップ
             const auto clip =
                 m_assets->LoadAnimationClip(
                     entry->clipPath);
@@ -233,6 +244,7 @@ namespace LamaPon
             m_controller =
                 m_assets->ReloadAnimatorController(
                     m_controllerPath);
+            // 制御器の入口状態
             const auto* entry =
                 m_controller->FindState(
                     m_controller->EntryState());
@@ -347,6 +359,7 @@ namespace LamaPon
         m_controller =
             m_assets->LoadAnimatorController(
                 m_controllerPath);
+        // 制御器の入口状態
         const auto* entry =
             m_controller->FindState(
                 m_controller->EntryState());
@@ -385,12 +398,14 @@ namespace LamaPon
         {
             return;
         }
+        // 遷移先の登録状態
         const auto* targetState =
             m_controller->FindState(transition.to);
         if (targetState == nullptr)
         {
             return;
         }
+        // 遷移先の共有クリップ
         auto targetClip =
             m_assets->LoadAnimationClip(
                 targetState->clipPath);
@@ -418,6 +433,7 @@ namespace LamaPon
     void TransformAnimatorComponent::UpdateController(
         const float deltaTime)
     {
+        // 現在の登録状態
         const auto* current =
             m_controller->FindState(
                 m_currentState);
@@ -434,10 +450,12 @@ namespace LamaPon
 
         if (m_nextClip == nullptr)
         {
+            // クリップ長に対する再生割合
             const float normalizedTime =
                 m_clip->Duration() > 0.0f
                     ? m_time / m_clip->Duration()
                     : 1.0f;
+            // 現在状態から選ぶ遷移
             if (const auto* transition =
                     m_controller->FindTransition(
                         m_currentState,
@@ -454,6 +472,7 @@ namespace LamaPon
             return;
         }
 
+        // ブレンド先の登録状態
         const auto* next =
             m_controller->FindState(
                 m_nextState);
@@ -469,23 +488,25 @@ namespace LamaPon
             m_nextClip->Duration(),
             next->loop);
         m_transitionTime += deltaTime;
+        // 実経過時間によるブレンド割合
         const float amount = std::clamp(
             m_transitionTime
                 / m_transitionDuration,
             0.0f,
             1.0f);
+        // 現在クリップの変換サンプル
         const auto from =
             m_clip->Sample(m_time);
+        // 遷移先クリップの変換サンプル
         const auto to =
             m_nextClip->Sample(m_nextTime);
+        // 適用するローカルTransform
         auto& transform = GetTransform();
         transform.position = LerpFloat3(
             from.position,
             to.position,
             amount);
-        // 回転はクォータニオンでSlerpします。軸ごとに角度を補間すると
-        // 最短経路から外れて途中で振れるため（クリップのファイル形式は
-        // 人が読めるようオイラー角のままです）。
+        // クリップのオイラー角をクォータニオンへ変換し、姿勢を最短経路で補間する。
         {
             using namespace DirectX;
             transform.SetRotationVector(
@@ -524,10 +545,13 @@ namespace LamaPon
         {
             return;
         }
+        // 現在クリップの変換サンプル
         const auto sample =
             m_clip->Sample(m_time);
+        // 適用するローカルTransform
         auto& transform = GetTransform();
         transform.position = sample.position;
+        // 適用する回転クォータニオン
         const auto rotation =
             m_clip->SampleRotationQuaternion(m_time);
         transform.SetRotationVector(

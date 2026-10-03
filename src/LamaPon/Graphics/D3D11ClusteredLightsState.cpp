@@ -14,6 +14,7 @@
 
 namespace
 {
+    // 失敗したHRESULTを例外として伝える(result: 操作結果, operation: 診断に表示する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -28,13 +29,16 @@ namespace
         }
     }
 
-    // カリングCSへ渡す定数。シェーダーのClusterCullingBufferと
-    // 並びを一致させています。
+    // HLSLのClusterCullingBufferと同じ配置の計算定数。
     struct CullingConstants final
     {
+        // ワールドからビューへの行列
         DirectX::XMFLOAT4X4 view{};
+        // xyzは分割数、wはライト数
         DirectX::XMFLOAT4 gridParameters{};
+        // 近遠面・距離対数・ライト上限
         DirectX::XMFLOAT4 depthParameters{};
+        // xyは水平・垂直の半視野正接
         DirectX::XMFLOAT4 frustumParameters{};
     };
 }
@@ -87,8 +91,8 @@ namespace LamaPon::Detail
         }
         m_initialized = false;
 
-        // 共通のディスクキャッシュを使ってCompute Shaderを
-        // コンパイルします。
+
+        // CSMainのバイトコード
         const auto byteCode = CompileShaderCached(
             assets,
             shaderPath,
@@ -102,6 +106,7 @@ namespace LamaPon::Detail
                 m_cullingShader.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateComputeShader(light culling)");
 
+        // 計算定数バッファーの作成設定
         D3D11_BUFFER_DESC constantDescription{};
         constantDescription.ByteWidth = sizeof(CullingConstants);
         constantDescription.Usage = D3D11_USAGE_DEFAULT;
@@ -113,7 +118,8 @@ namespace LamaPon::Detail
                 m_constantBuffer.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateBuffer(light culling constants)");
 
-        // ライト一覧（CPU書き込みの動的StructuredBuffer）。
+
+        // ライト情報バッファーの作成設定
         D3D11_BUFFER_DESC lightDescription{};
         lightDescription.ByteWidth =
             sizeof(GpuLight) * MaximumClusteredLights;
@@ -129,6 +135,7 @@ namespace LamaPon::Detail
                 nullptr,
                 m_lightBuffer.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateBuffer(cluster lights)");
+        // ライト情報の読込ビュー設定
         D3D11_SHADER_RESOURCE_VIEW_DESC lightView{};
         lightView.Format = DXGI_FORMAT_UNKNOWN;
         lightView.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
@@ -140,6 +147,7 @@ namespace LamaPon::Detail
                 m_lightShaderResourceView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(cluster lights)");
 
+        // uintバッファーと両ビューを作る(elementCount: 要素数, buffer: バッファー出力, unorderedView: 書込ビュー出力, shaderView: 読込ビュー出力, name: 失敗時の操作名)。
         const auto createUavBuffer =
             [device](
                 const std::uint32_t elementCount,
@@ -150,6 +158,7 @@ namespace LamaPon::Detail
                     shaderView,
                 const char* name)
             {
+                // uintバッファーの作成設定
                 D3D11_BUFFER_DESC description{};
                 description.ByteWidth =
                     sizeof(std::uint32_t) * elementCount;
@@ -166,6 +175,7 @@ namespace LamaPon::Detail
                         nullptr,
                         buffer.ReleaseAndGetAddressOf()),
                     name);
+                // uintの書込ビュー設定
                 D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
                 uav.Format = DXGI_FORMAT_UNKNOWN;
                 uav.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
@@ -176,6 +186,7 @@ namespace LamaPon::Detail
                         &uav,
                         unorderedView.ReleaseAndGetAddressOf()),
                     name);
+                // uintの読込ビュー設定
                 D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
                 srv.Format = DXGI_FORMAT_UNKNOWN;
                 srv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
@@ -213,10 +224,11 @@ namespace LamaPon::Detail
     {
         lighting.clustered = {};
 
+        // 近遠面と視野を読む射影行列
         DirectX::XMFLOAT4X4 projectionValues{};
         DirectX::XMStoreFloat4x4(&projectionValues, projection);
-        // 正射影（2Dシーン）はクラスタの奥行き分割が成立しないので
-        // 従来経路に任せます。透視射影は_44が0、正射影は1です。
+        // 正射影では奥行分割を使わず、従来の照明経路へ戻す。
+        // 透視射影の判定結果
         const bool perspective =
             std::abs(projectionValues._44) < 0.5f;
         if (!perspective
@@ -230,10 +242,11 @@ namespace LamaPon::Detail
             return;
         }
 
-        // 射影行列からnear/farと視野の広がりを取り出します
-        // （XMMatrixPerspectiveFovRH: _33=f/(n-f), _43=n*f/(n-f)）。
+        // 通常の右手透視射影の_33・_43から近遠面を求める。
+        // カリングの近面距離
         const float nearPlane =
             projectionValues._43 / projectionValues._33;
+        // カリングの遠面距離
         const float farPlane =
             projectionValues._43
             / (projectionValues._33 + 1.0f);
@@ -242,14 +255,18 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 水平の半視野角の正接
         const float tanHalfX = 1.0f / projectionValues._11;
+        // 垂直の半視野角の正接
         const float tanHalfY = 1.0f / projectionValues._22;
 
+        // 上限内で転送するライト数
         const auto lightCount = static_cast<std::uint32_t>(
             std::min(
                 lighting.clusteredLights.size(),
                 MaximumClusteredLights));
 
+        // ライト情報の書込マップ
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context->Map(
                 m_lightBuffer.Get(),
@@ -266,6 +283,7 @@ namespace LamaPon::Detail
             sizeof(GpuLight) * lightCount);
         context->Unmap(m_lightBuffer.Get(), 0);
 
+        // GPUへ送るカリング条件
         CullingConstants constants{};
         DirectX::XMStoreFloat4x4(&constants.view, view);
         constants.gridParameters = {
@@ -295,17 +313,20 @@ namespace LamaPon::Detail
             0,
             0);
 
-        // Litシェーダーが前フレームのSRVを掴んだままだと書き込み先に
-        // できないので、先に外します。
+        // 同じ資源をUAVへ結合できるよう、画素シェーダーのSRVを解除する。
+        // PSのt16～t18を解除する配列
         ID3D11ShaderResourceView* nullViews[3]{};
         context->PSSetShaderResources(16, 3, nullViews);
 
+        // CSのb0へ結合する計算定数
         ID3D11Buffer* constantBuffers[]{ m_constantBuffer.Get() };
         context->CSSetConstantBuffers(0, 1, constantBuffers);
+        // CSのt0へ結合するライト情報
         ID3D11ShaderResourceView* resources[]{
             m_lightShaderResourceView.Get()
         };
         context->CSSetShaderResources(0, 1, resources);
+        // CSのu0・u1へ結合する計算結果
         ID3D11UnorderedAccessView* unorderedViews[]{
             m_indexListUnorderedView.Get(),
             m_countUnorderedView.Get()
@@ -321,9 +342,11 @@ namespace LamaPon::Detail
             1,
             1);
 
+        // 出力UAVの結合を解除する配列
         ID3D11UnorderedAccessView* nullUnordered[2]{};
         context->CSSetUnorderedAccessViews(
             0, 2, nullUnordered, nullptr);
+        // 入力SRVの結合を解除する配列
         ID3D11ShaderResourceView* nullResource[1]{};
         context->CSSetShaderResources(0, 1, nullResource);
         context->CSSetShader(nullptr, nullptr, 0);

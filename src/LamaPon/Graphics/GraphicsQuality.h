@@ -14,18 +14,12 @@ namespace LamaPon
         Custom
     };
 
-    // ライティングの計算方式です。品質プリセットとは独立した選択で、絵の
-    // 作り方そのものが変わるので、プリセットを切り替えても
-    // ここは引き継がれます。
+    // 品質プリセットと独立に選ぶライト計算の方式。
     enum class RenderingPath
     {
-        // 1回の描画で使えるポイント／スポットが品質設定の上限
-        // （High=12/4）までの経路。クラスタの前計算が要らないぶん
-        // 軽く、ライトの少ないシーンや非力な環境向けです。
+        // 品質設定の上限内で点・スポットを直接照明する。
         Forward,
-        // クラスタライトカリング。視錐台を16x9x24の格子へ切って
-        // 「そのクラスタへ届くライトの番号表」を毎フレーム作るので、
-        // シーン全体でポイント＋スポット256灯まで置けます。
+        // クラスタへ届くライトを前計算し、点・スポットの合計256灯を扱う。
         ForwardPlus
     };
 
@@ -36,93 +30,94 @@ namespace LamaPon
         DirectX12Experimental
     };
 
+    // 既定構築の点ライト上限は12、Highプリセットは8なので、プリセットの適用には生成関数を使う。
+    // 公開項目の追加は末尾に置き、既存の位置指定初期化との互換性を保つ。
     struct GraphicsSettings final
     {
+        // 各ポスト効果の利用には品質側の許可とScene側の有効設定の両方が必要になる。
+        // 品質プリセットの識別子
         GraphicsQualityPreset preset{
             GraphicsQualityPreset::High };
+        // 描画解像度の倍率
         float renderScale{ 1.0f };
+        // 影の描画の有効有無
         bool shadowsEnabled{ true };
+        // 方向影の解像度
         std::uint32_t shadowResolution{ 2048 };
+        // 影カスケード数の上限
         std::uint32_t shadowCascadeLimit{ 3 };
+        // ブルームの利用許可
         bool bloomEnabled{ true };
+        // 平滑化の利用許可
         bool antiAliasingEnabled{ true };
+        // 霧の利用許可
         bool fogEnabled{ true };
+        // 垂直同期の有効有無
         bool vSyncEnabled{ true };
+        // 直接照明する点ライト数上限
         std::uint32_t pointLightLimit{ 12 };
+        // 直接照明するスポット数上限
         std::uint32_t spotLightLimit{ 4 };
-        // SSAO（遮蔽による陰り）を使うか。プリセットではHigh以上で
-        // 有効になります。Sceneの環境設定側でも個別にオンにする
-        // 必要があります（Bloomと同じ扱い）。
-        // 位置指定の初期化を壊さないよう、必ず末尾に足してください。
+        // 画面空間遮蔽の利用許可
         bool ambientOcclusionEnabled{};
-        // SSAOが遮蔽を探す回数。多いほど滑らかですが重くなります。
-        // 半解像度で計算し、後段のブラーで均すため、少なめでも
-        // 実用になります（Low=8, Medium=12, High=16, Ultra=24）。
+        // 遮蔽を求めるサンプル数
         std::uint32_t ambientOcclusionSampleCount{ 16 };
-        // 0なら上限なしです。VSyncによってディスプレイの更新頻度に
-        // 制限される場合があります。
+        // フレームレート上限、0は無制限
         std::uint32_t targetFrameRate{};
-        // PNG/JPG等の読み込み時にBC1/BC3へランタイム圧縮して
-        // VRAM使用量を約1/4〜1/8にします（画質は少し低下）。
+        // 読込画像のBC圧縮の有効有無
         bool runtimeTextureCompression{};
-        // Screen Space Lens Flare。ポスト処理のサンプル数が多いため、
-        // High以上で有効にします。Scene側でも個別にオンにする必要があります。
+        // レンズフレアの利用許可
         bool screenSpaceLensFlareEnabled{};
-        // 被写界深度（DoF）。半解像度でぼかすので負荷は中程度です。
-        // High以上で有効にします。Scene側でも個別にオンにする必要が
-        // あります（Bloomと同じ扱い）。
+        // 被写界深度の利用許可
         bool depthOfFieldEnabled{};
-        // 被写界深度のぼけを作るサンプル数。多いほど滑らかですが
-        // 重くなります。半解像度で円形に散らすため少なめでも実用に
-        // なります（Low=10, Medium=16, High=22, Ultra=32）。
+        // 被写界深度のサンプル数
         std::uint32_t depthOfFieldSampleCount{ 22 };
-        // モーションブラー（カメラの動きによるブレ）。フル解像度で
-        // 線に沿ってサンプルするので、High以上で有効にします。
-        // Scene側でも個別にオンにする必要があります。
+        // カメラブラーの利用許可
         bool motionBlurEnabled{};
-        // ブレの線に沿って何回サンプルするか（Low=4, Medium=6,
-        // High=8, Ultra=16）。少ないとブレが縞に分かれて見えます。
+        // カメラブラーのサンプル数
         std::uint32_t motionBlurSampleCount{ 8 };
-        // 自動露出（明順応・暗順応）。1/4解像度1パス＋ミップ生成
-        // だけなので軽いほうですが、扱いを他と揃えてHigh以上で
-        // 有効にします。Scene側でも個別にオンにする必要があります。
+        // 自動露出の利用許可
         bool autoExposureEnabled{};
-        // ライティングの計算方式。既定はForward+です。
-        // 位置指定の初期化を壊さないよう、必ず末尾に足してください。
+        // ライト計算の方式
         RenderingPath renderingPath{
             RenderingPath::ForwardPlus };
-        // 自動LODの見た目優先度。1.0が基準で、小さいほど早く
-        // 低LODへ切り替わり、大きいほど高LODを長く保ちます。
+        // 高いLODを維持する優先度倍率
         float automaticLodQuality{ 1.0f };
-        // 描画APIの切り替えは再起動後に行います。既存の
-        // DirectX 11動作と位置指定の初期化を保つため、末尾で
-        // DirectX 11を既定にします。
+        // 起動時に使う描画API
+        // APIの切替はプロセス再起動後に反映する。
         RenderingApi renderingApi{ RenderingApi::DirectX11 };
     };
 
+    // 指定プリセットの設定を作り、CustomはHigh相当、不明な値はHighとする(preset: 品質プリセット)。
     [[nodiscard]] GraphicsSettings
         GraphicsSettingsForPreset(
             GraphicsQualityPreset preset) noexcept;
+    // 数値の範囲と不明な描画方式を補正して設定を返す(settings: 補正する描画設定)。
+    // プリセット識別子は保持し、浮動小数点のNaNは補正しない。
     [[nodiscard]] GraphicsSettings
         ClampGraphicsSettings(
             GraphicsSettings settings) noexcept;
+    // プリセットの保存名を返し、不明な値はHighとする(preset: 品質プリセット)。
     [[nodiscard]] std::string_view
         GraphicsQualityPresetName(
             GraphicsQualityPreset preset) noexcept;
+    // 大文字小文字を区別してプリセット名を読み、不明ならinvalid_argumentを送出する(name: プリセットの保存名)。
     [[nodiscard]] GraphicsQualityPreset
         GraphicsQualityPresetFromName(
             std::string_view name);
+    // 描画APIの保存名を返し、不明な値はDirectX11とする(api: 描画APIの種別)。
     [[nodiscard]] std::string_view
         RenderingApiName(
             RenderingApi api) noexcept;
+    // 大文字小文字を区別して描画API名を読み、不明ならDirectX11とする(name: 描画APIの保存名)。
     [[nodiscard]] RenderingApi
         RenderingApiFromName(
             std::string_view name) noexcept;
+    // 描画方式の保存名を返し、不明な値はForwardPlusとする(path: ライト計算の方式)。
     [[nodiscard]] std::string_view
         RenderingPathName(
             RenderingPath path) noexcept;
-    // 知らない名前はForward+として読みます（設定ファイルが将来の
-    // 名前を持っていても、絵が出ない状態にはしないため）。
+    // 大文字小文字を区別して描画方式名を読み、不明ならForwardPlusとする(name: 描画方式の保存名)。
     [[nodiscard]] RenderingPath
         RenderingPathFromName(
             std::string_view name);

@@ -19,6 +19,7 @@ namespace LamaPon
 {
     namespace
     {
+        // ボディ分類の表示名
         constexpr std::array<const char*, 5> BodyFilterLabels{
             "すべて",
             "動的",
@@ -27,6 +28,7 @@ namespace LamaPon
             "スリープ中"
         };
 
+        // 三次元ベクトルの長さを返します(value: 計測するベクトル)。
         [[nodiscard]] float Length(const DirectX::XMFLOAT3& value)
         {
             return std::sqrt(
@@ -35,6 +37,7 @@ namespace LamaPon
                 + value.z * value.z);
         }
 
+        // 基点へ倍率付きの方向ベクトルを加えます(origin: 基点, direction: 加算する方向, scale: 方向の倍率)。
         [[nodiscard]] DirectX::XMFLOAT3 Add(
             const DirectX::XMFLOAT3& origin,
             const DirectX::XMFLOAT3& direction,
@@ -47,9 +50,11 @@ namespace LamaPon
             };
         }
 
+        // 対象のワールド座標を返します(object: 位置を読み取る対象)。
         [[nodiscard]] DirectX::XMFLOAT3 WorldPosition(
             const GameObject& object)
         {
+            // 対象のワールド座標
             DirectX::XMFLOAT3 position{};
             DirectX::XMStoreFloat3(
                 &position,
@@ -57,13 +62,16 @@ namespace LamaPon
             return position;
         }
 
-        // コライダーの種類名を「BoxCollider3D, SphereCollider3D」の
-        // ように連結します。コライダーを持たない場合は空です。
+
+        // コライダーとCharacterControllerの種類名を連結し、無ければ空を返します(object: 調べる対象)。
         [[nodiscard]] std::string ColliderNames(const GameObject& object)
         {
+            // 連結済みコライダー名
             std::string names;
+            // 対象のコンポーネント
             for (const auto& component : object.Components())
             {
+                // コンポーネントの種類名
                 const auto typeName = component->TypeName();
                 if (typeName.find("Collider") == std::string_view::npos
                     && typeName != "CharacterController")
@@ -85,13 +93,21 @@ namespace LamaPon
 
         struct BodyRow final
         {
+            // シーン内の対象への借用参照
+            // シーン内の対象
             GameObject* object{};
+            // 有効な物理ボディの借用参照
+            // 対象の物理ボディ
             const RigidbodyComponent* body{};
+            // コライダーの種類名一覧
+            // 対象のコライダー名一覧
             std::string colliders;
+            // 一覧表示用のボディ分類
             PhysicsDebuggerPanel::BodyFilter kind{
                 PhysicsDebuggerPanel::BodyFilter::StaticCollider };
         };
 
+        // 一覧用のボディ分類名を返します(kind: ボディの分類)。
         [[nodiscard]] const char* KindLabel(
             const PhysicsDebuggerPanel::BodyFilter kind)
         {
@@ -110,18 +126,24 @@ namespace LamaPon
             return "";
         }
 
+        // ボディまたはコライダーを持つ対象への借用参照を集めます(scene: 調べるシーン)。
         [[nodiscard]] std::vector<BodyRow> CollectBodies(const Scene& scene)
         {
+            // 表示候補のボディ一覧
             std::vector<BodyRow> rows;
+            // シーン内の対象
             for (const auto& object : scene.GameObjects())
             {
+                // 対象の物理ボディ
                 const auto* body =
                     object->GetComponent<RigidbodyComponent>();
+                // 対象のコライダー名一覧
                 auto colliders = ColliderNames(*object);
                 if (body == nullptr && colliders.empty())
                 {
                     continue;
                 }
+                // 表示対象のボディ行
                 BodyRow row;
                 row.object = object.get();
                 row.body = body != nullptr && body->IsEnabled()
@@ -138,22 +160,25 @@ namespace LamaPon
             return rows;
         }
 
+        // 対象名を返し、見つからなければIDを表示名に使います(scene: 検索先のシーン, id: 対象のID)。
         [[nodiscard]] std::string ObjectLabel(
             const Scene& scene,
             const GameObjectId id)
         {
+            // シーン内の対象
             const auto* object = scene.FindGameObject(id);
             return object != nullptr
                 ? object->Name()
                 : "#" + std::to_string(id);
         }
 
-        // 点を中心とする3軸の小さな十字を線分の組で追加します。
+        // 三軸の十字を線分頂点の組で追加します(points: 線分頂点の追加先, center: 十字の中心, size: 各軸の半径)。
         void AppendCross(
             std::vector<DirectX::XMFLOAT3>& points,
             const DirectX::XMFLOAT3& center,
             const float size)
         {
+            // 十字の軸方向と半径
             for (const DirectX::XMFLOAT3 axis : {
                     DirectX::XMFLOAT3{ size, 0.0f, 0.0f },
                     DirectX::XMFLOAT3{ 0.0f, size, 0.0f },
@@ -165,11 +190,13 @@ namespace LamaPon
         }
     }
 
+    // オブジェクト選択の通知を保持します。
     PhysicsDebuggerPanel::PhysicsDebuggerPanel(SelectObject select)
         : m_select(std::move(select))
     {
     }
 
+    // パネルの開閉に接触記録と補助描画を同期します。
     void PhysicsDebuggerPanel::SynchronizeCapture(
         Scene& scene,
         const bool panelOpen)
@@ -181,6 +208,7 @@ namespace LamaPon
         }
     }
 
+    // 物理統計とボディ・接触一覧を描画します。
     void PhysicsDebuggerPanel::Draw(
         const char* const title,
         bool& open,
@@ -227,6 +255,7 @@ namespace LamaPon
             "Scene Viewに赤=衝突、黄=トリガーの接触点と法線、"
             "水色=速度、紫=角速度を描きます。");
 
+        // 直前の物理ステップの統計
         const auto& statistics = scene.PhysicsStats();
         ImGui::Text(
             "固定ステップ %zu回  補間α %.2f  Collider 2D/3D %zu / %zu"
@@ -258,11 +287,13 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // 名前と種類で絞り込んだボディの状態を表示します。
     void PhysicsDebuggerPanel::DrawBodyTable(
         const Scene& scene,
         const GameObjectId selectedObject)
     {
         ImGui::SetNextItemWidth(200.0f);
+        // 名前の入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -275,6 +306,7 @@ namespace LamaPon
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(150.0f);
+        // 選択中のボディ分類番号
         int bodyFilter = static_cast<int>(m_bodyFilter);
         if (ImGui::Combo(
                 "種類",
@@ -285,13 +317,16 @@ namespace LamaPon
             m_bodyFilter = static_cast<BodyFilter>(bodyFilter);
         }
 
+        // オブジェクト別の接触数
         std::unordered_map<GameObjectId, std::size_t> contactCounts;
+        // 記録済みの接触
         for (const auto& contact : scene.PhysicsDebugContacts())
         {
             ++contactCounts[contact.left];
             ++contactCounts[contact.right];
         }
 
+        // 表示候補のボディ一覧
         const auto rows = CollectBodies(scene);
         if (!ImGui::BeginTable(
                 "PhysicsBodies",
@@ -337,8 +372,10 @@ namespace LamaPon
             40.0f);
         ImGui::TableHeadersRow();
 
+        // 表示対象のボディ行
         for (const auto& row : rows)
         {
+            // ボディがスリープ中か
             const bool sleeping =
                 row.body != nullptr && row.body->IsSleeping();
             if (m_bodyFilter == BodyFilter::Sleeping
@@ -395,6 +432,7 @@ namespace LamaPon
                 }
             }
             ImGui::TableSetColumnIndex(7);
+            // 接触一覧または接触数の検索結果
             const auto contacts = contactCounts.find(row.object->Id());
             ImGui::Text(
                 "%zu",
@@ -403,8 +441,10 @@ namespace LamaPon
         ImGui::EndTable();
     }
 
+    // 可視行に限って接触の相手・位置・法線を表示します。
     void PhysicsDebuggerPanel::DrawContactTable(const Scene& scene)
     {
+        // 接触一覧または接触数の検索結果
         const auto& contacts = scene.PhysicsDebugContacts();
         if (contacts.empty())
         {
@@ -445,25 +485,30 @@ namespace LamaPon
             70.0f);
         ImGui::TableHeadersRow();
 
+        // 可視行だけを描画する範囲
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(contacts.size()));
         while (clipper.Step())
         {
+            // 表示する接触の添字
             for (int index = clipper.DisplayStart;
                 index < clipper.DisplayEnd;
                 ++index)
             {
+                // 記録済みの接触
                 const auto& contact =
                     contacts[static_cast<std::size_t>(index)];
                 ImGui::TableNextRow();
                 ImGui::PushID(index);
                 ImGui::TableSetColumnIndex(0);
+                // 接触相手Aの表示名
                 const auto left = ObjectLabel(scene, contact.left);
                 if (ImGui::Selectable(left.c_str()) && m_select)
                 {
                     m_select(contact.left);
                 }
                 ImGui::TableSetColumnIndex(1);
+                // 接触相手Bの表示名
                 const auto right = ObjectLabel(scene, contact.right);
                 if (ImGui::Selectable(right.c_str()) && m_select)
                 {
@@ -494,6 +539,7 @@ namespace LamaPon
         ImGui::EndTable();
     }
 
+    // 接触とスリープしていない有効なボディの速度を重ね描きします。
     void PhysicsDebuggerPanel::DrawSceneOverlay(
         const Scene& scene,
         DebugRenderer& debug,
@@ -505,6 +551,7 @@ namespace LamaPon
         {
             return;
         }
+        // 選択対象の絞り込みに合うか判定します(id: 対象のオブジェクトID)。
         const auto isShown = [this, selectedObject](
             const GameObjectId id)
         {
@@ -513,14 +560,18 @@ namespace LamaPon
 
         if (m_showContacts)
         {
+            // 衝突点と法線の線分頂点
             std::vector<DirectX::XMFLOAT3> collisionLines;
+            // トリガー点と法線の線分頂点
             std::vector<DirectX::XMFLOAT3> triggerLines;
+            // 記録済みの接触
             for (const auto& contact : scene.PhysicsDebugContacts())
             {
                 if (!isShown(contact.left) && !isShown(contact.right))
                 {
                     continue;
                 }
+                // 接触種類に対応する描画先
                 auto& lines =
                     contact.isTrigger ? triggerLines : collisionLines;
                 AppendCross(lines, contact.point, 0.05f);
@@ -544,14 +595,18 @@ namespace LamaPon
         {
             return;
         }
+        // 速度ベクトルの線分頂点
         std::vector<DirectX::XMFLOAT3> velocityLines;
+        // 角速度ベクトルの線分頂点
         std::vector<DirectX::XMFLOAT3> angularLines;
+        // シーン内の対象
         for (const auto& object : scene.GameObjects())
         {
             if (!object->IsActiveInHierarchy() || !isShown(object->Id()))
             {
                 continue;
             }
+            // 対象の物理ボディ
             const auto* body = object->GetComponent<RigidbodyComponent>();
             if (body == nullptr
                 || !body->IsEnabled()
@@ -559,6 +614,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 対象のワールド座標
             const auto origin = WorldPosition(*object);
             if (m_showVelocities && Length(body->Velocity()) > 1.0e-4f)
             {

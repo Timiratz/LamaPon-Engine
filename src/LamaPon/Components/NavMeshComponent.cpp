@@ -13,13 +13,18 @@
 
 namespace
 {
+    // グリッド各軸の最大セル数
     constexpr std::uint32_t MaximumGridAxis = 128;
 
     struct OpenNode final
     {
+        // 探索候補セルの配列添字
+        // 経路に追加する中継点の番号
         std::size_t index{};
+        // 始点コストと残り距離の和
         int score{};
 
+        // 優先度キューで小さい探索スコアを先に取り出すよう比較する(other: 比較相手の探索候補)。
         bool operator<(
             const OpenNode& other) const noexcept
         {
@@ -158,16 +163,19 @@ namespace LamaPon
             const std::uint32_t x,
             const std::uint32_t z) const noexcept
     {
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
             Owner().WorldMatrix());
+        // グリッド最小端のワールドX
         const float originX =
             world._41
             - static_cast<float>(
                 GridWidth())
                 * m_cellSize
                 * 0.5f;
+        // グリッド最小端のワールドZ
         const float originZ =
             world._43
             - static_cast<float>(
@@ -191,28 +199,38 @@ namespace LamaPon
         const std::span<
             const Bounds3D> obstacles)
     {
+        // グリッドのX方向のセル数
         const auto width = GridWidth();
+        // グリッドのZ方向のセル数
         const auto depth = GridDepth();
         m_blocked.assign(
             static_cast<std::size_t>(width)
                 * depth,
             0);
 
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
             Owner().WorldMatrix());
+        // サーフェスのワールド高さ
         const float surfaceY = world._42;
+        // 対象セルのZ座標
         for (std::uint32_t z{};
+            // グリッドのZ方向のセル数
             z < depth;
             ++z)
         {
+            // 対象セルのX座標
             for (std::uint32_t x{};
+                // グリッドのX方向のセル数
                 x < width;
                 ++x)
             {
+                // セル中心のワールド座標
                 const auto center =
                     CellCenter(x, z);
+                // 通行可否を調べる障害物AABB
                 for (const auto& obstacle :
                     obstacles)
                 {
@@ -256,6 +274,7 @@ namespace LamaPon
                 GridWidth())
                 * GridDepth(),
             0);
+        // 通行禁止セルを復元する(x: セルのX座標, z: セルのZ座標)。
         for (const auto& [x, z] :
             blockedCells)
         {
@@ -273,16 +292,19 @@ namespace LamaPon
         int& x,
         int& z) const noexcept
     {
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
             Owner().WorldMatrix());
+        // グリッド最小端のワールドX
         const float originX =
             world._41
             - static_cast<float>(
                 GridWidth())
                 * m_cellSize
                 * 0.5f;
+        // グリッド最小端のワールドZ
         const float originZ =
             world._43
             - static_cast<float>(
@@ -310,14 +332,19 @@ namespace LamaPon
             const int x,
             const int z) const
     {
+        // 最近傍の通行可セルX座標
         std::uint32_t bestX{};
+        // 最近傍の通行可セルZ座標
         std::uint32_t bestZ{};
+        // 最良セルまでの二乗距離
         int bestDistance =
             std::numeric_limits<int>::max();
+        // 近傍検索中のセルZ座標
         for (std::uint32_t candidateZ{};
             candidateZ < GridDepth();
             ++candidateZ)
         {
+            // 近傍検索中のセルX座標
             for (std::uint32_t candidateX{};
                 candidateX < GridWidth();
                 ++candidateX)
@@ -328,12 +355,15 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // 対象セル間のX座標差
                 const int deltaX =
                     static_cast<int>(
                         candidateX) - x;
+                // 対象セル間のZ座標差
                 const int deltaZ =
                     static_cast<int>(
                         candidateZ) - z;
+                // 候補セルまでの二乗距離
                 const int distance =
                     deltaX * deltaX
                     + deltaZ * deltaZ;
@@ -366,9 +396,13 @@ namespace LamaPon
             return {};
         }
 
+        // 入力始点のセルX座標
         int startX{};
+        // 入力始点のセルZ座標
         int startZ{};
+        // 入力目的地のセルX座標
         int destinationX{};
+        // 入力目的地のセルZ座標
         int destinationZ{};
         static_cast<void>(
             WorldToCell(
@@ -380,49 +414,62 @@ namespace LamaPon
                 destination,
                 destinationX,
                 destinationZ));
+        // 始点に最も近い通行可セル
         const auto startCell =
             NearestWalkable(
                 startX,
                 startZ);
+        // 目的地に最も近い通行可セル
         const auto destinationCell =
             NearestWalkable(
                 destinationX,
                 destinationZ);
 
+        // グリッドのX方向のセル数
         const auto width = GridWidth();
+        // グリッド全体のセル数
         const auto cellCount =
             static_cast<std::size_t>(width)
             * GridDepth();
+        // 探索始点の配列添字
         const auto startIndex =
             CellIndex(
                 startCell.first,
                 startCell.second);
+        // 探索目的地の配列添字
         const auto destinationIndex =
             CellIndex(
                 destinationCell.first,
                 destinationCell.second);
+        // 始点から各セルへの最良コスト
         std::vector<int> scores(
             cellCount,
             std::numeric_limits<int>::max());
+        // 経路を復元する直前セルの添字
         std::vector<std::size_t> parents(
             cellCount,
             std::numeric_limits<
                 std::size_t>::max());
+        // 最良経路を確定したセルのフラグ
         std::vector<std::uint8_t> closed(
             cellCount,
             0);
+        // 探索スコア順の候補キュー
         std::priority_queue<OpenNode> open;
 
+        // 直進10・斜め14の目的地までの推定コストを返す(xValue: 対象セルのX座標, zValue: 対象セルのZ座標)。
         const auto heuristic =
             [&destinationCell](
                 const int xValue,
                 const int zValue)
             {
+                // 対象セル間のX座標差
                 const int deltaX =
                     std::abs(
                         static_cast<int>(
                             destinationCell.first)
                         - xValue);
+                // 対象セル間のZ座標差
                 const int deltaZ =
                     std::abs(
                         static_cast<int>(
@@ -447,6 +494,7 @@ namespace LamaPon
                 static_cast<int>(
                     startCell.second))
         });
+        // 直進と斜めの8近傍の座標差
         constexpr std::array<
             std::pair<int, int>,
             8> Directions{
@@ -462,6 +510,7 @@ namespace LamaPon
 
         while (!open.empty())
         {
+            // 最小スコアで取り出した探索候補
             const auto current =
                 open.top();
             open.pop();
@@ -476,17 +525,22 @@ namespace LamaPon
                 break;
             }
 
+            // 探索中のセルX座標
             const int currentX =
                 static_cast<int>(
                     current.index % width);
+            // 探索中のセルZ座標
             const int currentZ =
                 static_cast<int>(
                     current.index / width);
+            // 隣接セルを調べる(offsetX: X方向の座標差, offsetZ: Z方向の座標差)。
             for (const auto& [offsetX, offsetZ] :
                 Directions)
             {
+                // 隣接候補のセルX座標
                 const int nextX =
                     currentX + offsetX;
+                // 隣接候補のセルZ座標
                 const int nextZ =
                     currentZ + offsetZ;
                 if (nextX < 0
@@ -529,6 +583,7 @@ namespace LamaPon
                     continue;
                 }
 
+                // 隣接候補の配列添字
                 const auto nextIndex =
                     CellIndex(
                         static_cast<
@@ -537,6 +592,7 @@ namespace LamaPon
                         static_cast<
                             std::uint32_t>(
                                 nextZ));
+                // 始点から隣接候補へのコスト
                 const int candidateScore =
                     scores[current.index]
                     + (offsetX != 0
@@ -571,7 +627,9 @@ namespace LamaPon
             return {};
         }
 
+        // 始点から目的地へのセル経路
         std::vector<CellCoordinate> cells;
+        // 経路を逆にたどるセルの配列添字
         for (std::size_t current =
                 destinationIndex;;
             current = parents[current])
@@ -588,15 +646,18 @@ namespace LamaPon
         }
         std::ranges::reverse(cells);
 
-        // 視線が通る限り中継セルを飛ばして経路を平滑化します
-        // （string pulling）。グリッドA*特有のジグザグを解消します。
+        // 通行可の直線で結べる最遠の中継セルへ飛ばして経路を平滑化する。
+        // 直線で中継を省いたセル経路
         std::vector<CellCoordinate> pulled;
         pulled.reserve(cells.size());
         pulled.push_back(cells.front());
+        // 平滑化する線分の始点番号
         std::size_t anchor = 0;
         while (anchor + 1 < cells.size())
         {
+            // 直線で到達できる最遠点の番号
             std::size_t farthest = anchor + 1;
+            // 最遠から試す中継点の番号
             for (std::size_t candidate =
                     cells.size() - 1;
                 candidate > anchor + 1;
@@ -614,10 +675,12 @@ namespace LamaPon
             anchor = farthest;
         }
 
+        // 返すワールド座標の経路
         std::vector<DirectX::XMFLOAT3> path;
         path.reserve(pulled.size() + 1);
         path.push_back(start);
-        // 終端セルの中心は実際の目的地で置き換えます。
+        // 両端はセル中心へ補正せず、入力された始点と目的地をそのまま返す。
+        // 経路に追加する中継点の番号
         for (std::size_t index = 1;
             index + 1 < pulled.size();
             ++index)
@@ -635,8 +698,8 @@ namespace LamaPon
         const CellCoordinate& from,
         const CellCoordinate& to) const noexcept
     {
-        // セル中心間の線分が通過する全セルを走査します
-        // （Amanatides & Wooのボクセル走査）。
+
+        // 符号付き座標の範囲外も通行禁止として判定する(x: セルのX座標, z: セルのZ座標)。
         const auto isBlockedSafe =
             [this](const int x, const int z) noexcept
         {
@@ -649,34 +712,48 @@ namespace LamaPon
                     static_cast<std::uint32_t>(z));
         };
 
+        // 対象セルのX座標
         int x = static_cast<int>(from.first);
+        // 対象セルのZ座標
         int z = static_cast<int>(from.second);
+        // 線分終点のセルX座標
         const int targetX = static_cast<int>(to.first);
+        // 線分終点のセルZ座標
         const int targetZ = static_cast<int>(to.second);
+        // 対象セル間のX座標差
         const float deltaX =
             static_cast<float>(targetX - x);
+        // 対象セル間のZ座標差
         const float deltaZ =
             static_cast<float>(targetZ - z);
+        // 線分が進むX方向の符号
         const int stepX =
             deltaX > 0.0f ? 1 : (deltaX < 0.0f ? -1 : 0);
+        // 線分が進むZ方向の符号
         const int stepZ =
             deltaZ > 0.0f ? 1 : (deltaZ < 0.0f ? -1 : 0);
+        // 進まない軸の境界時刻代替値
         const float infinity =
             std::numeric_limits<float>::max();
-        // 開始点はセル中心なので次の境界まで0.5セルです。
+        // セル中心から最初の境界まで半セルとして線分の通過順を計算する。
+        // 次のX境界までの線分内の割合
         float tMaxX = stepX != 0
             ? 0.5f / std::abs(deltaX)
             : infinity;
+        // 次のZ境界までの線分内の割合
         float tMaxZ = stepZ != 0
             ? 0.5f / std::abs(deltaZ)
             : infinity;
+        // X境界一つ分の線分内の割合
         const float tDeltaX = stepX != 0
             ? 1.0f / std::abs(deltaX)
             : infinity;
+        // Z境界一つ分の線分内の割合
         const float tDeltaZ = stepZ != 0
             ? 1.0f / std::abs(deltaZ)
             : infinity;
 
+        // 角通過とみなす割合差の許容値
         constexpr float cornerEpsilon = 0.000001f;
         while (x != targetX || z != targetZ)
         {
@@ -685,8 +762,7 @@ namespace LamaPon
                 && std::abs(tMaxX - tMaxZ)
                     < cornerEpsilon)
             {
-                // 角を正確に通過する場合は、斜め移動と同じく
-                // 両隣のセルも通行可能である必要があります。
+                // 角を通る線分も斜め移動と同じく両隣の通行可を必要とする。
                 if (isBlockedSafe(x + stepX, z)
                     || isBlockedSafe(x, z + stepZ))
                 {
@@ -718,13 +794,16 @@ namespace LamaPon
     bool NavMeshComponent::ContainsPoint(
         const DirectX::XMFLOAT3& point) const noexcept
     {
+        // 対象セルのX座標
         int x{};
+        // 対象セルのZ座標
         int z{};
         return WorldToCell(point, x, z);
     }
 
     float NavMeshComponent::SurfaceHeight() const noexcept
     {
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
@@ -737,10 +816,14 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // グリッドのX方向のセル数
         const auto width = GridWidth();
+        // グリッドのZ方向のセル数
         const auto depth = GridDepth();
+        // 通行可セルの枠線頂点
         std::vector<DirectX::XMFLOAT3>
             walkableLines;
+        // 通行禁止セルの枠線頂点
         std::vector<DirectX::XMFLOAT3>
             blockedLines;
         walkableLines.reserve(
@@ -749,24 +832,33 @@ namespace LamaPon
         blockedLines.reserve(
             walkableLines.capacity());
 
+        // 対象セルのZ座標
         for (std::uint32_t z{};
+            // グリッドのZ方向のセル数
             z < depth;
             ++z)
         {
+            // 対象セルのX座標
             for (std::uint32_t x{};
+                // グリッドのX方向のセル数
                 x < width;
                 ++x)
             {
+                // セル中心のワールド座標
                 const auto center =
                     CellCenter(x, z);
+                // 描くセル枠の半幅
                 const float half =
                     m_cellSize * 0.47f;
+                // セル枠を描くワールド高さ
                 const float y =
                     center.y + 0.025f;
+                // 通行可否に対応する線の格納先
                 auto& lines =
                     IsBlocked(x, z)
                     ? blockedLines
                     : walkableLines;
+                // セル枠のワールド座標の四隅
                 const DirectX::XMFLOAT3
                     corners[]{
                         {
@@ -790,6 +882,7 @@ namespace LamaPon
                             center.z + half
                         }
                     };
+                // セル枠の辺番号
                 for (std::size_t edge{};
                     edge < 4;
                     ++edge)

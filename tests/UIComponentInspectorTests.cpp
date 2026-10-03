@@ -26,13 +26,17 @@
 
 namespace
 {
+    // Require(condition: 検証条件, message: 失敗理由)は不成立時に例外を送出する。
     void Require(const bool condition, const char* message)
     {
+        // 条件違反を検出する
         if (!condition) throw std::runtime_error(message);
     }
 
+    // TestMalformedShaderPropertiesFallBackWithoutThrowing()は不正なProperty定義の安全な処理を検証する。
     void TestMalformedShaderPropertiesFallBackWithoutThrowing()
     {
+        // 型が文字列ではない不正なProperty定義
         const auto invalidTarget = LamaPon::ParseShaderProperties(
             R"(/* LAMAPON_PROPERTIES
             [{"target":1,"type":"float","name":"Amount"}]
@@ -43,6 +47,7 @@ namespace
                 && invalidTarget.fields.empty(),
             "A non-string property target must fall back with an error");
 
+        // 既定値が型と一致しない不正なProperty定義
         const auto invalidDefault = LamaPon::ParseShaderProperties(
             R"(/* LAMAPON_PROPERTIES
             [{"target":"0.x","type":"float","name":"Amount",
@@ -55,8 +60,10 @@ namespace
             "An invalid property default must fall back with an error");
     }
 
+    // TestManifestPropertyConversion()はManifest Propertyの自動割当と既定値を検証する。
     void TestManifestPropertyConversion()
     {
+        // 自動割当の対象となるfloat Property
         LamaPon::ShaderPropertyDesc amount;
         amount.name = "Amount";
         amount.type = "float";
@@ -65,6 +72,7 @@ namespace
         amount.minimum = 0.0;
         amount.maximum = 1.0;
 
+        // Manifestから変換したProperty一覧
         const auto converted =
             LamaPon::ConvertShaderManifestProperties({ amount });
         Require(
@@ -77,6 +85,7 @@ namespace
             "A valid manifest property must retain its Inspector metadata");
 
         amount.target.clear();
+        // Binding先を指定していないProperty
         const auto targetless =
             LamaPon::ConvertShaderManifestProperties({ amount });
         Require(
@@ -87,13 +96,16 @@ namespace
                 && targetless.fields[0].components[0] == 0,
             "A targetless manifest property must be auto-bound");
 
+        // 自動Binding対象の色Property
         LamaPon::ShaderPropertyDesc tint;
         tint.name = "Tint";
         tint.type = "color";
         tint.defaultValue = "[1.0,0.5,0.25]";
+        // 自動Binding対象のTexture Property
         LamaPon::ShaderPropertyDesc mask;
         mask.name = "Mask";
         mask.type = "texture";
+        // 明示・自動Bindingを混ぜた変換結果
         const auto automatic =
             LamaPon::ConvertShaderManifestProperties(
                 { amount, tint, mask });
@@ -110,11 +122,14 @@ namespace
                 && automatic.fields[2].parameterIndex == 0,
             "Automatic bindings must pack constants and start textures at t7");
 
+        // 自動割当前から予約されたProperty
         LamaPon::ShaderPropertyDesc reserved = amount;
         reserved.name = "Reserved";
         reserved.target = "0.x";
+        // 最初に自動BindingするProperty
         LamaPon::ShaderPropertyDesc allocated = amount;
         allocated.name = "Allocated first";
+        // 明示・自動Binding混在時の変換結果
         const auto mixed =
             LamaPon::ConvertShaderManifestProperties(
                 { allocated, reserved });
@@ -127,10 +142,12 @@ namespace
             "Automatic bindings must not consume a later explicit target");
     }
 
+    // TestShaderAssetSelectionAndOpenRoutes()はShader資産の選択ルールを検証する。
     void TestShaderAssetSelectionAndOpenRoutes()
     {
         using namespace LamaPon::EditorDetail;
 
+        // 開く対象のShader Manifest
         const std::filesystem::path manifest{
             "Shaders/Toon.lamashader.json" };
         Require(
@@ -165,20 +182,24 @@ namespace
             "Selecting a manifest from the default shader must count as a change");
     }
 
+    // TestShaderPropertyEditCommitIsIndependentFromChange()はUndo確定を値変更と分けて検証する。
     void TestShaderPropertyEditCommitIsIndependentFromChange()
     {
+        // ドラッグ中の編集結果
         LamaPon::ShaderPropertyEditResult dragging;
         dragging.Observe(true, false);
         Require(
             dragging.changed && !dragging.committed,
             "Dragging must update the value without growing Undo history");
 
+        // ドラッグ解除時の編集結果
         LamaPon::ShaderPropertyEditResult released;
         released.Observe(false, true);
         Require(
             !released.changed && released.committed,
             "The release frame must commit Undo even without a new value");
 
+        // 即時確定するボタン操作
         LamaPon::ShaderPropertyEditResult button;
         button.Observe(true, true);
         Require(
@@ -186,13 +207,16 @@ namespace
             "An immediate property action must update and commit together");
     }
 
+    // TestSimpleMaterialShaderGeneration()は生成HLSLと各EntryPointを検証する。
     void TestSimpleMaterialShaderGeneration()
     {
+        // 機能を有効化した簡易Material Graph
         LamaPon::SimpleMaterialShaderGraph graph;
         graph.emission = true;
         graph.rimLight = true;
         graph.uvScroll = true;
         graph.maskTexture = true;
+        // Graphから生成したHLSL
         const auto source = LamaPon::GenerateSimpleMaterialShader(graph);
         Require(
             source.find("LamaPonSimpleMaterialGraph.hlsli")
@@ -204,17 +228,23 @@ namespace
                 && source.find("PSSkinnedMain") != std::string::npos,
             "A simple graph must generate register-free material HLSL");
 
+        // 生成Shaderが参照する共通Include
         std::ifstream includeFile(
             "assets/shaders/LamaPonSimpleMaterialGraph.hlsli",
             std::ios::binary);
+        // 共通Includeが配布されていることを確認する
         Require(
             static_cast<bool>(includeFile),
             "The generated graph support include must be distributed");
+        // Includeファイルの内容
         std::ostringstream includeContents;
         includeContents << includeFile.rdbuf();
+        // コンパイル用にIncludeを展開したShader
         auto compilable = source;
+        // 生成コード内のInclude行
         const std::string includeLine =
             "#include \"shaders/LamaPonSimpleMaterialGraph.hlsli\"";
+        // Include行の開始位置
         const auto includePosition = compilable.find(includeLine);
         Require(
             includePosition != std::string::npos,
@@ -224,12 +254,16 @@ namespace
             includeLine.size(),
             includeContents.str());
 
+        // compile(entry: EntryPoint名, target: Shader Model)は指定EntryPointをコンパイルする。
         const auto compile = [&compilable](
             const char* entry,
             const char* target)
         {
+            // 生成ShaderのByteCode出力先
             Microsoft::WRL::ComPtr<ID3DBlob> byteCode;
+            // コンパイラーエラー出力先
             Microsoft::WRL::ComPtr<ID3DBlob> errors;
+            // コンパイル実行結果
             const auto result = D3DCompile(
                 compilable.data(),
                 compilable.size(),
@@ -242,8 +276,10 @@ namespace
                 0,
                 byteCode.ReleaseAndGetAddressOf(),
                 errors.ReleaseAndGetAddressOf());
+            // 失敗時にコンパイラー出力を例外へ渡す
             if (FAILED(result))
             {
+                // 診断があれば診断文を使う
                 const auto message = errors
                     ? static_cast<const char*>(errors->GetBufferPointer())
                     : "Generated shader compilation failed";
@@ -257,10 +293,13 @@ namespace
     }
 }
 
+// UI Component InspectorのShader処理・描画・編集確定を検証する
 int main()
 {
     ImGui::CreateContext();
+    // テスト失敗を返す終了コード
     int result{};
+    // テスト失敗を終了コードへ変換する
     try
     {
         TestMalformedShaderPropertiesFallBackWithoutThrowing();
@@ -269,6 +308,7 @@ int main()
         TestShaderPropertyEditCommitIsIndependentFromChange();
         TestSimpleMaterialShaderGeneration();
 
+        // ImGuiのテスト用IO設定
         auto& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(1280, 720);
@@ -277,9 +317,12 @@ int main()
         ImGui::GetPlatformIO().Renderer_TextureMaxWidth = 4096;
         ImGui::GetPlatformIO().Renderer_TextureMaxHeight = 4096;
 
-        // Scene・GraphicsDevice・EditorLayerを生成せずに全担当を描画します。
+        // 全UI Inspectorを描画して編集履歴を確認する
+        // UI Inspectorを保持するGameObject
         LamaPon::GameObject object(1, "UI inspector regression");
+        // RenderTexture選択を検証する画像コンポーネント
         auto& image = object.AddComponent<LamaPon::UIImageComponent>();
+        // Inspectorの描画対象となるコンポーネント群
         const std::vector<LamaPon::Component*> components{
             &object.AddComponent<LamaPon::UICanvasComponent>(),
             &object.AddComponent<LamaPon::UIRectTransformComponent>(),
@@ -289,17 +332,24 @@ int main()
             &object.AddComponent<LamaPon::UIInputFieldComponent>(),
             &object.AddComponent<LamaPon::UILayoutGroupComponent>(),
             &object.AddComponent<LamaPon::UIScrollViewComponent>() };
+        // Inspector対象外のコンポーネント
         LamaPon::RotatorComponent unsupported;
+        // Asset Pickerへ渡す選択中の資産
         std::filesystem::path selectedAsset;
+        // Undo履歴数・Picker呼出数・描画フレーム番号
         int historyCount{}, pickerCalls{}, frame{};
+        // UI Inspectorが使う描画・Undo・Picker連携
         LamaPon::UIInspectorContext context{
             selectedAsset, 1280, 720,
             [&] { ++historyCount; },
+            // log(message: 表示する検査エラー)はテスト失敗を例外で通知する
             [](const std::string& message, bool) { throw std::runtime_error(message); },
+            // picker(id: Picker識別子, current: 現在値)は選択値と確定状態を返す
             [&](const char* id, const std::string& current)
             {
                 Require(std::string_view(id) == "UIImageRenderTexture", "Unexpected picker request");
                 ++pickerCalls;
+                // 初回フレームでは画像に候補を設定する
                 if (frame == 0)
                 {
                     Require(current.empty(), "Initial image must have no render texture");
@@ -308,35 +358,43 @@ int main()
                 Require(current == "Camera preview", "Edited value must survive until commit");
                 return LamaPon::RenderTexturePickerResult{ std::nullopt, frame == 1 };
             } };
+        // frame: 編集中・確定・確定後の描画番号
         for (; frame < 3; ++frame)
         {
             ImGui::NewFrame();
             ImGui::Begin("UI inspector regression");
+            // component: Inspectorを表示する対象
             for (auto* component : components)
             {
                 ImGui::PushID(component);
                 Require(LamaPon::DrawUIComponentInspector(*component, context), "UI component must have an inspector");
                 ImGui::PopID();
             }
+            // 非対応コンポーネントを呼び出し元へ委譲することを確認する
             Require(!LamaPon::DrawUIComponentInspector(unsupported, context),
                 "Unsupported component must be delegated without side effects");
             ImGui::End();
             ImGui::Render();
+            // texture: 作成・更新を要求するImGuiテクスチャ
             for (auto* texture : ImGui::GetPlatformIO().Textures)
             {
+                // 作成または更新待ちのテクスチャを準備済みにする
                 if (texture->Status == ImTextureStatus_WantCreate || texture->Status == ImTextureStatus_WantUpdates)
                 {
                     texture->SetTexID(1);
                     texture->SetStatus(ImTextureStatus_OK);
                 }
             }
+            // 編集時だけ履歴を作成し、確定時に一度だけ記録する
             Require(historyCount == (frame == 0 ? 0 : 1),
                 "Edit must be recorded once at commit, not during every frame");
         }
+        // Picker値とInspector描画結果を検証する
         Require(pickerCalls == 3 && image.RenderTexture() == "Camera preview",
             "Image inspector must apply the narrow picker result");
         Require(ImGui::GetDrawData()->TotalVtxCount > 0, "Independent inspectors must emit draw commands");
     }
+    // 例外内容を出力して失敗状態を記録する
     catch (const std::exception& error)
     {
         std::cerr << error.what() << '\n';

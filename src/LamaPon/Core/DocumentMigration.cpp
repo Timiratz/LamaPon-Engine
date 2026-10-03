@@ -17,6 +17,7 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // アセット参照を保持する項目名
     constexpr std::array<std::string_view, 15>
         AssetReferenceFields{
             "albedoTexture",
@@ -36,6 +37,7 @@ namespace
             "sourceAsset"
         };
 
+    // 文書種別の形式名を返します(kind: 文書種別)。
     std::string_view ExpectedFormat(
         const LamaPon::SerializedDocumentKind kind)
     {
@@ -54,10 +56,12 @@ namespace
         }
     }
 
+    // 文書形式が種別に合うか検証します(document: 検証対象のJSON, kind: 期待する種別)。
     void ValidateFormat(
         const Json& document,
         const LamaPon::SerializedDocumentKind kind)
     {
+        // 文書に記録された形式名
         const auto format =
             document.value("format", std::string{});
         if (kind
@@ -79,6 +83,7 @@ namespace
         }
     }
 
+    // プリファレンス値に型名を付けます(value: 移行対象の値)。
     Json TypedPreferenceValue(const Json& value)
     {
         if (value.is_boolean())
@@ -113,6 +118,7 @@ namespace
         return value;
     }
 
+    // 版番号0の文書を現行形式へ書き換えます(document: 更新対象のJSON, kind: 文書種別)。
     void MigrateVersionZero(
         Json& document,
         const LamaPon::SerializedDocumentKind kind)
@@ -159,10 +165,12 @@ namespace
             break;
 
         case LamaPon::SerializedDocumentKind::PlayerPrefs:
+            // 保存されたプリファレンス値の一覧
             if (auto values = document.find("values");
                 values != document.end()
                 && values->is_object())
             {
+                // key: 設定項目名, value: 移行する設定値
                 for (auto& [key, value] : values->items())
                 {
                     static_cast<void>(key);
@@ -190,6 +198,7 @@ namespace
             LamaPon::CurrentSerializedDocumentVersion;
     }
 
+    // アセット参照の項目名かを返します(field: JSONの項目名)。
     bool IsAssetReferenceField(
         const std::string_view field)
     {
@@ -198,9 +207,11 @@ namespace
             field) != AssetReferenceFields.end();
     }
 
+    // パスの重複判定キーを返します(path: アセットのパス)。
     std::wstring PathKey(
         const std::filesystem::path& path)
     {
+        // 小文字へ統一する正規化パス
         auto key = path.lexically_normal().wstring();
         std::ranges::transform(
             key,
@@ -209,6 +220,7 @@ namespace
         return key;
     }
 
+    // 未登録のアセット参照を追加します(value: パスを含むJSON値, keys: 登録済みの比較キー, paths: パスの出力先)。
     void AddPath(
         const Json& value,
         std::set<std::wstring>& keys,
@@ -218,11 +230,13 @@ namespace
         {
             return;
         }
+        // JSONに保存されたUTF-8パス
         const auto text = value.get<std::string>();
         if (text.empty() || text.size() > 32768)
         {
             return;
         }
+        // 正規化したアセットのパス
         const auto path =
             LamaPon::PathFromUtf8(text).lexically_normal();
         if (path.empty())
@@ -235,6 +249,7 @@ namespace
         }
     }
 
+    // JSONを再帰探索して参照先を収集します(value: 探索するJSON値, keys: 登録済みの比較キー, paths: パスの出力先)。
     void CollectPaths(
         const Json& value,
         std::set<std::wstring>& keys,
@@ -246,6 +261,7 @@ namespace
         }
         if (value.is_array())
         {
+            // 探索する配列要素
             for (const auto& child : value)
             {
                 CollectPaths(child, keys, paths);
@@ -257,11 +273,13 @@ namespace
             return;
         }
 
+        // field: 項目名, child: 探索する項目の値
         for (const auto& [field, child] : value.items())
         {
             if (field == "assetManifest"
                 && child.is_array())
             {
+                // 既存一覧に記録された参照先
                 for (const auto& entry : child)
                 {
                     AddPath(entry, keys, paths);
@@ -293,6 +311,7 @@ namespace LamaPon
         }
         ValidateFormat(document, kind);
 
+        // JSON内の版番号の位置
         const auto versionValue =
             document.find("version");
         if (versionValue != document.end()
@@ -303,6 +322,7 @@ namespace LamaPon
                 "Serialized LamaPon document has an invalid version.");
         }
 
+        // 負数も検証する文書の版番号
         const auto signedVersion =
             document.value("version", std::int64_t{});
         if (signedVersion < 0
@@ -313,6 +333,7 @@ namespace LamaPon
                 "Serialized LamaPon document requires a newer engine.");
         }
 
+        // 移行結果と前後の版番号
         DocumentMigrationReport report{
             static_cast<std::uint32_t>(signedVersion),
             static_cast<std::uint32_t>(signedVersion),
@@ -332,7 +353,9 @@ namespace LamaPon
         CollectSerializedAssetPaths(
             const nlohmann::json& document)
     {
+        // 重複判定用の正規化パス集合
         std::set<std::wstring> keys;
+        // 収集した参照先のパス一覧
         std::vector<std::filesystem::path> paths;
         CollectPaths(document, keys, paths);
         return paths;
@@ -342,10 +365,12 @@ namespace LamaPon
         nlohmann::json& document)
     {
         document.erase("assetManifest");
+        // 再構築する参照先のパス一覧
         const auto paths =
             CollectSerializedAssetPaths(document);
         document["assetManifest"] =
             nlohmann::json::array();
+        // アセット一覧に書き込むパス
         for (const auto& path : paths)
         {
             document["assetManifest"].push_back(

@@ -7,35 +7,22 @@
 
 namespace LamaPon
 {
-    // GameObjectの位置・回転・大きさ。
-    //
-    // 回転の正本はクォータニオン（rotationQuaternion）です。オイラー角は
-    // EulerAngles() / SetEulerAngles() を
-    // 通した「読み書きできる窓」として扱います。
-    //
-    // なぜクォータニオンを正本にするか:
-    // 1. ジンバルロックを避けます。オイラー角ではピッチ±90度でヨーと
-    //    ロールが縮退し、独立に回転できません。
-    // 2. 最短経路に沿って補間します。軸ごとの角度補間では回転の軌跡が
-    //    最短経路から外れ、途中で振れます。
-    // 3. 回転を順序どおりに合成し、角度の加算による誤差の蓄積を避けます。
-    //
-    // オイラー角で扱いたいときは EulerAngles() / SetEulerAngles() を
-    // 使ってください（Inspectorの表示・編集はこちらです）。
-    // 「Y軸まわりに少し回す」のような操作は Rotate() を使うと、
-    // オイラー角を経由せずに合成できます。
+    // 回転の正本は単位クォータニオンで、Euler角での読み書きは専用関数を通します。
     struct Transform final
     {
+        // 親を基準にした局所位置
         DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
-        // 単位クォータニオン（x, y, z, w）。既定は無回転。
+        // 単位回転クォータニオン
         DirectX::XMFLOAT4 rotationQuaternion{
             0.0f,
             0.0f,
             0.0f,
             1.0f
         };
+        // 三軸の局所拡縮倍率
         DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
 
+        // 保持する回転クォータニオンをSIMD値で返します。
         [[nodiscard]] DirectX::XMVECTOR
             RotationVector() const noexcept
         {
@@ -43,9 +30,12 @@ namespace LamaPon
                 &rotationQuaternion);
         }
 
+        // 回転クォータニオンを正規化して設定します(value: 回転値)。
+        // 長さが非有限または微小なら単位回転へ戻します。
         void SetRotationVector(
             DirectX::FXMVECTOR value) noexcept
         {
+            // 回転値の長さの二乗
             const float lengthSquared =
                 DirectX::XMVectorGetX(
                     DirectX::XMVector4LengthSq(value));
@@ -65,8 +55,8 @@ namespace LamaPon
                 DirectX::XMQuaternionNormalize(value));
         }
 
-        // オイラー角（ラジアン。x=ピッチ, y=ヨー, z=ロール）。
-        // DirectXMathのRollPitchYaw規約と同じ並びです。
+        // Euler角から回転を設定します(pitch: X軸ラジアン, yaw: Y軸ラジアン, roll: Z軸ラジアン)。
+        // DirectXMathのRollPitchYaw規約に従います。
         void SetEulerAngles(
             const float pitch,
             const float yaw,
@@ -79,6 +69,7 @@ namespace LamaPon
                     roll));
         }
 
+        // 三軸のEuler角から回転を設定します(radians: ピッチ・ヨー・ロールのラジアン)。
         void SetEulerAngles(
             const DirectX::XMFLOAT3& radians) noexcept
         {
@@ -88,42 +79,34 @@ namespace LamaPon
                 radians.z);
         }
 
-        // クォータニオンからオイラー角へ戻します。
-        //
-        // 同じ回転を表すオイラー角は複数あるため、往復して必ず同じ
-        // 数値に戻るとは限りません（-180度と180度など）。表す回転は
-        // 同じです。Inspectorでの編集は、この揺れを避けるために
-        // 編集中の入力値を別に保持しています。
+        // 回転をピッチ・ヨー・ロールのラジアンへ変換します。
+        // 同じ回転を表す角度は複数あるため、設定値と数値が一致するとは限りません。
         [[nodiscard]] DirectX::XMFLOAT3
             EulerAngles() const noexcept
         {
             using namespace DirectX;
 
+            // Euler角へ分解する回転行列
             XMFLOAT4X4 matrix{};
             XMStoreFloat4x4(
                 &matrix,
                 XMMatrixRotationQuaternion(
                     RotationVector()));
 
-            // M = Rz(roll) * Rx(pitch) * Ry(yaw) を展開すると
-            //   _32 = -sin(pitch)
-            //   _12 =  sin(roll) * cos(pitch)
-            //   _22 =  cos(roll) * cos(pitch)
-            //   _31 =  cos(pitch) * sin(yaw)
-            //   _33 =  cos(pitch) * cos(yaw)
-            // になります（DirectXは行ベクトル規約）。
+            // 行ベクトルのRz×Rx×Ryからsin(pitch)を取り出します。
+            // ピッチの制限済み正弦値
             const float sinPitch =
                 std::clamp(-matrix._32, -1.0f, 1.0f);
+            // 抽出したピッチのラジアン
             const float pitch = std::asin(sinPitch);
+            // 特異姿勢を判定するピッチ余弦
             const float cosPitch =
                 std::sqrt(
                     std::max(
                         1.0f - sinPitch * sinPitch,
                         0.0f));
 
-            // ピッチが±90度に近いとcos(pitch)が0へ落ち、ヨーと
-            // ロールが縮退します（ジンバルロック）。その場合は
-            // ロールを0に固定してヨーへ寄せます。
+            // ピッチが±90度付近ではヨーとロールが縮退するため、ロールを0へ固定します。
             if (cosPitch < 1.0e-4f)
             {
                 return {
@@ -139,15 +122,17 @@ namespace LamaPon
             };
         }
 
-        // 任意軸まわりの回転を後から合成します（ローカル基準）。
-        // オイラー角の成分を足す代わりにこちらを使ってください。
+        // ローカル軸まわりの回転を合成します(axis: 回転軸, radians: 回転ラジアン)。
+        // 非有限の角度や微小・非有限の軸では変更しません。
         void Rotate(
             const DirectX::XMFLOAT3& axis,
             const float radians) noexcept
         {
             using namespace DirectX;
+            // SIMD値へ変換した回転軸
             const XMVECTOR axisVector =
                 XMLoadFloat3(&axis);
+            // 回転軸の長さの二乗
             const float axisLengthSquared =
                 XMVectorGetX(
                     XMVector3LengthSq(axisVector));
@@ -165,8 +150,8 @@ namespace LamaPon
                         radians)));
         }
 
-        // オイラー角ぶんの回転を合成します。既存の
-        // 「rotation.y += delta」のような書き方の置き換えです。
+        // Euler角ぶんの回転をクォータニオンで合成します(radians: 三軸の回転ラジアン)。
+        // 非有限の角度では変更しません。
         void RotateEuler(
             const DirectX::XMFLOAT3& radians) noexcept
         {
@@ -186,6 +171,7 @@ namespace LamaPon
                         radians.z)));
         }
 
+        // 拡縮・回転・移動の順で局所変換行列を求めます。
         [[nodiscard]] DirectX::XMMATRIX
             LocalMatrix() const noexcept
         {

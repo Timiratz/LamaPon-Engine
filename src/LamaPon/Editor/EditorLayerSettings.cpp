@@ -24,25 +24,31 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // 保存するUndo状態の最大件数
     constexpr std::size_t MaximumHistoryEntries = 64;
 }
 
 namespace LamaPon
-{    std::filesystem::path EditorLayer::EditorSettingsPath() const
+{
+    // プロジェクトの管理ディレクトリ内にあるエディター設定の保存パスを返します。
+    std::filesystem::path EditorLayer::EditorSettingsPath() const
     {
         return m_graphics.Assets().AssetRoot().parent_path()
             / ".lamapon"
             / "editor-settings.json";
     }
 
+    // 保存された設定を順に適用し、ファイルが無ければfalseを返します。
     bool EditorLayer::LoadEditorSettings()
     {
+        // エディター設定JSONの保存パス
         const auto path = EditorSettingsPath();
         if (!std::filesystem::exists(path))
         {
             return false;
         }
 
+        // エディター設定JSONの入力
         std::ifstream input(path);
         if (!input)
         {
@@ -51,9 +57,12 @@ namespace LamaPon
                 + LamaPon::PathToUtf8(path));
         }
 
+        // 読込または保存する設定JSON
         nlohmann::json settings;
+        // 読込または保存する設定JSON
         input >> settings;
 
+        // 三成分が有限値なら反映します(value: 読込するJSON配列, target: 読込値の反映先)。
         const auto readFloat3 =
             [](const nlohmann::json& value, DirectX::XMFLOAT3& target)
             {
@@ -62,8 +71,11 @@ namespace LamaPon
                     return;
                 }
 
+                // 読込する三成分のX値
                 const float x = value[0].get<float>();
+                // 読込する三成分のY値
                 const float y = value[1].get<float>();
+                // 読込する三成分のZ値
                 const float z = value[2].get<float>();
                 if (std::isfinite(x)
                     && std::isfinite(y)
@@ -73,9 +85,11 @@ namespace LamaPon
                 }
             };
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("sceneCamera");
             iterator != settings.end() && iterator->is_object())
         {
+            // Scene Viewのカメラ設定
             const auto& camera = *iterator;
             if (camera.contains("position"))
             {
@@ -131,13 +145,14 @@ namespace LamaPon
                 3.0f);
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("grid");
             iterator != settings.end() && iterator->is_object())
         {
+            // グリッドと補助表示の設定
             const auto& grid = *iterator;
             m_gridVisible = grid.value("visible", m_gridVisible);
-            // デバッグ線の表示。旧設定には無いので、未指定なら
-            // 従来どおり表示（true）のままにします。
+            // 旧設定に表示フラグが無ければ、現在の既定値を維持します。
             m_colliderDebugVisible = grid.value(
                 "colliderDebugVisible",
                 m_colliderDebugVisible);
@@ -157,6 +172,7 @@ namespace LamaPon
                 1000.0f);
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("viewCube");
             iterator != settings.end() && iterator->is_object())
         {
@@ -164,10 +180,13 @@ namespace LamaPon
                 iterator->value("visible", m_viewCubeVisible);
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("gizmo");
             iterator != settings.end() && iterator->is_object())
         {
+            // 変形操作とスナップの設定
             const auto& gizmo = *iterator;
+            // 範囲検証済みの変形操作番号
             const int operation = std::clamp(
                 gizmo.value(
                     "operation",
@@ -195,15 +214,18 @@ namespace LamaPon
                 10.0f);
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("assetBrowser");
             iterator != settings.end() && iterator->is_object())
         {
+            // 資産一覧の表示設定
             const auto& assets = *iterator;
             m_assetGridView =
                 assets.value("gridView", m_assetGridView);
             m_assetDirectoryTreeVisible = assets.value(
                 "directoryTreeVisible",
                 m_assetDirectoryTreeVisible);
+            // 保存された資産表示フォルダー
             const auto directory = PathFromUtf8(
                 assets.value("directory", std::string{}));
             if (directory.empty()
@@ -215,10 +237,13 @@ namespace LamaPon
             }
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("panels");
             iterator != settings.end() && iterator->is_object())
         {
+            // 登録パネルの表示設定
             const auto& panels = *iterator;
+            // 表示を復元するパネルIDと表示状態
             for (const auto& [id, value] : panels.items())
             {
                 if (value.is_boolean())
@@ -230,9 +255,11 @@ namespace LamaPon
             }
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("gameView");
             iterator != settings.end() && iterator->is_object())
         {
+            // Game Viewの解像度設定
             const auto& gameView = *iterator;
             m_gameViewFixedResolution = gameView.value(
                 "fixedResolution", m_gameViewFixedResolution);
@@ -254,22 +281,27 @@ namespace LamaPon
                 1.0f);
         }
 
+        // 保存された設定項目の検索結果
         if (const auto iterator = settings.find("presets");
             iterator != settings.end() && iterator->is_array())
         {
+            // 検証済みの保存プリセット一覧
             std::vector<EditorSettingsPreset> presets;
+            // 保存されたプリセットのJSON値
             for (const auto& value : *iterator)
             {
                 if (!value.is_object())
                 {
                     continue;
                 }
+                // 読込または検証するプリセット名
                 const auto name =
                     value.value("name", std::string{});
                 if (name.empty() || name.size() > 64)
                 {
                     continue;
                 }
+                // 大小文字を無視したプリセット名の重複を検査します(preset: 比較する登録済み設定)。
                 if (std::ranges::any_of(
                     presets,
                     [&name](
@@ -282,6 +314,7 @@ namespace LamaPon
                     continue;
                 }
 
+                // 復元するプリセット
                 EditorSettingsPreset preset;
                 preset.name = name;
                 preset.sceneOrthographic =
@@ -382,10 +415,12 @@ namespace LamaPon
         }
 
         m_selectedEditorPreset = 0;
+        // 保存された選択プリセット名
         const auto selectedPreset =
             settings.value(
                 "selectedPreset",
                 std::string{});
+        // 保存プリセットの添字
         for (std::size_t index = 0;
             index < m_editorPresets.size();
             ++index)
@@ -401,17 +436,22 @@ namespace LamaPon
         return true;
     }
 
+    // 現在の表示設定とプリセットを保存し、失敗は例外で通知します。
     void EditorLayer::SaveEditorSettings() const
     {
+        // エディター設定JSONの保存パス
         const auto path = EditorSettingsPath();
         std::filesystem::create_directories(path.parent_path());
 
+        // パネルID別の表示状態JSON
         nlohmann::json panelVisibility = nlohmann::json::object();
+        // 表示状態を保存するパネル
         for (const auto& panel : m_editorExtensions.Panels())
         {
             panelVisibility[panel.id] = panel.open;
         }
 
+        // 読込または保存する設定JSON
         nlohmann::json settings{
             { "version", 2 },
             {
@@ -528,6 +568,7 @@ namespace LamaPon
         };
 
         settings["presets"] = nlohmann::json::array();
+        // 保存するプリセット
         for (const auto& preset : m_editorPresets)
         {
             settings["presets"].push_back({
@@ -585,6 +626,7 @@ namespace LamaPon
                         m_selectedEditorPreset,
                         m_editorPresets.size() - 1)].name;
 
+        // エディター設定JSONの出力
         std::ofstream output(path, std::ios::trunc);
         if (!output)
         {
@@ -601,6 +643,7 @@ namespace LamaPon
         }
     }
 
+    // カメラ・補助表示・資産表示とパネル配置を既定状態へ戻します。
     void EditorLayer::ResetEditorSettings()
     {
         m_sceneCameraPosition = { 0.0f, 1.8f, 7.0f };
@@ -634,14 +677,17 @@ namespace LamaPon
         m_resetDockLayout = true;
     }
 
+    // 標準・レベルデザイン・精密配置の既定プリセットを生成します。
     void EditorLayer::CreateDefaultEditorPresets()
     {
         m_editorPresets.clear();
 
+        // 標準操作のプリセット
         EditorSettingsPreset standard;
         standard.name = "標準";
         m_editorPresets.emplace_back(standard);
 
+        // レベル配置向けのプリセット
         EditorSettingsPreset levelDesign;
         levelDesign.name = "レベルデザイン";
         levelDesign.sceneCameraSpeed = 8.0f;
@@ -653,6 +699,7 @@ namespace LamaPon
         levelDesign.scaleSnap = 0.1f;
         m_editorPresets.emplace_back(levelDesign);
 
+        // 精密配置向けのプリセット
         EditorSettingsPreset precision;
         precision.name = "精密配置";
         precision.sceneCameraSpeed = 2.0f;
@@ -673,6 +720,7 @@ namespace LamaPon
         m_editorPresetError.clear();
     }
 
+    // 選択プリセットを反映して設定を保存します(index: プリセットの添字・範囲外は無視)。
     void EditorLayer::ApplyEditorPreset(
         const std::size_t index)
     {
@@ -682,6 +730,7 @@ namespace LamaPon
         }
 
         m_selectedEditorPreset = index;
+        // 選択中のプリセット
         const auto& preset =
             m_editorPresets[m_selectedEditorPreset];
         m_sceneOrthographic =
@@ -715,9 +764,11 @@ namespace LamaPon
             + preset.name);
     }
 
+    // 現在の操作設定を新しいプリセットとして保存します(name: 空白のみを除く64byte以下の名前)。
     void EditorLayer::SaveCurrentEditorPreset(
         std::string name)
     {
+        // 空白のみまたは空のプリセット名か判定します(character: 検証する文字)。
         const bool blank = name.empty()
             || std::ranges::all_of(
                 name,
@@ -737,6 +788,7 @@ namespace LamaPon
                 "プリセット名は64バイト以内にしてください";
             return;
         }
+        // 大小文字を無視したプリセット名の重複を検査します(preset: 比較する登録済み設定)。
         if (std::ranges::any_of(
             m_editorPresets,
             [&name](const EditorSettingsPreset& preset)
@@ -750,6 +802,7 @@ namespace LamaPon
             return;
         }
 
+        // 新規に保存するプリセット
         EditorSettingsPreset preset;
         preset.name = std::move(name);
         preset.sceneOrthographic =
@@ -787,6 +840,7 @@ namespace LamaPon
                 m_selectedEditorPreset].name);
     }
 
+    // 選択中プリセットを現在の操作設定で更新して保存します。
     void EditorLayer::UpdateSelectedEditorPreset()
     {
         if (m_selectedEditorPreset
@@ -795,6 +849,7 @@ namespace LamaPon
             return;
         }
 
+        // 更新する選択中プリセット
         auto& preset =
             m_editorPresets[m_selectedEditorPreset];
         preset.sceneOrthographic =
@@ -828,6 +883,7 @@ namespace LamaPon
             + preset.name);
     }
 
+    // 選択中プリセットを削除して保存し、最後の一件は残します。
     void EditorLayer::DeleteSelectedEditorPreset()
     {
         if (m_selectedEditorPreset
@@ -842,6 +898,7 @@ namespace LamaPon
             return;
         }
 
+        // 削除したプリセットの表示名
         const auto deletedName =
             m_editorPresets[
                 m_selectedEditorPreset].name;
@@ -859,16 +916,17 @@ namespace LamaPon
             + deletedName);
     }
 
+    // 追加選択を解除し、現在の主シーンだけを持つ履歴に置き換えます。
     void EditorLayer::ResetHistory()
     {
-        // シーンの入れ替え時に呼ばれるため、消えたGameObjectを
-        // 指したままの追加選択もここで捨てます。
+        // シーンの入れ替え時に呼ばれるため、消えたGameObjectを指したままの追加選択もここで捨てます。
         ClearMultiSelection();
         m_history.clear();
         m_history.push_back(m_scene.SerializeToJson());
         m_historyIndex = 0;
     }
 
+    // 編集時の主シーンの変更だけを記録し、やり直し分と件数超過分を破棄します。
     void EditorLayer::RecordHistory()
     {
         if (m_playing)
@@ -878,6 +936,7 @@ namespace LamaPon
 
         try
         {
+            // 現在の主シーンのJSON状態
             const std::string snapshot = m_scene.SerializeToJson();
 
             if (!m_history.empty() && snapshot == m_history[m_historyIndex])
@@ -897,12 +956,14 @@ namespace LamaPon
 
             m_historyIndex = m_history.size() - 1;
         }
+        // 保存や復元の失敗を通知します(exception: 失敗理由)。
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 再生中以外に履歴の位置を戻して主シーンを復元します。
     void EditorLayer::Undo()
     {
         if (!CanUndo() || m_playing)
@@ -915,6 +976,7 @@ namespace LamaPon
         SetStatus("元に戻しました");
     }
 
+    // 再生中以外に履歴の位置を進めて主シーンを復元します。
     void EditorLayer::Redo()
     {
         if (!CanRedo() || m_playing)
@@ -927,6 +989,7 @@ namespace LamaPon
         SetStatus("やり直しました");
     }
 
+    // 主シーンの履歴を復元して追加シーンを読み直し、消えた選択対象を解除します。
     void EditorLayer::RestoreHistoryState()
     {
         try
@@ -935,13 +998,12 @@ namespace LamaPon
             {
                 CloseAnimationTimeline(true);
             }
-            // Undo履歴は主シーンだけのスナップショットなので、
-            // 復元（LoadFromJson）で追加シーンが消えます。同じ
-            // ファイルを読み直して、表示状態を保ちます。
+            // 履歴復元後に再読込する追加パス
             std::vector<std::filesystem::path>
                 additiveScenes;
             additiveScenes.reserve(
                 m_scene.AdditiveScenes().size());
+            // 再読込のパスを保存する追加シーン情報
             for (const auto& additiveScene :
                 m_scene.AdditiveScenes())
             {
@@ -949,6 +1011,7 @@ namespace LamaPon
                     additiveScene.path);
             }
             m_scene.LoadFromJson(m_history[m_historyIndex]);
+            // 再読込する追加シーンのパス
             for (const auto& additiveScene :
                 additiveScenes)
             {
@@ -958,6 +1021,7 @@ namespace LamaPon
                         m_scene.MergeFromFile(
                             additiveScene));
                 }
+                // 追加シーンの読込失敗を通知します(exception: 失敗理由)。
                 catch (const std::exception&
                     exception)
                 {
@@ -973,22 +1037,26 @@ namespace LamaPon
                 m_selectedObjectId = 0;
             }
         }
+        // 保存や復元の失敗を通知します(exception: 失敗理由)。
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 現在の履歴位置より前に保存状態があるか返します。
     bool EditorLayer::CanUndo() const noexcept
     {
         return !m_history.empty() && m_historyIndex > 0;
     }
 
+    // 現在の履歴位置より後に保存状態があるか返します。
     bool EditorLayer::CanRedo() const noexcept
     {
         return !m_history.empty() && m_historyIndex + 1 < m_history.size();
     }
 
+    // 状態をログへ通知して画面表示を更新します(message: 通知内容, error: エラー通知か)。
     void EditorLayer::SetStatus(std::string message, const bool error)
     {
         if (error)

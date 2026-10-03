@@ -10,6 +10,7 @@
 
 namespace
 {
+    // RGBへアルファを乗算した描画色を返します(color: アルファ乗算前のRGBA色)。
     DirectX::XMFLOAT4 Premultiply(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -42,9 +43,11 @@ namespace LamaPon
     float UIScrollViewComponent::MaximumScrollOffset()
         const noexcept
     {
+        // 表示領域のUI矩形
         const auto* transform =
             Owner().GetComponent<
                 UIRectTransformComponent>();
+        // 表示領域の高さ
         const float viewHeight = transform != nullptr
             ? transform->SizeDelta().y
             : 0.0f;
@@ -56,6 +59,7 @@ namespace LamaPon
     UIRect UIScrollViewComponent::ViewRect(
         const GraphicsDevice& graphics) const noexcept
     {
+        // 表示領域のUI矩形
         if (const auto* transform =
             Owner().GetComponent<
                 UIRectTransformComponent>())
@@ -75,10 +79,12 @@ namespace LamaPon
         {
             return 1.0f;
         }
+        // キャンバスを探す物体
         for (const GameObject* ancestor = &Owner();
             ancestor != nullptr;
             ancestor = ancestor->Parent())
         {
+            // 最寄りのキャンバス設定
             if (const auto* canvas =
                 ancestor->GetComponent<
                     UICanvasComponent>())
@@ -96,15 +102,17 @@ namespace LamaPon
     void UIScrollViewComponent::RefreshContentHeight()
         noexcept
     {
-        // 子Rect（左上アンカー前提。LayoutGroupの出力と同じ座標系）
-        // の下端の最大値をコンテンツ高さとします。
+        // 子の左上基準の下端最大値を内容高に使います。
+        // 拡縮前の子の下端の最大値
         float bottom = 0.0f;
+        // 内容高を計算する直下の子
         for (const auto* child : Owner().Children())
         {
             if (child == nullptr || !child->IsEnabled())
             {
                 continue;
             }
+            // 内容高を計算する子の矩形
             if (const auto* childTransform =
                 child->GetComponent<
                     UIRectTransformComponent>())
@@ -136,12 +144,16 @@ namespace LamaPon
             return;
         }
 
+        // 今回のポインター入力状態
         const auto& pointer =
             m_graphics->Input().Pointer();
+        // 表示領域の矩形ピクセル
         const auto rect = ViewRect(*m_graphics);
+        // 有効なポインターが矩形内
         const bool hovered =
             pointer.valid
             && rect.Contains(pointer.position);
+        // ピクセル換算のキャンバス倍率
         const float scale = std::max(
             CanvasScale(),
             0.0001f);
@@ -183,15 +195,19 @@ namespace LamaPon
         {
             return;
         }
+        // 表示領域の矩形ピクセル
         const auto rect = ViewRect(*m_graphics);
+        // 表示幅・高さピクセル
         const auto size = rect.Size();
         if (size.x <= 0.0f || size.y <= 0.0f)
         {
             return;
         }
 
+        // アルファ乗算済みの背景色
         const auto premultipliedBackground =
             Premultiply(m_backgroundColor);
+        // 背景またはバーの描画要求
         SpriteDrawRequest request;
         request.position = rect.minimum;
         request.tint = premultipliedBackground;
@@ -199,6 +215,7 @@ namespace LamaPon
         static_cast<void>(sprites.Draw(request));
 
         // 右端の縦スクロールバー。
+        // 拡縮前のスクロール量上限
         const float maximumOffset =
             MaximumScrollOffset();
         if (maximumOffset <= 0.0f
@@ -206,22 +223,30 @@ namespace LamaPon
         {
             return;
         }
+        // ピクセル換算のキャンバス倍率
         const float scale = std::max(
             CanvasScale(),
             0.0001f);
+        // 表示領域の高さ
         const float viewHeight = size.y;
+        // contentPixels: canvas scaleを反映したcontent高さ。
         const float contentPixels =
             m_contentHeight * scale;
+        // つまみの高さピクセル
         const float thumbHeight = std::max(
             viewHeight * viewHeight
                 / std::max(contentPixels, 1.0f),
             8.0f);
+        // つまみが移動する高さ
         const float trackRange =
             viewHeight - thumbHeight;
+        // つまみの上端の移動量
         const float thumbOffset =
             trackRange
             * (m_scrollOffset / maximumOffset);
+        // スクロールバーの幅ピクセル
         const float barWidth = 6.0f;
+        // アルファ乗算済みのバー色
         const auto premultipliedBar =
             Premultiply(m_scrollbarColor);
         request.position = {

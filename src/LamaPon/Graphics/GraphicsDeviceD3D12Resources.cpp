@@ -36,8 +36,7 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceD3D12Resources::QuiesceResourceWork() noexcept
     {
-        // D3D12 render serviceは同期描画だけを行い、Backendを借用する
-        // 非同期作業は開始しません。
+        // バックエンドを借用する非同期作業を開始していないため、停止対象はない。
     }
 
     void GraphicsDeviceD3D12Resources::ResetHighLevelResources() noexcept
@@ -76,8 +75,11 @@ namespace LamaPon::Detail
                 "12 backend.");
         }
 
+        // 作成中の方向ライト影マップ
         auto directionalShadowMap = std::make_unique<ShadowMap>();
+        // 作成中のスポットライト影マップ
         auto spotShadowMap = std::make_unique<ShadowMap>();
+        // 作成中の点ライト影マップ
         auto pointShadowMap = std::make_unique<ShadowMap>();
         if (settings.shadowsEnabled)
         {
@@ -86,6 +88,7 @@ namespace LamaPon::Detail
                 settings.shadowResolution,
                 settings.shadowCascadeLimit,
                 false);
+            // 点・スポット用の影解像度
             const std::uint32_t localShadowResolution = std::max(
                 settings.shadowResolution / 2u,
                 256u);
@@ -101,7 +104,7 @@ namespace LamaPon::Detail
                 true);
         }
 
-        // allocationがすべて成功するまで現在のfacadeを変更しません。
+        // 全資源の作成が成功してから三種の窓口を公開する。
         m_directionalShadowMap = std::move(directionalShadowMap);
         m_spotShadowMap = std::move(spotShadowMap);
         m_pointShadowMap = std::move(pointShadowMap);
@@ -147,6 +150,7 @@ namespace LamaPon::Detail
         CreateD3D12GraphicsDeviceApiResources(
             GraphicsBackend& backend)
     {
+        // 検証するD3D12実装の参照
         auto* const d3d12Backend = dynamic_cast<D3D12Backend*>(&backend);
         if (d3d12Backend == nullptr || !d3d12Backend->IsInitialized())
         {

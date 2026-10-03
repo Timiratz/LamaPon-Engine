@@ -13,19 +13,19 @@
 #include <string>
 #include <string_view>
 
-// エンジンは遷移の時間（覆う→切り替える→開く）と覆い具合だけを
-// 計算し、画面を覆う絵は描きません。このヘッダーは、プリセットの
-// 「見た目」（Look）を読み、自前のシェーダーへ渡す値を作ります。
+// Engineは遷移時間を管理し、このPackageはPreset外観とShader引数を用意します。
 namespace LamaPonSceneShowcase
 {
+    // Data Assetに登録するPreset型名
     inline constexpr auto PresetType = "SceneTransition.Preset";
+    // 配布する初期Preset
     inline constexpr auto DefaultPresetPath =
         "packages/scene-transition-showcase/presets/IrisGold.asset.json";
-    // 覆いを描くピクセルシェーダーです（プリセットのshaderが空のとき）。
+    // Presetに独自Shaderがない場合の描画先
     inline constexpr auto DefaultShaderPath =
         "packages/scene-transition-showcase/shaders/LamaPonSceneTransition.hlsl";
 
-    // 覆いの形です。番号はシェーダーの演出番号と同じです。
+    // Shaderの演出番号と一致する覆い形状
     enum class Effect : std::uint8_t
     {
         // 覆わずにすぐ切り替えます。
@@ -44,8 +44,7 @@ namespace LamaPonSceneShowcase
         Count
     };
 
-    // 覆いが進む向きです。Blinds／Tiles／Dotsでは現れる順番、
-    // Shutterでは閉じる軸に使います。
+    // 覆い方向（Blinds等では順番、Shutterでは軸）
     enum class Direction : std::uint8_t
     {
         LeftToRight,
@@ -59,7 +58,7 @@ namespace LamaPonSceneShowcase
         Count
     };
 
-    // Shader演出の模様です。番号はシェーダーの模様番号と同じです。
+    // Shader側の模様番号と一致するPattern
     enum class ShaderPattern : std::uint8_t
     {
         RuleImage,
@@ -72,34 +71,34 @@ namespace LamaPonSceneShowcase
         Count
     };
 
-    // 演出の見た目です。時間と動作はLamaPon::SceneTransitionSettingsが
-    // 持ちます。
+    // 遷移の外観設定（時間と動作はSceneTransitionSettingsが保持）
     struct Look final
     {
+        // 遷移の描画形状
         Effect effect{ Effect::Fade };
+        // 形状が進む方向
         Direction direction{ Direction::LeftToRight };
-        // 覆いの色。alphaを1未満にすると旧シーンが透けます。
+        // Spriteの覆い色（alphaで旧Sceneの透け具合を調整）
         DirectX::XMFLOAT4 color{ 0.0f, 0.0f, 0.0f, 1.0f };
-        // 覆いの縁へ入れる差し色です。alphaが0なら使いません。
+        // 覆いの縁に使う差し色（alphaが0なら無効）
         DirectX::XMFLOAT4 accentColor{ 1.0f, 0.8f, 0.2f, 0.0f };
-        // 差し色の帯の太さ（画面の短辺に対する比率）。
+        // 差し色帯の太さ（画面短辺比）
         float accentWidth{ 0.03f };
-        // 境界をぼかす幅（画面の短辺に対する比率）。
+        // 境界のぼかし幅（画面短辺比）
         float softness{};
-        // Blindsの帯の本数、Tiles系の横方向の個数、模様の細かさ。
+        // 帯・タイルの分割数または模様の細かさ
         std::uint32_t divisions{ 10 };
-        // Blinds／Tiles系の時間差。0で一斉、1に近いほど順番に現れます。
+        // Blinds／Tiles等の段階時間差（0なら同時）
         float stagger{ 0.5f };
-        // Iris／Diamondなどの中心（左上0,0／右下1,1）。
+        // Iris等の中心（左上0,0／右下1,1）
         DirectX::XMFLOAT2 focus{ 0.5f, 0.5f };
-        // 開くときも覆ったときと同じ向きへ抜けます。
+        // 開くときも同じ方向へ抜けるか
         bool passThrough{ true };
+        // Shader形状のPattern
         ShaderPattern shaderPattern{ ShaderPattern::Dissolve };
-        // Spriteのテクスチャ（t0）へ渡す画像（assets相対）。RuleImageでは
-        // 覆う順番を決めるグレースケール画像です。
+        // RuleImageの順序を決めるグレースケール画像パス
         std::string ruleTexture;
-        // 独自のピクセルシェーダー（assets相対の.hlsl）。空なら
-        // DefaultShaderPathを使います。
+        // 独自Pixel Shaderパス（空ならDefaultShaderPath）
         std::string shader;
     };
 
@@ -108,10 +107,13 @@ namespace LamaPonSceneShowcase
         template <typename Enum>
         struct NamedValue final
         {
+            // Enum値
             Enum value;
+            // JSONへ保存する名前
             std::string_view name;
         };
 
+        // EffectのJSON名とEnum値
         inline constexpr std::array EffectNames{
             NamedValue<Effect>{ Effect::None, "none" },
             NamedValue<Effect>{ Effect::Fade, "fade" },
@@ -128,6 +130,7 @@ namespace LamaPonSceneShowcase
         static_assert(EffectNames.size()
             == static_cast<std::size_t>(Effect::Count));
 
+        // DirectionのJSON名とEnum値
         inline constexpr std::array DirectionNames{
             NamedValue<Direction>{ Direction::LeftToRight, "leftToRight" },
             NamedValue<Direction>{ Direction::RightToLeft, "rightToLeft" },
@@ -145,6 +148,7 @@ namespace LamaPonSceneShowcase
         static_assert(DirectionNames.size()
             == static_cast<std::size_t>(Direction::Count));
 
+        // ShaderPatternのJSON名とEnum値
         inline constexpr std::array PatternNames{
             NamedValue<ShaderPattern>{ ShaderPattern::RuleImage, "ruleImage" },
             NamedValue<ShaderPattern>{ ShaderPattern::Dissolve, "dissolve" },
@@ -158,12 +162,15 @@ namespace LamaPonSceneShowcase
             == static_cast<std::size_t>(ShaderPattern::Count));
 
         template <typename Enum, std::size_t Size>
+        // Enum値に対応するJSON名を返します(names: 対応表, value: Enum値)。
         [[nodiscard]] std::string_view NameOf(
             const std::array<NamedValue<Enum>, Size>& names,
             const Enum value) noexcept
         {
+            // 対応表の各名前(entry: Enum値とJSON名)
             for (const auto& entry : names)
             {
+                // 指定値に一致したJSON名を返します。
                 if (entry.value == value)
                 {
                     return entry.name;
@@ -172,7 +179,7 @@ namespace LamaPonSceneShowcase
             return names.front().name;
         }
 
-        // 未知の名前（新しい版で増えた演出など）はfallbackへ戻します。
+        // JSON名をEnumへ変換します(names: 対応表, values: JSON欄, key: 欄名, fallback: 不明時の値)。
         template <typename Enum, std::size_t Size>
         [[nodiscard]] Enum ValueOf(
             const std::array<NamedValue<Enum>, Size>& names,
@@ -180,14 +187,19 @@ namespace LamaPonSceneShowcase
             const char* key,
             const Enum fallback)
         {
+            // 指定されたJSON欄
             const auto found = values.find(key);
+            // 欄が無いか文字列でなければ既定値を返します。
             if (found == values.end() || !found->is_string())
             {
                 return fallback;
             }
+            // JSONに保存されたEnum名
             const auto name = found->get<std::string>();
+            // Enum値に対応する名前を探します(entry: 対応表項目)。
             for (const auto& entry : names)
             {
+                // 一致した名前をEnum値へ戻します。
                 if (entry.name == name)
                 {
                     return entry.value;
@@ -196,6 +208,7 @@ namespace LamaPonSceneShowcase
             return fallback;
         }
 
+        // 有限値を保ちます(value: 入力, fallback: 非有限時の値)。
         [[nodiscard]] inline float Finite(
             const float value,
             const float fallback) noexcept
@@ -203,35 +216,43 @@ namespace LamaPonSceneShowcase
             return std::isfinite(value) ? value : fallback;
         }
 
+        // 有限値を0～1へ制限します(value: 入力値)。
         [[nodiscard]] inline float Saturate(const float value) noexcept
         {
             return std::clamp(Finite(value, 0.0f), 0.0f, 1.0f);
         }
 
+        // 数値欄を検証して読みます(values: JSON欄, key: 欄名, fallback: 既定値)。
         [[nodiscard]] inline float ReadNumber(
             const nlohmann::json& values,
             const char* key,
             const float fallback)
         {
+            // 指定されたJSON欄
             const auto found = values.find(key);
             return found != values.end() && found->is_number()
                 ? Finite(found->get<float>(), fallback)
                 : fallback;
         }
 
+        // RGBA配列を検証して読みます(values: JSON欄, key: 欄名, fallback: 既定色)。
         [[nodiscard]] inline DirectX::XMFLOAT4 ReadColor(
             const nlohmann::json& values,
             const char* key,
             const DirectX::XMFLOAT4& fallback)
         {
+            // 指定されたJSON欄
             const auto found = values.find(key);
+            // RGBA配列でなければ既定色を返します。
             if (found == values.end() || !found->is_array()
                 || found->size() != 4)
             {
                 return fallback;
             }
+            // RGBAを構成する各要素(item: 色成分)。
             for (const auto& item : *found)
             {
+                // 数値以外の成分は既定色へ戻します。
                 if (!item.is_number())
                 {
                     return fallback;
@@ -245,6 +266,7 @@ namespace LamaPonSceneShowcase
             };
         }
 
+        // RGBA色をJSON配列へ変換します(color: 保存する色)。
         [[nodiscard]] inline nlohmann::json ColorToJson(
             const DirectX::XMFLOAT4& color)
         {
@@ -252,10 +274,13 @@ namespace LamaPonSceneShowcase
                 { color.x, color.y, color.z, color.w });
         }
 
+        // 方向Enumを単位ベクトルへ変換します(direction: 進行方向)。
         [[nodiscard]] inline DirectX::XMFLOAT2 DirectionVector(
             const Direction direction) noexcept
         {
+            // 斜め方向の正規化成分
             constexpr float Diagonal = 0.70710678f;
+            // 方向ごとの単位ベクトルを選びます。
             switch (direction)
             {
             case Direction::RightToLeft:
@@ -279,34 +304,40 @@ namespace LamaPonSceneShowcase
         }
     }
 
+    // EffectのJSON名を返します(effect: 演出形状)。
     [[nodiscard]] inline std::string_view EffectName(
         const Effect effect) noexcept
     {
         return Detail::NameOf(Detail::EffectNames, effect);
     }
 
-    // プリセットに時間が書かれていないときの時間です。
+    // Presetに時間がない場合の遷移時間を返します。
     [[nodiscard]] inline LamaPon::SceneTransitionSettings DefaultTiming()
     {
         return LamaPon::MakeSceneTransition(0.4f, 0.1f);
     }
 
-    // 範囲外の値を安全な範囲へ丸めます。
+    // 見た目設定を安全な範囲へ補正します(look: 補正対象)。
     [[nodiscard]] inline Look SanitizeLook(Look look)
     {
+        // Lookの既定値
         const Look defaults;
+        // 未定義の演出番号を既定値へ戻します。
         if (look.effect >= Effect::Count)
         {
             look.effect = defaults.effect;
         }
+        // 未定義の向き番号を既定値へ戻します。
         if (look.direction >= Direction::Count)
         {
             look.direction = defaults.direction;
         }
+        // 未定義の模様番号を既定値へ戻します。
         if (look.shaderPattern >= ShaderPattern::Count)
         {
             look.shaderPattern = defaults.shaderPattern;
         }
+        // 各色成分を0～1へ制限します(color: 補正するRGBA色)。
         const auto saturate = [](const DirectX::XMFLOAT4& color)
             {
                 return DirectX::XMFLOAT4{
@@ -338,16 +369,17 @@ namespace LamaPonSceneShowcase
         return look;
     }
 
-    // プリセットのvaluesと同じキーで読み書きします。時間と動作の
-    // キーは無視します（SceneTransitionFromJsonが読みます）。
+    // JSONから外観を読みます(values: Preset欄, fallback: 欠落時の外観)。時間設定欄は無視します。
     [[nodiscard]] inline Look LookFromJson(
         const nlohmann::json& values,
         const Look& fallback = {})
     {
+        // JSON object以外は既定外観へ戻します。
         if (!values.is_object())
         {
             return SanitizeLook(fallback);
         }
+        // 欠落欄を補う外観設定
         Look look = fallback;
         look.effect = Detail::ValueOf(
             Detail::EffectNames, values, "effect", fallback.effect);
@@ -365,7 +397,7 @@ namespace LamaPonSceneShowcase
             values, "accentWidth", fallback.accentWidth);
         look.softness = Detail::ReadNumber(
             values, "softness", fallback.softness);
-        // DataAssetは整数もdoubleで保持するため、数値なら丸めて読みます。
+        // JSON数値から分割数を読みます。
         if (const auto divisions = values.find("divisions");
             divisions != values.end() && divisions->is_number())
         {
@@ -375,6 +407,7 @@ namespace LamaPonSceneShowcase
                 64.0f));
         }
         look.stagger = Detail::ReadNumber(values, "stagger", fallback.stagger);
+        // 2要素のFocus配列を読みます。
         if (const auto focus = values.find("focus");
             focus != values.end() && focus->is_array()
             && focus->size() == 2
@@ -385,16 +418,19 @@ namespace LamaPonSceneShowcase
                 (*focus)[1].get<float>()
             };
         }
+        // passThroughのBoolean欄を読みます。
         if (const auto found = values.find("passThrough");
             found != values.end() && found->is_boolean())
         {
             look.passThrough = found->get<bool>();
         }
+        // Rule Textureの文字列欄を読みます。
         if (const auto found = values.find("ruleTexture");
             found != values.end() && found->is_string())
         {
             look.ruleTexture = found->get<std::string>();
         }
+        // Shader pathの文字列欄を読みます。
         if (const auto found = values.find("shader");
             found != values.end() && found->is_string())
         {
@@ -403,8 +439,10 @@ namespace LamaPonSceneShowcase
         return SanitizeLook(look);
     }
 
+    // 外観設定をPreset用JSONへ変換します(source: 保存するLook)。
     [[nodiscard]] inline nlohmann::json LookToJson(const Look& source)
     {
+        // 範囲を補正した保存対象
         const auto look = SanitizeLook(source);
         return nlohmann::json{
             { "effect", std::string(EffectName(look.effect)) },
@@ -431,28 +469,32 @@ namespace LamaPonSceneShowcase
         };
     }
 
-    // DataAssetはLoadDataAssetから取得します。型の違うアセットは読まず、
-    // 欠けた項目・範囲外の値は既定値と補正で埋めます。「なし」の
-    // 演出は覆う絵が無いので、時間を0にしてすぐ切り替えます。
+    // Presetを読みます(asset: Data Asset, timing: 時間出力, look: 外観出力)。
+    // 型・内容不正はfalse、演出Noneは遷移時間を0にします。
     [[nodiscard]] inline bool ReadPreset(
         const LamaPon::DataAsset& asset,
         LamaPon::SceneTransitionSettings& timing,
         Look& look)
     {
+        // Data Asset型と内容を検証します。
         if (asset.TypeName() != PresetType || asset.IsEmpty())
         {
             return false;
         }
+        // Assetから解析したJSON文書
         const auto document = nlohmann::json::parse(
             asset.SerializeToJson(), nullptr, false);
+        // values objectがない文書を拒否します。
         if (!document.is_object() || !document.contains("values")
             || !document.at("values").is_object())
         {
             return false;
         }
+        // Presetの値オブジェクト
         const auto& values = document.at("values");
         timing = LamaPon::SceneTransitionFromJson(values, DefaultTiming());
         look = LookFromJson(values);
+        // 演出なしは即時切替へ補正します。
         if (look.effect == Effect::None)
         {
             timing.coverDuration = 0.0f;
@@ -462,47 +504,46 @@ namespace LamaPonSceneShowcase
         return true;
     }
 
-    // シェーダーのCustomParameters[0]～[4]です。[5]～[7]はSpriteの描画時に
-    // エンジンが上書きします（[5]が覆いの色、[6].zwが描画サイズ）。
-    //   [0] = coverage, ぼかし幅, 差し色の幅, 演出の番号
-    //   [1] = 順番を反転するか(0/1), stagger, divisions, 模様の番号
-    //   [2] = 差し色（premultiplyしない色）
-    //   [3] = 中心x, 中心y（0～1）, 向きx, 向きy
-    //   [4] = 未使用
+    // Shaderへ渡す追加引数（[5]～[7]はSprite描画時にEngineが上書き）
     struct ShaderFrame final
     {
+        // CustomParameters[0]～[4]へ渡す値
         std::array<DirectX::XMFLOAT4, 5> parameters{};
+        // RuleImage未設定時の代替Patternを含む選択値
         ShaderPattern pattern{ ShaderPattern::Dissolve };
     };
 
-    // coverageはSceneManager::TransitionCoverage()、revealingは開く途中か
-    // どうかです。hasRuleTextureがfalseならRuleImageをDissolveに
-    // 置き換えます。
+    // Shader引数を作ります(source: 外観, coverage: 覆い割合, revealing: 開く途中か, hasRuleTexture: 画像の有無)。
+    // RuleImage用TextureがなければDissolveへ置き換えます。
     [[nodiscard]] inline ShaderFrame BuildShaderFrame(
         const Look& source,
         const float coverage,
         const bool revealing,
         const bool hasRuleTexture)
     {
+        // 範囲を補正した外観設定
         const auto look = SanitizeLook(source);
+        // Shader引数と有効Pattern
         ShaderFrame frame;
         frame.pattern =
             look.shaderPattern == ShaderPattern::RuleImage && !hasRuleTexture
                 ? ShaderPattern::Dissolve
                 : look.shaderPattern;
+        // 差し色帯を描くか
         const bool hasAccent =
             look.accentColor.w > 0.0f && look.accentWidth > 0.0f;
+        // 開く方向を反転するか
         const bool reverse = revealing && look.passThrough;
+        // Patternへ渡す進行方向
         auto direction = Detail::DirectionVector(look.direction);
-        // 形の演出は、通り抜けるときに向きを反転します。模様は順番を
-        // 反転するので向きはそのままです。
+        // Shape効果だけ進行方向を反転します。Patternは順序で反転します。
         if (reverse && look.effect != Effect::Shader)
         {
             direction = { -direction.x, -direction.y };
         }
+        // Shader Patternは境界のジャギーを防ぐ最小ぼかしを保ちます。
+        // Shaderへ渡す最終ぼかし幅
         const float softness = look.effect == Effect::Shader
-            // 模様の境界が0だとジャギーが目立つため、最小限のぼかしを
-            // 残します。
             ? std::max(look.softness, 0.02f)
             : look.softness;
         frame.parameters[0] = {

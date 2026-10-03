@@ -12,30 +12,32 @@
 #include <string_view>
 #include <vector>
 
-// EditorLayerの分割翻訳単位（EditorLayer*.cpp）で共有する
-// 小さなヘルパー群です。特定の翻訳単位でしか使わない大きな
-// ヘルパーは、その翻訳単位の匿名名前空間に置いてください。
+// EditorLayerの複数の翻訳単位で使うヘルパーを共有します。
 namespace LamaPon::EditorDetail
 {
+    // ヒエラルキーの既定幅・px
     constexpr float HierarchyWidth = 290.0f;
 
+    // オブジェクトIDのpayload型名
     constexpr const char* GameObjectPayload = "LAMAPON_GAME_OBJECT";
 
-    // インスペクター内のコンポーネント並び替え（Component*を運ぶ）。
+    // 並べ替え用Component*のpayload型名
     constexpr const char* ComponentPayload = "LAMAPON_COMPONENT";
 
+    // 資産パスのpayload型名
     constexpr const char* AssetPayload = "LAMAPON_ASSET_PATH";
 
-    // フォルダーのドラッグはファイルと種別を分けます（フォルダーを
-    // ファイル用の受け取り先へ落とせないようにするため）。
+    // フォルダードラッグのpayload型名
     constexpr const char* AssetFolderPayload =
         "LAMAPON_ASSET_FOLDER";
 
-    // 表示名と保存名は分けます。日本語などを含む表示名には英語の既定名を
-    // 提案し、メニュー保存とドラッグ作成で同じファイル命名規則を使います。
+
+    // 表示名から保存名を提案し、非ASCIIならNewPrefabにします(displayName: 元の表示名)。
     inline std::wstring SuggestedPrefabFileStem(const std::string_view displayName)
     {
+        // 調整中のPrefabファイル名
         std::wstring stem = PathFromUtf8(displayName).filename().wstring();
+        // 検証するファイル名文字
         for (auto& character : stem)
         {
             if (character > 0x7f)
@@ -56,8 +58,10 @@ namespace LamaPon::EditorDetail
         return stem.empty() ? L"NewPrefab" : stem;
     }
 
+    // 文字列を小文字へ変換します(value: 変換する文字列の所有先)。
     inline std::string Lowercase(std::string value)
     {
+        // 各文字を小文字へ揃えます(character: 変換する文字)。
         std::ranges::transform(
             value,
             value.begin(),
@@ -68,6 +72,7 @@ namespace LamaPon::EditorDetail
         return value;
     }
 
+    // 差分項目の表示名を返し、未登録の項目は元の名前を使います(field: 差分の項目名)。
     inline std::string PrefabOverrideFieldLabel(
         const std::string_view field)
     {
@@ -86,15 +91,19 @@ namespace LamaPon::EditorDetail
         return std::string{ field };
     }
 
+    // 差分パスをオブジェクト・成分の表示名へ整形します(path: 差分のスラッシュ区切りパス)。
     inline std::string FormatPrefabOverridePath(
         const std::string_view path)
     {
+        // 差分パスを区切った借用項目
         std::vector<std::string_view> tokens;
+        // 次に区切るパスの開始位置
         std::size_t start = path.starts_with('/')
             ? 1
             : 0;
         while (start < path.size())
         {
+            // 次のパス区切り位置
             const auto end = path.find('/', start);
             tokens.push_back(
                 path.substr(
@@ -109,11 +118,14 @@ namespace LamaPon::EditorDetail
             start = end + 1;
         }
 
+        // 表示用に整形した差分パス
         std::string result;
+        // 差分パスの項目添字
         for (std::size_t index = 0;
             index < tokens.size();
             ++index)
         {
+            // 差分パスの表示項目
             std::string part;
             if (tokens[index] == "objects"
                 && index + 1 < tokens.size())
@@ -146,6 +158,7 @@ namespace LamaPon::EditorDetail
             : result;
     }
 
+    // 字句正規化した資産パスを小文字化して比較キーを作ります(path: 比較する資産パス)。
     inline std::string NormalizeAssetReference(
         const std::filesystem::path& path)
     {
@@ -153,6 +166,7 @@ namespace LamaPon::EditorDetail
             LamaPon::PathToUtf8(path.lexically_normal()));
     }
 
+    // 両方が非空の資産パスを正規化して比較します(left: 左の資産パス, right: 右の資産パス)。
     inline bool IsSameAssetReference(
         const std::filesystem::path& left,
         const std::filesystem::path& right)
@@ -163,8 +177,8 @@ namespace LamaPon::EditorDetail
                 == NormalizeAssetReference(right);
     }
 
-    // 未選択（空path）同士も同じ選択として扱います。Asset Selectorで
-    // 現在の項目を再クリックしただけの操作を変更扱いにしないためです。
+
+    // 空同士は変更無しとし、他は正規化したパスで変更を判定します(current: 現在選択している資産, candidate: 新たに選択する資産)。
     inline bool IsAssetSelectionChange(
         const std::filesystem::path& current,
         const std::filesystem::path& candidate)
@@ -176,8 +190,10 @@ namespace LamaPon::EditorDetail
         return !IsSameAssetReference(current, candidate);
     }
 
+    // 内蔵図形か対応する画像拡張子か判定します(path: 調べる資産パス)。
     inline bool IsTextureAsset(const std::filesystem::path& path)
     {
+        // 小文字と区切りを揃えた資産名
         auto normalized = Lowercase(
             LamaPon::PathToUtf8(path));
         std::ranges::replace(
@@ -190,6 +206,7 @@ namespace LamaPon::EditorDetail
         {
             return true;
         }
+        // 小文字化したファイル拡張子
         const auto extension = Lowercase(LamaPon::PathToUtf8(path.extension()));
         return extension == ".png"
             || extension == ".jpg"
@@ -200,30 +217,34 @@ namespace LamaPon::EditorDetail
             || extension == ".dds";
     }
 
+    // ファイル名が.scene.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsSceneAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(".scene.json");
     }
 
+    // ファイル名が.prefab.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsPrefabAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(".prefab.json");
     }
 
-    // データアセット（ScriptableObject相当）。判定はランタイム側の
-    // LamaPon::IsDataAssetPathと同じ規則です。
+
+    // ランタイムと同じ.asset.jsonの命名規則で判定します(path: 調べる資産パス)。
     inline bool IsDataAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(
             ".asset.json");
     }
 
+    // ファイル名が.material.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsMaterialAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(
             ".material.json");
     }
 
+    // ファイル名が.lamashader.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsShaderManifestAsset(
         const std::filesystem::path& path)
     {
@@ -231,16 +252,15 @@ namespace LamaPon::EditorDetail
             ".lamashader.json");
     }
 
-    // 従来のHLSL直接指定だけを表します。Manifestをここへ混ぜると、
-    // Material Manifestが未対応のSprite／Particleにも選べてしまうため、
-    // そちらは用途別の選択経路で明示的に許可します。
+
+    // 直接割当用のHLSLだけを判定し、manifestは用途別に選択します(path: 調べる資産パス)。
     inline bool IsShaderAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.extension())) == ".hlsl";
     }
 
-    // Asset Browserからコードエディターで開けるShader資産です。
-    // 割り当て可否ではなく編集導線専用なので、Manifestも含めます。
+
+    // コード編集用にHLSLとmanifestの両方を許可します(path: 調べる資産パス)。
     inline bool IsOpenableShaderAsset(
         const std::filesystem::path& path)
     {
@@ -248,22 +268,20 @@ namespace LamaPon::EditorDetail
             || IsShaderManifestAsset(path);
     }
 
-    // エンジンが「壊れている印」として使うShader（コンパイルに失敗した
-    // ときの代役）。利用者が自分で割り当てられると、マゼンタが
-    // 「壊れている」のか「そう描きたい」のか区別できなくなり、印の
-    // 意味が無くなります。
+
+    // 割当を許さないエンジンのエラー表示用シェーダーか判定します(path: 調べる資産パス)。
     inline bool IsShaderErrorPlaceholder(
         const std::filesystem::path& path)
     {
+        // 判定用の小文字ファイル名
         const auto filename =
             Lowercase(LamaPon::PathToUtf8(path.filename()));
         return filename == "lamaponshadererror.hlsl"
             || filename == "lamaponspriteerror.hlsl";
     }
 
-    // マテリアル／スプライトへ割り当て可能なShaderかを判定します。
-    // コンボ、ドラッグ＆ドロップ、「選択Shaderを設定」の各経路で
-    // 同じ判定を使用します。
+
+    // エラー表示用を除いた直接HLSLの割当可否を判定します(path: 調べる資産パス)。
     inline bool IsAssignableShaderAsset(
         const std::filesystem::path& path)
     {
@@ -271,12 +289,14 @@ namespace LamaPon::EditorDetail
             && !IsShaderErrorPlaceholder(path);
     }
 
+    // ファイル名が.animation.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsAnimationAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(
             ".animation.json");
     }
 
+    // ファイル名が.animator.jsonで終わるか判定します(path: 調べる資産パス)。
     inline bool IsAnimatorControllerAsset(
         const std::filesystem::path& path)
     {
@@ -284,8 +304,10 @@ namespace LamaPon::EditorDetail
             ".animator.json");
     }
 
+    // 対応するモデル拡張子か判定します(path: 調べる資産パス)。
     inline bool IsModelAsset(const std::filesystem::path& path)
     {
+        // 小文字化したファイル拡張子
         const auto extension = Lowercase(LamaPon::PathToUtf8(path.extension()));
         return extension == ".cmo"
             || extension == ".sdkmesh"
@@ -295,38 +317,45 @@ namespace LamaPon::EditorDetail
             || extension == ".fbx";
     }
 
-    // インポートスケール設定はFbxImporterだけが対応しています
-    // （FBXはファイルごとに単位設定が食い違っていることが多く、
-    // 実寸と大きく異なるサイズでインポートされる原因になるため）。
+
+    // インポート単位設定に対応するFBXか判定します(path: 調べる資産パス)。
     inline bool IsFbxAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.extension()))
             == ".fbx";
     }
 
+    // 音声の対応拡張子wavかoggか判定します(path: 調べる資産パス)。
     inline bool IsAudioAsset(const std::filesystem::path& path)
     {
+        // 小文字化したファイル拡張子
         const auto extension =
             Lowercase(LamaPon::PathToUtf8(path.extension()));
         return extension == ".wav"
             || extension == ".ogg";
     }
 
+    // 拡張子がcppか判定します(path: 調べる資産パス)。
     inline bool IsCppScriptAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.extension())) == ".cpp";
     }
 
+    // 正規化した絶対パスの要素を比較し、基準自身または配下か判定します(root: 基準パス, candidate: 比較する候補パス)。
     inline bool IsPathWithin(
         const std::filesystem::path& root,
         const std::filesystem::path& candidate)
     {
+        // 基準の正規化済み絶対パス
         const auto normalizedRoot =
             std::filesystem::absolute(root).lexically_normal();
+        // 候補の正規化済み絶対パス
         const auto normalizedCandidate =
             std::filesystem::absolute(candidate).lexically_normal();
 
+        // 比較中の基準パス要素の位置
         auto rootPart = normalizedRoot.begin();
+        // 比較中の候補パス要素の位置
         auto candidatePart = normalizedCandidate.begin();
         for (; rootPart != normalizedRoot.end(); ++rootPart, ++candidatePart)
         {

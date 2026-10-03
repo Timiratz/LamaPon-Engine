@@ -73,6 +73,7 @@ namespace LamaPon
     DirectX::XMFLOAT3
         SpotLightComponent::WorldPosition() const noexcept
     {
+        // 光源のワールド位置
         DirectX::XMFLOAT3 result{};
         DirectX::XMStoreFloat3(
             &result,
@@ -85,6 +86,7 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 光源のワールド負Z方向
         const XMVECTOR direction =
             XMVectorNegate(Owner().WorldMatrix().r[2]);
         if (XMVectorGetX(XMVector3LengthSq(direction))
@@ -93,6 +95,7 @@ namespace LamaPon
             return { 0.0f, -1.0f, 0.0f };
         }
 
+        // 正規化した光源方向
         XMFLOAT3 result{};
         XMStoreFloat3(&result, XMVector3Normalize(direction));
         return result;

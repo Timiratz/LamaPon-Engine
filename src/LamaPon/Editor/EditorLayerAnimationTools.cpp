@@ -29,6 +29,7 @@ using namespace LamaPon::EditorDetail;
 
 namespace LamaPon
 {
+    // キーの時刻と変換を編集・プレビューし、閉じる際は元の変換へ戻します。
     void EditorLayer::DrawAnimationTimeline()
     {
         if (!m_animationTimelineOpen)
@@ -36,20 +37,24 @@ namespace LamaPon
             return;
         }
 
+        // タイムラインの表示状態
         bool windowOpen = true;
         ImGui::SetNextWindowSize(
             ImVec2{ 760.0f, 560.0f },
             ImGuiCond_FirstUseEver);
+        // 変更状態を含むウィンドウ名
         const std::string title =
             std::string{ "Animation Timeline" }
             + (m_animationTimelineDirty
                 ? " *"
                 : "")
             + "###AnimationTimeline";
+        // タイムラインの内容を描画するか
         const bool visible = ImGui::Begin(
             title.c_str(),
             &windowOpen);
 
+        // アニメーションの編集対象
         auto* target = m_scene.FindGameObject(
             m_animationTimelineTargetId);
         if (target == nullptr)
@@ -97,6 +102,7 @@ namespace LamaPon
                     SetStatus(
                         "Animation Timelineを再読み込みしました");
                 }
+                // タイムライン再読込時の例外
                 catch (const std::exception& exception)
                 {
                     m_animationTimelineError =
@@ -119,7 +125,9 @@ namespace LamaPon
                 m_animationTimelineDirty = true;
             }
 
+            // 最も遅いキーの時刻・秒
             float maximumKeyTime{};
+            // 時刻の集計・編集中のキー
             for (const auto& keyframe :
                 m_animationTimelineKeyframes)
             {
@@ -165,12 +173,14 @@ namespace LamaPon
             }
 
             ImGui::SeparatorText("Keyframe");
+            // 表示中のキー番号
             for (std::size_t index = 0;
                 index < m_animationTimelineKeyframes.size();
                 ++index)
             {
                 ImGui::PushID(
                     static_cast<int>(index));
+                // キー番号と時刻の表示
                 const std::string keyLabel =
                     std::to_string(index)
                     + ": "
@@ -196,6 +206,7 @@ namespace LamaPon
             if (ImGui::Button(
                     "現在時刻へKeyframe追加"))
             {
+                // 既存キーとの時刻重複を調べます(keyframe: 比較するキー)。
                 const bool duplicateTime =
                     std::ranges::any_of(
                         m_animationTimelineKeyframes,
@@ -214,6 +225,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 記録する対象のローカル変換
                     const auto& transform =
                         target->GetTransform();
                     m_animationTimelineKeyframes.push_back(
@@ -229,6 +241,7 @@ namespace LamaPon
                         m_animationTimelineKeyframes,
                         {},
                         &TransformKeyframe::time);
+                    // 現在時刻のキーを探します(keyframe: 時刻を調べるキー)。
                     const auto selected =
                         std::ranges::find_if(
                             m_animationTimelineKeyframes,
@@ -250,6 +263,7 @@ namespace LamaPon
                 }
             }
 
+            // 選択キー番号が範囲内か
             const bool validSelection =
                 m_animationTimelineSelectedKey
                     < m_animationTimelineKeyframes.size();
@@ -258,6 +272,7 @@ namespace LamaPon
             if (ImGui::Button(
                     "選択Keyを現在時刻へ移動"))
             {
+                // 既存キーとの時刻重複を調べます(keyframe: 比較するキー)。
                 const bool duplicateTime =
                     std::ranges::any_of(
                         m_animationTimelineKeyframes,
@@ -279,6 +294,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 時刻を変更するキーのコピー
                     auto moved =
                         m_animationTimelineKeyframes[
                             m_animationTimelineSelectedKey];
@@ -294,6 +310,7 @@ namespace LamaPon
                         m_animationTimelineKeyframes,
                         {},
                         &TransformKeyframe::time);
+                    // 現在時刻のキーを探します(keyframe: 時刻を調べるキー)。
                     const auto selected =
                         std::ranges::find_if(
                             m_animationTimelineKeyframes,
@@ -338,12 +355,14 @@ namespace LamaPon
                 && m_animationTimelineSelectedKey
                     < m_animationTimelineKeyframes.size())
             {
+                // 時刻の集計・編集中のキー
                 auto& keyframe =
                     m_animationTimelineKeyframes[
                         m_animationTimelineSelectedKey];
                 ImGui::SeparatorText(
                     "選択KeyframeのTransform");
 
+                // 選択キーの位置の編集値
                 auto position =
                     keyframe.transform.position;
                 if (ImGui::InputFloat3(
@@ -356,6 +375,7 @@ namespace LamaPon
                     PreviewAnimationTimeline();
                 }
 
+                // 選択キーの回転角・度
                 DirectX::XMFLOAT3 rotationDegrees{
                     DirectX::XMConvertToDegrees(
                         keyframe.transform.rotation.x),
@@ -380,6 +400,7 @@ namespace LamaPon
                     PreviewAnimationTimeline();
                 }
 
+                // 選択キーの拡縮の編集値
                 auto scale =
                     keyframe.transform.scale;
                 if (ImGui::InputFloat3(
@@ -395,6 +416,7 @@ namespace LamaPon
                 if (ImGui::Button(
                         "現在のGameObject Transformを記録"))
                 {
+                    // 記録する対象のローカル変換
                     const auto& transform =
                         target->GetTransform();
                     keyframe.transform = {
@@ -419,6 +441,7 @@ namespace LamaPon
         }
     }
 
+    // 状態・遷移・ブレンド・イベントを編集し、閉じる時の保存失敗では画面を開いたままにします。
     void EditorLayer::DrawAnimatorControllerGraph()
     {
         if (!m_animatorGraphOpen
@@ -427,7 +450,9 @@ namespace LamaPon
             return;
         }
 
+        // 制御グラフの表示状態
         bool windowOpen = true;
+        // 編集中の制御グラフの表示名
         const std::string title =
             "Animator Controller"
             + std::string{
@@ -447,9 +472,12 @@ namespace LamaPon
             return;
         }
 
+        // 編集中の制御グラフJSON
         auto& document =
             *m_animatorGraphDocument;
+        // 制御グラフの状態一覧
         auto& states = document["states"];
+        // 状態間の遷移一覧
         auto& transitions =
             document["transitions"];
         if (!transitions.is_array())
@@ -457,6 +485,7 @@ namespace LamaPon
             transitions =
                 nlohmann::json::array();
         }
+        // Floatパラメーター一覧
         auto& parameters =
             document["parameters"];
         if (!parameters.is_array())
@@ -465,13 +494,17 @@ namespace LamaPon
                 nlohmann::json::array();
         }
 
+        // 重複しない名前の状態を追加します(position: グラフ上の配置座標)。
         const auto addState =
             [this, &states, &document](
                 const DirectX::XMFLOAT2 position)
             {
+                // 重複を避ける名前・候補の名前
                 std::string name = "New State";
+                // 重複を避ける名前の連番
                 for (std::size_t suffix = 2;; ++suffix)
                 {
+                    // 同名の状態があるか調べます(state: 既存の状態)。
                     const bool exists =
                         std::ranges::any_of(
                             states,
@@ -515,6 +548,7 @@ namespace LamaPon
             {
                 SaveAnimatorControllerGraph();
             }
+            // グラフの保存・読込時の例外
             catch (const std::exception& exception)
             {
                 m_animatorGraphError =
@@ -528,6 +562,7 @@ namespace LamaPon
             {
                 LoadAnimatorControllerGraph();
             }
+            // グラフの保存・読込時の例外
             catch (const std::exception& exception)
             {
                 m_animatorGraphError =
@@ -555,6 +590,7 @@ namespace LamaPon
                 m_animatorGraphError.c_str());
         }
 
+        // このグラフでCtrl+Sを押したか
         const bool saveShortcut =
             ImGui::GetIO().KeyCtrl
             && ImGui::IsKeyPressed(
@@ -568,6 +604,7 @@ namespace LamaPon
             {
                 SaveAnimatorControllerGraph();
             }
+            // グラフの保存・読込時の例外
             catch (const std::exception& exception)
             {
                 m_animatorGraphError =
@@ -575,6 +612,7 @@ namespace LamaPon
             }
         }
 
+        // 設定ペインの表示幅
         const float inspectorWidth =
             std::clamp(
                 ImGui::GetContentRegionAvail().x
@@ -591,12 +629,16 @@ namespace LamaPon
             true,
             ImGuiWindowFlags_NoScrollbar
                 | ImGuiWindowFlags_NoScrollWithMouse);
+        // グラフCanvasの画面原点
         const ImVec2 canvasPosition =
             ImGui::GetWindowPos();
+        // グラフCanvasの表示サイズ
         const ImVec2 canvasSize =
             ImGui::GetWindowSize();
+        // グラフCanvasの描画リスト
         auto* drawList =
             ImGui::GetWindowDrawList();
+        // マウスがグラフCanvas内か
         const bool canvasHovered =
             ImGui::IsWindowHovered();
         if (canvasHovered
@@ -604,6 +646,7 @@ namespace LamaPon
                 ImGuiMouseButton_Middle,
                 0.0f))
         {
+            // マウスのドラッグ移動量
             const auto delta =
                 ImGui::GetIO().MouseDelta;
             m_animatorGraphScrolling.x +=
@@ -611,7 +654,9 @@ namespace LamaPon
             m_animatorGraphScrolling.y +=
                 delta.y;
         }
+        // グラフ背景の格子間隔
         constexpr float gridStep = 32.0f;
+        // 背景格子・ブレンドのX座標
         for (float x = std::fmod(
                 m_animatorGraphScrolling.x,
                 gridStep);
@@ -630,6 +675,7 @@ namespace LamaPon
                 },
                 IM_COL32(52, 60, 72, 100));
         }
+        // 背景格子・ブレンドのY座標
         for (float y = std::fmod(
                 m_animatorGraphScrolling.y,
                 gridStep);
@@ -649,16 +695,19 @@ namespace LamaPon
                 IM_COL32(52, 60, 72, 100));
         }
 
+        // 状態ノードの表示サイズ
         constexpr ImVec2 nodeSize{
             180.0f,
             82.0f
         };
+        // 状態の画面座標を探し、未登録ならnulloptを返します(name: 状態名)。
         const auto stateScreenPosition =
             [&states,
                 &canvasPosition = canvasPosition,
                 this](const std::string_view name)
                 -> std::optional<ImVec2>
             {
+                // 表示・編集中の状態
                 for (const auto& state : states)
                 {
                     if (state.value(
@@ -667,6 +716,7 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 状態・ブレンド要素の座標
                     const auto& position =
                         state["editorPosition"];
                     return ImVec2{
@@ -681,13 +731,16 @@ namespace LamaPon
                 return std::nullopt;
             };
 
+        // 表示・編集中の状態遷移
         for (const auto& transition : transitions)
         {
+            // 遷移元ノードの画面座標
             const auto from =
                 stateScreenPosition(
                     transition.value(
                         "from",
                         std::string{}));
+            // 遷移先ノードの画面座標
             const auto to =
                 stateScreenPosition(
                     transition.value(
@@ -697,14 +750,17 @@ namespace LamaPon
             {
                 continue;
             }
+            // 遷移線の始点
             const ImVec2 start{
                 from->x + nodeSize.x,
                 from->y + nodeSize.y * 0.5f
             };
+            // 遷移線の終点
             const ImVec2 end{
                 to->x,
                 to->y + nodeSize.y * 0.5f
             };
+            // 遷移線の表示色
             const ImU32 color =
                 IM_COL32(115, 175, 235, 210);
             drawList->AddBezierCubic(
@@ -733,13 +789,17 @@ namespace LamaPon
                 color);
         }
 
+        // 表示・編集中の要素番号
         for (std::size_t index = 0;
             index < states.size();
             ++index)
         {
+            // 表示・編集中の状態
             auto& state = states[index];
+            // 状態・ブレンド要素の座標
             auto& position =
                 state["editorPosition"];
+            // 状態ノードの画面座標
             const ImVec2 screenPosition{
                 canvasPosition.x
                     + m_animatorGraphScrolling.x
@@ -765,6 +825,7 @@ namespace LamaPon
                     ImGuiMouseButton_Left,
                     0.0f))
             {
+                // マウスのドラッグ移動量
                 const auto delta =
                     ImGui::GetIO().MouseDelta;
                 position[0] =
@@ -775,9 +836,11 @@ namespace LamaPon
                     + delta.y;
                 m_animatorGraphDirty = true;
             }
+            // 選択中の状態ノードか
             const bool selected =
                 index
                 == m_animatorGraphSelectedState;
+            // 開始状態のノードか
             const bool entry =
                 document.value(
                     "entry",
@@ -785,9 +848,11 @@ namespace LamaPon
                 == state.value(
                     "name",
                     std::string{});
+            // 状態ノードの本体色
             const ImU32 bodyColor = selected
                 ? IM_COL32(44, 78, 116, 255)
                 : IM_COL32(34, 42, 54, 255);
+            // 状態ノードの見出し色
             const ImU32 headerColor = entry
                 ? IM_COL32(50, 145, 92, 255)
                 : state.contains("blendTree")
@@ -845,6 +910,7 @@ namespace LamaPon
                     "name",
                     std::string{
                         "Unnamed" }).c_str());
+            // 状態ノードのClip・Blend表示
             const std::string detail =
                 state.contains("blendTree")
                 ? state["blendTree"].value(
@@ -884,6 +950,7 @@ namespace LamaPon
         {
             if (ImGui::MenuItem("Stateを追加"))
             {
+                // 追加メニューを開いた画面位置
                 const auto mouse =
                     ImGui::GetMousePosOnOpeningCurrentPopup();
                 addState({
@@ -903,16 +970,21 @@ namespace LamaPon
             ImVec2{ 0.0f, 0.0f },
             true);
         ImGui::SeparatorText("Float Parameters");
+        // 列挙後に削除する入力番号
         std::optional<std::size_t>
             parameterToDelete;
+        // 表示・編集中の要素番号
         for (std::size_t index = 0;
             index < parameters.size();
             ++index)
         {
+            // 編集・参照するブレンド入力
             auto& parameter = parameters[index];
             ImGui::PushID(
                 static_cast<int>(index));
+            // 状態・パラメーター名の編集欄
             std::array<char, 128> nameBuffer{};
+            // 編集前の状態・パラメーター名
             const auto oldName = parameter.value(
                 "name",
                 std::string{});
@@ -926,10 +998,12 @@ namespace LamaPon
                     nameBuffer.data(),
                     nameBuffer.size()))
             {
+                // 編集後の状態・パラメーター名
                 const std::string newName{
                     nameBuffer.data()
                 };
                 parameter["name"] = newName;
+                // 表示・編集中の状態
                 for (auto& state : states)
                 {
                     if (!state.contains("blendTree"))
@@ -937,8 +1011,10 @@ namespace LamaPon
                         continue;
                     }
 
+                    // 編集中・参照中のブレンド構造
                     auto& blendTree =
                         state["blendTree"];
+                    // ブレンド入力を指定するキー
                     for (const char* key :
                         { "parameter",
                           "parameterX",
@@ -957,6 +1033,7 @@ namespace LamaPon
                 m_animatorGraphDirty = true;
             }
             ImGui::SameLine();
+            // パラメーターの既定値
             float defaultValue =
                 parameter.value(
                     "default",
@@ -972,6 +1049,7 @@ namespace LamaPon
                 m_animatorGraphDirty = true;
             }
             ImGui::SameLine();
+            // ブレンドで参照されているか調べます(state: 参照を調べる状態)。
             const bool used =
                 std::ranges::any_of(
                     states,
@@ -984,6 +1062,7 @@ namespace LamaPon
                             return false;
                         }
 
+                        // 編集中・参照中のブレンド構造
                         const auto& blendTree =
                             state["blendTree"];
                         return blendTree.value(
@@ -1019,8 +1098,11 @@ namespace LamaPon
         }
         if (ImGui::Button("+ Float Parameter"))
         {
+            // 重複を避ける名前・候補の名前
             std::string name = "Blend";
+            // 重複を避ける名前の連番
             std::size_t suffix = 2;
+            // 同名パラメーターを避けます(value: 登録済みパラメーター)。
             while (std::ranges::any_of(
                 parameters,
                 [&name](
@@ -1047,14 +1129,17 @@ namespace LamaPon
         if (m_animatorGraphSelectedState
             < states.size())
         {
+            // 表示・編集中の状態
             auto& state =
                 states[
                     m_animatorGraphSelectedState];
             ImGui::SeparatorText("State");
+            // 編集前の状態・パラメーター名
             const std::string oldName =
                 state.value(
                     "name",
                     std::string{});
+            // 状態・パラメーター名の編集欄
             std::array<char, 128> nameBuffer{};
             strcpy_s(
                 nameBuffer.data(),
@@ -1065,6 +1150,7 @@ namespace LamaPon
                     nameBuffer.data(),
                     nameBuffer.size()))
             {
+                // 編集後の状態・パラメーター名
                 const std::string newName{
                     nameBuffer.data()
                 };
@@ -1079,6 +1165,7 @@ namespace LamaPon
                         document["entry"] =
                             newName;
                     }
+                    // 表示・編集中の状態遷移
                     for (auto& transition :
                         transitions)
                     {
@@ -1129,6 +1216,7 @@ namespace LamaPon
                     "Entry State");
             }
 
+            // 状態の再生速度の編集値
             float speed =
                 state.value("speed", 1.0f);
             if (ImGui::DragFloat(
@@ -1145,6 +1233,7 @@ namespace LamaPon
                         100.0f);
                 m_animatorGraphDirty = true;
             }
+            // 状態をループ再生するか
             bool loop =
                 state.value("loop", true);
             if (ImGui::Checkbox(
@@ -1155,6 +1244,7 @@ namespace LamaPon
                 m_animatorGraphDirty = true;
             }
 
+            // ブレンド方式・0は単一Clip
             int blendMode{};
             if (state.contains("blendTree"))
             {
@@ -1166,6 +1256,7 @@ namespace LamaPon
                     ? 2
                     : 1;
             }
+            // ブレンド方式の表示名
             const char* blendModeNames[]{
                 "なし",
                 "1D Blend Tree",
@@ -1195,6 +1286,7 @@ namespace LamaPon
                     }
                     if (!state.contains("blendTree"))
                     {
+                        // ブレンドの初期Clip名
                         const std::string clip =
                             state.value(
                                 "modelClip",
@@ -1237,12 +1329,15 @@ namespace LamaPon
                             }
                         };
                     }
+                    // 編集中・参照中のブレンド構造
                     auto& blendTree =
                         state["blendTree"];
+                    // ブレンド要素の一覧
                     auto& children =
                         blendTree["children"];
                     if (blendMode == 1)
                     {
+                        // 編集・参照するブレンド入力
                         const std::string parameter =
                             blendTree.value(
                                 "parameter",
@@ -1255,6 +1350,7 @@ namespace LamaPon
                         blendTree["type"] = "1D";
                         blendTree["parameter"] =
                             parameter;
+                        // 編集・表示するブレンド要素
                         for (auto& child : children)
                         {
                             if (!child.contains(
@@ -1295,6 +1391,7 @@ namespace LamaPon
                                     "name",
                                     std::string{
                                         "BlendY" }));
+                        // 編集・表示するブレンド要素
                         for (auto& child : children)
                         {
                             if (!child.contains(
@@ -1312,18 +1409,23 @@ namespace LamaPon
                 }
                 m_animatorGraphDirty = true;
             }
+            // ブレンドを使う状態か
             const bool usesBlendTree =
                 blendMode != 0;
+            // 2Dブレンドを使う状態か
             const bool uses2DBlendTree =
                 blendMode == 2;
 
+            // JSON文字列の編集を反映します(label: 項目名, object: 編集対象, key: JSONキー)。
             const auto inputString =
                 [this](
                     const char* label,
                     nlohmann::json& object,
                     const char* key)
                 {
+                    // JSON文字列の編集欄
                     std::array<char, 512> buffer{};
+                    // 編集前のJSON文字列
                     const auto value = object.value(
                         key,
                         std::string{});
@@ -1358,13 +1460,16 @@ namespace LamaPon
             }
             else
             {
+                // 編集中・参照中のブレンド構造
                 auto& blendTree =
                     state["blendTree"];
+                // ブレンドの入力パラメーターを選びます(label: 項目名, key: 設定先のJSONキー)。
                 const auto drawParameterCombo =
                     [this, &parameters, &blendTree](
                         const char* label,
                         const char* key)
                 {
+                    // 現在のブレンド入力名
                     const std::string current =
                         blendTree.value(
                             key,
@@ -1375,9 +1480,11 @@ namespace LamaPon
                     {
                         return;
                     }
+                    // 編集・参照するブレンド入力
                     for (const auto& parameter :
                         parameters)
                     {
+                        // 重複を避ける名前・候補の名前
                         const auto name =
                             parameter.value(
                                 "name",
@@ -1406,14 +1513,18 @@ namespace LamaPon
                         "Y Parameter",
                         "parameterY");
                 }
+                // ブレンド要素の一覧
                 auto& children =
                     blendTree["children"];
+                // 列挙後に削除する要素番号
                 std::optional<std::size_t>
                     childToDelete;
+                // 表示・編集中の要素番号
                 for (std::size_t index = 0;
                     index < children.size();
                     ++index)
                 {
+                    // 編集・表示するブレンド要素
                     auto& child =
                         children[index];
                     ImGui::PushID(
@@ -1443,6 +1554,7 @@ namespace LamaPon
                                 0.0f
                             };
                         }
+                        // 2Dブレンド座標の編集値
                         std::array<float, 2>
                             position{
                                 child["position"]
@@ -1465,6 +1577,7 @@ namespace LamaPon
                     }
                     else
                     {
+                        // 1Dブレンドのしきい値
                         float threshold =
                             child.value(
                                 "threshold",
@@ -1506,16 +1619,22 @@ namespace LamaPon
                 if (uses2DBlendTree
                     && !children.empty())
                 {
+                    // ブレンド表示の最小X
                     float minimumX =
                         std::numeric_limits<float>::max();
+                    // ブレンド表示の最大X
                     float maximumX =
                         std::numeric_limits<float>::lowest();
+                    // ブレンド表示の最小Y
                     float minimumY =
                         std::numeric_limits<float>::max();
+                    // ブレンド表示の最大Y
                     float maximumY =
                         std::numeric_limits<float>::lowest();
+                    // 編集・表示するブレンド要素
                     for (const auto& child : children)
                     {
+                        // 状態・ブレンド要素の座標
                         const auto position =
                             child.value(
                                 "position",
@@ -1523,8 +1642,10 @@ namespace LamaPon
                                     0.0f,
                                     0.0f
                                 }));
+                        // 背景格子・ブレンドのX座標
                         const float x =
                             position.at(0).get<float>();
+                        // 背景格子・ブレンドのY座標
                         const float y =
                             position.at(1).get<float>();
                         minimumX = std::min(
@@ -1552,9 +1673,11 @@ namespace LamaPon
                     maximumY = std::max(
                         maximumY,
                         0.0f);
+                    // ブレンド表示範囲の横幅
                     const float spanX = std::max(
                         maximumX - minimumX,
                         1.0f);
+                    // ブレンド表示範囲の高さ
                     const float spanY = std::max(
                         maximumY - minimumY,
                         1.0f);
@@ -1565,10 +1688,13 @@ namespace LamaPon
                     ImGui::InvisibleButton(
                         "##Blend2DPreview",
                         ImVec2{ -1.0f, 180.0f });
+                    // 2Dブレンド表示の左上
                     const ImVec2 areaMin =
                         ImGui::GetItemRectMin();
+                    // 2Dブレンド表示の右下
                     const ImVec2 areaMax =
                         ImGui::GetItemRectMax();
+                    // 2Dブレンドの描画リスト
                     auto* previewDrawList =
                         ImGui::GetWindowDrawList();
                     previewDrawList->AddRectFilled(
@@ -1589,6 +1715,7 @@ namespace LamaPon
                             105,
                             255),
                         5.0f);
+                    // ブレンド座標をプレビューの画面座標へ変換します(x: ブレンドX, y: ブレンドY)。
                     const auto toScreen =
                         [areaMin,
                             areaMax,
@@ -1614,6 +1741,7 @@ namespace LamaPon
                                             - minimumY))
                             };
                         };
+                    // ブレンド原点の画面座標
                     const ImVec2 origin =
                         toScreen(0.0f, 0.0f);
                     previewDrawList->AddLine(
@@ -1644,8 +1772,10 @@ namespace LamaPon
                             82,
                             98,
                             210));
+                    // 編集・表示するブレンド要素
                     for (const auto& child : children)
                     {
+                        // 状態・ブレンド要素の座標
                         const auto position =
                             child.value(
                                 "position",
@@ -1653,6 +1783,7 @@ namespace LamaPon
                                     0.0f,
                                     0.0f
                                 }));
+                        // ブレンド要素の画面座標
                         const ImVec2 point =
                             toScreen(
                                 position.at(0)
@@ -1668,6 +1799,7 @@ namespace LamaPon
                                     190,
                                     255,
                                     255));
+                        // ブレンド要素のClip表示名
                         const auto label =
                             child.value(
                                 "modelClip",
@@ -1688,6 +1820,7 @@ namespace LamaPon
                 if (children.size() < 16
                     && ImGui::Button("+ Child"))
                 {
+                    // 追加時の基準にする末尾要素
                     const auto& last =
                         children.back();
                     children.push_back({
@@ -1739,14 +1872,18 @@ namespace LamaPon
                 state["events"] =
                     nlohmann::json::array();
             }
+            // 状態のイベント一覧
             auto& animationEvents =
                 state["events"];
+            // 列挙後に削除するイベント番号
             std::optional<std::size_t>
                 eventToDelete;
+            // 表示・編集中の要素番号
             for (std::size_t index = 0;
                 index < animationEvents.size();
                 ++index)
             {
+                // 編集中のアニメーションイベント
                 auto& animationEvent =
                     animationEvents[index];
                 ImGui::PushID(
@@ -1759,6 +1896,7 @@ namespace LamaPon
                     "Payload",
                     animationEvent,
                     "payload");
+                // イベントの正規化時刻
                 float eventTime =
                     animationEvent.value(
                         "time",
@@ -1806,16 +1944,20 @@ namespace LamaPon
             }
 
             ImGui::SeparatorText("Transitions");
+            // 列挙後に削除する遷移番号
             std::optional<std::size_t>
                 transitionToDelete;
+            // 遷移を編集する状態の名前
             const std::string stateName =
                 state.value(
                     "name",
                     std::string{});
+            // 表示・編集中の要素番号
             for (std::size_t index = 0;
                 index < transitions.size();
                 ++index)
             {
+                // 表示・編集中の状態遷移
                 auto& transition =
                     transitions[index];
                 if (transition.value(
@@ -1827,6 +1969,7 @@ namespace LamaPon
                 }
                 ImGui::PushID(
                     static_cast<int>(index));
+                // 選択中の遷移先名
                 const auto target =
                     transition.value(
                         "to",
@@ -1840,9 +1983,11 @@ namespace LamaPon
                             "遷移先",
                             target.c_str()))
                     {
+                        // 遷移先候補の状態
                         for (const auto&
                             targetState : states)
                         {
+                            // 遷移先候補の状態名
                             const auto targetName =
                                 targetState.value(
                                     "name",
@@ -1866,6 +2011,7 @@ namespace LamaPon
                         "Trigger",
                         transition,
                         "trigger");
+                    // 遷移のExitTime編集値
                     float exitTime =
                         transition.value(
                             "exitTime",
@@ -1885,6 +2031,7 @@ namespace LamaPon
                         m_animatorGraphDirty =
                             true;
                     }
+                    // 遷移にかける時間・秒
                     float duration =
                         transition.value(
                             "duration",
@@ -1928,6 +2075,7 @@ namespace LamaPon
                 && ImGui::Button(
                     "+ Transition"))
             {
+                // 他の状態への遷移先を探します(candidate: 遷移先候補)。
                 const auto target =
                     std::ranges::find_if(
                         states,
@@ -1966,6 +2114,7 @@ namespace LamaPon
                     "Stateを削除",
                     ImVec2{ -1.0f, 0.0f }))
             {
+                // 削除する状態に接続した遷移も消します(transition: 接続を調べる遷移)。
                 transitions.erase(
                     std::remove_if(
                         transitions.begin(),
@@ -2019,6 +2168,7 @@ namespace LamaPon
                 {
                     SaveAnimatorControllerGraph();
                 }
+                // 終了時の保存例外
                 catch (const std::exception& exception)
                 {
                     m_animatorGraphError =
@@ -2033,6 +2183,7 @@ namespace LamaPon
         }
     }
 
+    // 編集中のグラフを保存して指定ファイルを開き、失敗時はエラーを通知します(controllerPath: 制御グラフのパス)。
     void EditorLayer::OpenAnimatorControllerGraph(
         const std::filesystem::path& controllerPath)
     {
@@ -2055,6 +2206,7 @@ namespace LamaPon
                 "Animator Controllerを開きました: "
                 + PathToUtf8(controllerPath));
         }
+        // アニメーション操作時の例外
         catch (const std::exception& exception)
         {
             m_animatorGraphError = exception.what();
@@ -2063,11 +2215,14 @@ namespace LamaPon
         }
     }
 
+    // 制御グラフを検証し、欠けた配置座標を補って編集状態を置き換えます。
     void EditorLayer::LoadAnimatorControllerGraph()
     {
+        // 制御グラフの解決済みパス
         const auto path =
             m_graphics.Assets().ResolvePath(
                 m_animatorGraphControllerPath);
+        // 制御グラフJSONの入力
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -2075,19 +2230,25 @@ namespace LamaPon
                 "Animator Controllerを開けません: "
                 + PathToUtf8(path));
         }
+        // 検証後に公開するグラフJSON
         auto document =
             std::make_unique<nlohmann::json>();
+        // 検証後に公開するグラフJSON
         input >> *document;
         static_cast<void>(
             AnimatorController::FromJson(
                 document->dump()));
 
+        // 読込グラフの状態一覧
         auto& states = document->at("states");
+        // 状態の配置を補う添字
         for (std::size_t index = 0;
             index < states.size();
             ++index)
         {
+            // 配置座標を補う状態
             auto& state = states[index];
+            // 登録済みの配置座標
             const auto position =
                 state.find("editorPosition");
             if (position == state.end()
@@ -2115,6 +2276,7 @@ namespace LamaPon
         m_animatorGraphError.clear();
     }
 
+    // グラフを検証して一時書込後に置換し、利用中のコンポーネントへ再読み込みします。
     void EditorLayer::SaveAnimatorControllerGraph()
     {
         if (!m_animatorGraphDocument
@@ -2122,6 +2284,7 @@ namespace LamaPon
         {
             return;
         }
+        // 検証・保存するグラフJSON
         const std::string serialized =
             m_animatorGraphDocument->dump(2)
             + '\n';
@@ -2129,14 +2292,17 @@ namespace LamaPon
             AnimatorController::FromJson(
                 serialized));
 
+        // 制御グラフの保存先
         const auto path =
             m_graphics.Assets().ResolvePath(
                 m_animatorGraphControllerPath);
+        // 置換前の一時保存パス
         const auto temporary =
             std::filesystem::path{
                 path.wstring() + L".tmp"
             };
         {
+            // 制御グラフJSONの出力
             std::ofstream output(
                 temporary,
                 std::ios::binary
@@ -2165,6 +2331,7 @@ namespace LamaPon
                 MOVEFILE_REPLACE_EXISTING
                     | MOVEFILE_WRITE_THROUGH))
         {
+            // 置換失敗後の削除エラー
             std::error_code cleanupError;
             std::filesystem::remove(
                 temporary,
@@ -2174,13 +2341,16 @@ namespace LamaPon
                 + PathToUtf8(path));
         }
 
+        // ファイル置換後に再読込するため、後続の例外でも保存済みファイルは戻しません。
         static_cast<void>(
             m_graphics.Assets().
                 ReloadAnimatorController(
                     m_animatorGraphControllerPath));
+        // 制御グラフの利用対象
         for (const auto& gameObject :
             m_scene.GameObjects())
         {
+            // 再読込する変換アニメーター
             if (auto* animator =
                     gameObject->GetComponent<
                         TransformAnimatorComponent>();
@@ -2190,6 +2360,7 @@ namespace LamaPon
             {
                 animator->ReloadController();
             }
+            // 再読込するモデルアニメーター
             if (auto* model =
                     gameObject->GetComponent<
                         ModelRendererComponent>();
@@ -2208,11 +2379,14 @@ namespace LamaPon
                 m_animatorGraphControllerPath));
     }
 
+    // 選択対象のClipを読み込み、元の変換を保存してタイムラインを開きます。
     void EditorLayer::OpenAnimationTimeline()
     {
+        // 選択中のアニメーション対象
         auto* gameObject =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // Clipを編集するアニメーター
         auto* animator = gameObject != nullptr
             ? gameObject->GetComponent<
                 TransformAnimatorComponent>()
@@ -2243,6 +2417,7 @@ namespace LamaPon
                 + PathToUtf8(
                     animator->ClipPath()));
         }
+        // アニメーション操作時の例外
         catch (const std::exception& exception)
         {
             m_animationTimelineOpen = false;
@@ -2251,11 +2426,14 @@ namespace LamaPon
         }
     }
 
+    // assets内に現在の変換のClipを作り、選択対象へ割り当ててタイムラインを開きます。
     void EditorLayer::CreateAnimationClipForSelected()
     {
+        // 新規Clipを割り当てる対象
         auto* gameObject =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // Clipを設定するアニメーター
         auto* animator = gameObject != nullptr
             ? gameObject->GetComponent<
                 TransformAnimatorComponent>()
@@ -2269,9 +2447,11 @@ namespace LamaPon
             CloseAnimationTimeline(true);
         }
 
+        // 新規Clipのファイル名の幹
         std::wstring baseName =
             PathFromUtf8(
                 gameObject->Name()).filename().wstring();
+        // ファイル名を整える文字
         for (auto& character : baseName)
         {
             if (character < L' '
@@ -2294,7 +2474,9 @@ namespace LamaPon
             baseName = L"NewAnimation";
         }
 
+        // 選択したClipの保存先
         std::array<wchar_t, 32768> filename{};
+        // Clipファイル名の初期候補
         const std::wstring suggestedName =
             baseName + L".animation.json";
         wcscpy_s(
@@ -2302,12 +2484,15 @@ namespace LamaPon
             filename.size(),
             suggestedName.c_str());
 
+        // 保存を許可するアセットルート
         const auto assetRoot =
             std::filesystem::absolute(
                 m_graphics.Assets().AssetRoot()).
                     lexically_normal();
+        // Clip保存先の初期フォルダー
         const auto animationDirectory =
             assetRoot / L"animations";
+        // 初期フォルダーの作成エラー
         std::error_code directoryError;
         std::filesystem::create_directories(
             animationDirectory,
@@ -2319,12 +2504,15 @@ namespace LamaPon
                 true);
             return;
         }
+        // 保存ダイアログの初期パス
         const std::wstring initialDirectory =
             animationDirectory.wstring();
+        // Clip保存のファイルフィルター
         constexpr wchar_t filter[] =
             L"LamaPon Animation (*.animation.json)\0*.animation.json\0"
             L"JSON (*.json)\0*.json\0\0";
 
+        // Clip保存ダイアログの設定
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -2357,6 +2545,7 @@ namespace LamaPon
 
         try
         {
+            // 検証するClipの保存先
             std::filesystem::path destination{
                 filename.data()
             };
@@ -2376,8 +2565,10 @@ namespace LamaPon
                     "Animation Clipはassetsフォルダー内へ保存してください。");
             }
 
+            // 新規Clipに記録する変換
             const auto& transform =
                 gameObject->GetTransform();
+            // 作成して保存するClip
             const auto clip =
                 AnimationClip::Create(
                     gameObject->Name()
@@ -2395,6 +2586,7 @@ namespace LamaPon
                         }
                     });
             clip.SaveToFile(destination);
+            // 割当用のアセット相対パス
             const auto relativePath =
                 destination.lexically_relative(
                     assetRoot);
@@ -2410,20 +2602,24 @@ namespace LamaPon
                 + PathToUtf8(relativePath));
             OpenAnimationTimeline();
         }
+        // アニメーション操作時の例外
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // Clipを読み込み、最初のキーを選択した編集状態に置き換えます(clipPath: 相対または絶対Clipパス)。
     void EditorLayer::LoadAnimationTimeline(
         const std::filesystem::path& clipPath)
     {
+        // 読込Clipの解決済みパス
         const auto resolvedPath =
             clipPath.is_absolute()
                 ? clipPath.lexically_normal()
                 : m_graphics.Assets().ResolvePath(
                     clipPath);
+        // 編集欄へ複製するClip
         const auto clip =
             AnimationClip::LoadFromFile(
                 resolvedPath);
@@ -2448,6 +2644,7 @@ namespace LamaPon
         m_animationTimelineError.clear();
     }
 
+    // 編集Clipを保存して対象に再読込し、失敗は編集エラーとして通知します。
     void EditorLayer::SaveAnimationTimeline()
     {
         if (m_playing
@@ -2457,12 +2654,14 @@ namespace LamaPon
         }
         try
         {
+            // 編集値から作成する保存Clip
             const auto clip =
                 AnimationClip::Create(
                     m_animationTimelineName.data(),
                     m_animationTimelineDuration,
                     m_animationTimelineLoop,
                     m_animationTimelineKeyframes);
+            // Clipの解決済み保存先
             const auto resolvedPath =
                 m_animationTimelineClipPath.is_absolute()
                     ? m_animationTimelineClipPath.
@@ -2471,10 +2670,12 @@ namespace LamaPon
                         m_animationTimelineClipPath);
             clip.SaveToFile(resolvedPath);
 
+            // 保存Clipを利用する対象
             if (auto* target =
                     m_scene.FindGameObject(
                         m_animationTimelineTargetId))
             {
+                // Clipを再読込するアニメーター
                 if (auto* animator =
                         target->GetComponent<
                             TransformAnimatorComponent>();
@@ -2491,6 +2692,7 @@ namespace LamaPon
                 + PathToUtf8(
                     m_animationTimelineClipPath));
         }
+        // アニメーション操作時の例外
         catch (const std::exception& exception)
         {
             m_animationTimelineError =
@@ -2499,11 +2701,13 @@ namespace LamaPon
         }
     }
 
+    // 未保存変更を破棄してタイムラインを閉じます(restoreTransform: 元の変換を復元するか)。
     void EditorLayer::CloseAnimationTimeline(
         const bool restoreTransform)
     {
         if (restoreTransform)
         {
+            // 元の変換を復元する対象
             if (auto* target =
                     m_scene.FindGameObject(
                         m_animationTimelineTargetId))
@@ -2527,8 +2731,10 @@ namespace LamaPon
         m_animationTimelineDirty = false;
     }
 
+    // 編集キーから現在時刻の変換を求め、対象の位置・回転・拡縮に適用します。
     void EditorLayer::PreviewAnimationTimeline()
     {
+        // 変換をプレビューする対象
         auto* target =
             m_scene.FindGameObject(
                 m_animationTimelineTargetId);
@@ -2539,7 +2745,9 @@ namespace LamaPon
         }
         try
         {
+            // 最も遅いキーの時刻・秒
             float lastKeyTime{};
+            // 終端時刻を調べるキー
             for (const auto& keyframe :
                 m_animationTimelineKeyframes)
             {
@@ -2547,6 +2755,7 @@ namespace LamaPon
                     lastKeyTime,
                     keyframe.time);
             }
+            // 編集キーから作る確認用Clip
             const auto previewClip =
                 AnimationClip::Create(
                     m_animationTimelineName.data(),
@@ -2557,13 +2766,16 @@ namespace LamaPon
                             0.01f)),
                     m_animationTimelineLoop,
                     m_animationTimelineKeyframes);
+            // 現在時刻の位置・回転・拡縮
             const auto sample =
                 previewClip.Sample(
                     m_animationTimelineTime);
+            // プレビューを適用する変換
             auto& transform =
                 target->GetTransform();
             transform.position =
                 sample.position;
+            // 現在時刻の回転Quaternion
             const auto rotation =
                 previewClip.SampleRotationQuaternion(
                     m_animationTimelineTime);
@@ -2573,6 +2785,7 @@ namespace LamaPon
                 sample.scale;
             m_animationTimelineError.clear();
         }
+        // アニメーション操作時の例外
         catch (const std::exception& exception)
         {
             m_animationTimelineError =

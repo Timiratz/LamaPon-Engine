@@ -44,6 +44,7 @@ namespace LamaPon
     DirectX::XMFLOAT3
         PointLightComponent::WorldPosition() const noexcept
     {
+        // 光源のワールド位置
         DirectX::XMFLOAT3 result{};
         DirectX::XMStoreFloat3(
             &result,

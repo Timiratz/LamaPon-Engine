@@ -1,6 +1,9 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>LamaPon Web tests</title></head>
 <body data-test-status="pending"><canvas id="canvas"></canvas>
-<script>var Module = {canvas: document.getElementById('canvas')};</script>
+<script>
+// Module: Emscripten test用Canvasを参照する設定。
+var Module = {canvas: document.getElementById('canvas')};
+</script>
 {{{ SCRIPT }}}
 </body></html>

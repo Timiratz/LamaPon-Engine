@@ -1,12 +1,5 @@
-// エンジンの実描画パス（シェーダーコンパイル、ライティング、
-// GPUインスタンシング、カスケード影、スカイ）をWARPデバイス＋
-// 非表示ウィンドウで実行し、ピクセルの性質で検証します。
-// ゴールデンイメージ比較ではなく性質検証なので、環境差や
-// ラスタライズ差に対して頑健です。
 #include "LamaPon/LamaPon.h"
 
-// レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
-// （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
 #include "LamaPon/Assets/GltfImporter.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
@@ -25,7 +18,6 @@
 
 #include <Windows.h>
 #include <objbase.h>
-// Compute Shaderの出力（R16G16B16A16_FLOAT）をCPUで読み戻すため。
 #include <DirectXPackedVector.h>
 #include <nlohmann/json.hpp>
 #include <wrl/client.h>
@@ -55,6 +47,7 @@ namespace
         LamaPon::Detail::GraphicsDeviceD3D11Access;
 
     template <typename T>
+    // HasPublicDepthCopyShaderResourceView(target: 検査対象): public depth-copy view APIの有無を調べます。
     concept HasPublicDepthCopyShaderResourceView = requires(
         const T& target)
     {
@@ -62,6 +55,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicReflectionDepthPyramidMipTarget(target: 検査対象, mip: mip番号): public mip target APIの有無を調べます。
     concept HasPublicReflectionDepthPyramidMipTarget = requires(
         const T& target,
         const std::uint32_t mip)
@@ -70,6 +64,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicReflectionDepthPyramidMipView(target: 検査対象, mip: mip番号): public mip view APIの有無を調べます。
     concept HasPublicReflectionDepthPyramidMipView = requires(
         const T& target,
         const std::uint32_t mip)
@@ -78,6 +73,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicDisplayUnorderedAccessView(target: 検査対象): public display UAV APIの有無を調べます。
     concept HasPublicDisplayUnorderedAccessView = requires(
         const T& target)
     {
@@ -85,28 +81,35 @@ namespace
     };
 
     template <typename T>
+    // HasPublicDisplayTexture(target: 検査対象): public display texture APIの有無を調べます。
     concept HasPublicDisplayTexture = requires(const T& target)
     {
         target.DisplayTexture();
     };
 
+    // Width: test render targetの幅(px)。
     constexpr std::uint32_t Width = 320;
+    // Height: test render targetの高さ(px)。
     constexpr std::uint32_t Height = 180;
 
+    // Require(condition: 成否条件, message: failure説明): 条件不成立時にtestを失敗させます。
     void Require(
         const bool condition,
         const char* message)
     {
+        // conditionがfalseならfailureを送出します。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // CreateSolidView(graphics: 描画API, color: RGBA値): 1pxのshader resource viewを作ります。
     [[nodiscard]] LamaPon::GraphicsViewHandle CreateSolidView(
         LamaPon::GraphicsDevice& graphics,
         const std::array<std::uint8_t, 4>& color)
     {
+        // initialData: 1px textureへ設定するRGBA texel。
         const std::array initialData{
             LamaPon::GraphicsTextureSubresourceData{
                 std::as_bytes(std::span{ color }),
@@ -114,6 +117,7 @@ namespace
                 static_cast<std::uint32_t>(color.size())
             }
         };
+        // texture: initialDataを持つimmutable 1px texture。
         const auto texture = graphics.CreateTexture2D(
             LamaPon::GraphicsTexture2DDescription{
                 1,
@@ -123,67 +127,92 @@ namespace
                 LamaPon::GraphicsTextureUpdateMode::Immutable
             },
             initialData);
+        // 作成したtextureのshader resource viewを返します。
         return graphics.CreateShaderResourceView(
             texture,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
     }
 
     [[nodiscard]] Microsoft::WRL::ComPtr<
+        // CapturePixelShaderView(graphics: 描画API, slot: pixel shader resource slot): 現在のviewを取得します。
         ID3D11ShaderResourceView> CapturePixelShaderView(
             LamaPon::GraphicsDevice& graphics,
             const UINT slot)
     {
+        // result: pixel shader slotから取得したresource view。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
         D3D11Access::Context(graphics)->PSGetShaderResources(
             slot,
             1,
             result.ReleaseAndGetAddressOf());
+        // 取得したresource viewを返します。
         return result;
     }
 
     struct PrefilterPipelineState final
     {
+        // targets: 現在bind中のrender target views。
+        // viewports: 現在設定中のviewport群。
+        // vertexInstances: vertex shaderのclass instance群。
         std::array<
             Microsoft::WRL::ComPtr<ID3D11RenderTargetView>,
             D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets;
+        // depth: 現在bind中のdepth stencil view。
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
         std::array<
             D3D11_VIEWPORT,
             D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE>
             viewports{};
+        // viewportCount: 保存するactive viewport数。
         UINT viewportCount{};
+        // depthState: 現在bind中のdepth stencil state。
         Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthState;
+        // stencilReference: D3D11 depth-stencil reference value。
         UINT stencilReference{};
+        // rasterizer: 現在bind中のrasterizer state。
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+        // inputLayout: 現在bind中のinput layout。
         Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+        // topology: 現在のprimitive topology。
         D3D11_PRIMITIVE_TOPOLOGY topology{
             D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED
         };
+        // vertexShader: 現在bind中のvertex shader。
         Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
         std::array<
             Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
             D3D11_SHADER_MAX_INTERFACES> vertexInstances;
+        // vertexInstanceCount: vertex shaderにbindしたclass instance数。
         UINT vertexInstanceCount{};
+        // pixelShader: pixel shader object captured for restoration。
         Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
         std::array<
             Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
             D3D11_SHADER_MAX_INTERFACES> pixelInstances;
+        // pixelInstanceCount: pixel shaderにbindしたclass instance数。
         UINT pixelInstanceCount{};
+        // pixelResource: pixel shader slotのresource view。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> pixelResource;
+        // pixelSampler: pixel shader slot 0のsampler。
         Microsoft::WRL::ComPtr<ID3D11SamplerState> pixelSampler;
+        // pixelBuffer: pixel shader slot 3のconstant buffer。
         Microsoft::WRL::ComPtr<ID3D11Buffer> pixelBuffer;
 
+        // Capture(context: D3D11 context): draw前のpipeline stateを保存します。
         [[nodiscard]] static PrefilterPipelineState Capture(
             ID3D11DeviceContext* const context)
         {
+            // state: 復元用pipeline stateの保存領域。
             PrefilterPipelineState state;
             std::array<
                 ID3D11RenderTargetView*,
+                // rawTargets: COM ownershipをstateへ移す前のrender target群。
                 D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
             context->OMGetRenderTargets(
                 static_cast<UINT>(rawTargets.size()),
                 rawTargets.data(),
                 state.depth.ReleaseAndGetAddressOf());
+            // index: raw target viewをstateへ順に移す位置。
             for (std::size_t index{}; index < rawTargets.size(); ++index)
             {
                 state.targets[index].Attach(rawTargets[index]);
@@ -205,6 +234,7 @@ namespace
 
             std::array<
                 ID3D11ClassInstance*,
+                // rawVertexInstances: ownership移行前のvertex shader class instance群。
                 D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
             state.vertexInstanceCount = static_cast<UINT>(
                 rawVertexInstances.size());
@@ -212,6 +242,7 @@ namespace
                 state.vertexShader.ReleaseAndGetAddressOf(),
                 rawVertexInstances.data(),
                 &state.vertexInstanceCount);
+            // index: vertex shader class instanceの移行位置。
             for (UINT index{}; index < state.vertexInstanceCount; ++index)
             {
                 state.vertexInstances[index].Attach(
@@ -220,6 +251,7 @@ namespace
 
             std::array<
                 ID3D11ClassInstance*,
+                // rawPixelInstances: ownership移行前のpixel shader class instance群。
                 D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
             state.pixelInstanceCount = static_cast<UINT>(
                 rawPixelInstances.size());
@@ -227,6 +259,7 @@ namespace
                 state.pixelShader.ReleaseAndGetAddressOf(),
                 rawPixelInstances.data(),
                 &state.pixelInstanceCount);
+            // index: pixel shader class instanceの移行位置。
             for (UINT index{}; index < state.pixelInstanceCount; ++index)
             {
                 state.pixelInstances[index].Attach(
@@ -248,11 +281,13 @@ namespace
             return state;
         }
 
+        // Restore(context: 描画context): 保存したpipeline stateを復元します。
         void Restore(ID3D11DeviceContext* const context) const noexcept
         {
             std::array<
                 ID3D11RenderTargetView*,
                 D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            // 配列内の要素位置
             for (std::size_t index{}; index < rawTargets.size(); ++index)
             {
                 rawTargets[index] = targets[index].Get();
@@ -274,6 +309,7 @@ namespace
             std::array<
                 ID3D11ClassInstance*,
                 D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            // 配列内の要素位置
             for (UINT index{}; index < vertexInstanceCount; ++index)
             {
                 rawVertexInstances[index] = vertexInstances[index].Get();
@@ -288,6 +324,7 @@ namespace
             std::array<
                 ID3D11ClassInstance*,
                 D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            // 配列内の要素位置
             for (UINT index{}; index < pixelInstanceCount; ++index)
             {
                 rawPixelInstances[index] = pixelInstances[index].Get();
@@ -298,19 +335,24 @@ namespace
                     ? rawPixelInstances.data()
                     : nullptr,
                 pixelInstanceCount);
+            // resources: pixel shaderへbindするresource view群。
             ID3D11ShaderResourceView* resources[]{
                 pixelResource.Get()
             };
             context->PSSetShaderResources(1, 1, resources);
+            // samplers: pixel shaderへbindするsampler群。
             ID3D11SamplerState* samplers[]{ pixelSampler.Get() };
             context->PSSetSamplers(0, 1, samplers);
+            // buffers: pixel shaderへbindするconstant buffer群。
             ID3D11Buffer* buffers[]{ pixelBuffer.Get() };
             context->PSSetConstantBuffers(3, 1, buffers);
         }
 
+        // Matches(context: 描画context): 現在のpipeline stateが保存値と一致するか判定します。
         [[nodiscard]] bool Matches(
             ID3D11DeviceContext* const context) const
         {
+            // current: captureしたD3D11描画状態。
             const auto current = Capture(context);
             if (viewportCount != current.viewportCount
                 || depth.Get() != current.depth.Get()
@@ -329,6 +371,7 @@ namespace
             {
                 return false;
             }
+            // 配列内の要素位置
             for (std::size_t index{}; index < targets.size(); ++index)
             {
                 if (targets[index].Get() != current.targets[index].Get())
@@ -336,9 +379,12 @@ namespace
                     return false;
                 }
             }
+            // 配列内の要素位置
             for (UINT index{}; index < viewportCount; ++index)
             {
+                // left: 比較元の値。
                 const auto& left = viewports[index];
+                // right: 比較先の値。
                 const auto& right = current.viewports[index];
                 if (left.TopLeftX != right.TopLeftX
                     || left.TopLeftY != right.TopLeftY
@@ -350,6 +396,7 @@ namespace
                     return false;
                 }
             }
+            // 配列内の要素位置
             for (UINT index{}; index < vertexInstanceCount; ++index)
             {
                 if (vertexInstances[index].Get()
@@ -358,6 +405,7 @@ namespace
                     return false;
                 }
             }
+            // 配列内の要素位置
             for (UINT index{}; index < pixelInstanceCount; ++index)
             {
                 if (pixelInstances[index].Get()
@@ -379,6 +427,7 @@ namespace
     // 非表示のWin32ウィンドウ（スワップチェーン用）。
     [[nodiscard]] HWND CreateHiddenWindow()
     {
+        // windowClass: 登録するWin32 window class。
         WNDCLASSEXW windowClass{};
         windowClass.cbSize = sizeof(windowClass);
         windowClass.lpfnWndProc = DefWindowProcW;
@@ -393,6 +442,7 @@ namespace
                 "RegisterClassExW failed.");
         }
 
+        // window: 生成したWin32 window handle。
         const HWND window = CreateWindowExW(
             0,
             windowClass.lpszClassName,
@@ -414,16 +464,21 @@ namespace
 
     struct Pixel final
     {
+        // red: pixelの赤成分。
         std::uint8_t red{};
+        // green: pixelの緑成分。
         std::uint8_t green{};
+        // blue: pixelの青成分。
         std::uint8_t blue{};
     };
 
+    // At(pixels: RGBA byte列, x: 列番号, y: 行番号): 指定画素のRGBを返します。
     [[nodiscard]] Pixel At(
         const std::vector<std::uint8_t>& pixels,
         const std::uint32_t x,
         const std::uint32_t y)
     {
+        // offset: buffer内のbyte offset。
         const std::size_t offset =
             (static_cast<std::size_t>(y) * Width + x)
             * 4;
@@ -433,6 +488,7 @@ namespace
             pixels[offset + 2] };
     }
 
+    // NearColor(pixel: 比較するRGB, red: 赤値, green: 緑値, blue: 青値, tolerance: 許容差): 画素が指定色に近いか判定します。
     [[nodiscard]] bool NearColor(
         const Pixel& pixel,
         const int red,
@@ -455,15 +511,19 @@ namespace
         const std::uint32_t maximumY,
         const Pixel& background)
     {
+        // 縦方向の走査座標
         for (std::uint32_t y = minimumY;
             y < maximumY;
             ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x = minimumX;
                 x < maximumX;
                 ++x)
             {
+                // pixel: 検査位置の画素値。
                 const auto pixel = At(pixels, x, y);
+                // difference: RGB各成分の絶対差合計。
                 const int difference =
                     std::abs(
                         pixel.red - background.red)
@@ -488,15 +548,19 @@ namespace
         const std::uint32_t minimumY,
         const std::uint32_t maximumY)
     {
+        // total: 累積した測定値。
         long long total = 0;
+        // 縦方向の走査座標
         for (std::uint32_t y = minimumY;
             y < maximumY;
             ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x = minimumX;
                 x < maximumX;
                 ++x)
             {
+                // pixel: 検査位置の画素値。
                 const auto pixel = At(pixels, x, y);
                 total += pixel.red;
                 total += pixel.green;
@@ -506,10 +570,9 @@ namespace
         return total;
     }
 
-    // 指定領域の「鋭さ」。隣どうしの差の2乗の平均です。
-    //
-    // 単調な段差では絶対差の総和がぼかし後も変わらないため、
-    // ぼかし幅に応じて減少する差の2乗を使います。
+    // 指定領域の「鋭さ」。
+    // 隣どうしの差の2乗の平均です。
+    // 単調な段差では絶対差の総和がぼかし後も変わらないため、ぼかし幅に応じて減少する差の2乗を使います。
     [[nodiscard]] double RegionSharpness(
         const std::vector<std::uint8_t>& pixels,
         const std::uint32_t minimumX,
@@ -517,22 +580,31 @@ namespace
         const std::uint32_t minimumY,
         const std::uint32_t maximumY)
     {
+        // total: 累積した測定値。
         double total{};
+        // count: 集計対象数。
         int count{};
+        // 縦方向の走査座標
         for (std::uint32_t y = minimumY; y < maximumY; ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x = minimumX;
                 x + 1 < maximumX;
                 ++x)
             {
+                // left: 比較元の値。
                 const auto left = At(pixels, x, y);
+                // right: 比較先の値。
                 const auto right = At(pixels, x + 1, y);
+                // deltaRed: 赤成分の差。
                 const double deltaRed =
                     static_cast<double>(left.red)
                     - static_cast<double>(right.red);
+                // deltaGreen: 緑成分の差。
                 const double deltaGreen =
                     static_cast<double>(left.green)
                     - static_cast<double>(right.green);
+                // deltaBlue: 青成分の差。
                 const double deltaBlue =
                     static_cast<double>(left.blue)
                     - static_cast<double>(right.blue);
@@ -549,8 +621,10 @@ namespace
     // （P3。RenderRegressionTestsと同じ形式）で書き出します。
     // 目視確認用で、通常のテスト実行では使いません。
     std::filesystem::path g_dumpDirectory;
+    // g_runBenchmarks: 性能測定を有効にするCLI指定。
     bool g_runBenchmarks{};
 
+    // DumpFrame(name: 出力名, pixels: RGBA byte列): 画素をPPM画像へ書き出します。
     void DumpFrame(
         const char* name,
         const std::vector<std::uint8_t>& pixels)
@@ -559,22 +633,28 @@ namespace
         {
             return;
         }
+        // error: 直前のOS操作error code。
         std::error_code error;
         std::filesystem::create_directories(
             g_dumpDirectory,
             error);
+        // path: dump画像の出力path。
         const auto path = g_dumpDirectory
             / (std::string{ name } + ".ppm");
+        // output: 検証用fileのoutput stream。
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
         output << "P3\n"
                << Width << ' ' << Height
                << "\n255\n";
+        // 縦方向の走査座標
         for (std::uint32_t y{}; y < Height; ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x{}; x < Width; ++x)
             {
+                // pixel: 検査位置の画素値。
                 const auto pixel = At(pixels, x, y);
                 output
                     << static_cast<unsigned>(pixel.red) << ' '
@@ -590,6 +670,7 @@ namespace
     }
 }
 
+// main(argumentCount: CLI引数数, arguments: CLI引数列): 描画回帰テストを実行します。
 int main(const int argumentCount, char** arguments)
 {
     try
@@ -597,9 +678,12 @@ int main(const int argumentCount, char** arguments)
         // --dump <dir> のときは、実GPUを優先します（Windows on ARMの
         // x64エミュレーションにはx64版WARPが無いため）。
         bool preferWarp = true;
+        // debugLayer: D3D11 debug layerの有効指定。
         bool debugLayer = false;
+        // 配列内の要素位置
         for (int index = 1; index < argumentCount; ++index)
         {
+            // argument: 起動時のCLI引数。
             const std::string argument{ arguments[index] };
             if (argument == "--dump"
                 && index + 1 < argumentCount)
@@ -625,18 +709,19 @@ int main(const int argumentCount, char** arguments)
             }
         }
 
+        // comResult: COM初期化のHRESULT。
         const HRESULT comResult =
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
 
-        // 利用者の%LOCALAPPDATA%と過去の結果を避けるため、
-        // プローブのベイク結果は専用ディレクトリへ保存します。
+        // 利用者の%LOCALAPPDATA%と過去の結果を避けるため、プローブのベイク結果は専用ディレクトリへ保存します。
         LamaPon::EnvironmentCache::SetCacheDirectoryOverride(
             std::filesystem::current_path()
             / "test-output"
             / "environment-cache");
 
         Stage("window");
+        // window: 生成したWin32 window handle。
         const HWND window = CreateHiddenWindow();
 
         // CIランナーにはGPUがないためWARPを明示します。
@@ -644,9 +729,8 @@ int main(const int argumentCount, char** arguments)
             preferWarp);
         LamaPon::GraphicsDevice::SetEnableDebugLayer(
             debugLayer);
-        // このexeが立てたフラグが、LamaPonRuntime.dllの中まで
-        // 届いていること。ヘッダーでinline staticにするとEXE側とDLL側で
-        // 別々の実体になり、--warpと--d3ddebugが機能しません。
+        // このexeが立てたフラグが、LamaPonRuntime.dllの中まで届いていること。
+        // ヘッダーでinline staticにするとEXE側とDLL側で別々の実体になり、--warpと--d3ddebugが機能しません。
         Require(
             LamaPon::GraphicsDevice::IsDebugLayerEnabled()
                 == debugLayer,
@@ -654,8 +738,8 @@ int main(const int argumentCount, char** arguments)
             " runtime DLL.");
         if (debugLayer)
         {
-            // Loggerはファイルを指定しないと画面にも出ません
-            // （メモリへ溜めるだけ）。行き先を作ってから知らせます。
+            // Loggerはファイルを指定しないと画面にも出ません（メモリへ溜めるだけ）。
+            // 行き先を作ってから知らせます。
             const auto logPath =
                 (g_dumpDirectory.empty()
                     ? std::filesystem::current_path()
@@ -669,11 +753,11 @@ int main(const int argumentCount, char** arguments)
                 << logPath.string()
                 << std::endl;
         }
+        // graphics: 回帰テスト用graphics device。
         LamaPon::GraphicsDevice graphics;
         Stage("initialize");
-        // この回帰テストはD3D11固有の公開互換入口も検証するため、
-        // D3D11を明示して起動します。D3D12は専用の画素比較suiteで
-        // 同じユーザー向け描画経路を検証します。
+        // この回帰テストはD3D11固有の公開互換入口も検証するため、D3D11を明示して起動します。
+        // D3D12は専用の画素比較suiteで同じユーザー向け描画経路を検証します。
         graphics.Initialize(
             window,
             Width,
@@ -696,6 +780,7 @@ int main(const int argumentCount, char** arguments)
                 && D3D11Access::Context(graphics) != nullptr,
             "The DirectX 11 renderer must expose a valid device and context.");
         Stage("skeletal-legacy-export");
+        // LegacySkeletalDrawSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacySkeletalDrawSymbol[] =
             "?Draw@SkeletalModel@LamaPon@@QEBAX"
             "PEAUID3D11DeviceContext@@"
@@ -710,89 +795,115 @@ int main(const int argumentCount, char** arguments)
             "_KPEAVLitEffect@2@PEAUID3D11InputLayout@@6"
             "PEBV?$vector@UXMFLOAT4X4@DirectX@@"
             "V?$allocator@UXMFLOAT4X4@DirectX@@@std@@@std@@M@Z";
+        // LegacyBakedGiUploadSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyBakedGiUploadSymbol[] =
             "?UploadBakedGlobalIllumination@GraphicsDevice@LamaPon@@"
             "QEBA?AV?$array@V?$ComPtr@UID3D11ShaderResourceView@@@"
             "WRL@Microsoft@@$02@std@@IIIV?$span@$$CBG$0?0@4@@Z";
+        // LegacyLitLightingSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyLitLightingSymbol[] =
             "?SetLighting@LitEffect@LamaPon@@"
             "QEAAXAEBULightingState@2@@Z";
+        // LegacyAmbientOcclusionViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyAmbientOcclusionViewSymbol[] =
             "?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyColorHistoryViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyColorHistoryViewSymbol[] =
             "?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyReflectionDepthViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyReflectionDepthViewSymbol[] =
             "?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyRenderTargetDepthViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyRenderTargetDepthViewSymbol[] =
             "?DepthShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyShadowMapViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyShadowMapViewSymbol[] =
             "?ShaderResourceView@ShadowMap@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyClusteredLightsConstructorSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyClusteredLightsConstructorSymbol[] =
             "??0ClusteredLights@LamaPon@@QEAA@"
             "PEAUID3D11Device@@AEAVAssetManager@1@"
             "AEBVpath@filesystem@std@@@Z";
+        // LegacyClustersAccessorSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyClustersAccessorSymbol[] =
             "?Clusters@GraphicsDevice@LamaPon@@"
             "QEBAAEAVClusteredLights@2@XZ";
+        // LegacyPrefilteredEnvironmentSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyPrefilteredEnvironmentSymbol[] =
             "?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@"
             "QEAA?AUPrefilteredEnvironment@12@"
             "PEAUID3D11ShaderResourceView@@_K@Z";
+        // LegacyCachedEnvironmentSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyCachedEnvironmentSymbol[] =
             "?TryLoadCachedEnvironment@GraphicsDevice@LamaPon@@"
             "QEBA?AUOwnedPrefilteredEnvironment@EnvironmentRenderer@2@"
             "_K@Z";
+        // LegacyPrepareProbeBakeSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyPrepareProbeBakeSymbol[] =
             "?PrepareProbeBake@EnvironmentRenderer@LamaPon@@QEAAXXZ";
+        // LegacyBakeReflectionProbeSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyBakeReflectionProbeSymbol[] =
             "?BakeReflectionProbe@EnvironmentRenderer@LamaPon@@"
             "QEAA?AUOwnedPrefilteredEnvironment@12@"
             "AEBV?$function@$$A6AXI@Z@std@@"
             "V?$optional@_K@5@@Z";
+        // LegacyEnvironmentOverrideSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyEnvironmentOverrideSymbol[] =
             "?SetEnvironmentOverride@LitEffect@LamaPon@@"
             "QEAAXAEBUReflectionProbeEnvironment@2@@Z";
+        // LegacySkyDrawSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacySkyDrawSymbol[] =
             "?DrawSky@EnvironmentRenderer@LamaPon@@"
             "QEAAXUXMMATRIX@DirectX@@AEBU34@"
             "AEBUSkySettings@2@PEAUID3D11ShaderResourceView@@"
             "PEBUSkySun@12@@Z";
+        // LegacyReflectionDepthBuildSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyReflectionDepthBuildSymbol[] =
             "?BuildReflectionDepthPyramid@EnvironmentRenderer@LamaPon@@"
             "QEAAXAEAVRenderTarget@2@MM@Z";
+        // LegacyIrradianceProbeBakeSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyIrradianceProbeBakeSymbol[] =
             "?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@"
             "QEAA?AV?$optional@V?$array@M$0M@@std@@@std@@"
             "AEBV?$function@$$A6AXI@Z@4@@Z";
+        // LegacyEnvironmentAccessorSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyEnvironmentAccessorSymbol[] =
             "?Environment@GraphicsDevice@LamaPon@@"
             "QEBAAEAVEnvironmentRenderer@2@XZ";
+        // LegacyCurrentColorViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyCurrentColorViewSymbol[] =
             "?ShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyDisplayViewSymbol: 旧API互換性検査用のexport名またはaddress。
         constexpr char LegacyDisplayViewSymbol[] =
             "?DisplayShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyRenderTargetDepthCopyViewSymbol: 旧API互換性検査用のexport名またはaddress。
         static constexpr char LegacyRenderTargetDepthCopyViewSymbol[] =
             "?DepthCopyShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        // LegacyRenderTargetReflectionMipTargetSymbol: 旧API互換性検査用のexport名またはaddress。
         static constexpr char LegacyRenderTargetReflectionMipTargetSymbol[] =
             "?ReflectionDepthPyramidMipTarget@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11RenderTargetView@@I@Z";
+        // LegacyRenderTargetReflectionMipViewSymbol: 旧API互換性検査用のexport名またはaddress。
         static constexpr char LegacyRenderTargetReflectionMipViewSymbol[] =
             "?ReflectionDepthPyramidMipView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@I@Z";
+        // LegacyRenderTargetDisplayUavSymbol: 旧API互換性検査用のexport名またはaddress。
         static constexpr char LegacyRenderTargetDisplayUavSymbol[] =
             "?DisplayUnorderedAccessView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11UnorderedAccessView@@XZ";
+        // LegacyRenderTargetDisplayTextureSymbol: 旧API互換性検査用のexport名またはaddress。
         static constexpr char LegacyRenderTargetDisplayTextureSymbol[] =
             "?DisplayTexture@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11Texture2D@@XZ";
+        // LegacyRenderTargetPostProcessSymbols: 旧API互換性検査用のexport名またはaddress。
         constexpr std::array LegacyRenderTargetPostProcessSymbols{
             "?ApplyBloom@RenderTarget@LamaPon@@"
             "QEAAXAEAVEnvironmentRenderer@2@AEBUBloomSettings@2@@Z",
@@ -831,6 +942,7 @@ int main(const int argumentCount, char** arguments)
             "AEBUAmbientOcclusionSettings@2@"
             "AEBUXMFLOAT4X4@DirectX@@I@Z"
         };
+        // Api63RenderTargetSymbols: API 63のexport名群。
         constexpr std::array Api63RenderTargetSymbols{
             "??0RenderTarget@LamaPon@@QEAA@XZ",
             "??1RenderTarget@LamaPon@@QEAA@XZ",
@@ -865,6 +977,7 @@ int main(const int argumentCount, char** arguments)
             "?AspectRatio@RenderTarget@LamaPon@@QEBAMXZ",
             "?IsValid@RenderTarget@LamaPon@@QEBA_NXZ"
         };
+        // Api64GraphicsDeviceSymbols: API 64のexport名群。
         constexpr std::array Api64GraphicsDeviceSymbols{
             "?DepthPass@GraphicsDevice@LamaPon@@"
                 "QEBA?AW4DepthPassKind@2@XZ",
@@ -908,6 +1021,7 @@ int main(const int argumentCount, char** arguments)
                 "QEBA?AVGraphicsViewHandle@2@XZ",
             "?Width@GraphicsDevice@LamaPon@@QEBAIXZ"
         };
+        // Api65LegacyD3D11AccessSymbols: API 65のexport名群。
         constexpr std::array Api65LegacyD3D11AccessSymbols{
             "?Device@GraphicsDevice@LamaPon@@"
                 "QEBAPEAUID3D11Device@@XZ",
@@ -924,6 +1038,7 @@ int main(const int argumentCount, char** arguments)
                 "QEBAPEAUID3D11ShaderResourceView@@"
                 "AEBUTextureResourceSnapshot@2@@Z"
         };
+        // Api66ShadowMapSymbols: API 66のexport名群。
         constexpr std::array Api66ShadowMapSymbols{
             "??0ShadowMap@LamaPon@@QEAA@XZ",
             "??1ShadowMap@LamaPon@@QEAA@XZ",
@@ -933,35 +1048,45 @@ int main(const int argumentCount, char** arguments)
             "?CascadeCount@ShadowMap@LamaPon@@QEBAIXZ",
             "?IsValid@ShadowMap@LamaPon@@QEBA_NXZ"
         };
+        // Api67ClusteredLightsSymbols: API 67のexport名群。
         constexpr std::array Api67ClusteredLightsSymbols{
             "??0ClusteredLights@LamaPon@@QEAA@XZ",
             "??1ClusteredLights@LamaPon@@QEAA@XZ"
         };
+        // runtimeModule: 検査対象のruntime DLL module。
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
+        // legacyShadowMapViewAddress: 旧API shadow map viewのAPI address。
         const auto legacyShadowMapViewAddress = GetProcAddress(
             runtimeModule,
             LegacyShadowMapViewSymbol);
+        // legacyClustersAccessorAddress: 旧API cluster accessorのAPI address。
         const auto legacyClustersAccessorAddress = GetProcAddress(
             runtimeModule,
             LegacyClustersAccessorSymbol);
+        // legacyClusteredLightsConstructorAddress: 旧API constructor address。
         const auto legacyClusteredLightsConstructorAddress = GetProcAddress(
             runtimeModule,
             LegacyClusteredLightsConstructorSymbol);
+        // legacyRenderTargetDepthCopyViewAddress: 旧API depth-copy view address。
         const auto legacyRenderTargetDepthCopyViewAddress = GetProcAddress(
             runtimeModule,
             LegacyRenderTargetDepthCopyViewSymbol);
+        // legacyRenderTargetReflectionMipTargetAddress: 旧API reflection mip target address。
         const auto legacyRenderTargetReflectionMipTargetAddress =
             GetProcAddress(
                 runtimeModule,
                 LegacyRenderTargetReflectionMipTargetSymbol);
+        // legacyRenderTargetReflectionMipViewAddress: 旧API reflection mip view address。
         const auto legacyRenderTargetReflectionMipViewAddress =
             GetProcAddress(
                 runtimeModule,
                 LegacyRenderTargetReflectionMipViewSymbol);
+        // legacyRenderTargetDisplayUavAddress: 旧API 描画 target 表示 UAVのAPI address。
         const auto legacyRenderTargetDisplayUavAddress = GetProcAddress(
             runtimeModule,
             LegacyRenderTargetDisplayUavSymbol);
+        // legacyRenderTargetDisplayTextureAddress: 旧API display texture address。
         const auto legacyRenderTargetDisplayTextureAddress = GetProcAddress(
             runtimeModule,
             LegacyRenderTargetDisplayTextureSymbol);
@@ -1028,6 +1153,7 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyIrradianceProbeBakeSymbol) != nullptr,
             "An API 60 EnvironmentRenderer export alias is missing");
+        // legacyEnvironmentAccessorAddress: 旧API environment accessorのAPI address。
         const auto legacyEnvironmentAccessorAddress =
             GetProcAddress(
                 runtimeModule,
@@ -1035,6 +1161,7 @@ int main(const int argumentCount, char** arguments)
         Require(
             legacyEnvironmentAccessorAddress != nullptr,
             "The API 61 Environment accessor export alias is missing");
+        // 照合中のAPIシンボル
         for (const auto* const symbol :
             LegacyRenderTargetPostProcessSymbols)
         {
@@ -1050,24 +1177,28 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyDisplayViewSymbol) != nullptr,
             "An API 62 RenderTarget color-view export alias is missing");
+        // 照合中のAPIシンボル
         for (const auto* const symbol : Api63RenderTargetSymbols)
         {
             Require(
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 63 opaque RenderTarget export is missing");
         }
+        // 照合中のAPIシンボル
         for (const auto* const symbol : Api64GraphicsDeviceSymbols)
         {
             Require(
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 64 opaque GraphicsDevice export is missing");
         }
+        // 照合中のAPIシンボル
         for (const auto* const symbol : Api65LegacyD3D11AccessSymbols)
         {
             Require(
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 65 D3D11 compatibility export alias is missing");
         }
+        // 照合中のAPIシンボル
         for (const auto* const symbol : Api66ShadowMapSymbols)
         {
             Require(
@@ -1078,6 +1209,7 @@ int main(const int argumentCount, char** arguments)
             legacyClusteredLightsConstructorAddress != nullptr
                 && legacyClustersAccessorAddress != nullptr,
             "An API 66 ClusteredLights compatibility export is missing");
+        // 照合中のAPIシンボル
         for (const auto* const symbol : Api67ClusteredLightsSymbols)
         {
             Require(
@@ -1094,29 +1226,34 @@ int main(const int argumentCount, char** arguments)
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
+        // legacyEnvironmentAccessor: 旧API environment accessor。
         const auto legacyEnvironmentAccessor =
             reinterpret_cast<LegacyEnvironmentAccessor>(
                 legacyEnvironmentAccessorAddress);
         using LegacyShadowMapViewAccessor =
             ID3D11ShaderResourceView* (__fastcall*)(
                 const LamaPon::ShadowMap*);
+        // legacyShadowMapView: 旧API shadow mapのview。
         const auto legacyShadowMapView =
             reinterpret_cast<LegacyShadowMapViewAccessor>(
                 legacyShadowMapViewAddress);
         using LegacyClustersAccessor =
             LamaPon::ClusteredLights* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
+        // legacyClustersAccessor: 旧API cluster accessor。
         const auto legacyClustersAccessor =
             reinterpret_cast<LegacyClustersAccessor>(
                 legacyClustersAccessorAddress);
         using LegacyClusteredLightsConstructor =
             void* (__fastcall*)(void*, void*, void*, const void*);
+        // legacyClusteredLightsConstructor: 旧API clustered lights Constructor。
         const auto legacyClusteredLightsConstructor =
             reinterpret_cast<LegacyClusteredLightsConstructor>(
                 legacyClusteredLightsConstructorAddress);
         using LegacyRenderTargetDepthCopyViewAccessor =
             ID3D11ShaderResourceView* (__fastcall*)(
                 const LamaPon::RenderTarget*);
+        // legacyRenderTargetDepthCopyView: 旧API 描画 target depth copyのview。
         const auto legacyRenderTargetDepthCopyView =
             reinterpret_cast<LegacyRenderTargetDepthCopyViewAccessor>(
                 legacyRenderTargetDepthCopyViewAddress);
@@ -1124,6 +1261,7 @@ int main(const int argumentCount, char** arguments)
             ID3D11RenderTargetView* (__fastcall*)(
                 const LamaPon::RenderTarget*,
                 std::uint32_t);
+        // legacyRenderTargetReflectionMipTarget: 旧API reflection mip target。
         const auto legacyRenderTargetReflectionMipTarget =
             reinterpret_cast<
                 LegacyRenderTargetReflectionMipTargetAccessor>(
@@ -1132,24 +1270,26 @@ int main(const int argumentCount, char** arguments)
             ID3D11ShaderResourceView* (__fastcall*)(
                 const LamaPon::RenderTarget*,
                 std::uint32_t);
+        // legacyRenderTargetReflectionMipView: 旧API 描画 target reflection mipのview。
         const auto legacyRenderTargetReflectionMipView =
             reinterpret_cast<LegacyRenderTargetReflectionMipViewAccessor>(
                 legacyRenderTargetReflectionMipViewAddress);
         using LegacyRenderTargetDisplayUavAccessor =
             ID3D11UnorderedAccessView* (__fastcall*)(
                 const LamaPon::RenderTarget*);
+        // legacyRenderTargetDisplayUav: 旧API 描画 target 表示のUAV。
         const auto legacyRenderTargetDisplayUav =
             reinterpret_cast<LegacyRenderTargetDisplayUavAccessor>(
                 legacyRenderTargetDisplayUavAddress);
         using LegacyRenderTargetDisplayTextureAccessor =
             ID3D11Texture2D* (__fastcall*)(
                 const LamaPon::RenderTarget*);
+        // legacyRenderTargetDisplayTexture: 旧API 描画 target 表示のtexture。
         const auto legacyRenderTargetDisplayTexture =
             reinterpret_cast<LegacyRenderTargetDisplayTextureAccessor>(
                 legacyRenderTargetDisplayTextureAddress);
 
-        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、
-        // loader互換constructorは旧storage全体を初期化します。
+        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、loader互換constructorは旧storage全体を初期化します。
         constexpr auto LegacyClusteredLightsSize =
             10u * sizeof(void*)
             + 3u * sizeof(LamaPon::GraphicsViewHandle);
@@ -1201,6 +1341,7 @@ int main(const int argumentCount, char** arguments)
             "ShadowMap leaked native backend state into its public layout");
         Stage("shadow-map-opaque-state");
         {
+            // opaqueShadowMap: shadow-map handle used by opaque depth-copy validation。
             LamaPon::ShadowMap opaqueShadowMap;
             Require(
                 !opaqueShadowMap.IsValid()
@@ -1239,7 +1380,9 @@ int main(const int argumentCount, char** arguments)
             "RenderTarget leaked native backend state into its public layout");
         Stage("render-target-api70-facade");
         {
+            // opaqueTarget: opaqueのrender target。
             LamaPon::RenderTarget opaqueTarget;
+            // historyProjectionAddress: 履歴 projectionのAPI address。
             const auto* const historyProjectionAddress =
                 &opaqueTarget.ColorHistoryViewProjection();
             opaqueTarget.SetComputeWritable(true);
@@ -1278,6 +1421,7 @@ int main(const int argumentCount, char** arguments)
                         == &opaqueTarget.ColorHistoryViewProjection(),
                 "A default opaque RenderTarget changed its empty semantics");
 
+            // initialResizeRejected: 初回時のResizeの拒否結果。
             bool initialResizeRejected{};
             try
             {
@@ -1314,6 +1458,7 @@ int main(const int argumentCount, char** arguments)
                 "A failed first resize published a partial backend state");
 
             graphics.ResizeOffscreenTarget(opaqueTarget, 4u, 4u);
+            // opaqueHistory: opaque 履歴。
             DirectX::XMFLOAT4X4 opaqueHistory{};
             opaqueHistory._11 = 2.0f;
             opaqueHistory._22 = 3.0f;
@@ -1322,20 +1467,26 @@ int main(const int argumentCount, char** arguments)
             graphics.CaptureOffscreenTargetColorHistory(
                 opaqueTarget,
                 opaqueHistory);
+            // opaqueMipCount: opaque mipの件数。
             const auto opaqueMipCount =
                 opaqueTarget.ReflectionDepthPyramidMipCount();
+            // opaqueDepthCopyView: D3D11 view for the opaque depth-copy texture。
             auto* const opaqueDepthCopyView =
                 legacyRenderTargetDepthCopyView(&opaqueTarget);
+            // opaqueReflectionMipTarget: opaque reflection mipのrender target。
             auto* const opaqueReflectionMipTarget =
                 legacyRenderTargetReflectionMipTarget(
                     &opaqueTarget,
                     0u);
+            // opaqueReflectionMipView: D3D11 view for the opaque reflection mip。
             auto* const opaqueReflectionMipView =
                 legacyRenderTargetReflectionMipView(
                     &opaqueTarget,
                     0u);
+            // opaqueDisplayUav: opaque 表示のUAV。
             auto* const opaqueDisplayUav =
                 legacyRenderTargetDisplayUav(&opaqueTarget);
+            // opaqueDisplayTexture: opaque 表示のtexture。
             auto* const opaqueDisplayTexture =
                 legacyRenderTargetDisplayTexture(&opaqueTarget);
             Require(
@@ -1365,12 +1516,16 @@ int main(const int argumentCount, char** arguments)
                     && historyProjectionAddress->_44 == 1.0f,
                 "A committed D3D11 state lost pre-resize options or the "
                 "stable history projection reference");
+            // opaqueCurrentView: opaque 現在のview。
             const auto opaqueCurrentView =
                 opaqueTarget.CurrentColorViewHandle();
+            // opaqueDisplayView: opaque 表示のview。
             const auto opaqueDisplayView =
                 opaqueTarget.DisplayViewHandle();
+            // opaqueHistoryView: opaque 履歴のview。
             const auto opaqueHistoryView =
                 opaqueTarget.ColorHistoryViewHandle();
+            // replacementResizeRejected: 置換後時のResizeの拒否結果。
             bool replacementResizeRejected{};
             try
             {
@@ -1445,10 +1600,10 @@ int main(const int argumentCount, char** arguments)
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
 
-        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来の
-        // DirectXTK11 viewと同じ内容をBackend世代付きhandleでも
-        // 保持します。Importer単体のraw互換経路とはここで区別します。
+        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来のDirectXTK11 viewと同じ内容をBackend世代付きhandleでも保持します。
+        // Importer単体のraw互換経路とはここで区別します。
         Stage("skeletal-neutral-textures");
+        // skeletalAsset: imported skeletal mesh asset。
         const auto skeletalAsset = graphics.Assets().LoadModel(
             std::filesystem::path{ "models" }
                 / "TexturedRiggedSimple.gltf");
@@ -1457,10 +1612,13 @@ int main(const int argumentCount, char** arguments)
                 && skeletalAsset->skeletalModel != nullptr
                 && !skeletalAsset->skeletalModel->primitives.empty(),
             "The skeletal neutral-texture fixture could not be loaded");
+        // foundSkeletalTexture: 検出 skeletalのtexture。
         bool foundSkeletalTexture{};
+        // 骨格モデルの描画primitive
         for (const auto& primitive :
             skeletalAsset->skeletalModel->primitives)
         {
+            // nativeViews: nativeのview群。
             const std::array<ID3D11ShaderResourceView*, 6> nativeViews{
                 primitive.texture.Get(),
                 primitive.normalTexture.Get(),
@@ -1478,6 +1636,7 @@ int main(const int argumentCount, char** arguments)
                     &primitive.embeddedTextures.occlusion,
                     &primitive.embeddedTextures.emissive
                 };
+            // 配列内の要素位置
             for (std::size_t index{};
                 index < nativeViews.size();
                 ++index)
@@ -1511,10 +1670,11 @@ int main(const int argumentCount, char** arguments)
             foundSkeletalTexture,
             "The skeletal neutral-texture fixture has no texture to test");
 
-        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを
-        // 再利用したときのclear、別Backend世代の拒否を直接固定します。
+        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを再利用したときのclear、別Backend世代の拒否を直接固定します。
         Stage("lit-texture-request");
+        // litViews: litのview群。
         std::array<LamaPon::GraphicsViewHandle, 10> litViews;
+        // 配列内の要素位置
         for (std::size_t index{}; index < litViews.size(); ++index)
         {
             litViews[index] = CreateSolidView(
@@ -1526,6 +1686,7 @@ int main(const int argumentCount, char** arguments)
                     255u
                 });
         }
+        // litTextures: litのtexture群。
         LamaPon::LitTextureRequest litTextures;
         litTextures.albedo = litViews[0];
         litTextures.normal = litViews[1];
@@ -1538,7 +1699,9 @@ int main(const int argumentCount, char** arguments)
             litTextures.customTextures.size(),
             litTextures.customTextures.begin());
 
+        // litEffect: graphics device LitEffect under test。
         auto& litEffect = graphics.Lit();
+        // identity: identity matrix。
         const auto identity = DirectX::XMMatrixIdentity();
         litEffect.SetMatrices(identity, identity, identity);
         litEffect.SetMaterial(LamaPon::LitMaterial{});
@@ -1553,9 +1716,11 @@ int main(const int argumentCount, char** arguments)
                 litTextures),
             "A valid neutral Lit texture request was rejected");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // LitTextureSlots: slot indices initialized with default white textures。
         constexpr std::array<UINT, 10> LitTextureSlots{
             0u, 1u, 11u, 12u, 13u, 14u, 7u, 8u, 9u, 10u
         };
+        // 配列内の要素位置
         for (std::size_t index{}; index < litViews.size(); ++index)
         {
             Require(
@@ -1566,19 +1731,22 @@ int main(const int argumentCount, char** arguments)
                         litViews[index]),
                 "A neutral Lit texture was bound to the wrong slot");
         }
+        // disabledAmbientOcclusionView: 無効時 ambient occlusionのview。
         const auto disabledAmbientOcclusionView =
             CapturePixelShaderView(graphics, 15u);
         Require(
             disabledAmbientOcclusionView != nullptr,
             "Disabled SSAO did not bind the Lit white fallback");
 
-        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeが
-        // array/cube形状とメタデータをまとめて検証します。
+        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeがarray/cube形状とメタデータをまとめて検証します。
         Stage("lit-neutral-shadow-lighting");
+        // directionalShadowView: resource view for directional shadow data。
         const auto directionalShadowView =
             graphics.Shadows().ViewHandle();
+        // spotShadowView: spot shadow resource view。
         const auto spotShadowView =
             graphics.SpotShadows().ViewHandle();
+        // pointShadowView: point shadow resource view。
         const auto pointShadowView =
             graphics.PointShadows().ViewHandle();
         Require(
@@ -1590,20 +1758,24 @@ int main(const int argumentCount, char** arguments)
                 && pointShadowView,
             "Shadow maps did not publish their neutral views");
 
+        // shadowLighting: LightingState used by shadow validation。
         LamaPon::LightingState shadowLighting;
         shadowLighting.directionalLightCount = 1;
         shadowLighting.spotLightCount = 1;
         shadowLighting.pointLightCount = 1;
+        // directionalShadow: directional shadow parameters。
         auto& directionalShadow = shadowLighting.directionalShadow;
         directionalShadow.texture = directionalShadowView;
         directionalShadow.lightIndex = 0;
         directionalShadow.cascadeCount =
             graphics.Shadows().CascadeCount();
         directionalShadow.enabled = true;
+        // spotShadow: first spot shadow parameters。
         auto& spotShadow = shadowLighting.spotShadows[0];
         spotShadow.lightIndex = 0;
         spotShadow.enabled = true;
         shadowLighting.spotShadowTexture = spotShadowView;
+        // pointShadow: point shadow parameters。
         auto& pointShadow = shadowLighting.pointShadow;
         pointShadow.texture = pointShadowView;
         pointShadow.lightIndex = 0;
@@ -1630,6 +1802,7 @@ int main(const int argumentCount, char** arguments)
                         pointShadowView),
             "Neutral shadow views were bound to the wrong slots");
 
+        // incompleteShadowLighting: 不完全な shadowのlighting設定。
         auto incompleteShadowLighting = shadowLighting;
         incompleteShadowLighting.directionalShadow.texture.Reset();
         Require(
@@ -1637,6 +1810,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteShadowLighting),
             "An enabled shadow with no neutral view was accepted");
+        // wrongPointShadowShape: 不一致の point shadow Shape。
         auto wrongPointShadowShape = shadowLighting;
         wrongPointShadowShape.pointShadow.texture = spotShadowView;
         Require(
@@ -1644,6 +1818,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongPointShadowShape),
             "A Texture2DArray was accepted as a point-shadow cube");
+        // invalidSpotShadowIndex: 不正な spot shadow index。
         auto invalidSpotShadowIndex = shadowLighting;
         invalidSpotShadowIndex.spotShadows[0].lightIndex = 1;
         Require(
@@ -1651,6 +1826,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 invalidSpotShadowIndex),
             "A spot shadow with an invalid light index was accepted");
+        // wrongShadowResolution: 不一致の shadowの解像度。
         auto wrongShadowResolution = shadowLighting;
         wrongShadowResolution.localShadowResolution += 1.0f;
         Require(
@@ -1671,6 +1847,7 @@ int main(const int argumentCount, char** arguments)
                         pointShadowView),
             "Rejected neutral shadow lighting partially changed the Effect");
 
+        // disabledShadowLighting: 無効時 shadowのlighting設定。
         auto disabledShadowLighting = shadowLighting;
         disabledShadowLighting.directionalShadow.enabled = false;
         disabledShadowLighting.spotShadows[0].enabled = false;
@@ -1692,8 +1869,7 @@ int main(const int argumentCount, char** arguments)
                 shadowLighting),
             "The neutral shadow baseline could not be restored");
 
-        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、
-        // 同じsource/keyではhandle wrapperも再利用します。
+        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、同じsource/keyではhandle wrapperも再利用します。
         Stage("neutral-sky-ibl");
         Require(
             graphics.IsSampleableCubeView(pointShadowView)
@@ -1701,15 +1877,19 @@ int main(const int argumentCount, char** arguments)
                 && !graphics.IsSampleableCubeView(litViews[0]),
             "Sky cube validation accepted an empty or Texture2D view");
 
+        // neutralSkySettings: neutral skyの設定。
         LamaPon::SkySettings neutralSkySettings;
         neutralSkySettings.enabled = true;
         neutralSkySettings.topColor = { 0.13f, 0.37f, 0.71f };
         neutralSkySettings.horizonColor = { 0.13f, 0.37f, 0.71f };
         neutralSkySettings.groundColor = { 0.13f, 0.37f, 0.71f };
+        // neutralSkySun: sun settings for the neutral-sky baseline。
         LamaPon::SkySunDescription neutralSkySun;
         neutralSkySun.directionToSun = { 0.0f, 1.0f, 0.0f };
         neutralSkySun.color = { 0.9f, 0.8f, 0.7f };
+        // neutralSkyClear: clear color for the neutral-sky baseline。
         constexpr float neutralSkyClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        // captureNeutralSky: renders and captures the neutral-sky baseline。
         const auto captureNeutralSky =
             [&graphics,
              &identity,
@@ -1725,8 +1905,11 @@ int main(const int argumentCount, char** arguments)
                 neutralSkySettings,
                 cubemap,
                 &neutralSkySun);
+            // width: 幅。
             std::uint32_t width{};
+            // height: 高さ。
             std::uint32_t height{};
+            // pixels: pixel群。
             auto pixels = graphics.CaptureBackBuffer(width, height);
             graphics.EndFrame();
             Require(
@@ -1739,15 +1922,19 @@ int main(const int argumentCount, char** arguments)
             return pixels;
         };
         static_cast<void>(captureNeutralSky(pointShadowView));
+        // emptyNeutralSky: 空 Neutral sky。
         const auto emptyNeutralSky = captureNeutralSky({});
+        // twoDimensionalNeutralSky: 2D Neutral sky。
         const auto twoDimensionalNeutralSky =
             captureNeutralSky(litViews[0]);
         Require(
             twoDimensionalNeutralSky == emptyNeutralSky,
             "A Texture2D did not fall back to the procedural Sky");
 
+        // baselinePrefilterPipeline: 基準 prefilterのpipeline。
         const auto baselinePrefilterPipeline =
             PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
+        // sentinelTargetDescription: D3D11 API descriptor。
         D3D11_TEXTURE2D_DESC sentinelTargetDescription{};
         sentinelTargetDescription.Width = Width;
         sentinelTargetDescription.Height = Height;
@@ -1757,6 +1944,7 @@ int main(const int argumentCount, char** arguments)
         sentinelTargetDescription.SampleDesc.Count = 1;
         sentinelTargetDescription.Usage = D3D11_USAGE_DEFAULT;
         sentinelTargetDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+        // sentinelTargetTexture: texture bound to verify pipeline-state restoration。
         Microsoft::WRL::ComPtr<ID3D11Texture2D> sentinelTargetTexture;
         Require(
             SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
@@ -1764,6 +1952,7 @@ int main(const int argumentCount, char** arguments)
                 nullptr,
                 sentinelTargetTexture.ReleaseAndGetAddressOf())),
             "The IBL pipeline-state sentinel texture could not be created");
+        // sentinelTarget: sentinelのrender target。
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> sentinelTarget;
         Require(
             SUCCEEDED(D3D11Access::Device(graphics)->CreateRenderTargetView(
@@ -1771,6 +1960,7 @@ int main(const int argumentCount, char** arguments)
                 nullptr,
                 sentinelTarget.ReleaseAndGetAddressOf())),
             "The IBL pipeline-state sentinel RTV could not be created");
+        // sentinelTargets: sentinelのrender target群。
         ID3D11RenderTargetView* sentinelTargets[]{
             baselinePrefilterPipeline.targets[0].Get(),
             sentinelTarget.Get()
@@ -1779,6 +1969,7 @@ int main(const int argumentCount, char** arguments)
             static_cast<UINT>(std::size(sentinelTargets)),
             sentinelTargets,
             baselinePrefilterPipeline.depth.Get());
+        // sentinelViewports: viewport snapshot used by state restoration。
         const D3D11_VIEWPORT sentinelViewports[]{
             baselinePrefilterPipeline.viewportCount != 0
                 ? baselinePrefilterPipeline.viewports[0]
@@ -1802,11 +1993,14 @@ int main(const int argumentCount, char** arguments)
             sentinelViewports);
         D3D11Access::Context(graphics)->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        // sentinelPrefilterPipeline: saved prefilter pipeline state。
         const auto sentinelPrefilterPipeline =
             PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
+        // prefilteredEnvironment: prefilter済みのenvironment。
         const auto prefilteredEnvironment =
             graphics.TryGetPrefilteredEnvironmentViews(
                 pointShadowView);
+        // retainedPrefilterPipeline: 保持中 prefilterのpipeline。
         const bool retainedPrefilterPipeline =
             sentinelPrefilterPipeline.Matches(D3D11Access::Context(graphics));
         baselinePrefilterPipeline.Restore(D3D11Access::Context(graphics));
@@ -1820,6 +2014,7 @@ int main(const int argumentCount, char** arguments)
                         LamaPon::EnvironmentRenderer::
                             PrefilteredSpecularMipLevels - 1),
             "A sampleable cube could not produce neutral IBL views");
+        // repeatedPrefilteredEnvironment: 再実行 prefilter済みのenvironment。
         const auto repeatedPrefilteredEnvironment =
             graphics.TryGetPrefilteredEnvironmentViews(
                 pointShadowView);
@@ -1829,8 +2024,10 @@ int main(const int argumentCount, char** arguments)
                 && repeatedPrefilteredEnvironment.irradiance
                     == prefilteredEnvironment.irradiance,
             "Repeated Sky IBL lookup rebuilt neutral view handles");
+        // emptyPrefilteredEnvironment: 空 prefilter済みのenvironment。
         const auto emptyPrefilteredEnvironment =
             graphics.TryGetPrefilteredEnvironmentViews({});
+        // twoDimensionalPrefilteredEnvironment: 2D  prefilter済みのenvironment。
         const auto twoDimensionalPrefilteredEnvironment =
             graphics.TryGetPrefilteredEnvironmentViews(litViews[0]);
         Require(
@@ -1841,25 +2038,31 @@ int main(const int argumentCount, char** arguments)
                     == prefilteredEnvironment.specular,
             "Invalid IBL sources changed the cached neutral pair");
 
+        // requirePrefilteredCube: prefilter済みcubeの検証処理。
         const auto requirePrefilteredCube = [&graphics](
             const LamaPon::GraphicsViewHandle& handle,
             const std::uint32_t size,
             const std::uint32_t mipLevels)
         {
+            // view: D3D11 view resolved from the test handle。
             auto* const view =
                 D3D11Access::TryResolveD3D11ShaderResourceView(graphics, handle);
             Require(
                 view != nullptr,
                 "A neutral IBL view could not be resolved");
+            // viewDescription: D3D11 API descriptor。
             D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
             view->GetDesc(&viewDescription);
+            // resource: D3D11 resource backing the resolved view。
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             view->GetResource(resource.ReleaseAndGetAddressOf());
+            // texture: 初期画素を持つimmutable texture。
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             Require(
                 resource != nullptr
                     && SUCCEEDED(resource.As(&texture)),
                 "A neutral IBL view did not own Texture2D storage");
+            // description: D3D11 API descriptor。
             D3D11_TEXTURE2D_DESC description{};
             texture->GetDesc(&description);
             Require(
@@ -1888,7 +2091,9 @@ int main(const int argumentCount, char** arguments)
             LamaPon::EnvironmentRenderer::PrefilteredIrradianceSize,
             LamaPon::EnvironmentRenderer::PrefilteredIrradianceMipLevels);
 
+        // environmentLighting: LightingState used by environment validation。
         LamaPon::LightingState environmentLighting;
+        // environment: environment-lighting payload。
         auto& environment = environmentLighting.environment;
         environment.texture = prefilteredEnvironment.specular;
         environment.intensity = 1.0f;
@@ -1925,6 +2130,7 @@ int main(const int argumentCount, char** arguments)
                         prefilteredEnvironment.irradiance),
             "Neutral IBL views were bound to the wrong slots");
 
+        // incompleteEnvironment: 不完全なのenvironment。
         auto incompleteEnvironment = environmentLighting;
         incompleteEnvironment.environment.irradiance.Reset();
         Require(
@@ -1932,6 +2138,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteEnvironment),
             "An incomplete prefiltered environment pair was accepted");
+        // swappedEnvironment: 入替後のenvironment。
         auto swappedEnvironment = environmentLighting;
         std::swap(
             swappedEnvironment.environment.specular,
@@ -1941,6 +2148,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 swappedEnvironment),
             "Prefiltered environment views with swapped shapes were accepted");
+        // invalidEnvironmentSource: 不正な environment source。
         auto invalidEnvironmentSource = environmentLighting;
         invalidEnvironmentSource.environment.texture = litViews[0];
         Require(
@@ -1948,6 +2156,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 invalidEnvironmentSource),
             "A Texture2D was accepted as an environment cube");
+        // depthEnvironmentSource: depth texture supplied as an invalid environment source。
         auto depthEnvironmentSource = environmentLighting;
         depthEnvironmentSource.environment.texture = pointShadowView;
         Require(
@@ -1955,6 +2164,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 depthEnvironmentSource),
             "A depth-stencil cube was accepted as an environment map");
+        // invalidEnvironmentMip: 不正な environment mip。
         auto invalidEnvironmentMip = environmentLighting;
         invalidEnvironmentMip.environment.specularMaximumMip += 1.0f;
         Require(
@@ -1962,6 +2172,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 invalidEnvironmentMip),
             "An invalid prefiltered maximum mip was accepted");
+        // nonFiniteEnvironment: 非・有限のenvironment。
         auto nonFiniteEnvironment = environmentLighting;
         nonFiniteEnvironment.environment.intensity =
             std::numeric_limits<float>::quiet_NaN();
@@ -1970,6 +2181,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 nonFiniteEnvironment),
             "A non-finite environment intensity was accepted");
+        // clampedEnvironment: clamp済みのenvironment。
         auto clampedEnvironment = environmentLighting;
         clampedEnvironment.environment.intensity = -1.0f;
         Require(
@@ -1998,6 +2210,7 @@ int main(const int argumentCount, char** arguments)
                         prefilteredEnvironment.irradiance),
             "Rejected neutral IBL lighting partially changed the Effect");
 
+        // disabledEnvironment: 無効時のenvironment。
         auto disabledEnvironment = nonFiniteEnvironment;
         disabledEnvironment.environment.enabled = false;
         disabledEnvironment.environment.texture = litViews[0];
@@ -2018,8 +2231,7 @@ int main(const int argumentCount, char** arguments)
                 environmentLighting),
             "The neutral environment baseline could not be restored");
 
-        // Reflection Probeもprimary/secondaryの4本をneutral handleで
-        // 運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
+        // Reflection Probeもprimary/secondaryの4本をneutral handleで運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
         Stage("lit-neutral-reflection-probe");
         Require(
             graphics.IsGraphicsViewCurrent(
@@ -2027,6 +2239,7 @@ int main(const int argumentCount, char** arguments)
                 && graphics.IsGraphicsViewCurrent(
                     prefilteredEnvironment.irradiance),
             "Fresh neutral IBL views were not current for their backend");
+        // reflectionProbe: reflection-probe payload under test。
         LamaPon::ReflectionProbeEnvironment reflectionProbe;
         reflectionProbe.specular = prefilteredEnvironment.specular;
         reflectionProbe.irradiance = prefilteredEnvironment.irradiance;
@@ -2052,6 +2265,7 @@ int main(const int argumentCount, char** arguments)
                 && CapturePixelShaderView(graphics, 20u) == nullptr,
             "A neutral Reflection Probe bound the wrong primary views");
 
+        // blendedReflectionProbe: blend済み reflectionのprobe。
         auto blendedReflectionProbe = reflectionProbe;
         blendedReflectionProbe.secondarySpecular =
             prefilteredEnvironment.specular;
@@ -2079,6 +2293,7 @@ int main(const int argumentCount, char** arguments)
                         prefilteredEnvironment.irradiance),
             "Neutral secondary Reflection Probe views used the wrong slots");
 
+        // incompleteReflectionProbe: 不完全な reflectionのprobe。
         auto incompleteReflectionProbe = reflectionProbe;
         incompleteReflectionProbe.irradiance.Reset();
         Require(
@@ -2086,6 +2301,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteReflectionProbe),
             "An incomplete primary Reflection Probe pair was accepted");
+        // swappedReflectionProbe: 入替後 reflectionのprobe。
         auto swappedReflectionProbe = reflectionProbe;
         std::swap(
             swappedReflectionProbe.specular,
@@ -2095,6 +2311,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 swappedReflectionProbe),
             "Reflection Probe views with swapped shapes were accepted");
+        // invalidReflectionProbeMip: 不正な reflection probe mip。
         auto invalidReflectionProbeMip = reflectionProbe;
         invalidReflectionProbeMip.specularMaximumMip += 1.0f;
         Require(
@@ -2102,6 +2319,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 invalidReflectionProbeMip),
             "A Reflection Probe with invalid mip metadata was accepted");
+        // nonFiniteReflectionProbe: 非・有限 reflectionのprobe。
         auto nonFiniteReflectionProbe = reflectionProbe;
         nonFiniteReflectionProbe.intensity =
             std::numeric_limits<float>::quiet_NaN();
@@ -2120,6 +2338,7 @@ int main(const int argumentCount, char** arguments)
                         prefilteredEnvironment.irradiance),
             "A rejected Reflection Probe partially changed the Effect");
 
+        // disabledSecondaryProbe: 無効時・副のprobe。
         auto disabledSecondaryProbe = blendedReflectionProbe;
         disabledSecondaryProbe.secondaryWeight = 0.0f;
         disabledSecondaryProbe.secondarySpecular = litViews[0];
@@ -2140,9 +2359,9 @@ int main(const int argumentCount, char** arguments)
                 environmentLighting),
             "The Sky IBL baseline could not be restored after Probe tests");
 
-        // ボリューメトリック光のmain depthとcascade shadowもhandleで
-        // 運び、検証に失敗した場合はping-pong先へ切り替えません。
+        // ボリューメトリック光のmain depthとcascade shadowもhandleで運び、検証に失敗した場合はping-pong先へ切り替えません。
         Stage("volumetric-neutral-depth-and-shadow");
+        // volumetricTarget: volumetricのrender target。
         LamaPon::RenderTarget volumetricTarget;
         graphics.ResizeOffscreenTarget(
             volumetricTarget,
@@ -2151,8 +2370,10 @@ int main(const int argumentCount, char** arguments)
         Require(
             static_cast<bool>(volumetricTarget.DepthViewHandle()),
             "RenderTarget did not publish its neutral depth view");
+        // volumetricSettings: volumetricの設定。
         LamaPon::VolumetricLightSettings volumetricSettings;
         volumetricSettings.enabled = true;
+        // volumetricInputs: volumetricの入力データ。
         LamaPon::VolumetricLightInputs volumetricInputs;
         volumetricInputs.cascadeShadow = directionalShadowView;
         volumetricInputs.cascadeCount =
@@ -2160,13 +2381,17 @@ int main(const int argumentCount, char** arguments)
                 directionalShadow.cascadeCount);
         volumetricInputs.shadowResolution =
             shadowLighting.directionalShadowResolution;
+        // volumetricSource: source texture for the volumetric pass。
         const auto volumetricSource =
             volumetricTarget.CurrentColorViewHandle();
+        // volumetricDisplay: volumetric 表示。
         const auto volumetricDisplay =
             volumetricTarget.DisplayViewHandle();
+        // volumetricNativeSource: native D3D11 texture for the volumetric source。
         auto* const volumetricNativeSource =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 volumetricSource);
+        // volumetricNativeDisplay: volumetric native 表示。
         auto* const volumetricNativeDisplay =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 volumetricDisplay);
@@ -2197,8 +2422,10 @@ int main(const int argumentCount, char** arguments)
                     == volumetricNativeDisplay,
             "Valid neutral volumetric inputs did not swap only the current "
             "color view");
+        // invalidVolumetricInputs: 不正な volumetricの入力データ。
         auto invalidVolumetricInputs = volumetricInputs;
         invalidVolumetricInputs.cascadeShadow.Reset();
+        // resolvedVolumetricSource: 解決済み volumetric source。
         const auto resolvedVolumetricSource =
             volumetricTarget.CurrentColorViewHandle();
         graphics.ApplyOffscreenTargetVolumetricLight(
@@ -2218,10 +2445,9 @@ int main(const int argumentCount, char** arguments)
             "Two post-process swaps did not restore the original current "
             "color identity while preserving the display view");
 
-        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、
-        // D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて
-        // 検証した後にだけ解決します。
+        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて検証した後にだけ解決します。
         Stage("temporal-neutral-history-and-depth");
+        // temporalTarget: temporalのrender target。
         LamaPon::RenderTarget temporalTarget;
         graphics.ResizeOffscreenTarget(
             temporalTarget,
@@ -2231,6 +2457,7 @@ int main(const int argumentCount, char** arguments)
             temporalTarget.DepthViewHandle()
                 && !temporalTarget.TemporalHistoryViewHandle(),
             "A fresh RenderTarget published an invalid temporal history state");
+        // temporalIdentity: identity transform for the temporal pass。
         DirectX::XMFLOAT4X4 temporalIdentity{};
         DirectX::XMStoreFloat4x4(
             &temporalIdentity,
@@ -2238,8 +2465,10 @@ int main(const int argumentCount, char** arguments)
         graphics.CaptureOffscreenTargetTemporalHistory(
             temporalTarget,
             temporalIdentity);
+        // temporalHistoryView: temporal 履歴のview。
         const auto temporalHistoryView =
             temporalTarget.TemporalHistoryViewHandle();
+        // temporalDepthView: depth input view for the temporal pass。
         const auto temporalDepthView =
             temporalTarget.DepthViewHandle();
         Require(
@@ -2255,11 +2484,14 @@ int main(const int argumentCount, char** arguments)
                     temporalDepthView) != nullptr,
             "RenderTarget did not publish current neutral TAA views");
 
+        // temporalSettings: temporalの設定。
         LamaPon::TemporalAntiAliasingSettings temporalSettings;
         temporalSettings.enabled = true;
+        // temporalInputs: temporalの入力データ。
         LamaPon::TemporalAntiAliasingInputs temporalInputs;
         temporalInputs.inverseViewProjection = temporalIdentity;
         temporalInputs.viewProjection = temporalIdentity;
+        // temporalSource: source texture for the temporal pass。
         const auto temporalSource =
             temporalTarget.CurrentColorViewHandle();
         graphics.ApplyOffscreenTargetTemporalAntiAliasing(
@@ -2270,6 +2502,7 @@ int main(const int argumentCount, char** arguments)
             temporalTarget.CurrentColorViewHandle() != temporalSource,
             "Valid neutral TAA inputs were not applied by RenderTarget");
 
+        // temporalOutputDescription: D3D11 API descriptor。
         D3D11_TEXTURE2D_DESC temporalOutputDescription{};
         temporalOutputDescription.Width = Width;
         temporalOutputDescription.Height = Height;
@@ -2307,15 +2540,18 @@ int main(const int argumentCount, char** arguments)
         directTemporalInputs.previousViewProjection =
             temporalIdentity;
         directTemporalInputs.previousValid = true;
+        // temporalOutputState: temporal 出力のstate。
         auto temporalOutputState = graphics.CaptureOutputState();
         Require(
             temporalOutputState != nullptr,
             "The TAA renderer output state could not be captured");
+        // legacyEnvironment: 旧APIのenvironment。
         auto* const legacyEnvironment =
             legacyEnvironmentAccessor(&graphics);
         Require(
             legacyEnvironment != nullptr,
             "The legacy Environment accessor returned null");
+        // temporalNativeSource: native D3D11 texture for the temporal source。
         auto* const temporalNativeSource =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 temporalTarget.CurrentColorViewHandle());
@@ -2334,6 +2570,7 @@ int main(const int argumentCount, char** arguments)
             "The TAA renderer rejected valid neutral history and depth views");
         graphics.RestoreOutputState(*temporalOutputState);
 
+        // incompleteTemporalInputs: 不完全な temporalの入力データ。
         auto incompleteTemporalInputs = directTemporalInputs;
         incompleteTemporalInputs.history.Reset();
         Require(
@@ -2345,6 +2582,7 @@ int main(const int argumentCount, char** arguments)
                 temporalSettings,
                 incompleteTemporalInputs),
             "The TAA renderer accepted a missing neutral history view");
+        // invalidTemporalHistory: 不正な temporal 履歴。
         auto invalidTemporalHistory = directTemporalInputs;
         invalidTemporalHistory.history = litViews[0];
         Require(
@@ -2356,6 +2594,7 @@ int main(const int argumentCount, char** arguments)
                 temporalSettings,
                 invalidTemporalHistory),
             "The TAA renderer accepted an RGBA8 history view");
+        // invalidTemporalDepth: 不正な temporal depth。
         auto invalidTemporalDepth = directTemporalInputs;
         invalidTemporalDepth.depth = temporalHistoryView;
         Require(
@@ -2368,9 +2607,9 @@ int main(const int argumentCount, char** arguments)
                 invalidTemporalDepth),
             "The TAA renderer accepted a color view as depth");
 
-        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
-        // 反映する直前に3本まとめて同じBackend世代へ解決します。
+        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ反映する直前に3本まとめて同じBackend世代へ解決します。
         Stage("lit-neutral-screen-space-lighting");
+        // screenLightingTarget: screen lightingのrender target。
         LamaPon::RenderTarget screenLightingTarget;
         graphics.ResizeOffscreenTarget(
             screenLightingTarget,
@@ -2382,6 +2621,7 @@ int main(const int argumentCount, char** arguments)
                     .ReflectionDepthPyramidViewHandle()
                 && !screenLightingTarget.ColorHistoryViewHandle(),
             "RenderTarget did not publish its neutral screen-space views");
+        // screenHistoryTransform: screen 履歴 transform。
         DirectX::XMFLOAT4X4 screenHistoryTransform{};
         DirectX::XMStoreFloat4x4(
             &screenHistoryTransform,
@@ -2389,10 +2629,13 @@ int main(const int argumentCount, char** arguments)
         graphics.CaptureOffscreenTargetColorHistory(
             screenLightingTarget,
             screenHistoryTransform);
+        // ambientOcclusionView: ambient-occlusion input view。
         const auto ambientOcclusionView =
             screenLightingTarget.AmbientOcclusionViewHandle();
+        // colorHistoryView: 色 履歴のview。
         const auto colorHistoryView =
             screenLightingTarget.ColorHistoryViewHandle();
+        // reflectionDepthView: reflection depth input view。
         const auto reflectionDepthView =
             screenLightingTarget.ReflectionDepthPyramidViewHandle();
         Require(
@@ -2405,7 +2648,9 @@ int main(const int argumentCount, char** arguments)
                     reflectionDepthView) != nullptr,
             "A RenderTarget screen-space view could not be resolved");
 
+        // screenLighting: LightingState used by screen-space effects。
         LamaPon::LightingState screenLighting;
+        // ambientOcclusion: ambient-occlusion lighting payload。
         auto& ambientOcclusion =
             screenLighting.screenAmbientOcclusion;
         ambientOcclusion.enabled = true;
@@ -2414,6 +2659,7 @@ int main(const int argumentCount, char** arguments)
             1.0f / static_cast<float>(Width);
         ambientOcclusion.inverseHeight =
             1.0f / static_cast<float>(Height);
+        // screenReflection: screen-space reflection payload。
         auto& screenReflection =
             screenLighting.screenSpaceReflection;
         screenReflection.enabled = true;
@@ -2445,6 +2691,7 @@ int main(const int argumentCount, char** arguments)
                         reflectionDepthView),
             "Neutral screen-space lighting was bound to the wrong slot");
 
+        // incompleteScreenLighting: 不完全な screenのlighting設定。
         auto incompleteScreenLighting = screenLighting;
         incompleteScreenLighting.screenSpaceReflection.depth.Reset();
         Require(
@@ -2452,6 +2699,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteScreenLighting),
             "An incomplete neutral SSR pair was accepted");
+        // wrongAmbientOcclusionView: 不一致の ambient occlusionのview。
         auto wrongAmbientOcclusionView = screenLighting;
         wrongAmbientOcclusionView.screenAmbientOcclusion.texture =
             litViews[0];
@@ -2460,6 +2708,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongAmbientOcclusionView),
             "An RGBA texture was accepted as neutral SSAO");
+        // wrongScreenMetadata: 不一致の screen Metadata。
         auto wrongScreenMetadata = screenLighting;
         wrongScreenMetadata.screenSpaceReflection
             .depthPyramidMaximumMip = 0;
@@ -2468,6 +2717,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongScreenMetadata),
             "SSR with an incomplete mip-chain declaration was accepted");
+        // wrongAmbientOcclusionSize: 不一致の ambient occlusionのサイズ。
         auto wrongAmbientOcclusionSize = screenLighting;
         wrongAmbientOcclusionSize.screenAmbientOcclusion.inverseWidth =
             1.0f / static_cast<float>(Width + 2u);
@@ -2489,6 +2739,7 @@ int main(const int argumentCount, char** arguments)
                         reflectionDepthView),
             "Rejected screen-space lighting partially changed the Effect");
 
+        // disabledScreenLighting: 無効時 screenのlighting設定。
         auto disabledScreenLighting = screenLighting;
         disabledScreenLighting.screenAmbientOcclusion.enabled = false;
         disabledScreenLighting.screenSpaceReflection.enabled = false;
@@ -2510,12 +2761,14 @@ int main(const int argumentCount, char** arguments)
                 screenLighting),
             "The neutral screen-space baseline could not be restored");
 
-        // Forward+の3本のStructuredBufferもLightingStateがneutral
-        // handleで強所有し、Effect反映前にall-or-noneで解決します。
+        // Forward+の3本のStructuredBufferもLightingStateがneutral handleで強所有し、Effect反映前にall-or-noneで解決します。
         Stage("lit-neutral-clustered-lighting");
+        // clusteredLighting: LightingState used by clustered-light validation。
         LamaPon::LightingState clusteredLighting;
         clusteredLighting.clusteredLights.emplace_back();
+        // clusteredView: view matrix used for clustered-light validation。
         const auto clusteredView = DirectX::XMMatrixIdentity();
+        // clusteredProjection: clusteredのprojection matrix。
         const auto clusteredProjection =
             DirectX::XMMatrixPerspectiveFovRH(
                 DirectX::XM_PIDIV4,
@@ -2523,7 +2776,9 @@ int main(const int argumentCount, char** arguments)
                     / static_cast<float>(Height),
                 0.1f,
                 100.0f);
+        // clusteredViewValues: clustered lightingのview matrix。
         DirectX::XMFLOAT4X4 clusteredViewValues{};
+        // clusteredProjectionValues: clustered lightingのprojection matrix。
         DirectX::XMFLOAT4X4 clusteredProjectionValues{};
         DirectX::XMStoreFloat4x4(
             &clusteredViewValues,
@@ -2537,7 +2792,9 @@ int main(const int argumentCount, char** arguments)
             clusteredProjection,
             Width,
             Height);
+        // clustered: clustered-light input payload。
         auto& clustered = clusteredLighting.clustered;
+        // clusteredViews: clusteredのview群。
         const std::array clusteredViews{
             clustered.lights,
             clustered.lightIndices,
@@ -2556,6 +2813,7 @@ int main(const int argumentCount, char** arguments)
                 clusteredLighting),
             "Valid neutral clustered lighting was rejected");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // 配列内の要素位置
         for (std::size_t index{};
             index < clusteredViews.size();
             ++index)
@@ -2584,6 +2842,7 @@ int main(const int argumentCount, char** arguments)
                     == clusteredViews[2],
             "Clustered lighting rebuilt neutral wrappers every frame");
 
+        // incompleteClusteredLighting: 不完全な clusteredのlighting設定。
         auto incompleteClusteredLighting = clusteredLighting;
         incompleteClusteredLighting.clustered.clusterCounts.Reset();
         Require(
@@ -2591,6 +2850,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteClusteredLighting),
             "An incomplete clustered-lighting view set was accepted");
+        // wrongDimensionClusteredLighting: 不一致の Dimension clusteredのlighting設定。
         auto wrongDimensionClusteredLighting = clusteredLighting;
         wrongDimensionClusteredLighting.clustered.lightIndices =
             litViews[0];
@@ -2599,6 +2859,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongDimensionClusteredLighting),
             "A Texture2D was accepted as a clustered-lighting buffer");
+        // invalidClusteredMetadata: 不正な clustered Metadata。
         auto invalidClusteredMetadata = clusteredLighting;
         invalidClusteredMetadata.clustered.lightCount = 0;
         Require(
@@ -2607,6 +2868,7 @@ int main(const int argumentCount, char** arguments)
                 invalidClusteredMetadata),
             "Invalid clustered-lighting metadata was accepted");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // 配列内の要素位置
         for (std::size_t index{};
             index < clusteredViews.size();
             ++index)
@@ -2620,6 +2882,7 @@ int main(const int argumentCount, char** arguments)
                 "Rejected clustered lighting partially changed the Effect");
         }
 
+        // disabledClusteredLighting: 無効時 clusteredのlighting設定。
         auto disabledClusteredLighting = clusteredLighting;
         disabledClusteredLighting.clustered.enabled = false;
         Require(
@@ -2639,21 +2902,24 @@ int main(const int argumentCount, char** arguments)
                 clusteredLighting),
             "The neutral clustered-lighting baseline could not be restored");
 
-        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、
-        // D3D11への解決はEffect反映直前にtransactionalに行います。
+        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、D3D11への解決はEffect反映直前にtransactionalに行います。
         Stage("lit-neutral-baked-gi");
+        // bakedGiCoefficients: baked-GI coefficients uploaded to the renderer。
         const std::array<std::uint16_t, 12> bakedGiCoefficients{
             0x0000u, 0x0001u, 0x0002u, 0x0003u,
             0x0010u, 0x0011u, 0x0012u, 0x0013u,
             0x0020u, 0x0021u, 0x0022u, 0x0023u
         };
+        // bakedGiViews: baked GIのview群。
         const auto bakedGiViews =
             graphics.UploadBakedGlobalIlluminationViews(
                 1,
                 1,
                 1,
                 bakedGiCoefficients);
+        // bakedGiLighting: LightingState used by baked-GI validation。
         LamaPon::LightingState bakedGiLighting = graphics.Lighting();
+        // bakedGi: baked global-illumination input payload。
         auto& bakedGi = bakedGiLighting.bakedGlobalIllumination;
         bakedGi.enabled = true;
         bakedGi.redCoefficients = bakedGiViews[0];
@@ -2669,6 +2935,7 @@ int main(const int argumentCount, char** arguments)
                 bakedGiLighting),
             "A valid neutral Baked GI triplet was rejected");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // 配列内の要素位置
         for (std::size_t index{}; index < bakedGiViews.size(); ++index)
         {
             Require(
@@ -2680,6 +2947,7 @@ int main(const int argumentCount, char** arguments)
                 "A neutral Baked GI view was bound to the wrong slot");
         }
 
+        // incompleteBakedGiLighting: 不完全な baked GIのlighting設定。
         auto incompleteBakedGiLighting = bakedGiLighting;
         incompleteBakedGiLighting.bakedGlobalIllumination
             .blueCoefficients.Reset();
@@ -2688,6 +2956,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 incompleteBakedGiLighting),
             "An incomplete neutral Baked GI triplet was accepted");
+        // wrongDimensionBakedGiLighting: 不一致の Dimension baked GIのlighting設定。
         auto wrongDimensionBakedGiLighting = bakedGiLighting;
         wrongDimensionBakedGiLighting.bakedGlobalIllumination
             .blueCoefficients = litViews[0];
@@ -2696,6 +2965,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongDimensionBakedGiLighting),
             "A Texture2D was accepted as a Baked GI volume");
+        // wrongResolutionBakedGiLighting: 不一致の Resolution baked GIのlighting設定。
         auto wrongResolutionBakedGiLighting = bakedGiLighting;
         wrongResolutionBakedGiLighting.bakedGlobalIllumination
             .resolution.x = 2.0f;
@@ -2705,6 +2975,7 @@ int main(const int argumentCount, char** arguments)
                 wrongResolutionBakedGiLighting),
             "A Baked GI volume with mismatched resolution was accepted");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // 配列内の要素位置
         for (std::size_t index{}; index < bakedGiViews.size(); ++index)
         {
             Require(
@@ -2716,6 +2987,7 @@ int main(const int argumentCount, char** arguments)
                 "A rejected Baked GI triplet partially changed the Effect");
         }
 
+        // disabledBakedGiLighting: 無効時 baked GIのlighting設定。
         auto disabledBakedGiLighting = bakedGiLighting;
         disabledBakedGiLighting.bakedGlobalIllumination.enabled = false;
         Require(
@@ -2735,6 +3007,7 @@ int main(const int argumentCount, char** arguments)
                 bakedGiLighting),
             "The neutral Baked GI baseline could not be restored");
 
+        // emptyLitTextures: 空 litのtexture群。
         LamaPon::LitTextureRequest emptyLitTextures;
         Require(
             graphics.TrySetLitEffectTextures(
@@ -2742,7 +3015,9 @@ int main(const int argumentCount, char** arguments)
                 emptyLitTextures),
             "An empty neutral Lit texture request was rejected");
         litEffect.Apply(D3D11Access::Context(graphics));
+        // litWhite: default white texture bound to the Lit shader。
         const auto litWhite = CapturePixelShaderView(graphics, 0u);
+        // litFlatNormal: default flat-normal texture bound to the Lit shader。
         const auto litFlatNormal =
             CapturePixelShaderView(graphics, 1u);
         Require(
@@ -2750,9 +3025,11 @@ int main(const int argumentCount, char** arguments)
                 && litFlatNormal != nullptr
                 && litFlatNormal.Get() != litWhite.Get(),
             "Neutral Lit defaults did not bind white and flat normal views");
+        // LitWhiteSlots: shader slots receiving the default white texture。
         constexpr std::array<UINT, 8> LitWhiteSlots{
             7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u
         };
+        // 検査対象のresource slot
         for (const auto slot : LitWhiteSlots)
         {
             Require(
@@ -2761,19 +3038,22 @@ int main(const int argumentCount, char** arguments)
                 "An empty neutral Lit slot retained a previous texture");
         }
 
-        // 失敗時にEffectが部分更新されないことを、valid requestを
-        // baselineへ戻してからforeign handleで確認します。
+        // 失敗時にEffectが部分更新されないことを、valid requestをbaselineへ戻してからforeign handleで確認します。
         Require(
             graphics.TrySetLitEffectTextures(
                 litEffect,
                 litTextures),
             "The valid neutral Lit baseline could not be restored");
+        // foreignWindow: 外部 window。
         const HWND foreignWindow = CreateHiddenWindow();
         std::unique_ptr<LamaPon::RenderTarget>
             retainedBackendLifetimeTarget;
+        // retainedBackendLifetimeView: 保持中 Backend Lifetimeのview。
         LamaPon::GraphicsViewHandle retainedBackendLifetimeView;
+        // retainedBackendLifetimeTexture: 保持中 Backend Lifetimeのtexture。
         ID3D11Texture2D* retainedBackendLifetimeTexture{};
         {
+            // foreignBackend: 外部 Backend。
             LamaPon::D3D11Backend foreignBackend;
             const LamaPon::GraphicsBackendCreateInfo
                 foreignBackendCreateInfo{
@@ -2785,9 +3065,9 @@ int main(const int argumentCount, char** arguments)
             };
             foreignBackend.Initialize(foreignBackendCreateInfo);
 
-            // ClusteredLightsはdefault facadeを安全な未設定として扱い、
-            // native資源と3本のviewは完成後にだけ一括公開します。
+            // ClusteredLightsはdefault facadeを安全な未設定として扱い、native資源と3本のviewは完成後にだけ一括公開します。
             Stage("clustered-lights-backend-state");
+            // clusteredResultIsClear: clustered 結果のclear色。
             const auto clusteredResultIsClear =
                 [](const LamaPon::LightingState& state)
                 {
@@ -2797,13 +3077,17 @@ int main(const int argumentCount, char** arguments)
                         && !state.clustered.lightIndices
                         && !state.clustered.clusterCounts;
                 };
+            // clusteredShaderPath: clustered shaderのfile path。
             const auto clusteredShaderPath =
                 graphics.Assets().ResolvePath(
                     "shaders/LamaPonLightCulling.hlsl");
+            // missingClusteredShaderPath: 欠落 clustered shaderのfile path。
             const auto missingClusteredShaderPath =
                 graphics.Assets().ResolvePath(
                     "shaders/Api67MissingLightCulling.hlsl");
+            // transactionalClusteredLights: ClusteredLights object used for replacement tests。
             LamaPon::ClusteredLights transactionalClusteredLights;
+            // defaultClusteredLighting: 既定 clusteredのlighting設定。
             auto defaultClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -2816,6 +3100,7 @@ int main(const int argumentCount, char** arguments)
                 clusteredResultIsClear(defaultClusteredLighting),
                 "A default ClusteredLights facade retained an old result");
 
+            // initialClusteredCreationRejected: 初回時のclustered Creationの拒否結果。
             bool initialClusteredCreationRejected{};
             try
             {
@@ -2828,6 +3113,7 @@ int main(const int argumentCount, char** arguments)
             {
                 initialClusteredCreationRejected = true;
             }
+            // failedInitialClusteredLighting: 失敗後・初回 clusteredのlighting設定。
             auto failedInitialClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -2847,6 +3133,7 @@ int main(const int argumentCount, char** arguments)
                 transactionalClusteredLights,
                 graphics.Assets(),
                 clusteredShaderPath);
+            // transactionalClusteredLighting: LightingState used for transactional replacement。
             auto transactionalClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -2855,6 +3142,7 @@ int main(const int argumentCount, char** arguments)
                 clusteredProjectionValues,
                 Width,
                 Height);
+            // transactionalClusteredViews: transactional clusteredのview群。
             const std::array transactionalClusteredViews{
                 transactionalClusteredLighting.clustered.lights,
                 transactionalClusteredLighting.clustered.lightIndices,
@@ -2873,6 +3161,7 @@ int main(const int argumentCount, char** arguments)
                         }),
                 "ClusteredLights did not publish one complete backend state");
 
+            // replacementClusteredCreationRejected: 置換後時のclustered Creationの拒否結果。
             bool replacementClusteredCreationRejected{};
             try
             {
@@ -2885,6 +3174,7 @@ int main(const int argumentCount, char** arguments)
             {
                 replacementClusteredCreationRejected = true;
             }
+            // preservedClusteredLighting: 維持確認用 clusteredのlighting設定。
             auto preservedClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -2904,13 +3194,14 @@ int main(const int argumentCount, char** arguments)
                 "A failed ClusteredLights replacement changed the last "
                 "complete state");
 
-            // 別Backendのstateはnative contextへ渡さず、出力だけを安全な
-            // fallbackへ戻します。旧Clusters symbolも実際に転送確認します。
+            // 別Backendのstateはnative contextへ渡さず、出力だけを安全なfallbackへ戻します。
+            // 旧Clusters symbolも実際に転送確認します。
             auto* const primaryClusteredLights =
                 legacyClustersAccessor(&graphics);
             Require(
                 primaryClusteredLights != nullptr,
                 "The legacy GraphicsDevice::Clusters alias returned null");
+            // foreignClusteredLighting: 外部 clusteredのlighting設定。
             auto foreignClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 *primaryClusteredLights,
@@ -2932,12 +3223,13 @@ int main(const int argumentCount, char** arguments)
                 "or changed its owner");
 
             // ShadowMapのnative stateは完成した単位でのみ差し替えます。
-            // 初回作成と置換のどちらが失敗しても、部分的なstateを
-            // 公開せず、Begin中の旧stateは元の描画先へ戻せます。
+            // 初回作成と置換のどちらが失敗しても、部分的なstateを公開せず、Begin中の旧stateは元の描画先へ戻せます。
             const auto verifyShadowMapTransactionalState = [&]
             {
                 Stage("shadow-map-transactional-state");
+                // transactionalShadowMap: ShadowMap used for transactional replacement。
                 LamaPon::ShadowMap transactionalShadowMap;
+                // initialShadowCreationRejected: 初回時のshadow Creationの拒否結果。
                 bool initialShadowCreationRejected{};
                 try
                 {
@@ -2960,8 +3252,10 @@ int main(const int argumentCount, char** arguments)
 
                 foreignBackend.InitializeShadowMap(transactionalShadowMap, 0u,
                                                    0u, false);
+                // firstTransactionalShadowView: 初回・transactional shadowのview。
                 const auto firstTransactionalShadowView =
                     transactionalShadowMap.ViewHandle();
+                // firstTransactionalNativeView: 初回・transactional・nativeのview。
                 auto* const firstTransactionalNativeView =
                     foreignBackend.ResolveShaderResourceView(
                         firstTransactionalShadowView);
@@ -2971,6 +3265,7 @@ int main(const int argumentCount, char** arguments)
                             firstTransactionalNativeView,
                         "The legacy ShadowMap view alias did not reach the "
                         "opaque D3D11 state");
+                // firstShadowDescription: D3D11 API descriptor。
                 D3D11_SHADER_RESOURCE_VIEW_DESC firstShadowDescription{};
                 firstTransactionalNativeView->GetDesc(&firstShadowDescription);
                 Require(transactionalShadowMap.IsValid() &&
@@ -2987,6 +3282,7 @@ int main(const int argumentCount, char** arguments)
                         "metadata");
 
                 foreignBackend.BindBackBuffer();
+                // transactionalOutput: transactionalの出力。
                 auto transactionalOutput =
                     PrefilterPipelineState::Capture(foreignBackend.Context());
                 foreignBackend.BeginShadowMap(transactionalShadowMap, 0u);
@@ -2997,7 +3293,9 @@ int main(const int argumentCount, char** arguments)
                 foreignBackend.Context()->OMGetRenderTargets(
                     1, activeShadowColor.ReleaseAndGetAddressOf(),
                     activeShadowDepth.ReleaseAndGetAddressOf());
+                // activeShadowViewport: 有効中 shadow viewport。
                 D3D11_VIEWPORT activeShadowViewport{};
+                // activeShadowViewportCount: 有効中 shadow viewportの件数。
                 UINT activeShadowViewportCount = 1;
                 foreignBackend.Context()->RSGetViewports(
                     &activeShadowViewportCount, &activeShadowViewport);
@@ -3011,6 +3309,7 @@ int main(const int argumentCount, char** arguments)
 
                 foreignBackend.InitializeShadowMap(transactionalShadowMap, 4u,
                                                    8u, false);
+                // replacementShadowView: 置換後 shadowのview。
                 const auto replacementShadowView =
                     transactionalShadowMap.ViewHandle();
                 Require(
@@ -3029,6 +3328,7 @@ int main(const int argumentCount, char** arguments)
                     "publish one complete state");
 
                 foreignBackend.BeginShadowMap(transactionalShadowMap, 3u);
+                // replacementShadowCreationRejected: 置換後時のshadow Creationの拒否結果。
                 bool replacementShadowCreationRejected{};
                 try
                 {
@@ -3040,6 +3340,7 @@ int main(const int argumentCount, char** arguments)
                 {
                     replacementShadowCreationRejected = true;
                 }
+                // failedReplacementPreservedState: 失敗後・置換後・維持確認用のstate。
                 const bool failedReplacementPreservedState =
                     transactionalShadowMap.IsValid() &&
                     transactionalShadowMap.Resolution() == 4u &&
@@ -3053,24 +3354,28 @@ int main(const int argumentCount, char** arguments)
                         transactionalOutput.Matches(foreignBackend.Context()),
                     "A failed active ShadowMap replacement changed its state "
                     "or lost the saved output");
-                // 後段で同じHWNDのswap chainを再作成するため、back bufferを
-                // 強参照するsnapshotは検証直後に解放します。
+                // 後段で同じHWNDのswap chainを再作成するため、back bufferを強参照するsnapshotは検証直後に解放します。
                 transactionalOutput = {};
 
-                // 別Backendが描画中のstateは、そのBackendのcontextでEndする
-                // 必要があります。所有していないcontextへsaved viewを渡さず、
-                // 元stateを保持したまま明示的に拒否します。
+                // 別Backendが描画中のstateは、そのBackendのcontextでEndする必要があります。
+                // 所有していないcontextへsaved viewを渡さず、元stateを保持したまま明示的に拒否します。
                 auto& primaryActiveShadowMap = graphics.Shadows();
+                // primaryActiveShadowView: 主・有効中 shadowのview。
                 const auto primaryActiveShadowView =
                     primaryActiveShadowMap.ViewHandle();
+                // primaryActiveShadowResolution: 主・有効中 shadowの解像度。
                 const auto primaryActiveShadowResolution =
                     primaryActiveShadowMap.Resolution();
+                // primaryActiveShadowCascades: 主・有効中 shadowのcascade数。
                 const auto primaryActiveShadowCascades =
                     primaryActiveShadowMap.CascadeCount();
+                // primaryOutput: 主の出力。
                 const auto primaryOutput = PrefilterPipelineState::Capture(
                     D3D11Access::Context(graphics));
                 graphics.BeginShadowMap(primaryActiveShadowMap, 0u);
+                // foreignActiveReplacementRejected: 外部・有効中・置換後の拒否結果。
                 bool foreignActiveReplacementRejected{};
+                // foreignActiveReplacementWrongException: 外部 有効中 置換後 不一致の Exception。
                 bool foreignActiveReplacementWrongException{};
                 try
                 {
@@ -3085,6 +3390,7 @@ int main(const int argumentCount, char** arguments)
                 {
                     foreignActiveReplacementWrongException = true;
                 }
+                // foreignReplacementPreservedState: 外部・置換後・維持確認用のstate。
                 const bool foreignReplacementPreservedState =
                     primaryActiveShadowMap.IsValid() &&
                     primaryActiveShadowMap.ViewHandle() ==
@@ -3105,7 +3411,9 @@ int main(const int argumentCount, char** arguments)
                     "restored it through the wrong context");
             };
 
+            // invalidLitTextures: 不正な litのtexture群。
             auto invalidLitTextures = litTextures;
+            // foreignTexture: 外部のtexture。
             const auto foreignTexture =
                 foreignBackend.CreateSolidRgba8Texture(
                     { 1u, 2u, 3u, 255u });
@@ -3121,6 +3429,7 @@ int main(const int argumentCount, char** arguments)
                     invalidLitTextures),
                 "A foreign Lit texture view was accepted");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // 配列内の要素位置
             for (std::size_t index{};
                 index < litViews.size();
                 ++index)
@@ -3133,6 +3442,7 @@ int main(const int argumentCount, char** arguments)
                             litViews[index]),
                     "A rejected Lit request partially changed the Effect");
             }
+            // foreignEffect: 外部のeffect。
             LamaPon::LitEffect foreignEffect(
                 foreignBackend.Device(),
                 foreignBackend.Context(),
@@ -3145,9 +3455,11 @@ int main(const int argumentCount, char** arguments)
                     litTextures),
                 "A LitEffect owned by another GraphicsDevice was accepted");
 
+            // foreignBakedGiVoxel: 外部 baked GI Voxel。
             const std::array<std::uint16_t, 4> foreignBakedGiVoxel{
                 0x3000u, 0x3001u, 0x3002u, 0x3003u
             };
+            // foreignBakedGiInitialData: 外部 baked GI 初回 Data。
             const std::array foreignBakedGiInitialData{
                 LamaPon::GraphicsTextureSubresourceData{
                     std::as_bytes(std::span{ foreignBakedGiVoxel }),
@@ -3155,6 +3467,7 @@ int main(const int argumentCount, char** arguments)
                     8
                 }
             };
+            // foreignBakedGiTexture: 外部 baked GIのtexture。
             const auto foreignBakedGiTexture =
                 foreignBackend.CreateTexture3D(
                     LamaPon::GraphicsTexture3DDescription{
@@ -3165,9 +3478,11 @@ int main(const int argumentCount, char** arguments)
                         LamaPon::GraphicsTextureFormat::Rgba16Float
                     },
                     foreignBakedGiInitialData);
+            // foreignBakedGiView: 外部 baked GIのview。
             const auto foreignBakedGiView =
                 foreignBackend.CreateShaderResourceView(
                     foreignBakedGiTexture);
+            // mixedBakedGiLighting: 混在 baked GIのlighting設定。
             auto mixedBakedGiLighting = bakedGiLighting;
             mixedBakedGiLighting.bakedGlobalIllumination
                 .greenCoefficients = foreignBakedGiView;
@@ -3177,6 +3492,7 @@ int main(const int argumentCount, char** arguments)
                     mixedBakedGiLighting),
                 "A mixed-generation Baked GI triplet was accepted");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // 配列内の要素位置
             for (std::size_t index{};
                 index < bakedGiViews.size();
                 ++index)
@@ -3201,6 +3517,7 @@ int main(const int argumentCount, char** arguments)
                     clusteredLighting),
                 "The clustered-lighting baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // mixedClusteredLighting: 混在 clusteredのlighting設定。
             auto mixedClusteredLighting = clusteredLighting;
             mixedClusteredLighting.clustered.lightIndices =
                 invalidLitTextures.customTextures.back();
@@ -3210,6 +3527,7 @@ int main(const int argumentCount, char** arguments)
                     mixedClusteredLighting),
                 "A mixed-generation clustered-lighting set was accepted");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // 配列内の要素位置
             for (std::size_t index{};
                 index < clusteredViews.size();
                 ++index)
@@ -3230,21 +3548,27 @@ int main(const int argumentCount, char** arguments)
                 "The screen-space lighting baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
 
-            // Resizeだけが別Backendのtargetを引き取れる境界です。それ以外の
-            // 操作はforeign native資源をcontextへ渡す前に全て拒否します。
+            // Resizeだけが別Backendのtargetを引き取れる境界です。
+            // それ以外の操作はforeign native資源をcontextへ渡す前に全て拒否します。
             const auto ownedTargetCurrent =
                 screenLightingTarget.CurrentColorViewHandle();
+            // ownedTargetDisplay: 所有 target 表示。
             const auto ownedTargetDisplay =
                 screenLightingTarget.DisplayViewHandle();
+            // ownedTargetDepth: 所有 target depth。
             const auto ownedTargetDepth =
                 screenLightingTarget.DepthViewHandle();
+            // ownedTargetHistory: 所有 target 履歴。
             const auto ownedTargetHistory =
                 screenLightingTarget.ColorHistoryViewHandle();
+            // ownedHistoryProjection: 所有 履歴のprojection matrix。
             const auto ownedHistoryProjection =
                 screenLightingTarget.ColorHistoryViewProjection();
+            // requireForeignTargetRejected: 別deviceのtarget拒否検証処理。
             const auto requireForeignTargetRejected =
                 [&](auto&& operation, const char* const message)
                 {
+                    // rejected: whether the API rejected the invalid input。
                     bool rejected{};
                     try
                     {
@@ -3254,6 +3578,7 @@ int main(const int argumentCount, char** arguments)
                     {
                         rejected = true;
                     }
+                    // projection: 検証用projection matrix。
                     const auto& projection =
                         screenLightingTarget
                             .ColorHistoryViewProjection();
@@ -3279,6 +3604,7 @@ int main(const int argumentCount, char** arguments)
                                 == ownedHistoryProjection._44,
                         message);
                 };
+            // foreignClearColor: 外部 Clearの色。
             const float foreignClearColor[4]{};
             requireForeignTargetRejected(
                 [&]
@@ -3357,6 +3683,7 @@ int main(const int argumentCount, char** arguments)
                 },
                 "Display-view creation accepted a foreign target");
 
+            // foreignScreenTarget: 外部 screenのrender target。
             LamaPon::RenderTarget foreignScreenTarget;
             foreignBackend.ResizeOffscreenTarget(
                 foreignScreenTarget,
@@ -3368,14 +3695,19 @@ int main(const int argumentCount, char** arguments)
             foreignBackend.CaptureOffscreenTargetTemporalHistory(
                 foreignScreenTarget,
                 temporalIdentity);
+            // foreignAmbientOcclusionView: 外部 ambient occlusionのview。
             const auto foreignAmbientOcclusionView =
                 foreignScreenTarget.AmbientOcclusionViewHandle();
+            // foreignColorHistoryView: 外部 色 履歴のview。
             const auto foreignColorHistoryView =
                 foreignScreenTarget.ColorHistoryViewHandle();
+            // foreignTemporalHistoryView: 外部 temporal 履歴のview。
             const auto foreignTemporalHistoryView =
                 foreignScreenTarget.TemporalHistoryViewHandle();
+            // foreignReflectionDepthView: 外部 reflection depthのview。
             const auto foreignReflectionDepthView =
                 foreignScreenTarget.ReflectionDepthPyramidViewHandle();
+            // foreignDepthView: 外部 depthのview。
             const auto foreignDepthView =
                 foreignScreenTarget.DepthViewHandle();
             Require(
@@ -3383,12 +3715,16 @@ int main(const int argumentCount, char** arguments)
                     && foreignBackend.ResolveShaderResourceView(
                         foreignTemporalHistoryView) != nullptr,
                 "A foreign RenderTarget did not publish its TAA history view");
+            // foreignTargetBloom: 外部 target bloom。
             LamaPon::BloomSettings foreignTargetBloom;
             foreignTargetBloom.enabled = true;
+            // foreignTargetSource: 外部 target source。
             const auto foreignTargetSource =
                 foreignScreenTarget.CurrentColorViewHandle();
+            // foreignTargetDisplay: 外部 target 表示。
             const auto foreignTargetDisplay =
                 foreignScreenTarget.DisplayViewHandle();
+            // foreignPublishRejected: 外部時のPublishの拒否結果。
             bool foreignPublishRejected{};
             try
             {
@@ -3407,6 +3743,7 @@ int main(const int argumentCount, char** arguments)
                         == foreignTargetDisplay,
                 "PublishOffscreenTarget accepted or changed a foreign "
                 "RenderTarget");
+            // foreignTargetRejected: 外部時のtargetの拒否結果。
             bool foreignTargetRejected{};
             try
             {
@@ -3423,6 +3760,7 @@ int main(const int argumentCount, char** arguments)
                     && foreignScreenTarget.CurrentColorViewHandle()
                         == foreignTargetSource,
                 "The post-process facade accepted a foreign RenderTarget");
+            // mixedTemporalInputs: 混在 temporalの入力データ。
             auto mixedTemporalInputs = directTemporalInputs;
             mixedTemporalInputs.history = foreignTemporalHistoryView;
             Require(
@@ -3434,6 +3772,7 @@ int main(const int argumentCount, char** arguments)
                     temporalSettings,
                     mixedTemporalInputs),
                 "The TAA renderer accepted a foreign history view");
+            // mixedScreenLighting: 混在 screenのlighting設定。
             auto mixedScreenLighting = screenLighting;
             mixedScreenLighting.screenSpaceReflection.texture =
                 foreignColorHistoryView;
@@ -3484,6 +3823,7 @@ int main(const int argumentCount, char** arguments)
             graphics.CaptureOffscreenTargetTemporalHistory(
                 foreignScreenTarget,
                 temporalIdentity);
+            // replacementTemporalHistoryView: 置換後 temporal 履歴のview。
             const auto replacementTemporalHistoryView =
                 foreignScreenTarget.TemporalHistoryViewHandle();
             Require(
@@ -3496,6 +3836,7 @@ int main(const int argumentCount, char** arguments)
                         foreignTemporalHistoryView) == nullptr,
                 "RenderTarget did not replace its foreign TAA history view");
 
+            // foreignShadowMap: 外部 shadow map。
             LamaPon::ShadowMap foreignShadowMap;
             foreignBackend.InitializeShadowMap(
                 foreignShadowMap,
@@ -3507,6 +3848,7 @@ int main(const int argumentCount, char** arguments)
                     && foreignBackend.ResolveShaderResourceView(
                         foreignShadowMap.ViewHandle()) != nullptr,
                 "A foreign shadow map did not publish a neutral view");
+            // foreignSkyCube: 外部 sky cube。
             LamaPon::ShadowMap foreignSkyCube;
             foreignBackend.InitializeShadowMap(
                 foreignSkyCube,
@@ -3532,6 +3874,7 @@ int main(const int argumentCount, char** arguments)
                     shadowLighting),
                 "The neutral shadow baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // mixedShadowLighting: 混在 shadowのlighting設定。
             auto mixedShadowLighting = shadowLighting;
             mixedShadowLighting.directionalShadow.texture =
                 foreignShadowMap.ViewHandle();
@@ -3553,9 +3896,11 @@ int main(const int argumentCount, char** arguments)
                             pointShadowView),
                 "Rejected foreign shadow lighting changed the Effect");
 
+            // foreignVolumetricInputs: 外部 volumetricの入力データ。
             auto foreignVolumetricInputs = volumetricInputs;
             foreignVolumetricInputs.cascadeShadow =
                 foreignShadowMap.ViewHandle();
+            // foreignVolumetricSource: 外部 volumetric source。
             const auto foreignVolumetricSource =
                 volumetricTarget.CurrentColorViewHandle();
             graphics.ApplyOffscreenTargetVolumetricLight(
@@ -3567,6 +3912,7 @@ int main(const int argumentCount, char** arguments)
                     == foreignVolumetricSource,
                 "Foreign neutral volumetric inputs changed the target");
 
+            // foreignPrefilteredEnvironment: 外部 prefilter済みのenvironment。
             const auto foreignPrefilteredEnvironment =
                 graphics.TryGetPrefilteredEnvironmentViews(
                     foreignShadowMap.ViewHandle());
@@ -3575,6 +3921,7 @@ int main(const int argumentCount, char** arguments)
                     && !foreignPrefilteredEnvironment.specular
                     && !foreignPrefilteredEnvironment.irradiance,
                 "A foreign cube produced primary-backend IBL handles");
+            // retainedPrefilteredEnvironment: 保持中 prefilter済みのenvironment。
             const auto retainedPrefilteredEnvironment =
                 graphics.TryGetPrefilteredEnvironmentViews(
                     pointShadowView);
@@ -3591,6 +3938,7 @@ int main(const int argumentCount, char** arguments)
                     environmentLighting),
                 "The neutral environment baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // mixedEnvironment: 混在のenvironment。
             auto mixedEnvironment = environmentLighting;
             mixedEnvironment.environment.texture =
                 foreignShadowMap.ViewHandle();
@@ -3608,6 +3956,7 @@ int main(const int argumentCount, char** arguments)
                         == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.irradiance),
                 "Rejected foreign environment changed the Effect");
+            // disabledForeignEnvironment: 無効時・外部のenvironment。
             auto disabledForeignEnvironment = mixedEnvironment;
             disabledForeignEnvironment.environment.enabled = false;
             disabledForeignEnvironment.environment.specular =
@@ -3637,6 +3986,7 @@ int main(const int argumentCount, char** arguments)
                         reflectionProbe),
                 "The Reflection Probe baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
+            // mixedReflectionProbe: 混在 reflectionのprobe。
             auto mixedReflectionProbe = reflectionProbe;
             mixedReflectionProbe.specular =
                 foreignShadowMap.ViewHandle();
@@ -3665,6 +4015,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     environmentLighting),
                 "The Sky baseline could not be restored for an empty Probe");
+            // emptyReflectionProbe: 空 reflectionのprobe。
             LamaPon::ReflectionProbeEnvironment emptyReflectionProbe;
             emptyReflectionProbe.secondarySpecular =
                 foreignShadowMap.ViewHandle();
@@ -3692,13 +4043,14 @@ int main(const int argumentCount, char** arguments)
                 "The clustered-lighting baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
 
-            // LightingStateのproducerをneutral handleへ移す前提として、
-            // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
+            // LightingStateのproducerをneutral handleへ移す前提として、Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
             Stage("d3d11-generic-view-import");
+            // structuredValues: structured bufferの初期値群。
             constexpr std::array structuredValues{
                 DirectX::XMFLOAT4{ 1.0f, 2.0f, 3.0f, 4.0f },
                 DirectX::XMFLOAT4{ 5.0f, 6.0f, 7.0f, 8.0f }
             };
+            // structuredDescription: D3D11 API descriptor。
             D3D11_BUFFER_DESC structuredDescription{};
             structuredDescription.ByteWidth =
                 static_cast<UINT>(sizeof(structuredValues));
@@ -3709,8 +4061,10 @@ int main(const int argumentCount, char** arguments)
                 D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
             structuredDescription.StructureByteStride =
                 static_cast<UINT>(sizeof(DirectX::XMFLOAT4));
+            // structuredInitialData: structured 初回 Data。
             D3D11_SUBRESOURCE_DATA structuredInitialData{};
             structuredInitialData.pSysMem = structuredValues.data();
+            // structuredBuffer: GPU buffer containing structured test values。
             Microsoft::WRL::ComPtr<ID3D11Buffer> structuredBuffer;
             Require(
                 SUCCEEDED(foreignBackend.Device()->CreateBuffer(
@@ -3718,6 +4072,7 @@ int main(const int argumentCount, char** arguments)
                     &structuredInitialData,
                     structuredBuffer.ReleaseAndGetAddressOf())),
                 "The structured-buffer import fixture could not be created");
+            // structuredViewDescription: D3D11 API descriptor。
             D3D11_SHADER_RESOURCE_VIEW_DESC structuredViewDescription{};
             structuredViewDescription.Format = DXGI_FORMAT_UNKNOWN;
             structuredViewDescription.ViewDimension =
@@ -3734,12 +4089,14 @@ int main(const int argumentCount, char** arguments)
                     structuredView.ReleaseAndGetAddressOf())),
                 "The structured-buffer SRV fixture could not be created");
 
+            // volumePixels: volume textureに設定する初期pixel群。
             constexpr std::array<std::uint32_t, 8> volumePixels{
                 0xff0000ffu, 0xff00ff00u,
                 0xffff0000u, 0xffffffffu,
                 0xff808080u, 0xff00ffffu,
                 0xffff00ffu, 0xffffff00u
             };
+            // volumeDescription: D3D11 API descriptor。
             D3D11_TEXTURE3D_DESC volumeDescription{};
             volumeDescription.Width = 2;
             volumeDescription.Height = 2;
@@ -3748,6 +4105,7 @@ int main(const int argumentCount, char** arguments)
             volumeDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
             volumeDescription.Usage = D3D11_USAGE_IMMUTABLE;
             volumeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            // volumeInitialData: volume 初回 Data。
             D3D11_SUBRESOURCE_DATA volumeInitialData{};
             volumeInitialData.pSysMem = volumePixels.data();
             volumeInitialData.SysMemPitch =
@@ -3755,6 +4113,7 @@ int main(const int argumentCount, char** arguments)
                 * static_cast<UINT>(sizeof(std::uint32_t));
             volumeInitialData.SysMemSlicePitch =
                 volumeInitialData.SysMemPitch * volumeDescription.Height;
+            // volumeTexture: 3D texture containing volume test data。
             Microsoft::WRL::ComPtr<ID3D11Texture3D> volumeTexture;
             Require(
                 SUCCEEDED(foreignBackend.Device()->CreateTexture3D(
@@ -3762,12 +4121,14 @@ int main(const int argumentCount, char** arguments)
                     &volumeInitialData,
                     volumeTexture.ReleaseAndGetAddressOf())),
                 "The Texture3D import fixture could not be created");
+            // volumeViewDescription: D3D11 API descriptor。
             D3D11_SHADER_RESOURCE_VIEW_DESC volumeViewDescription{};
             volumeViewDescription.Format = volumeDescription.Format;
             volumeViewDescription.ViewDimension =
                 D3D11_SRV_DIMENSION_TEXTURE3D;
             volumeViewDescription.Texture3D.MostDetailedMip = 0;
             volumeViewDescription.Texture3D.MipLevels = 1;
+            // volumeView: shader resource view for the volume texture。
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeView;
             Require(
                 SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
@@ -3776,17 +4137,23 @@ int main(const int argumentCount, char** arguments)
                     volumeView.ReleaseAndGetAddressOf())),
                 "The Texture3D SRV fixture could not be created");
 
+            // structuredViewIdentity: native pointer captured for the structured view。
             auto* const structuredViewIdentity = structuredView.Get();
+            // volumeViewIdentity: native pointer captured for the volume view。
             auto* const volumeViewIdentity = volumeView.Get();
+            // structuredHandle: engine handle for the structured view。
             const auto structuredHandle =
                 foreignBackend.ImportShaderResourceViewHandle(
                     structuredView.Get());
+            // volumeHandle: engine handle for the volume view。
             const auto volumeHandle =
                 foreignBackend.ImportShaderResourceViewHandle(
                     volumeView.Get());
+            // nativeTexture2DView: D3D11 view imported from a native 2D texture。
             auto* const nativeTexture2DView =
                 foreignBackend.ResolveShaderResourceView(
                     invalidLitTextures.customTextures.back());
+            // texture2DHandle: engine handle for the imported 2D view。
             const auto texture2DHandle =
                 foreignBackend.ImportShaderResourceViewHandle(
                     nativeTexture2DView);
@@ -3811,6 +4178,7 @@ int main(const int argumentCount, char** arguments)
                         BufferResource(texture2DHandle) == nullptr,
                 "Generic SRV imports did not retain their resource kinds");
 
+            // nullViewRejected: null viewの拒否結果。
             bool nullViewRejected{};
             try
             {
@@ -3838,8 +4206,10 @@ int main(const int argumentCount, char** arguments)
                         texture2DHandle) == nativeTexture2DView,
                 "Imported SRV handles did not keep their native views alive");
 
+            // GenericViewSlot: 汎用 view slot。
             constexpr UINT GenericViewSlot =
                 D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 2;
+            // importedViews: import済みのview群。
             const std::array importedViews{
                 structuredHandle,
                 volumeHandle
@@ -3885,6 +4255,7 @@ int main(const int argumentCount, char** arguments)
             unsupportedDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
             unsupportedDescription.Usage = D3D11_USAGE_DEFAULT;
             unsupportedDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            // unsupportedTexture: 未対応のtexture。
             Microsoft::WRL::ComPtr<ID3D11Texture1D> unsupportedTexture;
             Require(
                 SUCCEEDED(foreignBackend.Device()->CreateTexture1D(
@@ -3900,6 +4271,7 @@ int main(const int argumentCount, char** arguments)
                     nullptr,
                     unsupportedView.ReleaseAndGetAddressOf())),
                 "The unsupported Texture1D SRV could not be created");
+            // unsupportedRejected: 未対応の拒否結果。
             bool unsupportedRejected{};
             try
             {
@@ -3915,14 +4287,12 @@ int main(const int argumentCount, char** arguments)
                 unsupportedRejected,
                 "An unsupported Texture1D SRV was imported");
 
-            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative
-            // viewとして解決・再取り込みすることはできません。
+            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative viewとして解決・再取り込みすることはできません。
             Microsoft::WRL::ComPtr<ID3D11Device> importedViewDevice =
                 foreignBackend.Device();
             foreignBackend.Initialize(foreignBackendCreateInfo);
 
-            // 同じBackend instanceを再初期化しても旧世代のcluster stateは
-            // native contextへ渡さず、明示的な再初期化後に回復します。
+            // 同じBackend instanceを再初期化しても旧世代のcluster stateはnative contextへ渡さず、明示的な再初期化後に回復します。
             auto staleClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -3947,6 +4317,7 @@ int main(const int argumentCount, char** arguments)
                 transactionalClusteredLights,
                 graphics.Assets(),
                 clusteredShaderPath);
+            // recoveredClusteredLighting: 復旧後 clusteredのlighting設定。
             auto recoveredClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -3955,6 +4326,7 @@ int main(const int argumentCount, char** arguments)
                 clusteredProjectionValues,
                 Width,
                 Height);
+            // recoveredClusteredViews: 復旧後 clusteredのview群。
             const std::array recoveredClusteredViews{
                 recoveredClusteredLighting.clustered.lights,
                 recoveredClusteredLighting.clustered.lightIndices,
@@ -3978,6 +4350,7 @@ int main(const int argumentCount, char** arguments)
                         != transactionalClusteredViews[2],
                 "ClusteredLights did not recover on the new backend "
                 "generation");
+            // staleHandleRejected: stale時のhandleの拒否結果。
             bool staleHandleRejected{};
             try
             {
@@ -3989,6 +4362,7 @@ int main(const int argumentCount, char** arguments)
             {
                 staleHandleRejected = true;
             }
+            // staleNativeViewRejected: stale・native時のviewの拒否結果。
             bool staleNativeViewRejected{};
             try
             {
@@ -4009,20 +4383,23 @@ int main(const int argumentCount, char** arguments)
 
             verifyShadowMapTransactionalState();
 
-            // ParticleSystemから分離した共通serviceがneutral handleだけで
-            // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
+            // ParticleSystemから分離した共通serviceがneutral handleだけでD3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
             Stage("particle-render-service");
+            // particleService: particle rendering service under test。
             auto particleService =
                 LamaPon::Detail::CreateD3D11GraphicsRenderServices(
                     foreignBackend.Device(),
                     foreignBackend.Context(),
                     foreignBackend);
+            // particleTexture: texture sampled by the particle shader。
             const auto particleTexture =
                 foreignBackend.CreateSolidRgba8Texture(
                     { 255u, 255u, 255u, 255u });
+            // particleTextureView: shader resource view for the particle texture。
             const auto particleTextureView =
                 foreignBackend.CreateShaderResourceView(
                     particleTexture);
+            // particleVertices: particle vertex数。
             constexpr std::array particleVertices{
                 LamaPon::ParticleRenderVertex{
                     { -0.5f, -0.5f, 0.0f },
@@ -4041,6 +4418,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 1.0f, 0.0f, 1.0f },
                     { 0.0f, 0.0f } }
             };
+            // particleRequest: particle draw request under test。
             LamaPon::ParticleDrawRequest particleRequest;
             particleRequest.vertices = particleVertices;
             DirectX::XMStoreFloat4x4(
@@ -4051,6 +4429,7 @@ int main(const int argumentCount, char** arguments)
                 DirectX::XMMatrixIdentity());
             particleRequest.fallbackTexture = particleTextureView;
             particleRequest.additive = false;
+            // customShaderAttempts: number of custom particle-shader attempts。
             std::uint32_t customShaderAttempts{};
             particleRequest.applyCustomPixelShader =
                 [&customShaderAttempts]
@@ -4058,6 +4437,7 @@ int main(const int argumentCount, char** arguments)
                 ++customShaderAttempts;
                 return false;
             };
+            // particleClear: clear color for particle rendering。
             constexpr float particleClear[]{
                 0.0f, 0.0f, 0.0f, 1.0f
             };
@@ -4066,12 +4446,16 @@ int main(const int argumentCount, char** arguments)
                 particleService->DrawParticles(particleRequest)
                     && customShaderAttempts == 1u,
                 "The neutral particle render service rejected a valid quad");
+            // particleWidth: particleの幅。
             std::uint32_t particleWidth{};
+            // particleHeight: particleの高さ。
             std::uint32_t particleHeight{};
+            // particlePixels: particle描画のback buffer pixel群。
             const auto particlePixels =
                 foreignBackend.CaptureBackBuffer(
                     particleWidth,
                     particleHeight);
+            // particleCenter: pixel sampled at the particle center。
             const auto particleCenter = At(
                 particlePixels,
                 Width / 2,
@@ -4085,13 +4469,17 @@ int main(const int argumentCount, char** arguments)
                         > particleCenter.blue + 120,
                 "The neutral particle render service did not rasterize its quad");
 
+            // restoredBlend: blend state captured before particle rendering。
             Microsoft::WRL::ComPtr<ID3D11BlendState> restoredBlend;
+            // restoredBlendFactor: blend factors captured before particle rendering。
             float restoredBlendFactor[4]{};
+            // restoredSampleMask: sample mask captured before particle rendering。
             UINT restoredSampleMask{};
             foreignBackend.Context()->OMGetBlendState(
                 restoredBlend.ReleaseAndGetAddressOf(),
                 restoredBlendFactor,
                 &restoredSampleMask);
+            // restoredBlendDescription: D3D11 API descriptor。
             D3D11_BLEND_DESC restoredBlendDescription{};
             restoredBlend->GetDesc(&restoredBlendDescription);
             Require(
@@ -4099,11 +4487,14 @@ int main(const int argumentCount, char** arguments)
                     && restoredSampleMask == 0xffffffffu,
                 "Particle rendering did not restore opaque blending");
 
+            // restoredDepth: depth-stencil state captured before particle rendering。
             Microsoft::WRL::ComPtr<ID3D11DepthStencilState> restoredDepth;
+            // restoredStencilReference: stencil reference captured before particle rendering。
             UINT restoredStencilReference{};
             foreignBackend.Context()->OMGetDepthStencilState(
                 restoredDepth.ReleaseAndGetAddressOf(),
                 &restoredStencilReference);
+            // restoredDepthDescription: D3D11 API descriptor。
             D3D11_DEPTH_STENCIL_DESC restoredDepthDescription{};
             restoredDepth->GetDesc(&restoredDepthDescription);
             Require(
@@ -4113,9 +4504,11 @@ int main(const int argumentCount, char** arguments)
                     && restoredStencilReference == 0u,
                 "Particle rendering did not restore writable depth testing");
 
+            // restoredRasterizer: rasterizer state captured before particle rendering。
             Microsoft::WRL::ComPtr<ID3D11RasterizerState> restoredRasterizer;
             foreignBackend.Context()->RSGetState(
                 restoredRasterizer.ReleaseAndGetAddressOf());
+            // restoredRasterizerDescription: D3D11 API descriptor。
             D3D11_RASTERIZER_DESC restoredRasterizerDescription{};
             restoredRasterizer->GetDesc(
                 &restoredRasterizerDescription);
@@ -4125,8 +4518,8 @@ int main(const int argumentCount, char** arguments)
                     && !restoredRasterizerDescription.FrontCounterClockwise,
                 "Particle rendering did not restore counter-clockwise culling");
 
-            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を
-            // 外します。callback自身はこのテストでは既定PSを維持します。
+            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を外します。
+            // callback自身はこのテストでは既定PSを維持します。
             particleRequest.texture = particleTextureView;
             particleRequest.auxiliaryTexture = particleTextureView;
             particleRequest.additive = true;
@@ -4154,6 +4547,7 @@ int main(const int argumentCount, char** arguments)
                 releasedParticleView0 == nullptr
                     && releasedParticleView1 == nullptr,
                 "Particle custom-shader resources remained bound");
+            // staleGenerationView: stale generation resource view。
             const auto staleGenerationView =
                 particleTextureView;
             Require(
@@ -4190,11 +4584,10 @@ int main(const int argumentCount, char** arguments)
         retainedBackendLifetimeTarget.reset();
         DestroyWindow(foreignWindow);
 
-        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、
-        // 初回の中立Drawでraw viewをBackend handleへ同期します。外部
-        // materialのempty albedo/normalは内蔵を継承し、empty PBRはclear
-        // されるmerge規則まで実際のDraw後のslotで固定します。
+        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、初回の中立Drawでraw viewをBackend handleへ同期します。
+        // 外部materialのempty albedo/normalは内蔵を継承し、empty PBRはclearされるmerge規則まで実際のDraw後のslotで固定します。
         Stage("skeletal-direct-import-compatibility");
+        // directSkeletal: 直接 skeletal。
         const auto directSkeletal = LamaPon::GltfImporter::Load(
             D3D11Access::Device(graphics),
             D3D11Access::Context(graphics),
@@ -4209,6 +4602,7 @@ int main(const int argumentCount, char** arguments)
                 && !directSkeletal->primitives.front()
                     .embeddedTextures.albedo,
             "The direct skeletal importer did not expose the legacy-only fixture");
+        // directPrimitive: 直接 Primitive。
         auto& directPrimitive = directSkeletal->primitives.front();
         directPrimitive.normalTexture =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[1]);
@@ -4220,6 +4614,7 @@ int main(const int argumentCount, char** arguments)
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[4]);
         directPrimitive.emissiveTexture =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[5]);
+        // drawDirectSkeletal: 描画 直接 skeletal。
         const auto drawDirectSkeletal =
             [&](const LamaPon::LitMaterial* const material,
                 const LamaPon::LitTextureRequest* const textureRequest)
@@ -4261,6 +4656,7 @@ int main(const int argumentCount, char** arguments)
                 &directPrimitive.embeddedTextures.occlusion,
                 &directPrimitive.embeddedTextures.emissive
             };
+        // 配列内の要素位置
         for (std::size_t index{};
             index < directNativeViews.size();
             ++index)
@@ -4287,7 +4683,9 @@ int main(const int argumentCount, char** arguments)
                     == litWhite.Get(),
             "Resetting a legacy skeletal texture did not clear its neutral cache");
 
+        // skeletalOverrideMaterial: test input or measurement used by the surrounding rendering check。
         LamaPon::LitMaterial skeletalOverrideMaterial;
+        // skeletalOverrideTextures: skeletal Overrideのtexture群。
         LamaPon::LitTextureRequest skeletalOverrideTextures;
         skeletalOverrideTextures.customTextures.front() = litViews[6];
         drawDirectSkeletal(
@@ -4299,6 +4697,7 @@ int main(const int argumentCount, char** arguments)
                 && CapturePixelShaderView(graphics, 1u).Get()
                     == directNativeViews[1],
             "Empty skeletal albedo/normal overrides did not inherit embedded textures");
+        // 検査対象のresource slot
         for (const auto slot : { 11u, 12u, 13u, 14u })
         {
             Require(
@@ -4319,10 +4718,11 @@ int main(const int argumentCount, char** arguments)
                 && graphics.MemoryStats().systemPhysicalTotalBytes > 0,
             "runtime RAM statistics must be available");
 
-        // 共通DebugRendererが生成した線分を、実効D3D11 Backendの
-        // sinkがバックバッファへ送れることをWARPの実画素で確認します。
+        // 共通DebugRendererが生成した線分を、実効D3D11 Backendのsinkがバックバッファへ送れることをWARPの実画素で確認します。
         Stage("debug-drawing-backend");
+        // debugClear: debug clear-color values。
         constexpr float debugClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        // debugLine: debug 線。
         constexpr std::array debugLine{
             DirectX::XMFLOAT3{ -0.75f, 0.0f, 0.0f },
             DirectX::XMFLOAT3{ 0.75f, 0.0f, 0.0f }
@@ -4330,12 +4730,15 @@ int main(const int argumentCount, char** arguments)
         Require(
             graphics.Gpu().IsSupported(),
             "The D3D11 backend must attach its GPU profiler driver");
+        // drawProfiledDebugLine: 描画 計測対象 debug 線。
         const auto drawProfiledDebugLine = [&]
         {
+            // outerSection: 外側 section。
             LamaPon::GpuProfiler::SectionScope outerSection{
                 graphics.Gpu(),
                 "D3D11 profiler outer"
             };
+            // innerSection: 内側 section。
             LamaPon::GpuProfiler::SectionScope innerSection{
                 graphics.Gpu(),
                 "D3D11 profiler inner"
@@ -4348,13 +4751,18 @@ int main(const int argumentCount, char** arguments)
         };
         graphics.BeginFrame(debugClear);
         drawProfiledDebugLine();
+        // debugWidth: debugの幅。
         std::uint32_t debugWidth{};
+        // debugHeight: debugの高さ。
         std::uint32_t debugHeight{};
+        // debugPixels: debug line描画のback buffer pixel群。
         const auto debugPixels = graphics.CaptureBackBuffer(
             debugWidth,
             debugHeight);
         graphics.EndFrame();
+        // redLinePixels: 赤いdebug lineのpixel数。
         std::size_t redLinePixels{};
+        // 画素buffer内のbyte位置
         for (std::size_t offset = 0;
             offset + 2u < debugPixels.size();
             offset += 4u)
@@ -4372,18 +4780,22 @@ int main(const int argumentCount, char** arguments)
                 && redLinePixels > Width / 4u,
             "Debug drawing backend must rasterize the submitted line");
 
-        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、
-        // そのEndFrameでring bufferからquery結果を決定的に回収できます。
+        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、そのEndFrameでring bufferからquery結果を決定的に回収できます。
         graphics.BeginFrame(debugClear);
         drawProfiledDebugLine();
+        // profilerProbeWidth: profiler probeの幅。
         std::uint32_t profilerProbeWidth{};
+        // profilerProbeHeight: profiler probeの高さ。
         std::uint32_t profilerProbeHeight{};
         static_cast<void>(graphics.CaptureBackBuffer(
             profilerProbeWidth,
             profilerProbeHeight));
         graphics.EndFrame();
+        // foundOuterSection: 検出 外側 section。
         bool foundOuterSection{};
+        // foundInnerSection: 検出 内側 section。
         bool foundInnerSection{};
+        // GPU計測の対象区間
         for (const auto& section : graphics.Gpu().LatestSections())
         {
             Require(
@@ -4437,27 +4849,30 @@ int main(const int argumentCount, char** arguments)
                 && !graphics.Lighting().pointShadow.enabled
                 && !graphics.Lighting().pointShadow.texture,
             "Shadow recreation retained old neutral handles or lighting state");
-        // このテストは1段につき1フレームしか描かないので、非同期
-        // コンパイルを入れたままだと「まだ焼けていないので標準Lit」
-        // の絵を撮ってしまいます。オフラインの決め打ち描画では
-        // 同期にします。
+        // このテストは1段につき1フレームしか描かないので、非同期コンパイルを入れたままだと「まだ焼けていないので標準Lit」の絵を撮ってしまいます。
+        // オフラインの決め打ち描画では同期にします。
         // 非同期そのものは下の専用の段で確かめます。
         graphics.SetAsyncShaderCompilationEnabled(false);
 
         Stage("scene-build");
+        // scene: Scene instance used by the rendering regression。
         LamaPon::Scene scene(graphics);
+        // cameraObject: scene object carrying the test camera。
         auto& cameraObject =
             scene.CreateGameObject("MainCamera");
         cameraObject.GetTransform().position =
             { 0.0f, 0.0f, 8.0f };
+        // camera: camera component used for the frame capture。
         auto& camera = cameraObject.AddComponent<
             LamaPon::CameraComponent>();
         scene.SetMainCamera(camera);
 
+        // subject: scene object whose rendering is measured。
         auto& subject =
             scene.CreateGameObject("Subject");
         subject.GetTransform().scale =
             { 2.0f, 2.0f, 2.0f };
+        // subjectRenderer: renderer component attached to the subject。
         auto& subjectRenderer = subject.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
@@ -4468,9 +4883,11 @@ int main(const int argumentCount, char** arguments)
             1.0f,
             1.0f);
 
+        // sunObject: scene object carrying the test sun。
         auto& sunObject =
             scene.CreateGameObject("Sun");
         sunObject.GetTransform().SetEulerAngles({ -0.7f, 0.3f, 0.0f });
+        // sun: directional-light component used by the test。
         auto& sun = sunObject.AddComponent<
             LamaPon::DirectionalLightComponent>();
         sun.SetColor({ 1.0f, 1.0f, 1.0f });
@@ -4480,20 +4897,26 @@ int main(const int argumentCount, char** arguments)
         scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
         scene.SetAmbientLightIntensity(0.35f);
 
+        // clearColor: frame初期化用color。
         constexpr float clearColor[4]{
             0.05f, 0.10f, 0.30f, 1.0f };
+        // background: expected background pixel color。
         const Pixel background{
             static_cast<std::uint8_t>(0.05f * 255.0f),
             static_cast<std::uint8_t>(0.10f * 255.0f),
             static_cast<std::uint8_t>(0.30f * 255.0f) };
 
+        // renderFrame: sceneの描画処理。
         const auto renderFrame =
             [&graphics, &scene, &clearColor]
         {
             graphics.BeginFrame(clearColor);
             scene.Render();
+            // width: 幅。
             std::uint32_t width{};
+            // height: 高さ。
             std::uint32_t height{};
+            // pixels: pixel群。
             auto pixels = graphics.CaptureBackBuffer(
                 width,
                 height);
@@ -4504,11 +4927,13 @@ int main(const int argumentCount, char** arguments)
             return pixels;
         };
 
-        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有service
-        // へ渡します。Scene統合経路でも中央に緑のparticleが描けること。
+        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有serviceへ渡します。
+        // Scene統合経路でも中央に緑のparticleが描けること。
         subject.SetEnabled(false);
+        // particleObject: scene object carrying the particle system。
         auto& particleObject =
             scene.CreateGameObject("ParticleServiceProbe");
+        // particleSystem: particle component under test。
         auto& particleSystem = particleObject.AddComponent<
             LamaPon::ParticleSystemComponent>(
                 1,
@@ -4526,7 +4951,9 @@ int main(const int argumentCount, char** arguments)
             10.0f,
             2.0f);
         Stage("frame-particle-render-service");
+        // particleFrame: particleの描画結果。
         const auto particleFrame = renderFrame();
+        // sceneParticleCenter: captured pixel at the particle center。
         const auto sceneParticleCenter = At(
             particleFrame,
             Width / 2,
@@ -4544,6 +4971,7 @@ int main(const int argumentCount, char** arguments)
 
         // (1) クリアカラーと環境光のみの被写体
         Stage("frame-ambient");
+        // ambientFrame: ambientの描画結果。
         const auto ambientFrame = renderFrame();
         DumpFrame("ambient", ambientFrame);
         Require(
@@ -4554,6 +4982,7 @@ int main(const int argumentCount, char** arguments)
                 background.blue,
                 14),
             "Corner pixel must match the clear color.");
+        // centerPixel: captured pixel at the region center。
         const auto centerPixel = At(
             ambientFrame,
             Width / 2,
@@ -4569,14 +4998,17 @@ int main(const int argumentCount, char** arguments)
         // (2) 平行光源を有効化すると被写体が明るくなる
         sunObject.SetEnabled(true);
         Stage("frame-lit");
+        // litFrame: litの描画結果。
         const auto litFrame = renderFrame();
         DumpFrame("lit", litFrame);
+        // litBrightness: litの明るさ。
         const auto litBrightness = RegionBrightness(
             litFrame,
             Width / 2 - 8,
             Width / 2 + 8,
             Height / 2 - 8,
             Height / 2 + 8);
+        // ambientBrightness: ambientの明るさ。
         const auto ambientBrightness = RegionBrightness(
             ambientFrame,
             Width / 2 - 8,
@@ -4594,11 +5026,13 @@ int main(const int argumentCount, char** arguments)
             { -2.5f, 0.0f, 0.0f };
         subject.GetTransform().scale =
             { 1.5f, 1.5f, 1.5f };
+        // clone: duplicate scene object used by the instancing test。
         auto& clone = scene.CreateGameObject("SubjectClone");
         clone.GetTransform().position =
             { 2.5f, 0.0f, 0.0f };
         clone.GetTransform().scale =
             { 1.5f, 1.5f, 1.5f };
+        // cloneRenderer: renderer component attached to the duplicate。
         auto& cloneRenderer = clone.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
@@ -4609,6 +5043,7 @@ int main(const int argumentCount, char** arguments)
             1.0f,
             1.0f);
         Stage("frame-instanced");
+        // instancedFrame: instancedの描画結果。
         const auto instancedFrame = renderFrame();
         Require(
             RegionHasForeground(
@@ -4643,10 +5078,10 @@ int main(const int argumentCount, char** arguments)
                     .meshInstancedRendererCount == 2u,
             "Matching Mesh materials must share one instance batch.");
 
-        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの
-        // 非instance値が違う2体は個別描画へ戻さなければなりません。
+        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの非instance値が違う2体は個別描画へ戻さなければなりません。
         cloneRenderer.SetOcclusionStrength(0.25f);
         Stage("frame-instance-material-split");
+        // splitMaterialFrame: split materialの描画結果。
         const auto splitMaterialFrame = renderFrame();
         Require(
             scene.VisibilityStats().meshInstanceBatchCount == 0u
@@ -4671,8 +5106,8 @@ int main(const int argumentCount, char** arguments)
             "Splitting a material batch must keep both Meshes visible.");
         cloneRenderer.SetOcclusionStrength(1.0f);
 
-        // leaderが共有する値はbatch keyへすべて含めます。含め忘れると
-        // 片方のcustom vector/textureがもう片方にも使われます。
+        // leaderが共有する値はbatch keyへすべて含めます。
+        // 含め忘れると片方のcustom vector/textureがもう片方にも使われます。
         Require(
             subjectRenderer.InstanceBatchKey()
                     == cloneRenderer.InstanceBatchKey(),
@@ -4715,11 +5150,11 @@ int main(const int argumentCount, char** arguments)
                     .meshInstancedRendererCount == 2,
             "Restored mesh materials must rejoin one instance batch.");
 
-        // インスタンシングはGameObject::Render3Dを迂回するため、
-        // 無効オブジェクトをバッチへ混ぜると通常経路と違って描画
-        // されてしまいます。無効化した右側だけが消えることを固定します。
+        // インスタンシングはGameObject::Render3Dを迂回するため、無効オブジェクトをバッチへ混ぜると通常経路と違って描画されてしまいます。
+        // 無効化した右側だけが消えることを固定します。
         clone.SetEnabled(false);
         Stage("frame-instanced-disabled-object");
+        // disabledInstanceFrame: 無効時 instanceの描画結果。
         const auto disabledInstanceFrame = renderFrame();
         Require(
             RegionHasForeground(
@@ -4759,20 +5194,24 @@ int main(const int argumentCount, char** arguments)
         sunObject.GetTransform().SetEulerAngles({ -1.1f, 0.25f, 0.0f });
 
         Stage("frame-shadowed");
+        // shadowedFrame: shadowありの描画結果。
         const auto shadowedFrame = renderFrame();
         settings.shadowsEnabled = false;
         graphics.SetGraphicsSettings(settings);
         Stage("frame-unshadowed");
+        // unshadowedFrame: shadowなしの描画結果。
         const auto unshadowedFrame = renderFrame();
         settings.shadowsEnabled = true;
         graphics.SetGraphicsSettings(settings);
 
+        // shadowedFloor: shadowあり 床。
         const auto shadowedFloor = RegionBrightness(
             shadowedFrame,
             0,
             Width,
             Height / 2 + 10,
             Height);
+        // unshadowedFloor: shadowなし 床。
         const auto unshadowedFloor = RegionBrightness(
             unshadowedFrame,
             0,
@@ -4791,6 +5230,7 @@ int main(const int argumentCount, char** arguments)
         sky.horizonColor = { 0.75f, 0.45f, 0.15f };
         scene.SetSkySettings(sky);
         Stage("frame-sky");
+        // skyFrame: skyの描画結果。
         const auto skyFrame = renderFrame();
         DumpFrame("sky", skyFrame);
         Require(
@@ -4803,11 +5243,12 @@ int main(const int argumentCount, char** arguments)
             "Sky gradient must replace the clear color.");
 
         // (6) Light2D：組み込みシェーダー（LamaPonSpriteLit.hlsl）が
-        // 実際にコンパイルでき、加算式ライティングとして機能することを
-        // 確認します。暗めのグレーを土台にすることで、白飽和で
-        // チャンネル差が消えないようにしています。
+        // 実際にコンパイルでき、加算式ライティングとして機能することを確認します。
+        // 暗めのグレーを土台にすることで、白飽和でチャンネル差が消えないようにしています。
         constexpr std::uint32_t LitSpriteSampleX = 260;
+        // LitSpriteSampleY: lit sprite sample Y coordinate。
         constexpr std::uint32_t LitSpriteSampleY = 150;
+        // litSpriteObject: lit sprite scene object used by the test。
         auto& litSpriteObject =
             scene.CreateGameObject("LitSprite");
         litSpriteObject.GetTransform().position =
@@ -4819,8 +5260,10 @@ int main(const int argumentCount, char** arguments)
                     0.15f, 0.15f, 0.15f, 1.0f });
 
         Stage("frame-light2d-none");
+        // unlitFrame: 未照明の描画結果。
         const auto unlitFrame = renderFrame();
         DumpFrame("light2d-none", unlitFrame);
+        // unlitPixel: 未照明のpixel。
         const auto unlitPixel = At(
             unlitFrame,
             LitSpriteSampleX,
@@ -4832,10 +5275,12 @@ int main(const int argumentCount, char** arguments)
             "The dark sprite must render at its own color"
                 " before any Light2D exists.");
 
+        // lightObject: scene object carrying the 2D light。
         auto& lightObject =
             scene.CreateGameObject("TestLight2D");
         lightObject.GetTransform().position =
             { -5000.0f, -5000.0f, 0.0f };
+        // testLight2D: 2D light component under test。
         auto& testLight2D =
             lightObject.AddComponent<
                 LamaPon::Light2DComponent>();
@@ -4844,8 +5289,10 @@ int main(const int argumentCount, char** arguments)
         testLight2D.SetRadius(50.0f);
 
         Stage("frame-light2d-out-of-range");
+        // farFrame: 遠距離の描画結果。
         const auto farFrame = renderFrame();
         DumpFrame("light2d-far", farFrame);
+        // farPixel: 遠距離のpixel。
         const auto farPixel = At(
             farFrame,
             LitSpriteSampleX,
@@ -4875,8 +5322,10 @@ int main(const int argumentCount, char** arguments)
                 0.0f
             };
         Stage("frame-light2d-near");
+        // light2DNearFrame: light 2 D 近距離の描画結果。
         const auto light2DNearFrame = renderFrame();
         DumpFrame("light2d-near", light2DNearFrame);
+        // light2DNearPixel: light 2 D 近距離のpixel。
         const auto light2DNearPixel = At(
             light2DNearFrame,
             LitSpriteSampleX,
@@ -4895,14 +5344,16 @@ int main(const int argumentCount, char** arguments)
                 " affecting its red channel.");
 
         // (6)-2 Light2DがTilemap全体へ届くこと。広いTilemapでは、
-        // オブジェクトの原点ではなく画面上の画素ごとに灯りを評価する
-        // 必要があります。
+        // オブジェクトの原点ではなく画面上の画素ごとに灯りを評価する必要があります。
         constexpr std::uint32_t TilemapSampleX = 90;
+        // TilemapSampleY: tilemap sample Y coordinate。
         constexpr std::uint32_t TilemapSampleY = 90;
+        // tilemapObject: scene object carrying the tilemap。
         auto& tilemapObject =
             scene.CreateGameObject("LitTilemap");
         tilemapObject.GetTransform().position =
             { 60.0f, 60.0f, 0.0f };
+        // tilemap: tilemap component under test。
         auto& tilemap =
             tilemapObject.AddComponent<
                 LamaPon::TilemapComponent>(
@@ -4917,8 +5368,10 @@ int main(const int argumentCount, char** arguments)
         static_cast<void>(tilemap.SetCell(1, 1, 0));
 
         Stage("frame-tilemap-unlit");
+        // tilemapUnlitFrame: tilemap 未照明の描画結果。
         const auto tilemapUnlitFrame = renderFrame();
         DumpFrame("tilemap-unlit", tilemapUnlitFrame);
+        // tilemapUnlitPixel: 未照明 tilemapのpixel。
         const auto tilemapUnlitPixel = At(
             tilemapUnlitFrame,
             TilemapSampleX,
@@ -4930,6 +5383,7 @@ int main(const int argumentCount, char** arguments)
             "The dark tilemap must render at its own color"
                 " while every Light2D is out of range.");
 
+        // tilemapLightObject: scene object carrying the tilemap light。
         auto& tilemapLightObject =
             scene.CreateGameObject("TilemapLight2D");
         tilemapLightObject.GetTransform().position =
@@ -4938,6 +5392,7 @@ int main(const int argumentCount, char** arguments)
                 static_cast<float>(TilemapSampleY),
                 0.0f
             };
+        // tilemapLight: 2D light component affecting the tilemap。
         auto& tilemapLight =
             tilemapLightObject.AddComponent<
                 LamaPon::Light2DComponent>();
@@ -4946,8 +5401,10 @@ int main(const int argumentCount, char** arguments)
         tilemapLight.SetRadius(50.0f);
 
         Stage("frame-tilemap-lit");
+        // tilemapLitFrame: tilemap litの描画結果。
         const auto tilemapLitFrame = renderFrame();
         DumpFrame("tilemap-lit", tilemapLitFrame);
+        // tilemapLitPixel: tilemap lit sampled pixel color。
         const auto tilemapLitPixel = At(
             tilemapLitFrame,
             TilemapSampleX,
@@ -4963,8 +5420,8 @@ int main(const int argumentCount, char** arguments)
                 " tint a Tilemap, not only Sprite Renderers.");
 
         // (6)-3 UIは既定では照らさず、「UIも照らす」を入れたときだけ
-        // 照らすこと。特定の画素ではなく「変わった画素の数」で見ます
-        // （UIの矩形はアンカー解決で決まるため、特定座標には依存しません）。
+        // 照らすこと。
+        // 特定の画素ではなく「変わった画素の数」で見ます（UIの矩形はアンカー解決で決まるため、特定座標には依存しません）。
         auto& uiSpriteObject =
             scene.CreateGameObject("LitUISprite");
         uiSpriteObject.AddComponent<
@@ -4983,20 +5440,27 @@ int main(const int argumentCount, char** arguments)
                     0.15f, 0.15f, 0.15f, 1.0f });
 
         Stage("frame-ui-light-off");
+        // uiUnlitFrame: ui 未照明の描画結果。
         const auto uiUnlitFrame = renderFrame();
         DumpFrame("ui-light-off", uiUnlitFrame);
 
         tilemapLight.SetAffectsUI(true);
         Stage("frame-ui-light-on");
+        // uiLitFrame: ui litの描画結果。
         const auto uiLitFrame = renderFrame();
         DumpFrame("ui-light-on", uiLitFrame);
 
+        // changedPixels: changedのpixel群。
         int changedPixels{};
+        // 縦方向の走査座標
         for (std::uint32_t y = 0; y < Height; ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x = 0; x < Width; ++x)
             {
+                // before: 前。
                 const auto& before = At(uiUnlitFrame, x, y);
+                // after: 後。
                 const auto& after = At(uiLitFrame, x, y);
                 if (std::abs(
                         static_cast<int>(after.blue)
@@ -5010,8 +5474,7 @@ int main(const int argumentCount, char** arguments)
         std::cout
             << "ui light2d changed pixels: "
             << changedPixels << std::endl;
-        // 40x40画素のUIに対して、中心から減衰する光が十分な範囲へ
-        // 届いたことを確認するため400画素を下限にします。
+        // 40x40画素のUIに対して、中心から減衰する光が十分な範囲へ届いたことを確認するため400画素を下限にします。
         Require(
             changedPixels > 400,
             "Turning on a Light2D's AffectsUI must light the"
@@ -5026,18 +5489,21 @@ int main(const int argumentCount, char** arguments)
             scene.DestroyGameObject(tilemapObject));
 
         // (7) Sprite Mask：組み込みシェーダー（LamaPonSpriteMask.hlsl）が
-        // 実際にコンパイルでき、円マスクの内側／外側で正しくクリップ
-        // されることを確認します。マスク円の中心は必ず可視、円から
-        // 十分離れた（しかしスプライト矩形内の）点は必ず不可視という、
-        // 形状に依存しない判定にしています。
+        // 実際にコンパイルでき、円マスクの内側／外側で正しくクリップされることを確認します。
+        // マスク円の中心は必ず可視、円から十分離れた（しかしスプライト矩形内の）点は必ず不可視という、形状に依存しない判定にしています。
         constexpr std::uint32_t MaskInsideX = 70;
+        // MaskInsideY: mask inside Y coordinate。
         constexpr std::uint32_t MaskInsideY = 70;
+        // MaskOutsideX: mask outside X coordinate。
         constexpr std::uint32_t MaskOutsideX = 110;
+        // MaskOutsideY: mask outside Y coordinate。
         constexpr std::uint32_t MaskOutsideY = 30;
+        // maskedSpriteObject: scene object carrying the masked sprite。
         auto& maskedSpriteObject =
             scene.CreateGameObject("MaskedSprite");
         maskedSpriteObject.GetTransform().position =
             { 20.0f, 20.0f, 0.0f };
+        // maskedSprite: sprite renderer under the mask。
         auto& maskedSprite =
             maskedSpriteObject.AddComponent<
                 LamaPon::SpriteRendererComponent>(
@@ -5048,10 +5514,12 @@ int main(const int argumentCount, char** arguments)
             LamaPon::SpriteMaskInteraction::
                 VisibleInsideMask);
 
+        // maskObject: scene object carrying the sprite mask。
         auto& maskObject =
             scene.CreateGameObject("TestSpriteMask");
         maskObject.GetTransform().position =
             { 70.0f, 70.0f, 0.0f };
+        // spriteMask: sprite-mask component under test。
         auto& spriteMask =
             maskObject.AddComponent<
                 LamaPon::SpriteMaskComponent>();
@@ -5060,8 +5528,10 @@ int main(const int argumentCount, char** arguments)
         spriteMask.SetSize({ 60.0f, 60.0f });
 
         Stage("frame-sprite-mask-inside");
+        // maskFrame: maskの描画結果。
         const auto maskFrame = renderFrame();
         DumpFrame("sprite-mask", maskFrame);
+        // insidePixel: pixel expected inside the mask。
         const auto insidePixel = At(
             maskFrame, MaskInsideX, MaskInsideY);
         Require(
@@ -5070,6 +5540,7 @@ int main(const int argumentCount, char** arguments)
                 && insidePixel.blue < 60,
             "The mask center must show the sprite's own"
                 " dark color (VisibleInsideMask).");
+        // outsidePixel: pixel expected outside the mask。
         const auto outsidePixel = At(
             maskFrame, MaskOutsideX, MaskOutsideY);
         Require(
@@ -5092,33 +5563,38 @@ int main(const int argumentCount, char** arguments)
                 " sprite's own color (VisibleInsideMask"
                 " should clip it away).");
 
-        // 2Dの壊れたShader。3Dと同じくマゼンタで知らせます。
-        // マスクを外した素の矩形で見ます（マスクが効いたままだと
-        // 「クリップされた」のか「色が出ていない」のか分かりません）。
+        // 2Dの壊れたShader。
+        // 3Dと同じくマゼンタで知らせます。
+        // マスクを外した素の矩形で見ます（マスクが効いたままだと「クリップされた」のか「色が出ていない」のか分かりません）。
         {
             maskedSprite.SetMaskInteraction(
                 LamaPon::SpriteMaskInteraction::None);
+            // sampleSprite: sprite renderer sampled by the mask test。
             const auto sampleSprite =
                 [&](const char* name) -> Pixel
             {
                 Stage(name);
+                // frame: captured pixel buffer for one rendered frame。
                 const auto frame = renderFrame();
                 DumpFrame(name, frame);
                 return At(frame, MaskInsideX, MaskInsideY);
             };
 
+            // plain: 通常。
             const auto plain =
                 sampleSprite("sprite-error-plain");
             maskedSprite.SetShaderPath(
                 std::filesystem::path{
                     LAMAPON_TEST_FIXTURE_DIR }
                 / "broken-shader.hlsl");
+            // broken: shader source that should fail compilation。
             const auto broken =
                 sampleSprite("sprite-error-broken");
             Require(
                 !maskedSprite.ShaderError().empty(),
                 "The neutral custom sprite pass did not publish its shader error.");
             maskedSprite.SetShaderPath({});
+            // repaired: shader source after repair。
             const auto repaired =
                 sampleSprite("sprite-error-repaired");
 
@@ -5160,10 +5636,13 @@ int main(const int argumentCount, char** arguments)
             LamaPon::SpriteMaskInteraction::
                 VisibleOutsideMask);
         Stage("frame-sprite-mask-outside");
+        // invertedFrame: invertedの描画結果。
         const auto invertedFrame = renderFrame();
         DumpFrame("sprite-mask-inverted", invertedFrame);
+        // invertedInsidePixel: inverted inside sampled pixel color。
         const auto invertedInsidePixel = At(
             invertedFrame, MaskInsideX, MaskInsideY);
+        // invertedOutsidePixel: inverted outside sampled pixel color。
         const auto invertedOutsidePixel = At(
             invertedFrame, MaskOutsideX, MaskOutsideY);
         Require(
@@ -5195,15 +5674,18 @@ int main(const int argumentCount, char** arguments)
                 " own color with VisibleOutsideMask.");
 
         // (8) レンダーテクスチャ：サブカメラの絵をSpriteで画面へ出す。
-        // 何も無い方向を向かせるので、テクスチャは背景色一色に
-        // なります。左上に貼ったSpriteがその色になれば成功です。
+        // 何も無い方向を向かせるので、テクスチャは背景色一色になります。
+        // 左上に貼ったSpriteがその色になれば成功です。
         constexpr std::uint32_t RenderTextureSize = 128;
+        // SpriteSize: spriteのサイズ。
         constexpr float SpriteSize = 64.0f;
+        // subCameraObject: scene object carrying the minimap camera。
         auto& subCameraObject =
             scene.CreateGameObject("MinimapCamera");
         subCameraObject.GetTransform().position =
             { 0.0f, 40.0f, 0.0f };
         subCameraObject.GetTransform().SetEulerAngles({ 1.5f, 0.0f, 0.0f });
+        // subCamera: camera component rendering the minimap。
         auto& subCamera =
             subCameraObject.AddComponent<
                 LamaPon::CameraComponent>();
@@ -5214,8 +5696,10 @@ int main(const int argumentCount, char** arguments)
         subCamera.SetTargetClearColor(
             { 0.0f, 0.85f, 0.15f, 1.0f });
 
+        // minimapSprite: sprite displaying the minimap texture。
         auto& minimapSprite =
             scene.CreateGameObject("MinimapSprite");
+        // minimapRenderer: renderer component for the minimap sprite。
         auto& minimapRenderer =
             minimapSprite.AddComponent<
                 LamaPon::SpriteRendererComponent>(
@@ -5225,8 +5709,10 @@ int main(const int argumentCount, char** arguments)
         minimapRenderer.SetRenderTexture("minimap");
 
         Stage("frame-render-texture");
+        // renderTextureFrame: textureの描画結果。
         const auto renderTextureFrame = renderFrame();
         DumpFrame("render-texture", renderTextureFrame);
+        // minimapTarget: minimapのrender target。
         const auto* minimapTarget =
             graphics.FindRenderTexture("minimap");
         Require(
@@ -5236,6 +5722,7 @@ int main(const int argumentCount, char** arguments)
                 && minimapTarget->Height()
                     == RenderTextureSize,
             "The render texture must use the requested resolution.");
+        // minimapViewHandle: engine handle for the minimap color view。
         const auto minimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         Require(
@@ -5245,6 +5732,7 @@ int main(const int argumentCount, char** arguments)
             minimapViewHandle.Kind()
                 == LamaPon::GraphicsViewKind::ShaderResource,
             "The render texture display handle must be a shader-resource view.");
+        // minimapRawView: native D3D11 view for the minimap color target。
         auto* const minimapRawView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 minimapTarget->DisplayViewHandle());
@@ -5253,6 +5741,7 @@ int main(const int argumentCount, char** arguments)
                 && minimapRawView != nullptr,
             "The named render texture must expose the target's neutral "
             "display view directly.");
+        // sameSizeMinimap: 同一 サイズ minimap。
         auto& sameSizeMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
@@ -5263,16 +5752,22 @@ int main(const int argumentCount, char** arguments)
                 && graphics.RenderTextureViewHandle("minimap")
                     == minimapViewHandle,
             "Reacquiring the same render texture size must preserve handle identity.");
+        // minimapCurrentViewHandle: minimap 現在 viewのhandle。
         const auto minimapCurrentViewHandle =
             sameSizeMinimap.CurrentColorViewHandle();
+        // minimapDepthViewHandle: engine handle for minimap depth。
         const auto minimapDepthViewHandle =
             sameSizeMinimap.DepthViewHandle();
+        // minimapAmbientOcclusionViewHandle: engine handle for minimap AO。
         const auto minimapAmbientOcclusionViewHandle =
             sameSizeMinimap.AmbientOcclusionViewHandle();
+        // minimapReflectionDepthViewHandle: engine handle for minimap reflection depth。
         const auto minimapReflectionDepthViewHandle =
             sameSizeMinimap.ReflectionDepthPyramidViewHandle();
+        // minimapMipCount: minimap mipの件数。
         const auto minimapMipCount =
             sameSizeMinimap.ReflectionDepthPyramidMipCount();
+        // oversizedResizeRejected: 上限超過時のResizeの拒否結果。
         bool oversizedResizeRejected = false;
         try
         {
@@ -5308,13 +5803,16 @@ int main(const int argumentCount, char** arguments)
                     == minimapViewHandle,
             "A failed named target resize must preserve the last complete "
             "backend state and every published view.");
+        // recoveredMinimap: 復旧後 minimap。
         auto& recoveredMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
                 RenderTextureSize,
                 RenderTextureSize);
+        // recoveredMinimapViewHandle: 復旧後 minimap viewのhandle。
         const auto recoveredMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
+        // recoveredMinimapRawView: 復旧後 minimap rawのview。
         auto* const recoveredMinimapRawView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 recoveredMinimap.DisplayViewHandle());
@@ -5330,16 +5828,10 @@ int main(const int argumentCount, char** arguments)
                     == minimapCurrentViewHandle,
             "A same-size acquire after a failed resize must keep the last "
             "complete backend state.");
-        // レンダーテクスチャにもスカイとシーンのカラーグレーディング
-        // （トーンマップ・ビネット）がかかるため、サブカメラの
-        // クリア色がそのままピクセルへ出てくるわけではありません。
-        // 一方でこの直後のアサーションはメインビューにスカイが
-        // 出ていることを要求しており、同じフレームなのでスカイを
-        // 切って厳密な色にすることもできません。
-        // そこで「Spriteの位置に背景と明確に違う絵が出ていて、
-        // かつ緑優勢である（サブカメラの緑いクリア色／スカイ上部の
-        // 緑）」ことで、レンダーテクスチャが表示されていることを
-        // 確認します。後処理の係数に依存しません。
+        // レンダーテクスチャにもスカイとシーンのカラーグレーディング（トーンマップ・ビネット）がかかるため、サブカメラのクリア色がそのままピクセルへ出てくるわけではありません。
+        // 一方でこの直後のアサーションはメインビューにスカイが出ていることを要求しており、同じフレームなのでスカイを切って厳密な色にすることもできません。
+        // そこで「Spriteの位置に背景と明確に違う絵が出ていて、かつ緑優勢である（サブカメラの緑いクリア色／スカイ上部の緑）」ことで、レンダーテクスチャが表示されていることを確認します。
+        // 後処理の係数に依存しません。
         Require(
             RegionHasForeground(
                 renderTextureFrame,
@@ -5349,14 +5841,15 @@ int main(const int argumentCount, char** arguments)
                 static_cast<std::uint32_t>(SpriteSize) - 4,
                 background),
             "The sprite must display the render texture contents.");
+        // minimapPixel: captured pixel from the resized minimap。
         const auto minimapPixel =
             At(renderTextureFrame, 24, 24);
         Require(
             minimapPixel.green > minimapPixel.red
                 && minimapPixel.green > minimapPixel.blue,
             "The sprite must display the render texture contents.");
-        // 描画先の復元漏れがあると、メインカメラの絵がテクスチャ側へ
-        // 流れて画面が変わってしまいます。空の帯で確認します。
+        // 描画先の復元漏れがあると、メインカメラの絵がテクスチャ側へ流れて画面が変わってしまいます。
+        // 空の帯で確認します。
         Require(
             !NearColor(
                 At(
@@ -5371,14 +5864,17 @@ int main(const int argumentCount, char** arguments)
         Require(
             graphics.RenderTextureNames().size() == 1,
             "Only the requested render texture should exist.");
+        // ResizedRenderTextureSize: resize後 描画 textureのサイズ。
         constexpr std::uint32_t ResizedRenderTextureSize =
             RenderTextureSize / 2;
         graphics.ResizeOffscreenTarget(
             sameSizeMinimap,
             ResizedRenderTextureSize,
             ResizedRenderTextureSize);
+        // resizedMinimapViewHandle: resize後 minimap viewのhandle。
         const auto resizedMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
+        // resizedMinimapRawView: resize後 minimap rawのview。
         auto* const resizedMinimapRawView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 sameSizeMinimap.DisplayViewHandle());
@@ -5414,11 +5910,50 @@ int main(const int argumentCount, char** arguments)
                     == resizedMinimapRawView,
             "A retained display handle must remain safe after registry release.");
 
+        // 登録解除したminimapがゲーム描画で再生成され、Spriteに表示されることを検証します。
+        Stage("frame-render-texture-game-frame");
+        graphics.BeginFrame(clearColor);
+        scene.RenderGameFrame(clearColor);
+        // ゲーム画像の幅
+        std::uint32_t gameFrameWidth{};
+        // ゲーム画像の高さ
+        std::uint32_t gameFrameHeight{};
+        // ゲーム描画のRGBA画像
+        const auto gameFrame = graphics.CaptureBackBuffer(
+            gameFrameWidth,
+            gameFrameHeight);
+        graphics.EndFrame();
+        DumpFrame("render-texture-game-frame", gameFrame);
+        // 再生成された描画先
+        const auto* const gameFrameMinimap =
+            graphics.FindRenderTexture("minimap");
+        Require(
+            gameFrameWidth == Width
+                && gameFrameHeight == Height
+                && gameFrameMinimap != nullptr
+                && gameFrameMinimap->IsValid(),
+            "The game frame path must render cameras that target a "
+            "render texture.");
+        // Sprite上の確認画素
+        const auto gameFrameMinimapPixel = At(gameFrame, 24, 24);
+        Require(
+            gameFrameMinimapPixel.green > gameFrameMinimapPixel.red
+                && gameFrameMinimapPixel.green
+                    > gameFrameMinimapPixel.blue,
+            "The game frame path must display the render texture "
+            "contents in the 2D pass.");
+        // 次の検証に備え、minimapを登録解除します。
+        Require(
+            graphics.ReleaseRenderTexture("minimap"),
+            "The game frame render texture must be releasable.");
+
+        // computeDisplayTarget: compute 表示のrender target。
         auto& computeDisplayTarget =
             graphics.AcquireComputeTexture(
                 "neutral-compute-display",
                 16u,
                 16u);
+        // computeDisplayHandle: compute 表示のhandle。
         const auto computeDisplayHandle =
             graphics.RenderTextureViewHandle(
                 "neutral-compute-display");
@@ -5434,10 +5969,13 @@ int main(const int argumentCount, char** arguments)
                     computeDisplayHandle) != nullptr,
             "A compute output must expose its display surface through the "
             "neutral handle registry.");
+        // computeCurrentHandle: compute 現在のhandle。
         const auto computeCurrentHandle =
             computeDisplayTarget.CurrentColorViewHandle();
+        // computeDisplayUav: compute 表示のUAV。
         auto* const computeDisplayUav =
             legacyRenderTargetDisplayUav(&computeDisplayTarget);
+        // oversizedComputeResizeRejected: 上限超過時のcompute Resizeの拒否結果。
         bool oversizedComputeResizeRejected{};
         try
         {
@@ -5470,17 +6008,13 @@ int main(const int argumentCount, char** arguments)
                     "neutral-compute-display"),
             "Releasing a compute output must remove its neutral view.");
 
-        // GIの保存→読み込み検証をテストの最後で行うための受け渡し
-        // （ベイクする節と検証する節が離れているため、両方から
-        // 見えるこの階層で宣言します）。
+        // GIの保存→読み込み検証をテストの最後で行うための受け渡し（ベイクする節と検証する節が離れているため、両方から見えるこの階層で宣言します）。
         std::string giRoundTripJson;
+        // giRoundTripExpectedNear: GI Round Trip 期待 近距離。
         long long giRoundTripExpectedNear = 0;
 
-        // 上のrenderFrameはBeginFrame→Scene::Render→Captureで、
-        // ポスト処理（SSAO・光の筋・Bloom・トーンマップ）を通りません。
-        // それらはApplicationがBeginSceneComposition〜
-        // EndSceneCompositionの間で行うため、ここでは実ゲームと
-        // 同じ順序を再現します。
+        // 上のrenderFrameはBeginFrame→Scene::Render→Captureで、ポスト処理（SSAO・光の筋・Bloom・トーンマップ）を通りません。
+        // それらはApplicationがBeginSceneComposition〜EndSceneCompositionの間で行うため、ここでは実ゲームと同じ順序を再現します。
         const auto renderComposedFrame =
             [&graphics, &scene, &clearColor]
             {
@@ -5493,8 +6027,11 @@ int main(const int argumentCount, char** arguments)
                 // 実行時と同じフレームデータを渡し、ポスト処理の経路を再現します。
                 graphics.EndSceneComposition(
                     scene.PostProcessFrameData());
+                // width: 幅。
                 std::uint32_t width{};
+                // height: 高さ。
                 std::uint32_t height{};
+                // pixels: pixel群。
                 auto pixels = graphics.CaptureBackBuffer(
                     width,
                     height);
@@ -5502,7 +6039,9 @@ int main(const int argumentCount, char** arguments)
                 return pixels;
             };
 
+        // composedBaseFrame: composed Baseの描画結果。
         const auto composedBaseFrame = renderComposedFrame();
+        // outlineSettings: outlineの設定。
         auto outlineSettings = scene.ScreenOutline();
         outlineSettings.enabled = true;
         outlineSettings.color = { 0.0f, 0.0f, 0.0f };
@@ -5512,15 +6051,22 @@ int main(const int argumentCount, char** arguments)
         outlineSettings.normalThreshold = 0.25f;
         scene.SetScreenOutlineSettings(outlineSettings);
         Stage("frame-outline");
+        // outlineFrame: outlineの描画結果。
         const auto outlineFrame = renderComposedFrame();
         DumpFrame("outline", outlineFrame);
+        // outlineChangedPixels: outline Changedのpixel群。
         std::size_t outlineChangedPixels{};
+        // 縦方向の走査座標
         for (std::uint32_t y = 1; y + 1 < Height; ++y)
         {
+            // 横方向の走査座標
             for (std::uint32_t x = 1; x + 1 < Width; ++x)
             {
+                // before: 前。
                 const auto before = At(composedBaseFrame, x, y);
+                // after: 後。
                 const auto after = At(outlineFrame, x, y);
+                // difference: RGB各成分の絶対差合計。
                 const int difference =
                     std::abs(
                         static_cast<int>(before.red)
@@ -5547,27 +6093,27 @@ int main(const int argumentCount, char** arguments)
         scene.SetScreenOutlineSettings({});
 
         // (9) ボリュメトリックライト（光の筋）。
-        //
-        // 太陽をカメラの正面奥へ置き、間に「中央だけ隙間のある壁」を
-        // 立てます。隙間からは空が見え、レイは最後まで光の中を通ります。
-        //
+        // 太陽をカメラの正面奥へ置き、間に「中央だけ隙間のある壁」を立てます。
+        // 隙間からは空が見え、レイは最後まで光の中を通ります。
         // 影の判定が効いているかは、壁の上の2箇所を比べて確かめます。
-        // どちらも同じ壁なので距離減衰は等しく、影へ入るまでの
-        // レイ区間だけが異なります。隙間側は明るい区間が長く、
-        // 画面端側は早く影へ入ります。
-        // 前方散乱を0（全方向へ均一）にすると位相関数の角度差も消える
-        // ので、この2箇所に差が出る理由は影の判定しか残りません。
-        // ただの霧を足しているだけの実装なら、2箇所は同じだけ明るく
-        // なってしまいます。
+        // どちらも同じ壁なので距離減衰は等しく、影へ入るまでのレイ区間だけが異なります。
+        // 隙間側は明るい区間が長く、画面端側は早く影へ入ります。
+        // 前方散乱を0（全方向へ均一）にすると位相関数の角度差も消えるので、この2箇所に差が出る理由は影の判定しか残りません。
+        // ただの霧を足しているだけの実装なら、2箇所は同じだけ明るくなってしまいます。
         {
+            // savedSunRotation: 退避済み sunのrotation。
             const auto savedSunRotation =
                 sunObject.GetTransform().EulerAngles();
+            // savedCameraPosition: 退避済み cameraのposition。
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
+            // savedCameraRotation: 退避済み cameraのrotation。
             const auto savedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
+            // savedSubjectPosition: 退避済み Subjectのposition。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
+            // savedClonePosition: 退避済み Cloneのposition。
             const auto savedClonePosition =
                 clone.GetTransform().position;
 
@@ -5575,8 +6121,7 @@ int main(const int argumentCount, char** arguments)
             // yaw=πで奥（-Z）から手前（+Z）へ、pitchで少し下向き。
             sunObject.GetTransform().SetEulerAngles(
                 { -0.5236f, 3.14159265f, 0.0f });
-            // キューブは視界の外へ退かせ、壁と空気だけを見ます
-            // （壁の前に立っていると測る帯の奥行きが変わります）。
+            // キューブは視界の外へ退かせ、壁と空気だけを見ます（壁の前に立っていると測る帯の奥行きが変わります）。
             subject.GetTransform().position =
                 { 0.0f, 60.0f, 0.0f };
             clone.GetTransform().position =
@@ -5586,10 +6131,12 @@ int main(const int argumentCount, char** arguments)
             cameraObject.GetTransform().SetEulerAngles(
                 { 0.0f, 0.0f, 0.0f });
 
+            // createBlocker: creates a wall object at the requested position。
             const auto createBlocker =
                 [&scene](const float centerX)
                 -> LamaPon::GameObject&
                 {
+                    // wall: 壁。
                     auto& wall = scene.CreateGameObject(
                         "VolumetricBlocker");
                     wall.GetTransform().position =
@@ -5607,23 +6154,32 @@ int main(const int argumentCount, char** arguments)
                         1.0f);
                     return wall;
                 };
+            // leftWall: 左側 壁。
             auto& leftWall = createBlocker(-6.0f);
+            // rightWall: 右側 壁。
             auto& rightWall = createBlocker(6.0f);
 
-            // 縦画角45度・カメラz=8・壁z=-4なので、画面に映る半幅は
-            // 約8.8。壁の内側の縁（x=±2）は320px幅のx=124とx=196
-            // あたりに来ます。床の地平線はy=121付近なので、帯は
-            // y=60〜120に取れば壁だけを見ます。
+            // 縦画角45度・カメラz=8・壁z=-4なので、画面に映る半幅は約8.8。
+            // 壁の内側の縁（x=±2）は320px幅のx=124とx=196あたりに来ます。
+            // 床の地平線はy=121付近なので、帯はy=60〜120に取れば壁だけを見ます。
             constexpr std::uint32_t gapMinimumX = 135;
+            // gapMaximumX: gap maximum X coordinate。
             constexpr std::uint32_t gapMaximumX = 185;
-            // 右の壁の2箇所（隙間寄りと画面端寄り）。奥行きは同じ。
+            // 右の壁の2箇所（隙間寄りと画面端寄り）。
+            // 奥行きは同じ。
             constexpr std::uint32_t wallNearMinimumX = 205;
+            // wallNearMaximumX: 壁 近距離 Maximum X。
             constexpr std::uint32_t wallNearMaximumX = 240;
+            // wallFarMinimumX: 壁 遠距離 Minimum X。
             constexpr std::uint32_t wallFarMinimumX = 280;
+            // wallFarMaximumX: 壁 遠距離 Maximum X。
             constexpr std::uint32_t wallFarMaximumX = 315;
+            // bandMinimumY: band minimum Y coordinate。
             constexpr std::uint32_t bandMinimumY = 60;
+            // bandMaximumY: band maximum Y coordinate。
             constexpr std::uint32_t bandMaximumY = 120;
 
+            // bandBrightness: bandの明るさ。
             const auto bandBrightness =
                 [&](const std::vector<std::uint8_t>& frame,
                     const std::uint32_t minimumX,
@@ -5637,10 +6193,12 @@ int main(const int argumentCount, char** arguments)
                         bandMaximumY);
                 };
 
+            // volumetric: test input or measurement used by the surrounding rendering check。
             auto volumetric = scene.VolumetricLight();
             volumetric.enabled = false;
             scene.SetVolumetricLightSettings(volumetric);
             Stage("frame-volumetric-off");
+            // volumetricOffFrame: volumetric 無効の描画結果。
             const auto volumetricOffFrame =
                 renderComposedFrame();
             DumpFrame(
@@ -5654,16 +6212,19 @@ int main(const int argumentCount, char** arguments)
             volumetric.scattering = 0.75f;
             scene.SetVolumetricLightSettings(volumetric);
             Stage("frame-volumetric-on");
+            // volumetricOnFrame: volumetric 有効の描画結果。
             const auto volumetricOnFrame =
                 renderComposedFrame();
             DumpFrame(
                 "volumetric-on",
                 volumetricOnFrame);
 
+            // gapBefore: gap 前。
             const auto gapBefore = bandBrightness(
                 volumetricOffFrame,
                 gapMinimumX,
                 gapMaximumX);
+            // gapAfter: gap 後。
             const auto gapAfter = bandBrightness(
                 volumetricOnFrame,
                 gapMinimumX,
@@ -5672,25 +6233,27 @@ int main(const int argumentCount, char** arguments)
                 << "volumetric gap: "
                 << gapBefore << " -> " << gapAfter
                 << std::endl;
-            // 隙間は明るくなること。効いていなければ差は完全に0です。
+            // 隙間は明るくなること。
+            // 効いていなければ差は完全に0です。
             Require(
                 gapAfter
                     > gapBefore + gapBefore / 100 + 1,
                 "Volumetric light must brighten the gap between the blockers.");
 
-            // 前方散乱を0にして、位相関数の角度差を消した状態で
-            // 壁の2箇所を比べます。強度は最大まで上げて、8bitの
-            // 読み出しで差が丸まらないようにします。
+            // 前方散乱を0にして、位相関数の角度差を消した状態で壁の2箇所を比べます。
+            // 強度は最大まで上げて、8bitの読み出しで差が丸まらないようにします。
             volumetric.scattering = 0.0f;
             volumetric.intensity = 4.0f;
             scene.SetVolumetricLightSettings(volumetric);
             Stage("frame-volumetric-isotropic");
+            // volumetricIsotropicFrame: volumetric isotropicの描画結果。
             const auto volumetricIsotropicFrame =
                 renderComposedFrame();
             DumpFrame(
                 "volumetric-isotropic",
                 volumetricIsotropicFrame);
 
+            // wallNearGain: 壁 近距離 Gain。
             const auto wallNearGain =
                 bandBrightness(
                     volumetricIsotropicFrame,
@@ -5700,6 +6263,7 @@ int main(const int argumentCount, char** arguments)
                     volumetricOffFrame,
                     wallNearMinimumX,
                     wallNearMaximumX);
+            // wallFarGain: 壁 遠距離 Gain。
             const auto wallFarGain =
                 bandBrightness(
                     volumetricIsotropicFrame,
@@ -5724,11 +6288,11 @@ int main(const int argumentCount, char** arguments)
                 "The band that enters the blocker's shadow sooner must gain less light.");
 
             // 元へ戻すとオフの絵と1バイトも変わらないこと。
-            // 設定の切り替えでターゲットの入れ替えが崩れていないか
-            // （光の筋はカラーターゲットをswapするため）の確認です。
+            // 設定の切り替えでターゲットの入れ替えが崩れていないか（光の筋はカラーターゲットをswapするため）の確認です。
             volumetric.enabled = false;
             scene.SetVolumetricLightSettings(volumetric);
             Stage("frame-volumetric-off-again");
+            // volumetricRestoredFrame: volumetric Restoredの描画結果。
             const auto volumetricRestoredFrame =
                 renderComposedFrame();
             Require(
@@ -5755,21 +6319,21 @@ int main(const int argumentCount, char** arguments)
         }
 
         // (10) リフレクションプローブのブレンド。
-        //
-        // カメラの画角の外（左右x=±10）へ緑と赤の壁を置き、その
-        // すぐ内側にプローブを1つずつ焼きます。壁は画面に映らない
-        // ので、鏡面の球に出る色は「どちらのプローブを読んだか」
-        // だけで決まります。
-        //
-        // 球を2つのプローブの中間へ置きます。ブレンド距離0では近い方だけ、
-        // 距離を与えた場合は両方が同じ重みで反映されることを確認します。
+        // カメラの画角の外（左右x=±10）へ緑と赤の壁を置き、そのすぐ内側にプローブを1つずつ焼きます。
+        // 壁は画面に映らないので、鏡面の球に出る色は「どちらのプローブを読んだか」だけで決まります。
+        // 球を2つのプローブの中間へ置きます。
+        // ブレンド距離0では近い方だけ、距離を与えた場合は両方が同じ重みで反映されることを確認します。
         {
+            // savedCameraPosition: 退避済み cameraのposition。
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
+            // savedCameraRotation: 退避済み cameraのrotation。
             const auto savedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
+            // savedSubjectPosition: 退避済み Subjectのposition。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
+            // savedClonePosition: 退避済み Cloneのposition。
             const auto savedClonePosition =
                 clone.GetTransform().position;
 
@@ -5782,12 +6346,14 @@ int main(const int argumentCount, char** arguments)
             cameraObject.GetTransform().SetEulerAngles(
                 { -0.08f, 0.0f, 0.0f });
 
+            // mirrorSphere: reflective sphere object used by the probe test。
             auto& mirrorSphere =
                 scene.CreateGameObject("BlendMirror");
             mirrorSphere.GetTransform().position =
                 { 0.0f, 0.0f, 0.0f };
             mirrorSphere.GetTransform().scale =
                 { 2.0f, 2.0f, 2.0f };
+            // mirrorRenderer: renderer component attached to the reflective sphere。
             auto& mirrorRenderer =
                 mirrorSphere.AddComponent<
                     LamaPon::MeshRendererComponent>(
@@ -5800,6 +6366,7 @@ int main(const int argumentCount, char** arguments)
                     1.0f);
             mirrorRenderer.SetMetallic(1.0f);
 
+            // createColoredWall: create Colored 壁。
             const auto createColoredWall =
                 [&scene](
                     const char* name,
@@ -5807,13 +6374,12 @@ int main(const int argumentCount, char** arguments)
                     const DirectX::XMFLOAT4& color)
                 -> LamaPon::GameObject&
                 {
+                    // wall: 壁。
                     auto& wall =
                         scene.CreateGameObject(name);
                     wall.GetTransform().position =
                         { centerX, 0.0f, 0.0f };
-                    // 奥行きを詰めて、画角の外に収めます
-                    // （13m先の画面の半幅は9.6なので、x=9.8から
-                    // 始まる壁が入り込まないようにするため）。
+                    // 奥行きを詰めて、画角の外に収めます（13m先の画面の半幅は9.6なので、x=9.8から始まる壁が入り込まないようにするため）。
                     wall.GetTransform().scale =
                         { 0.4f, 14.0f, 10.0f };
                     wall.AddComponent<
@@ -5826,21 +6392,25 @@ int main(const int argumentCount, char** arguments)
                         1.0f);
                     return wall;
                 };
+            // greenWall: 緑 壁。
             auto& greenWall = createColoredWall(
                 "BlendWallGreen",
                 -10.0f,
                 { 0.05f, 0.9f, 0.1f, 1.0f });
+            // redWall: 赤 壁。
             auto& redWall = createColoredWall(
                 "BlendWallRed",
                 10.0f,
                 { 0.9f, 0.06f, 0.05f, 1.0f });
 
+            // createProbe: creates a reflection probe at the requested position。
             const auto createProbe =
                 [&scene](
                     const char* name,
                     const float centerX)
                 -> LamaPon::GameObject&
                 {
+                    // probeObject: scene object carrying the reflection probe。
                     auto& probeObject =
                         scene.CreateGameObject(name);
                     probeObject.GetTransform().position =
@@ -5852,32 +6422,43 @@ int main(const int argumentCount, char** arguments)
                         1.0f);
                     return probeObject;
                 };
+            // greenProbe: 緑のprobe。
             auto& greenProbe = createProbe(
                 "BlendProbeGreen",
                 -5.0f);
+            // redProbe: 赤のprobe。
             auto& redProbe = createProbe(
                 "BlendProbeRed",
                 5.0f);
 
             // 球が映っている中央の帯。
             constexpr std::uint32_t sphereMinimumX = 145;
+            // sphereMaximumX: sphere maximum X coordinate。
             constexpr std::uint32_t sphereMaximumX = 175;
+            // sphereMinimumY: sphere minimum Y coordinate。
             constexpr std::uint32_t sphereMinimumY = 75;
+            // sphereMaximumY: sphere maximum Y coordinate。
             constexpr std::uint32_t sphereMaximumY = 105;
+            // sphereSkew: test input or measurement used by the surrounding rendering check。
             const auto sphereSkew =
                 [&](const std::vector<std::uint8_t>& frame)
                 {
+                    // green: pixelの緑成分。
                     long long green = 0;
+                    // red: pixelの赤成分。
                     long long red = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = sphereMinimumY;
                         y < sphereMaximumY;
                         ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x =
                                 sphereMinimumX;
                             x < sphereMaximumX;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(frame, x, y);
                             green += pixel.green;
@@ -5890,6 +6471,7 @@ int main(const int argumentCount, char** arguments)
             // 緑のプローブだけ。
             redProbe.SetEnabled(false);
             Stage("frame-probe-blend-green-only");
+            // greenOnlyFrame: 緑 のみの描画結果。
             const auto greenOnlyFrame =
                 renderComposedFrame();
             DumpFrame(
@@ -5900,14 +6482,17 @@ int main(const int argumentCount, char** arguments)
             redProbe.SetEnabled(true);
             greenProbe.SetEnabled(false);
             Stage("frame-probe-blend-red-only");
+            // redOnlyFrame: 赤 のみの描画結果。
             const auto redOnlyFrame =
                 renderComposedFrame();
             DumpFrame(
                 "probe-blend-red",
                 redOnlyFrame);
 
+            // greenOnlySkew: 緑 のみ skew。
             const auto greenOnlySkew =
                 sphereSkew(greenOnlyFrame);
+            // redOnlySkew: 赤 のみ skew。
             const auto redOnlySkew =
                 sphereSkew(redOnlyFrame);
             std::cout
@@ -5915,12 +6500,9 @@ int main(const int argumentCount, char** arguments)
                 << greenOnlySkew
                 << " redOnly=" << redOnlySkew
                 << std::endl;
-            // まず、プローブごとに色が違うことを確かめます
-            // （これが成り立たないと以降の比較に意味がありません）。
-            //
-            // 符号が反転するとは限りません。鏡面の球は周囲すべてを
-            // 映すので、どちらのプローブも両方の壁を見ています
-            // （近い方が大きく映る、という差にしかなりません）。
+            // まず、プローブごとに色が違うことを確かめます（これが成り立たないと以降の比較に意味がありません）。
+            // 符号が反転するとは限りません。
+            // 鏡面の球は周囲すべてを映すので、どちらのプローブも両方の壁を見ています（近い方が大きく映る、という差にしかなりません）。
             // 見るのは「緑寄りの度合いに差がある」ことです。
             Require(
                 greenOnlySkew - redOnlySkew > 1000,
@@ -5929,25 +6511,26 @@ int main(const int argumentCount, char** arguments)
             // 両方を有効にして、混ぜ始める距離0（従来の挙動）。
             greenProbe.SetEnabled(true);
             Stage("frame-probe-blend-off");
+            // hardSwitchFrame: hard Switchの描画結果。
             const auto hardSwitchFrame =
                 renderComposedFrame();
             DumpFrame(
                 "probe-blend-off",
                 hardSwitchFrame);
-            // 近い方だけを読むため、単独で描いたどちらかの画像と
-            // バイト単位で一致し、既定値で描画が変化しないことを確認します。
+            // 近い方だけを読むため、単独で描いたどちらかの画像とバイト単位で一致し、既定値で描画が変化しないことを確認します。
             Require(
                 hardSwitchFrame == greenOnlyFrame
                     || hardSwitchFrame == redOnlyFrame,
                 "With no blend distance the nearest probe must win outright.");
 
-            // 混ぜ始める距離を球までの距離より大きく取ると、影響度が
-            // どちらも1になり半々で混ざります。
+            // 混ぜ始める距離を球までの距離より大きく取ると、影響度がどちらも1になり半々で混ざります。
             {
+                // greenComponent: 緑のcomponent。
                 auto* greenComponent =
                     greenProbe.GetComponent<
                         LamaPon::
                             ReflectionProbeComponent>();
+                // redComponent: 赤のcomponent。
                 auto* redComponent =
                     redProbe.GetComponent<
                         LamaPon::
@@ -5960,16 +6543,20 @@ int main(const int argumentCount, char** arguments)
                 redComponent->SetBlendDistance(20.0f);
             }
             Stage("frame-probe-blend-on");
+            // blendedFrame: blend済みの描画結果。
             const auto blendedFrame =
                 renderComposedFrame();
             DumpFrame(
                 "probe-blend-on",
                 blendedFrame);
 
+            // blendedSkew: blend済み skew。
             const auto blendedSkew =
                 sphereSkew(blendedFrame);
+            // middleSkew: test input or measurement used by the surrounding rendering check。
             const auto middleSkew =
                 (greenOnlySkew + redOnlySkew) / 2;
+            // allowedOffset: maximum pixel offset accepted for the comparison。
             const auto allowedOffset =
                 (greenOnlySkew - redOnlySkew) / 3;
             std::cout
@@ -5979,8 +6566,7 @@ int main(const int argumentCount, char** arguments)
                 << " allowed=+-" << allowedOffset << ")"
                 << std::endl;
             // 半々で混ざるなら、単独2枚のちょうど中間付近へ来ます。
-            // 混ざっていなければどちらかの端の値のままになるので、
-            // 許容幅（差の1/3）を外れて落ちます。
+            // 混ざっていなければどちらかの端の値のままになるので、許容幅（差の1/3）を外れて落ちます。
             Require(
                 std::llabs(blendedSkew - middleSkew)
                     < allowedOffset,
@@ -6007,23 +6593,22 @@ int main(const int argumentCount, char** arguments)
         }
 
         // ⑪ SSR（画面空間反射）。
-        //
         // 鏡面の床の上へ緑の箱を置いて、床に緑が映るかを見ます。
-        // 箱は床より手前（カメラ寄り）に置くので画面に写っており、
-        // SSRが映せる条件を満たします。
-        //
-        // 有効時は箱の真下だけが緑寄りになり、離れた床は変化しないこと、
-        // 無効へ戻すと元の画像と一致することを確認します。
-        //
-        // なお前フレームのカラーを読むため、有効化した直後の1枚は
-        // まだ映りません。2枚目から比べます。
+        // 箱は床より手前（カメラ寄り）に置くので画面に写っており、SSRが映せる条件を満たします。
+        // 有効時は箱の真下だけが緑寄りになり、離れた床は変化しないこと、無効へ戻すと元の画像と一致することを確認します。
+        // なお前フレームのカラーを読むため、有効化した直後の1枚はまだ映りません。
+        // 2枚目から比べます。
         {
+            // savedCameraPosition: 退避済み cameraのposition。
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
+            // savedCameraRotation: 退避済み cameraのrotation。
             const auto savedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
+            // savedSubjectPosition: 退避済み Subjectのposition。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
+            // savedClonePosition: 退避済み Cloneのposition。
             const auto savedClonePosition =
                 clone.GetTransform().position;
 
@@ -6036,14 +6621,15 @@ int main(const int argumentCount, char** arguments)
             cameraObject.GetTransform().SetEulerAngles(
                 { -0.30f, 0.0f, 0.0f });
 
-            // 鏡のように磨いた床。粗さを小さくしないとSSRは
-            // 掛かりません（ぼやけた反射は1本のレイで表せないため）。
+            // 鏡のように磨いた床。
+            // 粗さを小さくしないとSSRは掛かりません（ぼやけた反射は1本のレイで表せないため）。
             auto& mirrorFloor =
                 scene.CreateGameObject("ReflectiveFloor");
             mirrorFloor.GetTransform().position =
                 { 0.0f, -1.0f, 0.0f };
             mirrorFloor.GetTransform().scale =
                 { 30.0f, 0.3f, 30.0f };
+            // floorRenderer: 床のrenderer。
             auto& floorRenderer =
                 mirrorFloor.AddComponent<
                     LamaPon::MeshRendererComponent>(
@@ -6057,7 +6643,8 @@ int main(const int argumentCount, char** arguments)
             floorRenderer.SetMetallic(1.0f);
             floorRenderer.SetRoughness(0.03f);
 
-            // 床の上に浮かぶ緑の箱。これが床へ映るはずです。
+            // 床の上に浮かぶ緑の箱。
+            // これが床へ映るはずです。
             auto& greenBox =
                 scene.CreateGameObject("ReflectedBox");
             greenBox.GetTransform().position =
@@ -6074,28 +6661,37 @@ int main(const int argumentCount, char** arguments)
                 1.0f,
                 1.0f);
 
-            // 床のうち、箱の真下あたり（映り込みが出る場所）と、
-            // 箱から左へ大きく離れた場所（出ない場所）。
+            // 床のうち、箱の真下あたり（映り込みが出る場所）と、箱から左へ大きく離れた場所（出ない場所）。
             constexpr std::uint32_t underMinimumX = 145;
+            // underMaximumX: under maximum X coordinate。
             constexpr std::uint32_t underMaximumX = 175;
+            // asideMinimumX: aside minimum X coordinate。
             constexpr std::uint32_t asideMinimumX = 20;
+            // asideMaximumX: aside maximum X coordinate。
             constexpr std::uint32_t asideMaximumX = 50;
+            // floorMinimumY: 床 Minimum Y。
             constexpr std::uint32_t floorMinimumY = 132;
+            // floorMaximumY: 床 Maximum Y。
             constexpr std::uint32_t floorMaximumY = 150;
+            // greenSkew: 緑 skew。
             const auto greenSkew =
                 [&](const std::vector<std::uint8_t>& frame,
                     const std::uint32_t minimumX,
                     const std::uint32_t maximumX)
                 {
+                    // skew: difference between two sample averages。
                     long long skew = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = floorMinimumY;
                         y < floorMaximumY;
                         ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = minimumX;
                             x < maximumX;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(frame, x, y);
                             skew += pixel.green;
@@ -6105,12 +6701,14 @@ int main(const int argumentCount, char** arguments)
                     return skew;
                 };
 
+            // reflection: screen-space reflection settings under test。
             auto reflection =
                 scene.ScreenSpaceReflection();
             reflection.enabled = false;
             scene.SetScreenSpaceReflectionSettings(
                 reflection);
             Stage("frame-ssr-off");
+            // ssrOffFrame: ssr 無効の描画結果。
             const auto ssrOffFrame =
                 renderComposedFrame();
             DumpFrame("ssr-off", ssrOffFrame);
@@ -6127,21 +6725,26 @@ int main(const int argumentCount, char** arguments)
             Stage("frame-ssr-warmup");
             static_cast<void>(renderComposedFrame());
             Stage("frame-ssr-on");
+            // ssrOnFrame: ssr 有効の描画結果。
             const auto ssrOnFrame = renderComposedFrame();
             DumpFrame("ssr-on", ssrOnFrame);
 
+            // underBefore: under 前。
             const auto underBefore = greenSkew(
                 ssrOffFrame,
                 underMinimumX,
                 underMaximumX);
+            // underAfter: under 後。
             const auto underAfter = greenSkew(
                 ssrOnFrame,
                 underMinimumX,
                 underMaximumX);
+            // asideBefore: aside 前。
             const auto asideBefore = greenSkew(
                 ssrOffFrame,
                 asideMinimumX,
                 asideMaximumX);
+            // asideAfter: aside 後。
             const auto asideAfter = greenSkew(
                 ssrOnFrame,
                 asideMinimumX,
@@ -6153,9 +6756,8 @@ int main(const int argumentCount, char** arguments)
                 << asideBefore << " -> " << asideAfter
                 << std::endl;
             // 箱の真下は緑寄りになること。
-            //
-            // 閾値は「1画素あたり」で決めます。合計値へ小さな定数を
-            // 置くと、実質何も起きていなくても通ってしまうためです。
+            // 閾値は「1画素あたり」で決めます。
+            // 合計値へ小さな定数を置くと、実質何も起きていなくても通ってしまうためです。
             // 30x18=540画素では、合計値200も1画素あたり0.4未満です。
             constexpr long long bandPixels =
                 static_cast<long long>(
@@ -6173,37 +6775,40 @@ int main(const int argumentCount, char** arguments)
                     < underAfter - underBefore,
                 "SSR must not tint floor that has nothing above it.");
 
-            // 距離フェード。最大距離のところで反射が急に途切れると、
-            // カメラが少し動くだけで現れたり消えたりします。
-            //
+            // 距離フェード。
+            // 最大距離のところで反射が急に途切れると、カメラが少し動くだけで現れたり消えたりします。
             // 同じ当たりに対して最大距離の設定だけを変えて測ります。
-            // 幾何は一切動かさないので、差が出るなら距離フェードだけが
-            // 原因です。フェードが無ければ、当たりが見つかる限りどの
-            // 設定でも同じ値が返ります。
-            //
-            // 反復数を上限の128に固定し、最大距離によるフェードだけを
-            // 比較できる条件にします。
+            // 幾何は一切動かさないので、差が出るなら距離フェードだけが原因です。
+            // フェードが無ければ、当たりが見つかる限りどの設定でも同じ値が返ります。
+            // 反復数を上限の128に固定し、最大距離によるフェードだけを比較できる条件にします。
             {
-                // 測る場所は狭い帯にします。広い帯だと画素ごとに
-                // レイの長さが違うため、最大距離を縮めていくと画素が
-                // 順番に脱落し、per-pixelのフェードが無くても
-                // 合計は緩やかに落ちます。それでは検証になりません。
+                // 測る場所は狭い帯にします。
+                // 広い帯だと画素ごとにレイの長さが違うため、最大距離を縮めていくと画素が順番に脱落し、per-pixelのフェードが無くても合計は緩やかに落ちます。
+                // それでは検証になりません。
                 constexpr std::uint32_t narrowMinimumX = 157;
+                // narrowMaximumX: narrow maximum X coordinate。
                 constexpr std::uint32_t narrowMaximumX = 165;
+                // narrowMinimumY: narrow minimum Y coordinate。
                 constexpr std::uint32_t narrowMinimumY = 137;
+                // narrowMaximumY: narrow maximum Y coordinate。
                 constexpr std::uint32_t narrowMaximumY = 142;
+                // narrowSkew: test input or measurement used by the surrounding rendering check。
                 const auto narrowSkew =
                     [&](const std::vector<std::uint8_t>& frame)
                 {
+                    // skew: difference between two sample averages。
                     long long skew = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = narrowMinimumY;
                         y < narrowMaximumY;
                         ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = narrowMinimumX;
                             x < narrowMaximumX;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel = At(frame, x, y);
                             skew += pixel.green;
                             skew -= pixel.red;
@@ -6211,12 +6816,15 @@ int main(const int argumentCount, char** arguments)
                     }
                     return skew;
                 };
+                // narrowBefore: narrow 前。
                 const long long narrowBefore =
                     narrowSkew(ssrOffFrame);
 
+                // measureAtDistance(maximumDistance: SSR距離上限): 指定距離での反射画像を取得します。
                 const auto measureAtDistance =
                     [&](const float maximumDistance)
                 {
+                    // sweep: SSR thickness setting for one sample pass。
                     auto sweep = reflection;
                     sweep.enabled = true;
                     sweep.maximumDistance = maximumDistance;
@@ -6225,6 +6833,7 @@ int main(const int argumentCount, char** arguments)
                         sweep);
                     // 前フレームのカラーを読むので1枚捨てます。
                     static_cast<void>(renderComposedFrame());
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     return narrowSkew(frame) - narrowBefore;
                 };
@@ -6232,6 +6841,7 @@ int main(const int argumentCount, char** arguments)
                 Stage("frame-ssr-distance-fade");
                 // レイの不一致を確認できるよう、12mと1.8mの画像を診断用に残します。
                 {
+                    // diagnostic: shader diagnostic produced by the test。
                     auto diagnostic = reflection;
                     diagnostic.enabled = true;
                     diagnostic.maximumDistance = 12.0f;
@@ -6250,17 +6860,19 @@ int main(const int argumentCount, char** arguments)
                         "ssr-fade-1p8m",
                         renderComposedFrame());
                 }
-                // この帯のレイの長さは約1.35mなので、フェードが効く
-                // 範囲（最後の1/4＝最大距離が1.35〜1.8mのとき）を
-                // またぐように選んでいます。
+                // この帯のレイの長さは約1.35mなので、フェードが効く範囲（最後の1/4＝最大距離が1.35〜1.8mのとき）をまたぐように選んでいます。
                 const long long fullRange =
                     measureAtDistance(12.0f);
+                // highRange: 高品質 Range。
                 const long long highRange =
                     measureAtDistance(1.8f);
+                // midRange: middle reflection-distance sample。
                 const long long midRange =
                     measureAtDistance(1.6f);
+                // lowRange: short reflection-distance sample。
                 const long long lowRange =
                     measureAtDistance(1.45f);
+                // cutRange: distance at which reflection fades out。
                 const long long cutRange =
                     measureAtDistance(1.3f);
                 std::cout
@@ -6271,8 +6883,7 @@ int main(const int argumentCount, char** arguments)
                     << " 1.3m=" << cutRange
                     << std::endl;
 
-                // 中間距離で反射強度が段階的に低下し、到達可否だけの
-                // 二値的な結果にならないことを確認します。
+                // 中間距離で反射強度が段階的に低下し、到達可否だけの二値的な結果にならないことを確認します。
                 Require(
                     fullRange > 500,
                     "The narrow band must show a reflection to"
@@ -6302,12 +6913,11 @@ int main(const int argumentCount, char** arguments)
                     " must be gone.");
 
                 // 反復の上限を変えたときの様子。
-                //
-                // Hi-Z走査は十分な反復予算があれば同じ交点へ収束するため、
-                // 48回と128回で反射結果が一致することを確認します。
+                // Hi-Z走査は十分な反復予算があれば同じ交点へ収束するため、48回と128回で反射結果が一致することを確認します。
                 const auto measureAtSteps =
                     [&](const std::uint32_t steps)
                 {
+                    // sweep: SSR thickness setting for one sample pass。
                     auto sweep = reflection;
                     sweep.enabled = true;
                     sweep.maximumDistance = 12.0f;
@@ -6315,10 +6925,12 @@ int main(const int argumentCount, char** arguments)
                     scene.SetScreenSpaceReflectionSettings(
                         sweep);
                     static_cast<void>(renderComposedFrame());
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     return narrowSkew(frame) - narrowBefore;
                 };
                 std::cout << "ssr step budget:";
+                // SSR反復予算の候補
                 for (const std::uint32_t steps : {
                     128u, 96u, 64u, 48u, 32u, 24u, 16u, 8u })
                 {
@@ -6328,8 +6940,10 @@ int main(const int argumentCount, char** arguments)
                 }
                 std::cout << std::endl;
                 {
+                    // generous: high SSR step-count setting。
                     const long long generous =
                         measureAtSteps(128u);
+                    // saturated: upper-clamped SSR setting。
                     const long long saturated =
                         measureAtSteps(48u);
                     Require(
@@ -6344,6 +6958,7 @@ int main(const int argumentCount, char** arguments)
                 const auto measureAtThickness =
                     [&](const float value)
                 {
+                    // sweep: SSR thickness setting for one sample pass。
                     auto sweep = reflection;
                     sweep.enabled = true;
                     sweep.maximumDistance = 12.0f;
@@ -6351,11 +6966,14 @@ int main(const int argumentCount, char** arguments)
                     scene.SetScreenSpaceReflectionSettings(
                         sweep);
                     static_cast<void>(renderComposedFrame());
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     return narrowSkew(frame) - narrowBefore;
                 };
+                // thickHit: pixel count using thick SSR rays。
                 const long long thickHit =
                     measureAtThickness(6.0f);
+                // thinHit: pixel count using thin SSR rays。
                 const long long thinHit =
                     measureAtThickness(0.02f);
                 std::cout
@@ -6369,42 +6987,34 @@ int main(const int argumentCount, char** arguments)
                     " surfaces the ray hits.");
 
                 // 厚みの既定値は「鏡像と見比べて」決めます。
-                //
-                // 厚みには両側に失敗があります。薄すぎるとレイが
-                // 物の側面から入った歩を捨てるので反射が途中で切れ、
-                // 厚すぎると物の裏まで通り抜けたレイを当たり扱いに
-                // するので、映るべきでない床まで映り込みます。
-                // どちらに寄せるかは「正解の絵」が無いと決められ
-                // ません。
-                //
-                // そこで、床の面で折り返した位置へ同じ箱をもう1つ
-                // 置き、床をどけて同じカメラで描きます。立方体は
-                // 上下対称なので、折り返した形はそのまま立方体です。
-                // それが写った行が、そのまま「反射が出るべき行」に
-                // なります。
-                //
-                // カメラを面で反転させると箱が写らず、比較するカメラも
-                // 変わってしまうため、この方法は使用しません。
-                // ずれたときに「反射がおかしい」のか「参照が
-                // おかしい」のか分かりません。同じカメラのままに
-                // できるこちらが確実です。
-                //
-                // 見方は床の縦1列を行ごとに。合計値だけだと反射が
-                // どこまで伸びたかが分からず、既定値の判断はまさに
-                // そこだからです。箱そのものの下端はy=100なので、床
-                // だけを見るためにその下から始めます（入れると箱の緑が
-                // 参照にも反射にも同じだけ乗り、一致率が水増しされます）。
+                // 厚みには両側に失敗があります。
+                // 薄すぎるとレイが物の側面から入った歩を捨てるので反射が途中で切れ、厚すぎると物の裏まで通り抜けたレイを当たり扱いにするので、映るべきでない床まで映り込みます。
+                // どちらに寄せるかは「正解の絵」が無いと決められません。
+                // そこで、床の面で折り返した位置へ同じ箱をもう1つ置き、床をどけて同じカメラで描きます。
+                // 立方体は上下対称なので、折り返した形はそのまま立方体です。
+                // それが写った行が、そのまま「反射が出るべき行」になります。
+                // カメラを面で反転させると箱が写らず、比較するカメラも変わってしまうため、この方法は使用しません。
+                // ずれたときに「反射がおかしい」のか「参照がおかしい」のか分かりません。
+                // 同じカメラのままにできるこちらが確実です。
+                // 見方は床の縦1列を行ごとに。
+                // 合計値だけだと反射がどこまで伸びたかが分からず、既定値の判断はまさにそこだからです。
+                // 箱そのものの下端はy=100なので、床だけを見るためにその下から始めます（入れると箱の緑が参照にも反射にも同じだけ乗り、一致率が水増しされます）。
                 constexpr std::uint32_t profileMinimumY = 102;
+                // profileMaximumY: profile maximum Y coordinate。
                 constexpr std::uint32_t profileMaximumY = 180;
+                // rowGreen: 行 緑。
                 const auto rowGreen =
                     [&](const std::vector<std::uint8_t>& frame,
                         const std::uint32_t y)
                 {
+                    // skew: difference between two sample averages。
                     long long skew = 0;
+                    // 横方向の走査座標
                     for (std::uint32_t x = underMinimumX;
                         x < underMaximumX;
                         ++x)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto pixel = At(frame, x, y);
                         skew += pixel.green;
                         skew -= pixel.red;
@@ -6414,16 +7024,17 @@ int main(const int argumentCount, char** arguments)
                             underMaximumX - underMinimumX);
                 };
                 // 鏡像が出ている行のうち、反射が届いている行の数。
-                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、
-                // 反射は床の反射率を通した後（暗い）だからです。同じ
-                // 値では比べられません。
+                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、反射は床の反射率を通した後（暗い）だからです。
+                // 同じ値では比べられません。
                 const auto countRows =
                     [&](const std::vector<std::uint8_t>& mirror,
                         const std::vector<std::uint8_t>* reflected,
                         std::uint32_t& firstRow)
                 {
+                    // rows: test input or measurement used by the surrounding rendering check。
                     std::uint32_t rows = 0;
                     firstRow = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = profileMinimumY;
                         y < profileMaximumY;
                         ++y)
@@ -6445,6 +7056,7 @@ int main(const int argumentCount, char** arguments)
                     }
                     return rows;
                 };
+                // printRowProfile: print 行 Profile。
                 const auto printRowProfile =
                     [&](const char* label,
                         const std::vector<std::uint8_t>& frame)
@@ -6452,6 +7064,7 @@ int main(const int argumentCount, char** arguments)
                     std::cout
                         << "ssr row profile " << label
                         << " from y=" << profileMinimumY << ":";
+                    // 縦方向の走査座標
                     for (std::uint32_t y = profileMinimumY;
                         y < profileMaximumY;
                         ++y)
@@ -6463,16 +7076,19 @@ int main(const int argumentCount, char** arguments)
 
                 // 鏡像そのものを置いた「正解の絵」。
                 Stage("frame-ssr-mirror-reference");
+                // referenceFrame: referenceの描画結果。
                 std::vector<std::uint8_t> referenceFrame;
                 {
+                    // disabled: 無効化したfeature設定。
                     auto disabled = reflection;
                     disabled.enabled = false;
                     scene.SetScreenSpaceReflectionSettings(
                         disabled);
+                    // savedFloorPosition: 退避済み 床のposition。
                     const auto savedFloorPosition =
                         mirrorFloor.GetTransform().position;
-                    // 床の上面。立方体プリミティブは1辺1なので
-                    // スケールの半分だけ持ち上がります。
+                    // 床の上面。
+                    // 立方体プリミティブは1辺1なのでスケールの半分だけ持ち上がります。
                     const float mirrorPlaneY =
                         savedFloorPosition.y
                         + mirrorFloor.GetTransform().scale.y
@@ -6484,10 +7100,13 @@ int main(const int argumentCount, char** arguments)
                         { 0.0f, -10000.0f, 0.0f };
                     ground.GetTransform().position =
                         { 0.0f, -10000.0f, 0.0f };
+                    // boxPosition: box world position。
                     const auto boxPosition =
                         greenBox.GetTransform().position;
+                    // boxScale: box world scale。
                     const auto boxScale =
                         greenBox.GetTransform().scale;
+                    // mirroredBox: test input or measurement used by the surrounding rendering check。
                     auto& mirroredBox =
                         scene.CreateGameObject("MirroredBox");
                     mirroredBox.GetTransform().position = {
@@ -6518,8 +7137,7 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // 既定値を選ぶための掃引（--dump のときだけ）。
-                // 絵はPPMで残すので、数字だけでなく切れ方・漏れ方の
-                // 形も見られます。
+                // 絵はPPMで残すので、数字だけでなく切れ方・漏れ方の形も見られます。
                 if (!g_dumpDirectory.empty())
                 {
                     printRowProfile(
@@ -6527,14 +7145,16 @@ int main(const int argumentCount, char** arguments)
                         referenceFrame);
                     printRowProfile("ssr-off", ssrOffFrame);
 
-                    // ファイル名は固定の文字列にします。値から作ると
-                    // <sstream>を足すことになり、そのためだけに
-                    // インクルードを増やしたくないためです。
+                    // ファイル名は固定の文字列にします。
+                    // 値から作ると<sstream>を足すことになり、そのためだけにインクルードを増やしたくないためです。
                     struct ThicknessSample final
                     {
+                        // name: 名前。
                         const char* name;
+                        // value: 検証用の値。
                         float value;
                     };
+                    // samples: 厚さ判定用のsample群。
                     static constexpr ThicknessSample samples[] = {
                         { "ssr-thickness-005", 0.05f },
                         { "ssr-thickness-010", 0.10f },
@@ -6548,8 +7168,10 @@ int main(const int argumentCount, char** arguments)
                         { "ssr-thickness-640", 6.40f },
                     };
                     Stage("frame-ssr-thickness-sweep");
+                    // 反射厚みの設定候補
                     for (const auto& sample : samples)
                     {
+                        // sweep: SSR thickness setting for one sample pass。
                         auto sweep = reflection;
                         sweep.enabled = true;
                         sweep.maximumDistance = 12.0f;
@@ -6558,6 +7180,7 @@ int main(const int argumentCount, char** arguments)
                             sweep);
                         static_cast<void>(
                             renderComposedFrame());
+                        // frame: captured pixel buffer for one rendered frame。
                         const auto frame =
                             renderComposedFrame();
                         DumpFrame(sample.name, frame);
@@ -6579,6 +7202,7 @@ int main(const int argumentCount, char** arguments)
                             << " narrow="
                             << narrowSkew(frame)
                                 - narrowBefore;
+                        // sweepFirstRow: sweep 初回 行。
                         std::uint32_t sweepFirstRow = 0;
                         std::cout
                             << " mirrorRowsCovered="
@@ -6593,12 +7217,11 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // 既定の厚みで、鏡像の行のどれだけを埋められるか。
-                //
-                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、
-                // 反射は床の反射率を通した後（暗い）だからです。同じ
-                // 値では比べられません。
+                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、反射は床の反射率を通した後（暗い）だからです。
+                // 同じ値では比べられません。
                 {
                     Stage("frame-ssr-default-thickness");
+                    // standard: test input or measurement used by the surrounding rendering check。
                     auto standard = reflection;
                     standard.enabled = true;
                     standard.maximumDistance = 12.0f;
@@ -6608,15 +7231,20 @@ int main(const int argumentCount, char** arguments)
                     scene.SetScreenSpaceReflectionSettings(
                         standard);
                     static_cast<void>(renderComposedFrame());
+                    // defaultFrame: 既定の描画結果。
                     const auto defaultFrame =
                         renderComposedFrame();
                     DumpFrame("ssr-default-thickness", defaultFrame);
+                    // firstReferenceRow: 初回 reference 行。
                     std::uint32_t firstReferenceRow = 0;
+                    // firstCoveredRow: 初回 Covered 行。
                     std::uint32_t firstCoveredRow = 0;
+                    // referenceRows: rows occupied by the reference reflection。
                     const std::uint32_t referenceRows = countRows(
                         referenceFrame,
                         nullptr,
                         firstReferenceRow);
+                    // coveredRows: reference rows covered by the test reflection。
                     const std::uint32_t coveredRows = countRows(
                         referenceFrame,
                         &defaultFrame,
@@ -6629,8 +7257,7 @@ int main(const int argumentCount, char** arguments)
                         << ", covered " << coveredRows
                         << " from y=" << firstCoveredRow
                         << std::endl;
-                    // 既定の厚みで鏡像の9割以上を覆い、過度に薄い設定を
-                    // 検出できる条件にします。
+                    // 既定の厚みで鏡像の9割以上を覆い、過度に薄い設定を検出できる条件にします。
                     Require(
                         referenceRows >= 40,
                         "The mirrored box must be visible to"
@@ -6647,6 +7274,7 @@ int main(const int argumentCount, char** arguments)
             scene.SetScreenSpaceReflectionSettings(
                 reflection);
             Stage("frame-ssr-off-again");
+            // ssrRestoredFrame: ssr Restoredの描画結果。
             const auto ssrRestoredFrame =
                 renderComposedFrame();
             Require(
@@ -6670,20 +7298,21 @@ int main(const int argumentCount, char** arguments)
         }
 
         // ⑫ TAA（時間的アンチエイリアス）。
-        //
-        // 斜めに傾けた板を1枚置いて、その輪郭を見ます。TAAは毎フレーム
-        // サブピクセルだけずらして描いて混ぜるので、輪郭に「前景でも
-        // 背景でもない中間色」の画素が増えるはずです。これがギザギザが
-        // 減ったことの直接的な証拠になります（見た目の判断が要らない）。
-        //
+        // 斜めに傾けた板を1枚置いて、その輪郭を見ます。
+        // TAAは毎フレームサブピクセルだけずらして描いて混ぜるので、輪郭に「前景でも背景でもない中間色」の画素が増えるはずです。
+        // これがギザギザが減ったことの直接的な証拠になります（見た目の判断が要らない）。
         // 性能はWARPのVMでは測れませんが、画質はこうして数値で出せます。
         {
+            // savedCameraPosition: 退避済み cameraのposition。
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
+            // savedCameraRotation: 退避済み cameraのrotation。
             const auto savedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
+            // savedSubjectPosition: 退避済み Subjectのposition。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
+            // savedClonePosition: 退避済み Cloneのposition。
             const auto savedClonePosition =
                 clone.GetTransform().position;
 
@@ -6700,32 +7329,37 @@ int main(const int argumentCount, char** arguments)
                 { 0.0f, 0.0f, 0.37f });
 
             // 輪郭の「段差」を測ります。
-            //
-            // 中間色の画素を数える方法は使えません。キューブ面の
-            // 陰影まで中間色として拾い、輪郭の変化が埋もれるためです。
-            //
-            // 代わりに横方向の隣接差の最大値を行ごとに取り、その
-            // 平均を見ます。ギザギザした輪郭は1画素で全コントラスト
-            // 跳ぶので段差が大きく、均されると小さくなります。
+            // 中間色の画素を数える方法は使えません。
+            // キューブ面の陰影まで中間色として拾い、輪郭の変化が埋もれるためです。
+            // 代わりに横方向の隣接差の最大値を行ごとに取り、その平均を見ます。
+            // ギザギザした輪郭は1画素で全コントラスト跳ぶので段差が大きく、均されると小さくなります。
             // つまりTAAを有効にすると下がるのが正しい向きです。
             const auto edgeStepAverage =
                 [&](const std::vector<std::uint8_t>& frame)
                 {
+                    // total: 累積した測定値。
                     long long total = 0;
+                    // rows: test input or measurement used by the surrounding rendering check。
                     int rows = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 40;
                         y < 140;
                         ++y)
                     {
+                        // rowMaximum: 行 Maximum。
                         int rowMaximum = 0;
+                        // 横方向の走査座標
                         for (std::uint32_t x = 60;
                             x + 1 < 260;
                             ++x)
                         {
+                            // left: 比較元の値。
                             const auto left =
                                 At(frame, x, y);
+                            // right: 比較先の値。
                             const auto right =
                                 At(frame, x + 1, y);
+                            // step: SSR step-count setting under test。
                             const int step = std::max(
                                 std::abs(
                                     left.red - right.red),
@@ -6748,12 +7382,14 @@ int main(const int argumentCount, char** arguments)
                             std::max(rows, 1));
                 };
 
+            // temporal: temporal anti-aliasing settings under test。
             auto temporal =
                 scene.TemporalAntiAliasing();
             temporal.enabled = false;
             scene.SetTemporalAntiAliasingSettings(
                 temporal);
             Stage("frame-taa-off");
+            // taaOffFrame: taa 無効の描画結果。
             const auto taaOffFrame = renderComposedFrame();
             DumpFrame("taa-off", taaOffFrame);
 
@@ -6765,7 +7401,9 @@ int main(const int argumentCount, char** arguments)
                 temporal);
             // 積算されるまで何枚か回します（1枚目は履歴が無い）。
             Stage("frame-taa-accumulate");
+            // taaOnFrame: taa 有効の描画結果。
             std::vector<std::uint8_t> taaOnFrame;
+            // 計測前の描画回数
             for (int warmup = 0; warmup < 12; ++warmup)
             {
                 taaOnFrame = renderComposedFrame();
@@ -6776,28 +7414,35 @@ int main(const int argumentCount, char** arguments)
                 renderComposedFrame();
             DumpFrame("taa-settled", taaSettledFrame);
 
-            // 「段差が大きい行の数」も数えます。硬い輪郭は1画素で
-            // 全コントラスト跳ぶので、しきい値を超える行が多く
-            // なります。均されると跳びが分割されて減ります。
+            // 「段差が大きい行の数」も数えます。
+            // 硬い輪郭は1画素で全コントラスト跳ぶので、しきい値を超える行が多くなります。
+            // 均されると跳びが分割されて減ります。
             // 平均より鋭敏なので、判定にはこちらを使います。
             const auto hardRowCount =
                 [&](const std::vector<std::uint8_t>& frame,
                     const int threshold)
                 {
+                    // rows: test input or measurement used by the surrounding rendering check。
                     int rows = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 40;
                         y < 140;
                         ++y)
                     {
+                        // rowMaximum: 行 Maximum。
                         int rowMaximum = 0;
+                        // 横方向の走査座標
                         for (std::uint32_t x = 60;
                             x + 1 < 260;
                             ++x)
                         {
+                            // left: 比較元の値。
                             const auto left =
                                 At(frame, x, y);
+                            // right: 比較先の値。
                             const auto right =
                                 At(frame, x + 1, y);
+                            // step: SSR step-count setting under test。
                             const int step = std::max(
                                 std::abs(
                                     left.red - right.red),
@@ -6820,8 +7465,10 @@ int main(const int argumentCount, char** arguments)
                     return rows;
                 };
 
+            // stepBefore: step 前。
             const auto stepBefore =
                 edgeStepAverage(taaOffFrame);
+            // stepAfter: step 後。
             const auto stepAfter =
                 edgeStepAverage(taaOnFrame);
             std::cout
@@ -6839,14 +7486,14 @@ int main(const int argumentCount, char** arguments)
                 << hardRowCount(taaOffFrame, 100)
                 << " -> " << hardRowCount(taaOnFrame, 100)
                 << std::endl;
-            // 輪郭の両側へAAが適用されることを確認するため、
-            // 画素間の段差が12%以上減少することを要求します。
+            // 輪郭の両側へAAが適用されることを確認するため、画素間の段差が12%以上減少することを要求します。
             Require(
                 stepAfter < stepBefore * 0.88,
                 "TAA must reduce the hard step across the diagonal edge.");
             // 1画素で大きく変化する行が半減し、輪郭が平滑化されること。
             const auto hardBefore =
                 hardRowCount(taaOffFrame, 150);
+            // hardAfter: hard 後。
             const auto hardAfter =
                 hardRowCount(taaOnFrame, 150);
             Require(
@@ -6854,18 +7501,24 @@ int main(const int argumentCount, char** arguments)
                     && hardAfter * 2 < hardBefore,
                 "TAA must cut the number of rows that still jump in one pixel.");
 
-            // 静止シーンでは収束して、隣り合うフレームがほぼ同じ絵に
-            // なること。ここが暴れると画面がちらつきます。
+            // 静止シーンでは収束して、隣り合うフレームがほぼ同じ絵になること。
+            // ここが暴れると画面がちらつきます。
             long long settleDifference = 0;
+            // settleMaximum: 安定 Maximum。
             int settleMaximum = 0;
+            // 縦方向の走査座標
             for (std::uint32_t y = 40; y < 140; ++y)
             {
+                // 横方向の走査座標
                 for (std::uint32_t x = 60; x < 260; ++x)
                 {
+                    // left: 比較元の値。
                     const auto left =
                         At(taaOnFrame, x, y);
+                    // right: 比較先の値。
                     const auto right =
                         At(taaSettledFrame, x, y);
+                    // difference: RGB各成分の絶対差合計。
                     const int difference = std::max(
                         std::abs(left.red - right.red),
                         std::max(
@@ -6879,7 +7532,9 @@ int main(const int argumentCount, char** arguments)
                         difference);
                 }
             }
+            // settlePixels: 安定のpixel群。
             constexpr long long settlePixels = 200LL * 100LL;
+            // settleAverage: 安定の平均値。
             const double settleAverage =
                 static_cast<double>(settleDifference)
                 / static_cast<double>(settlePixels);
@@ -6887,11 +7542,9 @@ int main(const int argumentCount, char** arguments)
                 << "taa settle: max=" << settleMaximum
                 << " average=" << settleAverage
                 << std::endl;
-            // 判定は平均で行います。輪郭の1画素はジッターの位置に
-            // よって最後まで多少振れるので、最大値で締めると
-            // 正しく動いていても落ちます。平均が十分小さければ
-            // 「絵として静止している」と言えます。
-            //
+            // 判定は平均で行います。
+            // 輪郭の1画素はジッターの位置によって最後まで多少振れるので、最大値で締めると正しく動いていても落ちます。
+            // 平均が十分小さければ「絵として静止している」と言えます。
             // 平均差0.3未満を要求し、再投影誤差による静止画のちらつきを検出します。
             Require(
                 settleAverage < 0.3,
@@ -6902,6 +7555,7 @@ int main(const int argumentCount, char** arguments)
             scene.SetTemporalAntiAliasingSettings(
                 temporal);
             Stage("frame-taa-off-again");
+            // taaRestoredFrame: taa Restoredの描画結果。
             const auto taaRestoredFrame =
                 renderComposedFrame();
             Require(
@@ -6923,16 +7577,16 @@ int main(const int argumentCount, char** arguments)
         }
 
         // (7) SSAO（--dump のときだけ）。
-        // 陰りの見た目は数値で判定しにくいので、ここではアサーション
-        // をせず、有効・無効の2枚を書き出して目視で比べられるように
-        // します。キューブが床に接しているので、接地部分に陰りが
-        // 出ているか、ザラつきや輪郭の白い縁が無いかを確認できます。
+        // 陰りの見た目は数値で判定しにくいので、ここではアサーションをせず、有効・無効の2枚を書き出して目視で比べられるようにします。
+        // キューブが床に接しているので、接地部分に陰りが出ているか、ザラつきや輪郭の白い縁が無いかを確認できます。
         if (!g_dumpDirectory.empty())
         {
+            // aoGraphics: AO描画検証用graphics device。
             auto aoGraphics = graphics.Settings();
             aoGraphics.ambientOcclusionEnabled = true;
             graphics.SetGraphicsSettings(aoGraphics);
 
+            // occlusion: ambient-occlusion settings under test。
             auto occlusion = scene.AmbientOcclusion();
             occlusion.enabled = false;
             scene.SetAmbientOcclusionSettings(occlusion);
@@ -6952,25 +7606,23 @@ int main(const int argumentCount, char** arguments)
             Stage("frame-ssao-strong");
             DumpFrame("ssao-strong", renderComposedFrame());
 
-            // 半径を広げた版。既定の0.5がシーンの寸法に対して
-            // 小さすぎないかを見るための比較用です。
+            // 半径を広げた版。
+            // 既定の0.5がシーンの寸法に対して小さすぎないかを見るための比較用です。
             occlusion.radius = 2.0f;
             scene.SetAmbientOcclusionSettings(occlusion);
             Stage("frame-ssao-wide");
             DumpFrame("ssao-wide", renderComposedFrame());
 
             // 接地部の陰りを見るための専用の段。
-            //
-            // 既定のシーンはキューブの底が-1.0、床の上面が-1.7で
-            // 0.7だけ浮いているため、SSAOの差が最大1/255かつ画面全体の
-            // 1%以下となり、判定に使えません。
+            // 既定のシーンはキューブの底が-1.0、床の上面が-1.7で0.7だけ浮いているため、SSAOの差が最大1/255かつ画面全体の1%以下となり、判定に使えません。
             // キューブを床へ置き、カメラを上げて見下ろします。
-            //
             // 影を有効にしたまま比較し、接地部だけに陰りが加わることを確認します。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
+            // savedCameraPosition: 退避済み cameraのposition。
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
+            // savedCameraRotation: 退避済み cameraのrotation。
             const auto savedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
 
@@ -6997,9 +7649,8 @@ int main(const int argumentCount, char** arguments)
                 renderComposedFrame());
 
             // SSAOが環境光項だけへ掛かっていることを確認します。
-            // 環境光を0にすると掛ける先が無くなるので、SSAOの有無で
-            // 絵が1ビットも変わらないはずです。完成した色へ掛けて
-            // 完成色へ適用される実装では、この条件でも画像が変化します。
+            // 環境光を0にすると掛ける先が無くなるので、SSAOの有無で絵が1ビットも変わらないはずです。
+            // 完成した色へ掛けて完成色へ適用される実装では、この条件でも画像が変化します。
             const auto savedAmbientIntensity =
                 scene.AmbientLightIntensity();
             scene.SetAmbientLightIntensity(0.0f);
@@ -7027,11 +7678,10 @@ int main(const int argumentCount, char** arguments)
                 savedCameraPosition;
             cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
 
-            // クラスタライトカリング（Forward+）の確認。ポイント
-            // ライトを24灯並べます。従来経路は品質設定の上限
-            // （High=12灯）で打ち切られるので、右半分のライトが
-            // 消えます。クラスタ経路が動いていれば24灯全部の
-            // 光だまりが床に並びます。
+            // クラスタライトカリング（Forward+）の確認。
+            // ポイントライトを24灯並べます。
+            // 従来経路は品質設定の上限（High=12灯）で打ち切られるので、右半分のライトが消えます。
+            // クラスタ経路が動いていれば24灯全部の光だまりが床に並びます。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -7041,10 +7691,12 @@ int main(const int argumentCount, char** arguments)
 
                 std::vector<LamaPon::GameObject*>
                     clusterLightObjects;
+                // 光源の連番
                 for (int lightIndex = 0;
                     lightIndex < 24;
                     ++lightIndex)
                 {
+                    // sharedLightObject: scene object shared by the lighting passes。
                     auto& sharedLightObject =
                         scene.CreateGameObject(
                             "ClusterLight"
@@ -7072,6 +7724,7 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 Stage("frame-clustered-lights");
+                // clusteredFrame: clusteredの描画結果。
                 const auto clusteredFrame =
                     renderComposedFrame();
                 DumpFrame(
@@ -7080,17 +7733,15 @@ int main(const int argumentCount, char** arguments)
 
                 // 描画方式の切り替えが画像へ反映されることを確認します。
                 // 24灯はForward+でのみすべて処理されます。
-                // Forwardでは品質設定の上限で打ち切られるので、床の
-                // 光だまりが減ります。
-                //
-                // 環境光と平行光の影響を避けるため合計輝度ではなく、
-                // 経路の切り替えで変化した画素数を比較します。
+                // Forwardでは品質設定の上限で打ち切られるので、床の光だまりが減ります。
+                // 環境光と平行光の影響を避けるため合計輝度ではなく、経路の切り替えで変化した画素数を比較します。
                 auto forwardSettings = graphics.Settings();
                 forwardSettings.renderingPath =
                     LamaPon::RenderingPath::Forward;
                 graphics.SetGraphicsSettings(
                     forwardSettings);
                 Stage("frame-forward-path");
+                // forwardFrame: forwardの描画結果。
                 const auto forwardFrame =
                     renderComposedFrame();
                 DumpFrame("forward-path", forwardFrame);
@@ -7099,19 +7750,27 @@ int main(const int argumentCount, char** arguments)
                 graphics.SetGraphicsSettings(
                     forwardSettings);
 
+                // pathChangedPixels: path Changedのpixel群。
                 std::size_t pathChangedPixels = 0;
+                // pathMaximumDelta: path Maximum 差分。
                 int pathMaximumDelta = 0;
+                // pathRightHalfChanged: path 右側 Half Changed。
                 std::size_t pathRightHalfChanged = 0;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0;
                         x < Width;
                         ++x)
                     {
+                        // plus: test input or measurement used by the surrounding rendering check。
                         const auto plus =
                             At(clusteredFrame, x, y);
+                        // plain: 通常。
                         const auto plain =
                             At(forwardFrame, x, y);
+                        // delta: 差分。
                         const int delta = std::max(
                             {
                                 std::abs(
@@ -7148,22 +7807,21 @@ int main(const int argumentCount, char** arguments)
                     << " of 24 lights)"
                     << std::endl;
 
-                // 上限が24灯以上だと打ち切りが起きず、この段が
-                // 何も確かめない段になってしまいます。
+                // 上限が24灯以上だと打ち切りが起きず、この段が何も確かめない段になってしまいます。
                 Require(
                     graphics.Settings().pointLightLimit
                         < 24,
                     "The point light limit must cut the"
                     " 24 lights for this stage to mean"
                     " anything.");
-                // GPU差を許容しつつ経路の未切り替えを検出するため、
-                // 変化した画素数の下限を1000にします。
+                // GPU差を許容しつつ経路の未切り替えを検出するため、変化した画素数の下限を1000にします。
                 Require(
                     pathChangedPixels > 1000,
                     "Switching the rendering path must"
                     " change the picture when the scene"
                     " has more lights than the limit.");
 
+                // 破棄するcluster光源
                 for (auto* instancedLightObject :
                     clusterLightObjects)
                 {
@@ -7179,12 +7837,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 半透明の前後ソートの確認。
-            //
-            // 重なった半透明を2枚置き、作る順番だけ変えて2回
-            // 描きます。並べ替えが効いていれば結果は作成順に
-            // よらないので、2枚の絵は一致するはずです。色の合成式を
-            // 当てにしないので、ブレンドの設定を将来変えても
-            // この段は生き残ります。
+            // 重なった半透明を2枚置き、作る順番だけ変えて2回描きます。
+            // 並べ替えが効いていれば結果は作成順によらないので、2枚の絵は一致するはずです。
+            // 色の合成式を当てにしないので、ブレンドの設定を将来変えてもこの段は生き残ります。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -7193,15 +7848,19 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
 
-                // nearZが手前。奥（farZ）を赤、手前を青にします。
+                // nearZが手前。
+                // 奥（farZ）を赤、手前を青にします。
                 constexpr float nearZ = 1.0f;
+                // farZ: 遠距離 Z。
                 constexpr float farZ = -1.0f;
+                // buildPane: creates the scene pane for render-order tests。
                 const auto buildPane =
                     [&scene](
                         const char* name,
                         const float z,
                         const DirectX::XMFLOAT4& color)
                 {
+                    // pane: rendered scene pane under test。
                     auto& pane =
                         scene.CreateGameObject(name);
                     pane.GetTransform().position =
@@ -7216,17 +7875,21 @@ int main(const int argumentCount, char** arguments)
                         color);
                     return &pane;
                 };
+                // farColor: 遠距離の色。
                 constexpr DirectX::XMFLOAT4 farColor{
                     1.0f, 0.15f, 0.15f, 0.5f };
+                // nearColor: 近距離の色。
                 constexpr DirectX::XMFLOAT4 nearColor{
                     0.15f, 0.3f, 1.0f, 0.5f };
 
                 // (1)手前を先に作る（並べ替えが無いと手前が先に出る）
                 auto* firstNear = buildPane(
                     "AlphaNearFirst", nearZ, nearColor);
+                // firstFar: 初回 遠距離。
                 auto* firstFar = buildPane(
                     "AlphaFarSecond", farZ, farColor);
                 Stage("frame-alpha-sort");
+                // nearFirstFrame: 近距離 初回の描画結果。
                 const auto nearFirstFrame =
                     renderComposedFrame();
                 DumpFrame("alpha-sort", nearFirstFrame);
@@ -7238,8 +7901,10 @@ int main(const int argumentCount, char** arguments)
                 // (2)奥を先に作る（同じ絵になるはず）
                 auto* secondFar = buildPane(
                     "AlphaFarFirst", farZ, farColor);
+                // secondNear: second 近距離。
                 auto* secondNear = buildPane(
                     "AlphaNearSecond", nearZ, nearColor);
+                // farFirstFrame: 遠距離 初回の描画結果。
                 const auto farFirstFrame =
                     renderComposedFrame();
                 static_cast<void>(
@@ -7251,20 +7916,26 @@ int main(const int argumentCount, char** arguments)
                 // いないから一致した」を弾くために要ります。
                 const auto emptyFrame = renderComposedFrame();
 
+                // countDifferences: 数 Differences。
                 const auto countDifferences =
                     [](const std::vector<std::uint8_t>& left,
                         const std::vector<std::uint8_t>& right)
                 {
+                    // changed: number of pixels changed by the feature。
                     std::size_t changed = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0;
                         y < Height;
                         ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // a: first pixel sample in the comparison。
                             const auto a = At(left, x, y);
+                            // b: second pixel sample in the comparison。
                             const auto b = At(right, x, y);
                             if (std::max({
                                     std::abs(a.red - b.red),
@@ -7279,9 +7950,11 @@ int main(const int argumentCount, char** arguments)
                     }
                     return changed;
                 };
+                // orderDifference: pixel difference caused by render order。
                 const auto orderDifference =
                     countDifferences(
                         nearFirstFrame, farFirstFrame);
+                // paneCoverage: fraction of the pane covered by the subject。
                 const auto paneCoverage =
                     countDifferences(
                         nearFirstFrame, emptyFrame);
@@ -7302,37 +7975,40 @@ int main(const int argumentCount, char** arguments)
                     " same regardless of the order they were"
                     " created in.");
 
-                // 読み込みモデル（ModelRenderer）でも同じことを
-                // 見ます。中身がパーツの集まりなので、MeshRenderer
-                // が通っても素通りする可能性があります。
+                // 読み込みモデル（ModelRenderer）でも同じことを見ます。
+                // 中身がパーツの集まりなので、MeshRendererが通っても素通りする可能性があります。
                 const auto buildModel =
                     [&scene](
                         const char* name,
                         const float z,
                         const DirectX::XMFLOAT4& color)
                 {
+                    // object: scene object used by this rendering case。
                     auto& object =
                         scene.CreateGameObject(name);
                     object.GetTransform().position =
                         { 0.0f, -0.5f, z };
                     object.GetTransform().scale =
                         { 1.5f, 1.5f, 1.5f };
+                    // renderer: renderer component attached to the test object。
                     auto& renderer =
                         object.AddComponent<
                             LamaPon::
                                 ModelRendererComponent>(
                             std::filesystem::path{ "models" }
                                 / "RiggedSimple.glb");
-                    // アルファを1未満にすると、モデル全体が
-                    // 半透明として扱われます（forceAlpha）。
+                    // アルファを1未満にすると、モデル全体が半透明として扱われます（forceAlpha）。
                     renderer.SetColor(color);
                     return &object;
                 };
+                // modelNearFirst: model 近距離 初回。
                 auto* modelNearFirst = buildModel(
                     "AlphaModelNear", nearZ, nearColor);
+                // modelFarSecond: model 遠距離 Second。
                 auto* modelFarSecond = buildModel(
                     "AlphaModelFar", farZ, farColor);
                 Stage("frame-alpha-sort-model");
+                // modelNearFirstFrame: model 近距離 初回の描画結果。
                 const auto modelNearFirstFrame =
                     renderComposedFrame();
                 DumpFrame(
@@ -7345,10 +8021,13 @@ int main(const int argumentCount, char** arguments)
                     scene.DestroyGameObject(
                         *modelFarSecond));
 
+                // modelFarFirst: model 遠距離 初回。
                 auto* modelFarFirst = buildModel(
                     "AlphaModelFar2", farZ, farColor);
+                // modelNearSecond: model 近距離 Second。
                 auto* modelNearSecond = buildModel(
                     "AlphaModelNear2", nearZ, nearColor);
+                // modelFarFirstFrame: model 遠距離 初回の描画結果。
                 const auto modelFarFirstFrame =
                     renderComposedFrame();
                 static_cast<void>(
@@ -7357,12 +8036,15 @@ int main(const int argumentCount, char** arguments)
                     scene.DestroyGameObject(
                         *modelNearSecond));
 
+                // modelEmptyFrame: model 空の描画結果。
                 const auto modelEmptyFrame =
                     renderComposedFrame();
+                // modelOrderDifference: model pixel difference caused by draw order。
                 const auto modelOrderDifference =
                     countDifferences(
                         modelNearFirstFrame,
                         modelFarFirstFrame);
+                // modelCoverage: fraction of the model region covered。
                 const auto modelCoverage =
                     countDifferences(
                         modelNearFirstFrame,
@@ -7393,8 +8075,8 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // テセレーションした不透明面が深度を書き込むことを
-            // 確認します。板の後ろに箱を置き、板より後に描画します。
+            // テセレーションした不透明面が深度を書き込むことを確認します。
+            // 板の後ろに箱を置き、板より後に描画します。
             // 深度が正しければ、箱は板に隠れます。
             {
                 subject.GetTransform().position =
@@ -7405,12 +8087,14 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { -1.5707963f, 0.0f, 0.0f });
 
+                // terrain: terrain object used by the tessellation test。
                 auto& terrain =
                     scene.CreateGameObject("TessTerrain");
                 terrain.GetTransform().position =
                     { 0.0f, 0.0f, 0.0f };
                 terrain.GetTransform().scale =
                     { 8.0f, 1.0f, 8.0f };
+                // terrainRenderer: renderer component attached to the terrain。
                 auto& terrainRenderer =
                     terrain.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -7420,8 +8104,8 @@ int main(const int argumentCount, char** arguments)
                 terrainRenderer.SetShaderPath(
                     std::filesystem::path{ "shaders" }
                         / "LamaPonTessellatedTerrain.hlsl");
-                // 地面は緑、隠れるべき箱は青。取り違えないよう
-                // はっきり分けます。
+                // 地面は緑、隠れるべき箱は青。
+                // 取り違えないようはっきり分けます。
                 terrainRenderer.SetCustomParameter(
                     0,
                     DirectX::XMFLOAT4{
@@ -7435,6 +8119,7 @@ int main(const int argumentCount, char** arguments)
                     DirectX::XMFLOAT4{
                         16.0f, 0.0f, 0.0f, 0.0f });
 
+                // buried: pixel count where terrain hides the object。
                 auto& buried =
                     scene.CreateGameObject("BuriedBox");
                 buried.GetTransform().position =
@@ -7448,45 +8133,54 @@ int main(const int argumentCount, char** arguments)
                         0.05f, 0.1f, 1.0f, 1.0f });
 
                 Stage("frame-tessellation");
+                // tessellationFrame: tessellationの描画結果。
                 const auto tessellationFrame =
                     renderComposedFrame();
                 DumpFrame(
                     "tessellation",
                     tessellationFrame);
 
-                // 対照。板を消して同じ絵を撮ります。ここで箱が
-                // 見えていなければ、隠しているのは板ではなく別の
-                // 何か（前の段で置いた地面など）で、上の判定は
-                // 検証になりません。検証シーンは使い回すため、
-                // 「隠れた＝成功」を信じる前に必ずこれを見ます。
+                // 対照。
+                // 板を消して同じ絵を撮ります。
+                // ここで箱が見えていなければ、隠しているのは板ではなく別の何か（前の段で置いた地面など）で、上の判定は検証になりません。
+                // 検証シーンは使い回すため、「隠れた＝成功」を信じる前に必ずこれを見ます。
                 static_cast<void>(
                     scene.DestroyGameObject(terrain));
+                // withoutTerrainFrame: without terrainの描画結果。
                 const auto withoutTerrainFrame =
                     renderComposedFrame();
                 static_cast<void>(
                     scene.DestroyGameObject(buried));
 
+                // countColour: 数 Colour。
                 const auto countColour =
                     [](const std::vector<std::uint8_t>& frame,
                         const bool wantGreen)
                 {
+                    // total: 累積した測定値。
                     std::size_t total = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0;
                         y < Height;
                         ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(frame, x, y);
+                            // primary: 主。
                             const int primary = wantGreen
                                 ? pixel.green
                                 : pixel.blue;
+                            // otherA: first neighboring pixel sample。
                             const int otherA = wantGreen
                                 ? pixel.red
                                 : pixel.red;
+                            // otherB: second neighboring pixel sample。
                             const int otherB = wantGreen
                                 ? pixel.blue
                                 : pixel.green;
@@ -7500,10 +8194,13 @@ int main(const int argumentCount, char** arguments)
                     }
                     return total;
                 };
+                // terrainPixels: terrainのpixel群。
                 const auto terrainPixels =
                     countColour(tessellationFrame, true);
+                // buriedPixels: buriedのpixel群。
                 const auto buriedPixels =
                     countColour(tessellationFrame, false);
+                // buriedWithoutTerrain: buried-pixel count without terrain。
                 const auto buriedWithoutTerrain =
                     countColour(withoutTerrainFrame, false);
                 std::cout
@@ -7514,13 +8211,13 @@ int main(const int argumentCount, char** arguments)
                     << buriedWithoutTerrain
                     << std::endl;
 
-                // 板が出ていること。HSMain/DSMainが無視されていたり
-                // コンパイルに失敗していたら、ここで落ちます。
+                // 板が出ていること。
+                // HSMain/DSMainが無視されていたりコンパイルに失敗していたら、ここで落ちます。
                 Require(
                     terrainPixels > 2000,
                     "The tessellated plane must be visible.");
-                // 対照が先。板が無いときに箱が見えていなければ、
-                // 下の判定は何も確かめていません。
+                // 対照が先。
+                // 板が無いときに箱が見えていなければ、下の判定は何も確かめていません。
                 Require(
                     buriedWithoutTerrain > 500,
                     "The buried box must be visible without"
@@ -7533,16 +8230,16 @@ int main(const int argumentCount, char** arguments)
                     " depth so later geometry behind it stays"
                     " hidden.");
 
-                // テセレーションShaderを、四角パッチに割れない形状
-                // （Sphere）へ割り当てた場合。
-                // ハル／ドメインを束ねたまま三角形リストを描くのは
-                // D3D11では不正で、ドライバー停止の原因になります。
+                // テセレーションShaderを、四角パッチに割れない形状（Sphere）へ割り当てた場合。
+                // ハル／ドメインを束ねたまま三角形リストを描くのはD3D11では不正で、ドライバー停止の原因になります。
                 // 描画できること自体を回帰条件として確認します。
                 {
+                    // wrongShape: 不一致の Shape。
                     auto& wrongShape =
                         scene.CreateGameObject("TessOnSphere");
                     wrongShape.GetTransform().position =
                         { 0.0f, 0.0f, 0.0f };
+                    // wrongRenderer: 不一致ののrenderer。
                     auto& wrongRenderer =
                         wrongShape.AddComponent<
                             LamaPon::MeshRendererComponent>(
@@ -7554,20 +8251,26 @@ int main(const int argumentCount, char** arguments)
                         / "LamaPonTessellatedTerrain.hlsl");
 
                     Stage("frame-tessellation-wrong-shape");
+                    // wrongFrame: 不一致のの描画結果。
                     const auto wrongFrame =
                         renderComposedFrame();
                     DumpFrame(
                         "tessellation-wrong-shape",
                         wrongFrame);
+                    // shaderError: shader compilation diagnostic text。
                     const auto shaderError =
                         wrongRenderer.ShaderError();
+                    // magenta: count of magenta pixels in the capture。
                     std::size_t magenta = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(wrongFrame, x, y);
                             if (pixel.red > 90
@@ -7580,21 +8283,26 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
-                    // 箱を消した画像と比較し、描画自体が省略されていないことを
-                    // 変化した画素数で確認します。
+                    // 箱を消した画像と比較し、描画自体が省略されていないことを変化した画素数で確認します。
                     static_cast<void>(
                         scene.DestroyGameObject(wrongShape));
+                    // withoutCube: capture without the reference cube。
                     const auto withoutCube =
                         renderComposedFrame();
+                    // changed: number of pixels changed by the feature。
                     std::size_t changed = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // before: 前。
                             const auto before =
                                 At(wrongFrame, x, y);
+                            // after: 後。
                             const auto after =
                                 At(withoutCube, x, y);
                             if (std::abs(
@@ -7624,8 +8332,7 @@ int main(const int argumentCount, char** arguments)
                         "A tessellation shader on a shape that"
                         " cannot tessellate must still draw the"
                         " mesh.");
-                    // テセレーション前提の頂点シェーダーは単体では
-                    // 成立しないため、マゼンタの代替表示になることを確認します。
+                    // テセレーション前提の頂点シェーダーは単体では成立しないため、マゼンタの代替表示になることを確認します。
                     Require(
                         magenta > 500,
                         "A tessellation shader on a shape that"
@@ -7639,18 +8346,14 @@ int main(const int argumentCount, char** arguments)
                         " reported.");
                 }
 
-                // Cubeは6面それぞれを四角パッチとして
-                // テセレーションできます。
-                //
+                // Cubeは6面それぞれを四角パッチとしてテセレーションできます。
                 // 見るのは2つです。
-                //  (1) 6面ぜんぶがパッチになっていること。1面しか
-                //      描いていなくても「マゼンタが出ない」だけなら
-                //      通ってしまうので、普通のCubeと同じ大きさに
-                //      見えるかを対照に置きます。
-                //  (2) 変位が効いていること。真上から見ると上面は
-                //      +Yへ動くだけで輪郭が変わらないので、箱を
-                //      傾けて側面の膨らみが写るようにします。
+                // (1) 6面ぜんぶがパッチになっていること。1面しか
+                // 描いていなくても「マゼンタが出ない」だけなら通ってしまうので、普通のCubeと同じ大きさに見えるかを対照に置きます。
+                // (2) 変位が効いていること。真上から見ると上面は
+                // +Yへ動くだけで輪郭が変わらないので、箱を傾けて側面の膨らみが写るようにします。
                 {
+                    // tessCube: cube object used as the tessellation reference。
                     auto& tessCube =
                         scene.CreateGameObject("TessCube");
                     tessCube.GetTransform().position =
@@ -7659,6 +8362,7 @@ int main(const int argumentCount, char** arguments)
                         { 1.2f, 1.2f, 1.2f };
                     tessCube.GetTransform().SetEulerAngles(
                         { 0.6f, 0.5f, 0.0f });
+                    // cubeRenderer: renderer component attached to the reference cube。
                     auto& cubeRenderer =
                         tessCube.AddComponent<
                             LamaPon::MeshRendererComponent>(
@@ -7667,6 +8371,7 @@ int main(const int argumentCount, char** arguments)
                                 1.0f, 1.0f, 1.0f, 1.0f });
 
                     Stage("frame-tessellation-cube-plain");
+                    // plainCubeFrame: 通常 cubeの描画結果。
                     const auto plainCubeFrame =
                         renderComposedFrame();
                     DumpFrame(
@@ -7685,20 +8390,19 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             8.0f, 0.0f, 0.0f, 0.0f });
                     // 周波数は分割数と割り切れない値にします。
-                    // 分割8に対して周波数4だと sin(u*4*2pi) が
-                    // u=k/8 のすべてでちょうど0になり、頂点が1つも
-                    // 動きません（傾きだけ変わるので陰影は変わり、
-                    // 「効いているように見えて動いていない」絵になります。
+                    // 分割8に対して周波数4だと sin(u*4*2pi) がu=k/8 のすべてでちょうど0になり、頂点が1つも動きません（傾きだけ変わるので陰影は変わり、「効いているように見えて動いていない」絵になります。
                     cubeRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
                             0.0f, 2.5f, 0.0f, 0.0f });
                     Stage("frame-tessellation-cube-flat");
+                    // flatFrame: flatの描画結果。
                     const auto flatFrame =
                         renderComposedFrame();
                     DumpFrame(
                         "tessellation-cube-flat",
                         flatFrame);
+                    // cubeError: cube shader compilation diagnostic。
                     const auto cubeError =
                         cubeRenderer.ShaderError();
 
@@ -7707,6 +8411,7 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             0.35f, 2.5f, 0.0f, 0.0f });
                     Stage("frame-tessellation-cube");
+                    // bumpFrame: bumpの描画結果。
                     const auto bumpFrame =
                         renderComposedFrame();
                     DumpFrame(
@@ -7716,25 +8421,32 @@ int main(const int argumentCount, char** arguments)
                     // 箱を消した絵を基準に、覆っている画素を数えます。
                     static_cast<void>(
                         scene.DestroyGameObject(tessCube));
+                    // emptyFrame: 空の描画結果。
                     const auto emptyFrame =
                         renderComposedFrame();
 
+                    // coverage: number of visible pixels in the measured region。
                     const auto coverage =
                         [&emptyFrame](
                             const std::vector<std::uint8_t>&
                                 frame)
                     {
+                        // total: 累積した測定値。
                         std::size_t total = 0;
+                        // 縦方向の走査座標
                         for (std::uint32_t y = 0;
                             y < Height;
                             ++y)
                         {
+                            // 横方向の走査座標
                             for (std::uint32_t x = 0;
                                 x < Width;
                                 ++x)
                             {
+                                // with: 対象frameのpixel。
                                 const auto with =
                                     At(frame, x, y);
+                                // without: 対照frameのpixel。
                                 const auto without =
                                     At(emptyFrame, x, y);
                                 if (std::abs(
@@ -7753,13 +8465,17 @@ int main(const int argumentCount, char** arguments)
                         }
                         return total;
                     };
+                    // magenta: count of magenta pixels in the capture。
                     std::size_t magenta = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(flatFrame, x, y);
                             if (pixel.red > 90
@@ -7772,10 +8488,13 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
+                    // plainCoverage: 通常 Coverage。
                     const auto plainCoverage =
                         coverage(plainCubeFrame);
+                    // flatCoverage: coverage with flat shading。
                     const auto flatCoverage =
                         coverage(flatFrame);
+                    // bumpCoverage: coverage with bump mapping。
                     const auto bumpCoverage =
                         coverage(bumpFrame);
                     std::cout
@@ -7800,8 +8519,7 @@ int main(const int argumentCount, char** arguments)
                         "The plain cube must be visible,"
                         " otherwise the comparison below means"
                         " nothing.");
-                    // 6面ぜんぶがパッチになっていれば、変位なしの
-                    // テセレーションは普通のCubeと同じ形になります。
+                    // 6面ぜんぶがパッチになっていれば、変位なしのテセレーションは普通のCubeと同じ形になります。
                     // 1面しか描いていなければ、ここで大きく減ります。
                     Require(
                         flatCoverage * 10 > plainCoverage * 8
@@ -7818,15 +8536,15 @@ int main(const int argumentCount, char** arguments)
                         " otherwise nothing was displaced.");
                 }
 
-                // ジオメトリシェーダー。三角形を面の向きへ押し出す
-                // 見本を割り当てて、形が変わることを見ます。
-                // 「マゼンタが出ない」だけでは、GSが1度も走らなくても
-                // 通ってしまいます。
+                // ジオメトリシェーダー。
+                // 三角形を面の向きへ押し出す見本を割り当てて、形が変わることを見ます。
+                // 「マゼンタが出ない」だけでは、GSが1度も走らなくても通ってしまいます。
                 {
                     // 直前の画像を対照に使い、このオブジェクトによる差だけを測ります。
                     const auto beforeGeometryFrame =
                         renderComposedFrame();
 
+                    // gsObject: geometry shaderのobject。
                     auto& gsObject =
                         scene.CreateGameObject("GeometryShader");
                     gsObject.GetTransform().position =
@@ -7835,6 +8553,7 @@ int main(const int argumentCount, char** arguments)
                         { 1.2f, 1.2f, 1.2f };
                     gsObject.GetTransform().SetEulerAngles(
                         { 0.6f, 0.5f, 0.0f });
+                    // gsRenderer: geometry shaderのrenderer。
                     auto& gsRenderer =
                         gsObject.AddComponent<
                             LamaPon::MeshRendererComponent>(
@@ -7849,45 +8568,51 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             0.85f, 0.45f, 0.2f, 1.0f });
 
-                    // 押し出し0。GSは走りますが形は元のままです。
+                    // 押し出し0。
+                    // GSは走りますが形は元のままです。
                     gsRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
                             0.0f, 0.0f, 0.0f, 0.0f });
                     Stage("frame-geometry-shader-flat");
+                    // gsFlatFrame: geometry shader flatの描画結果。
                     const auto gsFlatFrame =
                         renderComposedFrame();
                     DumpFrame(
                         "geometry-shader-flat",
                         gsFlatFrame);
+                    // gsError: geometry shaderのerror内容。
                     const auto gsError =
                         gsRenderer.ShaderError();
 
-                    // 押し出しあり。面がばらけるので輪郭が広がります。
+                    // 押し出しあり。
+                    // 面がばらけるので輪郭が広がります。
                     gsRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
                             0.5f, 0.0f, 0.0f, 0.0f });
                     Stage("frame-geometry-shader");
+                    // gsFrame: geometry shaderの描画結果。
                     const auto gsFrame =
                         renderComposedFrame();
                     DumpFrame("geometry-shader", gsFrame);
 
                     static_cast<void>(
                         scene.DestroyGameObject(gsObject));
+                    // gsEmptyFrame: geometry shader 空の描画結果。
                     const auto gsEmptyFrame =
                         renderComposedFrame();
                     DumpFrame(
                         "geometry-shader-empty",
                         gsEmptyFrame);
                     {
-                        // 同じ画素を3枚から並べます。「消えた」のか
-                        // 「暗く描かれた」のかは、対照と見比べないと
-                        // 区別できません。
+                        // 同じ画素を3枚から並べます。
+                        // 「消えた」のか「暗く描かれた」のかは、対照と見比べないと区別できません。
                         const auto sample =
                             [](const std::vector<std::uint8_t>&
                                     frame)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(frame, 150, 90);
                             return std::to_string(pixel.red)
@@ -7904,22 +8629,28 @@ int main(const int argumentCount, char** arguments)
                             << std::endl;
                     }
 
+                    // gsCoverage: geometry shader Coverage。
                     const auto gsCoverage =
                         [&gsEmptyFrame](
                             const std::vector<std::uint8_t>&
                                 frame)
                     {
+                        // total: 累積した測定値。
                         std::size_t total = 0;
+                        // 縦方向の走査座標
                         for (std::uint32_t y = 0;
                             y < Height;
                             ++y)
                         {
+                            // 横方向の走査座標
                             for (std::uint32_t x = 0;
                                 x < Width;
                                 ++x)
                             {
+                                // with: 対象frameのpixel。
                                 const auto with =
                                     At(frame, x, y);
+                                // without: 対照frameのpixel。
                                 const auto without =
                                     At(gsEmptyFrame, x, y);
                                 if (std::abs(
@@ -7938,8 +8669,10 @@ int main(const int argumentCount, char** arguments)
                         }
                         return total;
                     };
+                    // gsFlatCoverage: geometry shader flat Coverage。
                     const auto gsFlatCoverage =
                         gsCoverage(gsFlatFrame);
+                    // gsBurstCoverage: geometry shader Burst Coverage。
                     const auto gsBurstCoverage =
                         gsCoverage(gsFrame);
                     std::cout
@@ -7957,9 +8690,8 @@ int main(const int argumentCount, char** arguments)
                         "The cube must be visible with the"
                         " geometry shader bound, otherwise the"
                         " comparison below means nothing.");
-                    // 面がばらけると、外へ広がる分と、隙間から
-                    // 向こうが見える分の両方が起きます。増える
-                    // とは限らないので、増減ではなく変化量を見ます。
+                    // 面がばらけると、外へ広がる分と、隙間から向こうが見える分の両方が起きます。
+                    // 増えるとは限らないので、増減ではなく変化量を見ます。
                     const auto silhouetteChange =
                         gsBurstCoverage > gsFlatCoverage
                             ? gsBurstCoverage - gsFlatCoverage
@@ -7970,19 +8702,22 @@ int main(const int argumentCount, char** arguments)
                         " normal must change the silhouette,"
                         " otherwise the geometry shader never"
                         " ran.");
-                    // 束ねたまま抜けていないこと。GSが残っていると、
-                    // この後のスプライトやポスト処理まで巻き込みます。
-                    // オブジェクトを消した後の絵が、テセレーションの
-                    // 段を始める前と同じであることで確かめます。
+                    // 束ねたまま抜けていないこと。
+                    // GSが残っていると、この後のスプライトやポスト処理まで巻き込みます。
+                    // オブジェクトを消した後の絵が、テセレーションの段を始める前と同じであることで確かめます。
                     std::size_t leaked = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // after: 後。
                             const auto after =
                                 At(gsEmptyFrame, x, y);
+                            // before: 前。
                             const auto before =
                                 At(beforeGeometryFrame, x, y);
                             if (std::abs(
@@ -8008,24 +8743,21 @@ int main(const int argumentCount, char** arguments)
                         " gone.");
                 }
 
-                // 同じことを読み込みモデルでも見ます。MeshRenderer
-                // だけを制限してもModelRendererは通過します。パッチで描く
-                // 経路が無いのは同じ
-                // なので、テセレーション前提の頂点シェーダーが刺さり
-                // 何も描かれないまま黙って消えます。
-                //
-                // 使うのはCMO（スキニングなし）です。glTF/FBXは
-                // VSSkinnedMainが無くてコンパイルの時点で落ちるため、
-                // 差し替えの手前で止まってしまいこの経路を通りません。
-                // マテリアル上書きを有効にしないと共通Litで描かれない
-                // （＝カスタムShaderが効かない）ので、そこも合わせます。
+                // 同じことを読み込みモデルでも見ます。
+                // MeshRendererだけを制限してもModelRendererは通過します。
+                // パッチで描く経路が無いのは同じなので、テセレーション前提の頂点シェーダーが刺さり何も描かれないまま黙って消えます。
+                // 使うのはCMO（スキニングなし）です。
+                // glTF/FBXはVSSkinnedMainが無くてコンパイルの時点で落ちるため、差し替えの手前で止まってしまいこの経路を通りません。
+                // マテリアル上書きを有効にしないと共通Litで描かれない（＝カスタムShaderが効かない）ので、そこも合わせます。
                 {
+                    // tessModel: model object used by tessellation。
                     auto& tessModel =
                         scene.CreateGameObject("TessOnModel");
                     tessModel.GetTransform().position =
                         { 0.0f, -0.5f, 0.0f };
                     tessModel.GetTransform().scale =
                         { 1.5f, 1.5f, 1.5f };
+                    // modelRenderer: renderer component for the model test。
                     auto& modelRenderer =
                         tessModel.AddComponent<
                             LamaPon::ModelRendererComponent>(
@@ -8038,24 +8770,29 @@ int main(const int argumentCount, char** arguments)
                         / "LamaPonTessellatedTerrain.hlsl");
 
                     Stage("frame-tessellation-on-model");
+                    // modelFrame: modelの描画結果。
                     const auto modelFrame =
                         renderComposedFrame();
                     DumpFrame(
                         "tessellation-on-model",
                         modelFrame);
+                    // modelShaderError: model shader compilation diagnostic。
                     const auto modelShaderError =
                         modelRenderer.ShaderError();
-                    // 共通Litで描かれていないと、この段は「代役が
-                    // 出ている」ことを何も確かめていません。
+                    // 共通Litで描かれていないと、この段は「代役が出ている」ことを何も確かめていません。
                     const bool usesLamaPonLit =
                         modelRenderer.UsesLamaPonLit();
+                    // modelMagenta: magenta pixel count in the model region。
                     std::size_t modelMagenta = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel =
                                 At(modelFrame, x, y);
                             if (pixel.red > 90
@@ -8068,21 +8805,27 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
-                    // モデルを消した絵と見比べます。「落ちなかった」
-                    // では、描画が丸ごと捨てられていても通ります。
+                    // モデルを消した絵と見比べます。
+                    // 「落ちなかった」では、描画が丸ごと捨てられていても通ります。
                     static_cast<void>(
                         scene.DestroyGameObject(tessModel));
+                    // withoutModel: capture without the reference model。
                     const auto withoutModel =
                         renderComposedFrame();
+                    // modelChanged: pixel count changed by model rendering。
                     std::size_t modelChanged = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // before: 前。
                             const auto before =
                                 At(modelFrame, x, y);
+                            // after: 後。
                             const auto after =
                                 At(withoutModel, x, y);
                             if (std::abs(
@@ -8123,10 +8866,8 @@ int main(const int argumentCount, char** arguments)
                         "A tessellation shader on a loaded model"
                         " must fall back to the magenta"
                         " placeholder.");
-                    // コンパイル失敗による代役と区別します。CMOは
-                    // VSMain/PSMainがそろっていてコンパイルは通るので、
-                    // 理由がテセレーションでなければ差し替えは
-                    // 効いていません。
+                    // コンパイル失敗による代役と区別します。
+                    // CMOはVSMain/PSMainがそろっていてコンパイルは通るので、理由がテセレーションでなければ差し替えは効いていません。
                     Require(
                         modelShaderError.find("tessellation")
                             != std::string::npos,
@@ -8144,11 +8885,8 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 自作Compute Shaderの確認。
-            //
-            // 計算した絵を名前付きテクスチャへ書き、その名前を
-            // SpriteRendererへ入れて表示します。表示側は無改造で
-            // 使える（レンダーテクスチャと同じ登録簿に入る）ことも
-            // ここで一緒に確かめています。
+            // 計算した絵を名前付きテクスチャへ書き、その名前をSpriteRendererへ入れて表示します。
+            // 表示側は無改造で使える（レンダーテクスチャと同じ登録簿に入る）こともここで一緒に確かめています。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8157,7 +8895,9 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
 
+                // computeRed: compute 赤。
                 constexpr float computeRed = 0.75f;
+                // compute: compute effect settings under test。
                 LamaPon::ComputeEffectRequest compute;
                 compute.shader =
                     std::filesystem::path{
@@ -8169,6 +8909,7 @@ int main(const int argumentCount, char** arguments)
                 compute.customParameters[0] = {
                     computeRed, 0.0f, 0.0f, 0.0f
                 };
+                // computeError: compute shader compilation diagnostic。
                 std::string computeError;
                 Require(
                     graphics.DispatchComputeEffect(
@@ -8177,14 +8918,14 @@ int main(const int argumentCount, char** arguments)
                     ("The compute effect must run: "
                         + computeError).c_str());
 
-                // bool/error契約を守り、入力textureのdecode失敗を例外として
-                // 呼び出し側へ漏らさないこと。HLSLを意図的に画像入力へ
-                // 指定しています。
+                // bool/error契約を守り、入力textureのdecode失敗を例外として呼び出し側へ漏らさないこと。
+                // HLSLを意図的に画像入力へ指定しています。
                 auto invalidInputCompute = compute;
                 invalidInputCompute.outputTexture =
                     "computeInvalidInputProbe";
                 invalidInputCompute.inputTextures[0] =
                     compute.shader;
+                // invalidInputError: 入力のerror内容。
                 std::string invalidInputError;
                 Require(
                     !graphics.DispatchComputeEffect(
@@ -8193,11 +8934,11 @@ int main(const int argumentCount, char** arguments)
                         && !invalidInputError.empty(),
                     "A compute effect with an unreadable input texture must return false and an error.");
 
-                // 表示経路のフィルターやUV変換を除外するため、
-                // Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
+                // 表示経路のフィルターやUV変換を除外するため、Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
                 const auto* computeTarget =
                     graphics.FindRenderTexture(
                         "computeProbe");
+                // computeOutputTexture: compute 出力のtexture。
                 auto* const computeOutputTexture =
                     computeTarget != nullptr
                     ? legacyRenderTargetDisplayTexture(computeTarget)
@@ -8212,6 +8953,7 @@ int main(const int argumentCount, char** arguments)
                     << "x" << computeTarget->Height()
                     << std::endl;
 
+                // outputDescription: D3D11 API descriptor。
                 D3D11_TEXTURE2D_DESC outputDescription{};
                 computeOutputTexture->GetDesc(&outputDescription);
                 outputDescription.Usage =
@@ -8233,6 +8975,7 @@ int main(const int argumentCount, char** arguments)
                 D3D11Access::Context(graphics)->CopyResource(
                     staging.Get(),
                     computeOutputTexture);
+                // mapped: number of pixels matching the mapped compute color。
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 Require(
                     SUCCEEDED(D3D11Access::Context(graphics)->Map(
@@ -8248,11 +8991,13 @@ int main(const int argumentCount, char** arguments)
                     [&](const std::uint32_t x,
                         const std::uint32_t y)
                 {
+                    // row: 配置行番号。
                     const auto* row =
                         static_cast<const std::uint8_t*>(
                             mapped.pData)
                         + static_cast<std::size_t>(y)
                             * mapped.RowPitch;
+                    // halves: pixel counts in the two output regions。
                     const auto* halves =
                         reinterpret_cast<
                             const DirectX::PackedVector::
@@ -8267,11 +9012,14 @@ int main(const int argumentCount, char** arguments)
                             XMConvertHalfToFloat(halves[2])
                     };
                 };
+                // left: 比較元の値。
                 const auto left =
                     texel(compute.outputWidth / 4,
                         compute.outputHeight / 2);
+                // rightTop: 右側 上側。
                 const auto rightTop =
                     texel(compute.outputWidth * 3 / 4, 1);
+                // rightBottom: 右側 下側。
                 const auto rightBottom =
                     texel(compute.outputWidth * 3 / 4,
                         compute.outputHeight - 1);
@@ -8288,25 +9036,23 @@ int main(const int argumentCount, char** arguments)
                         && left.y < 0.01f,
                     "The compute shader must write the"
                     " requested color into the left half.");
-                // 下ほど明るい縦のグラデーション。配線だけ通って
-                // 中身が一様だと、ここで落ちます。
+                // 下ほど明るい縦のグラデーション。
+                // 配線だけ通って中身が一様だと、ここで落ちます。
                 Require(
                     rightBottom.y > rightTop.y + 0.5f,
                     "The compute output must keep the"
                     " vertical gradient it wrote.");
 
-                // 表示側。同じ名前をSpriteRendererへ入れるだけで
-                // 出る、という導線をドキュメントに書いているので、
-                // 実際に出ることも見ます。テクスチャの右半分は
-                // 明るい緑なので、画面のどこかに緑が優勢な画素が
-                // 無ければ表示できていません。
-                // スプライトの位置とサイズは画面のピクセルです
-                // （ワールド座標ではありません）。サイズを省くと
-                // 数画素に縮小されるため、測定領域から外れます。
+                // 表示側。
+                // 同じ名前をSpriteRendererへ入れるだけで出る、という導線をドキュメントに書いているので、実際に出ることも見ます。
+                // テクスチャの右半分は明るい緑なので、画面のどこかに緑が優勢な画素が無ければ表示できていません。
+                // スプライトの位置とサイズは画面のピクセルです（ワールド座標ではありません）。
+                // サイズを省くと数画素に縮小されるため、測定領域から外れます。
                 auto& computeSprite =
                     scene.CreateGameObject("ComputeSprite");
                 computeSprite.GetTransform().position =
                     { 80.0f, 30.0f, 0.0f };
+                // computeRenderer: renderer component used by the compute test。
                 auto& computeRenderer =
                     computeSprite.AddComponent<
                         LamaPon::SpriteRendererComponent>(
@@ -8314,28 +9060,31 @@ int main(const int argumentCount, char** arguments)
                 computeRenderer.SetRenderTexture(
                     "computeProbe");
                 Stage("frame-compute-effect");
-                // 2Dを描くのはscene.Render()を通るrenderFrameの方
-                // です。renderComposedFrameは3Dの合成だけなので、
-                // スプライトを置いても一生出てきません。
+                // 2Dを描くのはscene.Render()を通るrenderFrameの方です。
+                // renderComposedFrameは3Dの合成だけなので、スプライトを置いても一生出てきません。
                 const auto computeFrame = renderFrame();
                 DumpFrame("compute-effect", computeFrame);
                 static_cast<void>(
                     scene.DestroyGameObject(
                         computeSprite));
 
+                // spriteGreen: sprite 緑。
                 std::size_t spriteGreen = 0;
+                // spriteRed: sprite 赤。
                 std::size_t spriteRed = 0;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0;
                         x < Width;
                         ++x)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto pixel =
                             At(computeFrame, x, y);
-                        // 背景の床は(191,151,48)のような暖色で、
-                        // 青がはっきり低い。混ざらないよう、
-                        // 「他の2色がどちらも低い」ものだけ数えます。
+                        // 背景の床は(191,151,48)のような暖色で、青がはっきり低い。
+                        // 混ざらないよう、「他の2色がどちらも低い」ものだけ数えます。
                         if (pixel.green > 80
                             && pixel.red < 60
                             && pixel.blue < 60)
@@ -8359,10 +9108,8 @@ int main(const int argumentCount, char** arguments)
                     "A SpriteRenderer pointed at the compute"
                     " output must show both halves of it.");
 
-                // GraphicsDevice経由でもcompute manifestの任意entryを
-                // 実行し、失敗時にCSMain固定の誤診断を足さないことを
-                // 確かめます。fixtureのsourceはasset-root相対なので、
-                // この検証中だけfixture directoryをrootにします。
+                // GraphicsDevice経由でもcompute manifestの任意entryを実行し、失敗時にCSMain固定の誤診断を足さないことを確かめます。
+                // fixtureのsourceはasset-root相対なので、この検証中だけfixture directoryをrootにします。
                 const auto engineAssetRoot =
                     graphics.Assets().AssetRoot();
                 graphics.Assets().SetAssetRoot(
@@ -8370,6 +9117,7 @@ int main(const int argumentCount, char** arguments)
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "shader-manifest");
 
+                // manifestCompute: compute request loaded from the manifest。
                 LamaPon::ComputeEffectRequest manifestCompute;
                 manifestCompute.shader =
                     "valid-compute.lamashader.json";
@@ -8380,6 +9128,7 @@ int main(const int argumentCount, char** arguments)
                 manifestCompute.customParameters[0] = {
                     0.25f, 0.5f, 0.75f, 0.0f
                 };
+                // manifestComputeError: manifest compute compilation diagnostic。
                 std::string manifestComputeError;
                 Require(
                     graphics.DispatchComputeEffect(
@@ -8417,11 +9166,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // リフレクションプローブの確認。鏡面の球のそばに
-            // 緑の壁を置いてプローブを焼く。テストシーンには
-            // Skyboxが無いので、プローブ無しでは球へ緑が映る
-            // 経路が存在しない＝球に緑が出ればプローブが機能
-            // している証拠になる。
+            // リフレクションプローブの確認。
+            // 鏡面の球のそばに緑の壁を置いてプローブを焼く。
+            // テストシーンにはSkyboxが無いので、プローブ無しでは球へ緑が映る経路が存在しない＝球に緑が出ればプローブが機能している証拠になる。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8429,6 +9176,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.5f, 6.0f };
                 cameraObject.GetTransform().SetEulerAngles({ -0.15f, 0.0f, 0.0f });
 
+                // mirrorSphere: reflective sphere object used by the probe test。
                 auto& mirrorSphere =
                     scene.CreateGameObject(
                         "ProbeMirrorSphere");
@@ -8436,6 +9184,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.0f, 0.0f };
                 mirrorSphere.GetTransform().scale =
                     { 2.0f, 2.0f, 2.0f };
+                // mirrorRenderer: renderer component attached to the reflective sphere。
                 auto& mirrorRenderer =
                     mirrorSphere.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -8448,8 +9197,8 @@ int main(const int argumentCount, char** arguments)
                         1.0f);
                 mirrorRenderer.SetMetallic(1.0f);
 
-                // 壁はカメラ（z=+6）の後ろ。カメラには映らず、
-                // 球の反射にだけ現れます。
+                // 壁はカメラ（z=+6）の後ろ。
+                // カメラには映らず、球の反射にだけ現れます。
                 auto& greenWall =
                     scene.CreateGameObject("ProbeWall");
                 greenWall.GetTransform().position =
@@ -8466,9 +9215,8 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // プローブは鏡面球の中心に置きます。球の面は内側
-                // から見ると全部裏面（カリングされる）なので、
-                // ベイクには球自身が映らず周囲だけが焼けます。
+                // プローブは鏡面球の中心に置きます。
+                // 球の面は内側から見ると全部裏面（カリングされる）なので、ベイクには球自身が映らず周囲だけが焼けます。
                 auto& probeObject =
                     scene.CreateGameObject(
                         "ReflectionProbe");
@@ -8483,13 +9231,14 @@ int main(const int argumentCount, char** arguments)
                 DumpFrame(
                     "reflection-probe-on",
                     renderComposedFrame());
-                // 診断: ベイクが走ったか、検索で見つかるかを出す
-                // （--dump時のみの出力。効いていないときの切り分け用）。
+                // 診断: ベイクが走ったか、検索で見つかるかを出す（--dump時のみの出力。効いていないときの切り分け用）。
                 {
+                    // probeComponent: reflection-probe component under test。
                     auto& probeComponent =
                         *probeObject.GetComponent<
                             LamaPon::
                                 ReflectionProbeComponent>();
+                    // bakedEnvironment: test input or measurement used by the surrounding rendering check。
                     const auto& bakedEnvironment =
                         probeComponent.BakedEnvironment();
                     Require(
@@ -8525,11 +9274,11 @@ int main(const int argumentCount, char** arguments)
                         << std::endl;
                 }
 
-                // ボックス射影。箱の大きさを与えると、反射先が箱との
-                // 交点へ補正されて壁が正しい距離で映ります。指定なしの
-                // ときは無限遠として映るため、球の上に映る壁の
-                // 位置と大きさが変わります。
+                // ボックス射影。
+                // 箱の大きさを与えると、反射先が箱との交点へ補正されて壁が正しい距離で映ります。
+                // 指定なしのときは無限遠として映るため、球の上に映る壁の位置と大きさが変わります。
                 {
+                    // probeComponent: reflection-probe component under test。
                     auto& probeComponent =
                         *probeObject.GetComponent<
                             LamaPon::
@@ -8570,9 +9319,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // ベイク結果がディスクへ保存され、シーン再読み込み時に復元されることを
-            // 確認します。復元画像の一致と、壁を変更しても保存済みの反射を返すことを
-            // 別々に検証します。
+            // ベイク結果がディスクへ保存され、シーン再読み込み時に復元されることを確認します。
+            // 復元画像の一致と、壁を変更しても保存済みの反射を返すことを別々に検証します。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8589,6 +9337,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.0f, 0.0f };
                 mirrorSphere.GetTransform().scale =
                     { 2.0f, 2.0f, 2.0f };
+                // mirrorRenderer: renderer component attached to the reflective sphere。
                 auto& mirrorRenderer =
                     mirrorSphere.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -8600,12 +9349,14 @@ int main(const int argumentCount, char** arguments)
                         0.05f,
                         1.0f);
                 mirrorRenderer.SetMetallic(1.0f);
+                // wall: 壁。
                 auto& wall =
                     scene.CreateGameObject("PersistWall");
                 wall.GetTransform().position =
                     { 0.0f, 0.0f, 10.0f };
                 wall.GetTransform().scale =
                     { 20.0f, 12.0f, 0.3f };
+                // wallRenderer: 壁のrenderer。
                 auto& wallRenderer = wall.AddComponent<
                     LamaPon::MeshRendererComponent>(
                     LamaPon::PrimitiveShape::Cube,
@@ -8616,33 +9367,36 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // 決定性のため、空のキャッシュから始めます
-                // （置き場はmainでtest-output配下へ差し替え済み）。
+                // 決定性のため、空のキャッシュから始めます（置き場はmainでtest-output配下へ差し替え済み）。
                 const auto environmentCacheDirectory =
                     LamaPon::EnvironmentCache::
                         CacheDirectory();
+                // cleanupError: error returned by fixture cleanup。
                 std::error_code cleanupError;
                 std::filesystem::remove_all(
                     environmentCacheDirectory,
                     cleanupError);
 
+                // createProbe: creates a reflection probe at the requested position。
                 const auto createProbe =
                     [&scene](const char* name)
                     -> LamaPon::ReflectionProbeComponent&
                 {
+                    // probeObject: scene object carrying the reflection probe。
                     auto& probeObject =
                         scene.CreateGameObject(name);
                     probeObject.GetTransform().position =
                         { 0.0f, 0.0f, 0.0f };
+                    // component: component attached to the reflection probe。
                     auto& component =
                         probeObject.AddComponent<
                             LamaPon::
                                 ReflectionProbeComponent>(
                             20.0f,
                             1.0f);
-                    // シーンファイル由来の印。実際のシーン読み込み
-                    // ではデシリアライザが立てます。これが無い
-                    // プローブは保存も復元もされません。
+                    // シーンファイル由来の印。
+                    // 実際のシーン読み込みではデシリアライザが立てます。
+                    // これが無いプローブは保存も復元もされません。
                     component.MarkLoadedFromScene();
                     return component;
                 };
@@ -8652,6 +9406,7 @@ int main(const int argumentCount, char** arguments)
                 auto& bakedProbe =
                     createProbe("PersistedProbe");
                 Stage("frame-probe-persist-bake");
+                // bakedFrame: bakedの描画結果。
                 const auto bakedFrame =
                     renderComposedFrame();
                 Require(
@@ -8670,9 +9425,11 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(
                     scene.DestroyGameObject(
                         bakedProbe.Owner()));
+                // restoredProbe: probe state restored from serialized scene。
                 auto& restoredProbe =
                     createProbe("PersistedProbeReloaded");
                 Stage("frame-probe-persist-restore");
+                // restoredFrame: restoredの描画結果。
                 const auto restoredFrame =
                     renderComposedFrame();
                 Require(
@@ -8691,9 +9448,11 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(
                     scene.DestroyGameObject(
                         restoredProbe.Owner()));
+                // staleProbe: probe handle invalidated by scene reload。
                 auto& staleProbe =
                     createProbe("PersistedProbeStale");
                 Stage("frame-probe-persist-stale");
+                // staleFrame: staleの描画結果。
                 const auto staleFrame =
                     renderComposedFrame();
                 DumpFrame("probe-persist-stale", staleFrame);
@@ -8709,9 +9468,11 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(
                     scene.DestroyGameObject(
                         staleProbe.Owner()));
+                // rebakedProbe: probe rebaked after restoring the scene。
                 auto& rebakedProbe =
                     createProbe("PersistedProbeRebaked");
                 Stage("frame-probe-persist-rebake");
+                // rebakedFrame: rebakedの描画結果。
                 const auto rebakedFrame =
                     renderComposedFrame();
                 Require(
@@ -8738,15 +9499,11 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // ベイクした間接光（照度ボリューム）。赤い壁のそばの
-            // 床に、壁からのはね返り（バウンス光）が出ることを
-            // 確かめます。
-            //
-            // データ未生成時は画像が変化しないこと、ベイク後は壁付近だけへ
-            // 赤い間接光が加わること、JSON往復後も同じ結果になることを検証します。
+            // ベイクした間接光（照度ボリューム）。
+            // 赤い壁のそばの床に、壁からのはね返り（バウンス光）が出ることを確かめます。
+            // データ未生成時は画像が変化しないこと、ベイク後は壁付近だけへ赤い間接光が加わること、JSON往復後も同じ結果になることを検証します。
             {
-                // 測定領域へ検査用オブジェクトが映り込まないよう、
-                // subjectとcloneを画面外へ移動します。
+                // 測定領域へ検査用オブジェクトが映り込まないよう、subjectとcloneを画面外へ移動します。
                 const auto giSavedClonePosition =
                     clone.GetTransform().position;
                 subject.GetTransform().position =
@@ -8758,7 +9515,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.35f, 0.0f, 0.0f });
 
-                // 赤い壁。カメラから見て左側に立てます。
+                // 赤い壁。
+                // カメラから見て左側に立てます。
                 auto& redWall =
                     scene.CreateGameObject("GiRedWall");
                 redWall.GetTransform().position =
@@ -8775,20 +9533,24 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // 床の帯の「赤寄り」。壁のそば（画面左）と、壁から
-                // 離れた場所（画面右）を同じ大きさで測ります。
+                // 床の帯の「赤寄り」。
+                // 壁のそば（画面左）と、壁から離れた場所（画面右）を同じ大きさで測ります。
                 const auto redSkew =
                     [&](const std::vector<std::uint8_t>& frame,
                         const std::uint32_t minimumX,
                         const std::uint32_t maximumX)
                 {
+                    // skew: difference between two sample averages。
                     long long skew = 0;
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 130; y < 165; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = minimumX;
                             x < maximumX;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto pixel = At(frame, x, y);
                             skew += pixel.red;
                             skew -= pixel.blue;
@@ -8796,18 +9558,22 @@ int main(const int argumentCount, char** arguments)
                     }
                     return skew;
                 };
-                // 帯はダンプ画像から決めています（壁の右が床になる
-                // のはx≈105から。遠い帯はボリュームの外の床です）。
+                // 帯はダンプ画像から決めています（壁の右が床になるのはx≈105から。遠い帯はボリュームの外の床です）。
                 constexpr std::uint32_t nearMinimumX = 110;
+                // nearMaximumX: 近距離 Maximum X。
                 constexpr std::uint32_t nearMaximumX = 150;
+                // farMinimumX: 遠距離 Minimum X。
                 constexpr std::uint32_t farMinimumX = 270;
+                // farMaximumX: 遠距離 Maximum X。
                 constexpr std::uint32_t farMaximumX = 310;
+                // bandPixels: bandのpixel群。
                 constexpr long long bandPixels =
                     static_cast<long long>(
                         nearMaximumX - nearMinimumX)
                     * 35;
 
                 Stage("frame-gi-off");
+                // giOffFrame: GI 無効の描画結果。
                 const auto giOffFrame = renderComposedFrame();
                 DumpFrame("gi-off", giOffFrame);
 
@@ -8816,8 +9582,7 @@ int main(const int argumentCount, char** arguments)
                     scene.BakedGlobalIllumination();
                 giSettings.enabled = true;
                 // ボリュームは壁のある左半分だけを覆います。
-                // 「箱の外の床は1画素も変わらない」を遠い帯の検査に
-                // するためです（縁のフェードの検証も兼ねます）。
+                // 「箱の外の床は1画素も変わらない」を遠い帯の検査にするためです（縁のフェードの検証も兼ねます）。
                 giSettings.center = { -3.0f, 1.0f, 0.0f };
                 giSettings.size = { 10.0f, 6.0f, 16.0f };
                 giSettings.resolutionX = 4;
@@ -8826,6 +9591,7 @@ int main(const int argumentCount, char** arguments)
                 giSettings.intensity = 1.0f;
                 scene.SetBakedGlobalIlluminationSettings(
                     giSettings);
+                // giNoDataFrame: GI なし Dataの描画結果。
                 const auto giNoDataFrame =
                     renderComposedFrame();
                 Require(
@@ -8837,6 +9603,7 @@ int main(const int argumentCount, char** arguments)
                 // 描画を回します（4x2x4=32点なので数フレーム）。
                 scene.RequestBakedGlobalIlluminationBake();
                 Stage("frame-gi-bake");
+                // bakeFrames: bakeの描画結果群。
                 int bakeFrames = 0;
                 while (
                     scene.BakedGlobalIlluminationBakeProgress()
@@ -8852,18 +9619,23 @@ int main(const int argumentCount, char** arguments)
                     scene.HasBakedGlobalIllumination(),
                     "The GI bake must produce data.");
                 Stage("frame-gi-on");
+                // giOnFrame: GI 有効の描画結果。
                 const auto giOnFrame = renderComposedFrame();
                 DumpFrame("gi-on", giOnFrame);
 
+                // nearBefore: 近距離 前。
                 const long long nearBefore =
                     redSkew(giOffFrame,
                         nearMinimumX, nearMaximumX);
+                // nearAfter: 近距離 後。
                 const long long nearAfter =
                     redSkew(giOnFrame,
                         nearMinimumX, nearMaximumX);
+                // farBefore: 遠距離 前。
                 const long long farBefore =
                     redSkew(giOffFrame,
                         farMinimumX, farMaximumX);
+                // farAfter: 遠距離 後。
                 const long long farAfter =
                     redSkew(giOnFrame,
                         farMinimumX, farMaximumX);
@@ -8873,9 +9645,9 @@ int main(const int argumentCount, char** arguments)
                     << ", far (outside volume): "
                     << farBefore << " -> " << farAfter
                     << std::endl;
-                // どこで効いているかの診断（8画素刻みの列プロファイル。
-                // 帯の位置がずれたときに、この数字から選び直します）。
+                // どこで効いているかの診断（8画素刻みの列プロファイル。帯の位置がずれたときに、この数字から選び直します）。
                 std::cout << "gi column profile:";
+                // GI列プロファイルの横位置
                 for (std::uint32_t column = 0;
                     column < 320;
                     column += 8)
@@ -8889,16 +9661,13 @@ int main(const int argumentCount, char** arguments)
                             / (8 * 35);
                 }
                 std::cout << std::endl;
-                // 壁のそばは1画素あたり2以上赤くなること
-                // （閾値は1画素あたりで決めます）。
+                // 壁のそばは1画素あたり2以上赤くなること（閾値は1画素あたりで決めます）。
                 Require(
                     nearAfter - nearBefore > bandPixels * 2,
                     "GI must bounce red light onto the floor"
                     " near the wall.");
-                // ボリュームの外の床は（1画素あたり1未満まで）
-                // 変わらないこと。縁のフェードの外では重みが
-                // ちょうど0になり、従来のAmbientがそのまま
-                // 使われるためです。
+                // ボリュームの外の床は（1画素あたり1未満まで）変わらないこと。
+                // 縁のフェードの外では重みがちょうど0になり、従来のAmbientがそのまま使われるためです。
                 Require(
                     std::abs(farAfter - farBefore)
                         < bandPixels,
@@ -8906,15 +9675,13 @@ int main(const int argumentCount, char** arguments)
                     " stay unchanged.");
 
                 // (3)保存→読み込みで同じ間接光が再現されること。
-                // この場でシーンを丸ごとJSONにし、テストの最後に
-                // 別のSceneへ読み込んで見比べます（今のSceneを
-                // 壊すと以降の節が使えなくなるため、検証は最後です）。
+                // この場でシーンを丸ごとJSONにし、テストの最後に別のSceneへ読み込んで見比べます（今のSceneを壊すと以降の節が使えなくなるため、検証は最後です）。
                 giRoundTripJson = scene.SerializeToJson();
                 giRoundTripExpectedNear =
                     nearAfter - nearBefore;
 
-                // 後片付け。表示は無効へ戻します（焼き込みデータは
-                // 残りますが、enabledが偽なら描画へ影響しません）。
+                // 後片付け。
+                // 表示は無効へ戻します（焼き込みデータは残りますが、enabledが偽なら描画へ影響しません）。
                 giSettings.enabled = false;
                 scene.SetBakedGlobalIlluminationSettings(
                     giSettings);
@@ -8928,17 +9695,15 @@ int main(const int argumentCount, char** arguments)
                     savedCameraPosition;
                 cameraObject.GetTransform().SetEulerAngles(
                     savedCameraRotation);
+                // giRestoredFrame: GI Restoredの描画結果。
                 const auto giRestoredFrame =
                     renderComposedFrame();
                 static_cast<void>(giRestoredFrame);
             }
 
-            // レトロ3D（PS1風）Shaderの確認。テクスチャの泳ぎは
-            // 「大きなポリゴンを浅い角度で見る」ときに一番出るので、
-            // 巨大なPlaneを1枚敷いて低い視点から見ます。UVを細かく
-            // 繰り返して市松模様にし、直線が折れる様子を見えるように
-            // します（アルベド画像が無くてもUVスケールで格子は作れ
-            // ないため、色の量子化と頂点スナップが主な判定材料）。
+            // レトロ3D（PS1風）Shaderの確認。
+            // テクスチャの泳ぎは「大きなポリゴンを浅い角度で見る」ときに一番出るので、巨大なPlaneを1枚敷いて低い視点から見ます。
+            // UVを細かく繰り返して市松模様にし、直線が折れる様子を見えるようにします（アルベド画像が無くてもUVスケールで格子は作れないため、色の量子化と頂点スナップが主な判定材料）。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8946,20 +9711,20 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.6f, 6.0f };
                 cameraObject.GetTransform().SetEulerAngles({ -0.08f, 0.0f, 0.0f });
 
+                // retroFloor: retro 床。
                 auto& retroFloor =
                     scene.CreateGameObject("RetroFloor");
                 retroFloor.GetTransform().position =
                     { 0.0f, -1.0f, -10.0f };
                 retroFloor.GetTransform().scale =
                     { 40.0f, 1.0f, 60.0f };
+                // テクスチャが無いと泳ぎは目に見えません（歪むのはUVなので、模様が必要です）。
                 auto& retroRenderer =
                     retroFloor.AddComponent<
                         LamaPon::MeshRendererComponent>(
                         LamaPon::PrimitiveShape::Plane,
                         DirectX::XMFLOAT4{
                             1.0f, 1.0f, 1.0f, 1.0f },
-                        // テクスチャが無いと泳ぎは目に見えません
-                        // （歪むのはUVなので、模様が必要です）。
                         std::filesystem::path{ "textures" }
                             / "directxtk.jpg");
                 retroRenderer.SetShaderPath(
@@ -8981,12 +9746,14 @@ int main(const int argumentCount, char** arguments)
                     DirectX::XMFLOAT4{
                         4.0f, 4.0f, 0.0f, 0.0f });
 
+                // retroBlock: test input or measurement used by the surrounding rendering check。
                 auto& retroBlock =
                     scene.CreateGameObject("RetroBlock");
                 retroBlock.GetTransform().position =
                     { 1.4f, -0.4f, -3.0f };
                 retroBlock.GetTransform().scale =
                     { 1.2f, 1.2f, 1.2f };
+                // retroBlockRenderer: retro block renderer component under test。
                 auto& retroBlockRenderer =
                     retroBlock.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -9017,6 +9784,7 @@ int main(const int argumentCount, char** arguments)
                         const float warp,
                         const float snap)
                     {
+                        // value: 検証用の値。
                         const DirectX::XMFLOAT4 value{
                             warp, snap, 80.0f, 8.0f };
                         retroRenderer.SetCustomParameter(
@@ -9043,8 +9811,7 @@ int main(const int argumentCount, char** arguments)
                     "retro3d-off",
                     renderComposedFrame());
 
-                // 最後にONへ戻して、描画が復活するか確認します
-                // （復活すればパラメーター依存、しなければ状態依存）。
+                // 最後にONへ戻して、描画が復活するか確認します（復活すればパラメーター依存、しなければ状態依存）。
                 setRetroParameters(1.0f, 1.0f);
                 Stage("frame-retro3d-onagain");
                 DumpFrame(
@@ -9062,25 +9829,30 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // ノイズのCPU/GPU一致。C++（LamaPon::Noise）とHLSL
-            // （LamaPonNoise.hlsli）は同じ値を返す約束なので、
-            // 実際に突き合わせます。ここがずれると「C++で地形を
-            // 作り、シェーダーで同じノイズを使う」が成立しません。
-            //
-            // 画面全体へノイズの値を書き出す専用Shaderを1枚かけて、
-            // 中央のピクセルを読み取ります。8bitバッファなので
-            // R=上位、G=下位に分けて精度を確保しています。
+            // ノイズのCPU/GPU一致。
+            // C++（LamaPon::Noise）とHLSL（LamaPonNoise.hlsli）は同じ値を返す約束なので、実際に突き合わせます。
+            // ここがずれると「C++で地形を作り、シェーダーで同じノイズを使う」が成立しません。
+            // 画面全体へノイズの値を書き出す専用Shaderを1枚かけて、中央のピクセルを読み取ります。
+            // 8bitバッファなのでR=上位、G=下位に分けて精度を確保しています。
             {
                 struct NoiseCase final
                 {
+                    // name: 名前。
                     const char* name;
+                    // x: 横方向のpixel座標。
                     float x;
+                    // y: 縦方向のpixel座標。
                     float y;
+                    // kind: 種別。
                     float kind;
+                    // octaves: octave数。
                     float octaves;
+                    // z: 奥行き座標。
                     float z;
+                    // expected: 期待する検証値。
                     float expected;
                 };
+                // noiseCases: noise shader test coordinates and expected values。
                 const NoiseCase noiseCases[]{
                     { "Value2D", 3.25f, -7.5f, 0.0f, 1.0f,
                         0.0f,
@@ -9111,13 +9883,17 @@ int main(const int argumentCount, char** arguments)
                             2.5f, -3.25f, 8.125f) }
                 };
 
+                // probeShader: shader source used for the depth probe。
                 const auto probeShader =
                     std::filesystem::path{
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "noise-probe.hlsl";
+                // probeUsable: probe 利用可。
                 bool probeUsable = true;
+                // 評価するnoise条件
                 for (const auto& noiseCase : noiseCases)
                 {
+                    // request: screen-effect request under test。
                     LamaPon::ScreenEffectRequest request;
                     request.shader = probeShader;
                     request.customParameters[0] = {
@@ -9129,6 +9905,7 @@ int main(const int argumentCount, char** arguments)
                     request.customParameters[1] = {
                         noiseCase.z, 0.0f, 0.0f, 0.0f
                     };
+                    // shaderError: shader compilation diagnostic text。
                     std::string shaderError;
                     if (!graphics.QueueScreenEffect(
                             request,
@@ -9142,8 +9919,10 @@ int main(const int argumentCount, char** arguments)
                         break;
                     }
 
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame =
                         renderComposedFrame();
+                    // pixel: 検査位置の画素値。
                     const auto& pixel = At(
                         frame,
                         Width / 2,
@@ -9154,6 +9933,7 @@ int main(const int argumentCount, char** arguments)
                             + static_cast<float>(
                                 pixel.green) / 255.0f)
                         / 255.0f;
+                    // difference: RGB各成分の絶対差合計。
                     const float difference = std::abs(
                         measured - noiseCase.expected);
                     std::cout
@@ -9163,8 +9943,7 @@ int main(const int argumentCount, char** arguments)
                         << " gpu=" << measured
                         << " diff=" << difference
                         << std::endl;
-                    // ここのRequireはconst char*を取るため、
-                    // 失敗した種類は上のログ行から読み取ります。
+                    // ここのRequireはconst char*を取るため、失敗した種類は上のログ行から読み取ります。
                     Require(
                         difference < 0.01f,
                         "CPU and GPU noise implementations"
@@ -9174,17 +9953,17 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(probeUsable);
             }
 
-            // Manifestの構文・検証エラーには、VSMain/PSMain固定だった
-            // 旧HLSL向けの診断を足しません。type値へ意図的に
-            // "entrypoint not found"を入れ、旧診断へ誤って流すと
-            // PSMainの案内が付くケースを回帰検証します。
+            // Manifestの構文・検証エラーには、VSMain/PSMain固定だった旧HLSL向けの診断を足しません。
+            // type値へ意図的に"entrypoint not found"を入れ、旧診断へ誤って流すとPSMainの案内が付くケースを回帰検証します。
             {
+                // request: screen-effect request under test。
                 LamaPon::ScreenEffectRequest request;
                 request.shader =
                     std::filesystem::path{
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "shader-manifest"
                     / "invalid-type-screen-effect.lamashader.json";
+                // manifestError: manifest failure diagnostic text。
                 std::string manifestError;
                 Require(
                     !graphics.QueueScreenEffect(
@@ -9204,13 +9983,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // ScreenEffectがシーンの深度（t3）を読めることの確認。
-            // 手前に箱を置き、その画素と背景（何も無い＝遠平面）の
-            // 画素で距離が違うことを見ます。
-            //
-            // 深度が刺さっていないとShaderは0を読み、距離はニア
-            // クリップ面に張り付いて画面が一様になります。つまり
-            // 「手前と奥の差が出ない」が配線が外れたときの症状で、
-            // ここが0に近ければ落ちます。
+            // 手前に箱を置き、その画素と背景（何も無い＝遠平面）の画素で距離が違うことを見ます。
+            // 深度が刺さっていないとShaderは0を読み、距離はニアクリップ面に張り付いて画面が一様になります。
+            // つまり「手前と奥の差が出ない」が配線が外れたときの症状で、ここが0に近ければ落ちます。
             {
                 subject.GetTransform().position =
                     savedSubjectPosition;
@@ -9219,10 +9994,13 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     savedCameraRotation);
 
+                // depthProbeRange: depth probeの検証距離。
                 constexpr float depthProbeRange = 40.0f;
+                // probeFrame: probe用depth画像の取得処理。
                 const auto probeFrame =
                     [&](const float rawMode)
                 {
+                    // request: screen-effect request under test。
                     LamaPon::ScreenEffectRequest request;
                     request.shader =
                         std::filesystem::path{
@@ -9234,6 +10012,7 @@ int main(const int argumentCount, char** arguments)
                         0.0f,
                         0.0f
                     };
+                    // shaderError: shader compilation diagnostic text。
                     std::string shaderError;
                     Require(
                         graphics.QueueScreenEffect(
@@ -9244,15 +10023,16 @@ int main(const int argumentCount, char** arguments)
                         " compile.");
                     return renderComposedFrame();
                 };
+                // decode: depth値の復号処理。
                 const auto decode =
                     [](const std::vector<std::uint8_t>& frame,
                         const std::uint32_t x,
                         const std::uint32_t y)
                 {
+                    // pixel: 検査位置の画素値。
                     const auto pixel = At(frame, x, y);
                     // 青一色は「深度が無効」の合図（fixture参照）。
-                    // 値はR・Gにしか書かないので、Bが立っていたら
-                    // それしかありません。
+                    // 値はR・Gにしか書かないので、Bが立っていたらそれしかありません。
                     Require(
                         pixel.blue < 128,
                         "The screen effect reported that no"
@@ -9264,24 +10044,31 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 Stage("frame-screeneffect-depth");
+                // rawFrame: rawの描画結果。
                 const auto rawFrame = probeFrame(1.0f);
+                // rawCenter: decoded raw depth at the center sample。
                 const float rawCenter =
                     decode(rawFrame, Width / 2, Height / 2);
+                // rawCorner: decoded raw depth at the corner sample。
                 const float rawCorner = decode(rawFrame, 4, 4);
+                // depthFrame: depthの描画結果。
                 const auto depthFrame = probeFrame(0.0f);
                 DumpFrame(
                     "screeneffect-depth",
                     depthFrame);
-                // 特定画素が背景だけを指す場合を避けるため、
-                // 画面全体の最小値と最大値を使います。
+                // 特定画素が背景だけを指す場合を避けるため、画面全体の最小値と最大値を使います。
                 float nearDistance = depthProbeRange;
+                // farDistance: far planeまでの距離。
                 float farDistance = 0.0f;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0;
                         x < Width;
                         ++x)
                     {
+                        // value: 検証用の値。
                         const float value =
                             decode(depthFrame, x, y)
                             * depthProbeRange;
@@ -9293,14 +10080,19 @@ int main(const int argumentCount, char** arguments)
                 }
                 // 背景だけを選ぶ可能性を避けるため、全画素の深度範囲を測ります。
                 float rawMinimum = 1.0f;
+                // rawMaximum: raw depthの最大値。
                 float rawMaximum = 0.0f;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0;
                         x < Width;
                         ++x)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto pixel = At(rawFrame, x, y);
+                        // value: 検証用の値。
                         const float value =
                             (static_cast<float>(pixel.red)
                                 + static_cast<float>(
@@ -9312,6 +10104,7 @@ int main(const int argumentCount, char** arguments)
                             std::max(rawMaximum, value);
                     }
                 }
+                // probeProjection: probeのprojection matrix。
                 const auto& probeProjection =
                     graphics.SceneProjection();
                 std::cout
@@ -9358,28 +10151,34 @@ int main(const int argumentCount, char** arguments)
                     " reproduce what the shader computed.");
 
                 // (4)深度から組み立てた法線。単位ベクトルになって
-                // いること、かつ画面内で向きが変わっていることを
-                // 見ます。長さと方向の分布を併せて検証します。
+                // いること、かつ画面内で向きが変わっていることを見ます。
+                // 長さと方向の分布を併せて検証します。
                 const auto normalFrame = probeFrame(2.0f);
                 DumpFrame(
                     "screeneffect-normal",
                     normalFrame);
+                // normalSamples: normal長の測定回数。
                 std::size_t normalSamples = 0;
+                // lengthTotal: normal長の累積値。
                 double lengthTotal = 0.0;
+                // normalMinimumZ: normal Zの最小値。
                 float normalMinimumZ = 1.0f;
+                // normalMaximumZ: normal Zの最大値。
                 float normalMaximumZ = -1.0f;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 1;
                     y + 1 < Height;
                     ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 1;
                         x + 1 < Width;
                         ++x)
                     {
-                        // ジオメトリのある画素だけ見ます（空は
-                        // 遠平面どうしなので法線が定義できません）。
+                        // ジオメトリのある画素だけ見ます（空は遠平面どうしなので法線が定義できません）。
                         const auto rawPixel =
                             At(rawFrame, x, y);
+                        // rawValue: unconverted depth sample。
                         const float rawValue =
                             (static_cast<float>(rawPixel.red)
                                 + static_cast<float>(
@@ -9389,14 +10188,18 @@ int main(const int argumentCount, char** arguments)
                         {
                             continue;
                         }
+                        // pixel: 検査位置の画素値。
                         const auto pixel =
                             At(normalFrame, x, y);
+                        // nx: normal X component。
                         const float nx =
                             static_cast<float>(pixel.red)
                                 / 255.0f * 2.0f - 1.0f;
+                        // ny: normal Y component。
                         const float ny =
                             static_cast<float>(pixel.green)
                                 / 255.0f * 2.0f - 1.0f;
+                        // nz: normal Z component。
                         const float nz =
                             static_cast<float>(pixel.blue)
                                 / 255.0f * 2.0f - 1.0f;
@@ -9410,6 +10213,7 @@ int main(const int argumentCount, char** arguments)
                             std::max(normalMaximumZ, nz);
                     }
                 }
+                // averageLength: 平均の長さ。
                 const double averageLength =
                     normalSamples > 0
                     ? lengthTotal
@@ -9438,9 +10242,7 @@ int main(const int argumentCount, char** arguments)
                     " the scene, not be a constant vector.");
             }
 
-            // ノイズの見本Shaderを5種類ぶん焼いて目視できるように
-            // します（数値の一致は上の段で見たので、ここは
-            // 「意図した模様になっているか」の確認用）。
+            // ノイズの見本Shaderを5種類ぶん焼いて目視できるようにします（数値の一致は上の段で見たので、ここは「意図した模様になっているか」の確認用）。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -9448,6 +10250,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.0f, 3.2f };
                 cameraObject.GetTransform().SetEulerAngles({ 0.0f, 0.0f, 0.0f });
 
+                // noisePlane: scene plane displaying the noise shader。
                 auto& noisePlane =
                     scene.CreateGameObject("NoisePlane");
                 noisePlane.GetTransform().position =
@@ -9456,6 +10259,7 @@ int main(const int argumentCount, char** arguments)
                 noisePlane.GetTransform().SetEulerAngles({ -1.5707963f, 0.0f, 0.0f });
                 noisePlane.GetTransform().scale =
                     { 4.0f, 1.0f, 2.4f };
+                // noiseRenderer: renderer component for the noise plane。
                 auto& noiseRenderer =
                     noisePlane.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -9478,6 +10282,7 @@ int main(const int argumentCount, char** arguments)
                     DirectX::XMFLOAT4{
                         0.95f, 0.9f, 0.7f, 1.0f });
 
+                // noiseNames: names for the noise shader variants。
                 const char* const noiseNames[]{
                     "noise-value",
                     "noise-perlin",
@@ -9485,6 +10290,7 @@ int main(const int argumentCount, char** arguments)
                     "noise-worley",
                     "noise-curl"
                 };
+                // noise種別の番号
                 for (int kind = 0; kind < 5; ++kind)
                 {
                     noiseRenderer.SetCustomParameter(
@@ -9509,50 +10315,50 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // 水面の見本Shader。ノイズで作った波の傾きで太陽と空を
-            // 反射するので、「面全体が一様でないこと」が最低条件です
-            // （一様なら波の法線が出ていない＝計算が死んでいる）。
+            // 水面の見本Shader。
+            // ノイズで作った波の傾きで太陽と空を反射するので、「面全体が一様でないこと」が最低条件です（一様なら波の法線が出ていない＝計算が死んでいる）。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // SubjectCloneは最初の段で作った赤いキューブで、
-                // 誰も片付けないまま残っています。水面の絵に写り
-                // 込むと「これは何だ」となるので一緒に退かします。
+                // SubjectCloneは最初の段で作った赤いキューブで、誰も片付けないまま残っています。
+                // 水面の絵に写り込むと「これは何だ」となるので一緒に退かします。
                 const auto savedClonePosition =
                     clone.GetTransform().position;
                 clone.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // 太陽の反射（光の帯）が画面の真ん中に来る配置に
-                // します。太陽の高度とカメラの伏せ角を揃えるのが
-                // 条件で、どちらも約30度にしてあります。ずれると
-                // 帯は水平線の向こうへ行き、絵に写りません。
+                // 太陽の反射（光の帯）が画面の真ん中に来る配置にします。
+                // 太陽の高度とカメラの伏せ角を揃えるのが条件で、どちらも約30度にしてあります。
+                // ずれると帯は水平線の向こうへ行き、絵に写りません。
                 cameraObject.GetTransform().position =
                     { 0.0f, 3.0f, 7.0f };
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.38f, 0.0f, 0.0f });
                 sunObject.SetEnabled(true);
                 // 太陽をカメラの向こう側・低い位置へ置きます。
-                // 水面の反射は「太陽が自分の向こうにあるとき」しか
-                // 見えません（背中側にあると光の帯は水平線の裏へ
-                // 行きます）。WorldDirection()は光の進む向きで、
-                // yaw=πのとき (0, sin(pitch), cos(pitch)) です。
+                // 水面の反射は「太陽が自分の向こうにあるとき」しか見えません（背中側にあると光の帯は水平線の裏へ行きます）。
+                // WorldDirection()は光の進む向きで、yaw=πのとき (0, sin(pitch), cos(pitch)) です。
                 const auto savedSunAngles =
                     sunObject.GetTransform().EulerAngles();
                 sunObject.GetTransform().SetEulerAngles(
                     { -0.5236f, 3.14159265f, 0.0f });
 
+                // waterPlane: scene plane displaying the water shader。
                 auto& waterPlane =
                     scene.CreateGameObject("WaterPlane");
                 waterPlane.GetTransform().position =
                     { 0.0f, 0.0f, 0.0f };
                 waterPlane.GetTransform().scale =
                     { 12.0f, 1.0f, 12.0f };
+                // waterRenderer: water surface検証用renderer。
                 auto& waterRenderer =
                     waterPlane.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -9592,21 +10398,28 @@ int main(const int argumentCount, char** arguments)
                         0.72f, 0.82f, 0.93f, 1.0f });
 
                 Stage("frame-water");
+                // waterFrame: waterの描画結果。
                 const auto waterFrame = renderComposedFrame();
                 DumpFrame("water", waterFrame);
 
-                // 水面が確実に写っている範囲だけを見ます。画面の
-                // 下半分ぜんぶを測ると、水と空の境目の段差だけで
-                // ばらつきが出てしまい、波が無くても閾値を超えるためです。
+                // 水面が確実に写っている範囲だけを見ます。
+                // 画面の下半分ぜんぶを測ると、水と空の境目の段差だけでばらつきが出てしまい、波が無くても閾値を超えるためです。
                 double sum{};
+                // sumSquared: 画素差分の二乗和。
                 double sumSquared{};
+                // peak: 最大値。
                 double peak{};
+                // samples: 厚さ判定用のsample群。
                 int samples{};
+                // 縦方向の走査座標
                 for (std::uint32_t y = 110; y < 175; y += 2)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 40; x < 280; x += 2)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto& pixel = At(waterFrame, x, y);
+                        // luminance: 輝度。
                         const double luminance =
                             0.299 * pixel.red
                             + 0.587 * pixel.green
@@ -9617,9 +10430,12 @@ int main(const int argumentCount, char** arguments)
                         ++samples;
                     }
                 }
+                // mean: 平均。
                 const double mean = sum / samples;
+                // variance: 分散。
                 const double variance =
                     sumSquared / samples - mean * mean;
+                // deviation: 標準偏差。
                 const double deviation =
                     variance > 0.0 ? std::sqrt(variance) : 0.0;
                 std::cout
@@ -9627,16 +10443,14 @@ int main(const int argumentCount, char** arguments)
                     << " stddev=" << deviation
                     << " peak=" << peak
                     << std::endl;
-                // 水面色だけで通らないよう、太陽反射による輝度205超の
-                // ハイライトを要求します。
+                // 水面色だけで通らないよう、太陽反射による輝度205超のハイライトを要求します。
                 Require(
                     peak > 205.0,
                     "The water sample shader must show the"
                     " sun's reflection as a bright highlight.");
-                // 2つ見ます。meanは「そもそも色が出ているか」
-                // （パラメーターが0のままだと真っ黒＝mean 2以下に
-                // なります）。deviationは「波が効いているか」
-                // （法線が全部真上なら映り込みが一様になります）。
+                // 2つ見ます。
+                // meanは「そもそも色が出ているか」（パラメーターが0のままだと真っ黒＝mean 2以下になります）。
+                // deviationは「波が効いているか」（法線が全部真上なら映り込みが一様になります）。
                 Require(
                     mean > 20.0,
                     "The water sample shader must render a"
@@ -9661,90 +10475,90 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 太陽の角度サイズ。つるつるの球で、見かけの大きさを
-            // 0度（点）／0.53度（太陽相当）／8度（曇り）と振り、
-            // ハイライトが広がることを画素数で測ります。
+            // 太陽の角度サイズ。
+            // つるつるの球で、見かけの大きさを0度（点）／0.53度（太陽相当）／8度（曇り）と振り、ハイライトが広がることを画素数で測ります。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
+                // savedCloneForSize: 退避済み Clone Forのサイズ。
                 const auto savedCloneForSize =
                     clone.GetTransform().position;
                 clone.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // 測る相手は球ではなく「寝かせた平面」です。球だと
-                // 法線が画素ごとに大きく回るため、0.53度ぶんの反射が
-                // 1画素未満に潰れます。平面なら反射の向きが
-                // ゆっくり変わるので、太陽の円盤が横に伸びた光の帯
-                // として広い面積に写ります。
+                // 測る相手は球ではなく「寝かせた平面」です。
+                // 球だと法線が画素ごとに大きく回るため、0.53度ぶんの反射が1画素未満に潰れます。
+                // 平面なら反射の向きがゆっくり変わるので、太陽の円盤が横に伸びた光の帯として広い面積に写ります。
                 cameraObject.GetTransform().position =
                     { 0.0f, 1.2f, 6.0f };
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.16f, 0.0f, 0.0f });
                 sunObject.SetEnabled(true);
                 scene.SetAmbientLightIntensity(0.02f);
-                // 水面と同じ理由で、太陽はカメラの向こう側・低い
-                // 位置に置きます。背中側にあると鏡の面には太陽が
-                // 一切写らず、角度を変えても同じ暗い画像になります。
+                // 水面と同じ理由で、太陽はカメラの向こう側・低い位置に置きます。
+                // 背中側にあると鏡の面には太陽が一切写らず、角度を変えても同じ暗い画像になります。
                 const auto savedSunAnglesForSize =
                     sunObject.GetTransform().EulerAngles();
                 sunObject.GetTransform().SetEulerAngles(
                     { -0.305f, 3.14159265f, 0.0f });
 
+                // mirror: mirror object in the reflection test。
                 auto& mirror =
                     scene.CreateGameObject("SunSizeMirror");
                 mirror.GetTransform().scale =
                     { 12.0f, 1.0f, 12.0f };
+                // 磨いた金属です。
+                // 暗い金属にすると反射率（F0＝albedo）ごと下がってハイライトまで暗くなり、広がりが測れなくなります。
+                // 粗さ0.2です。
+                // 完全な鏡（0.04）にすると、点光源のハイライトが1画素より細くなってサンプリングから漏れ、比べる相手が「たまたま拾えた10」のような値になってしまいます。
+                // 少しざらつかせて、両方が確実に画素へ乗るようにしています。
                 auto& mirrorRenderer =
                     mirror.AddComponent<
                         LamaPon::MeshRendererComponent>(
                         LamaPon::PrimitiveShape::Plane,
-                        // 磨いた金属です。暗い金属にすると反射率
-                        // （F0＝albedo）ごと下がってハイライトまで
-                        // 暗くなり、広がりが測れなくなります。
                         DirectX::XMFLOAT4{
                             0.95f, 0.95f, 0.95f, 1.0f },
                         std::filesystem::path{},
                         std::filesystem::path{},
-                        // 粗さ0.2です。完全な鏡（0.04）にすると、
-                        // 点光源のハイライトが1画素より細くなって
-                        // サンプリングから漏れ、比べる相手が「たまたま
-                        // 拾えた10」のような値になってしまいます。
-                        // 少しざらつかせて、両方が確実に画素へ乗る
-                        // ようにしています。
                         0.2f,
                         1.0f);
                 // 6番目の引数はnormalStrengthでmetallicではありません。
-                // 金属度を上げないと拡散反射が残り、面全体がN･Lの
-                // 明るさで埋まってハイライトの広がりを測れません。
+                // 金属度を上げないと拡散反射が残り、面全体がN･Lの明るさで埋まってハイライトの広がりを測れません。
                 mirrorRenderer.SetMetallic(1.0f);
 
-                // ハイライトの「広がり」を画素数で測ります。合計
-                // 輝度ではないのは、代表点法がピークの高さではなく
-                // 広がりを変える手法だからです（エネルギーは保存
-                // するので、合計はあまり動きません）。
+                // ハイライトの「広がり」を画素数で測ります。
+                // 合計輝度ではないのは、代表点法がピークの高さではなく広がりを変える手法だからです（エネルギーは保存するので、合計はあまり動きません）。
                 const auto countHighlight =
                     [&](const char* name,
                         int& maximumLuminance) -> int
                 {
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     DumpFrame(name, frame);
+                    // bright: 明部。
                     int bright{};
                     maximumLuminance = 0;
                     // 明るい空の影響を除外するため、鏡面の範囲だけを測ります。
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 100; y < Height; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             ++x)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto& pixel =
                                 At(frame, x, y);
+                            // luminance: 輝度。
                             const int luminance =
                                 (static_cast<int>(pixel.red)
                                     * 299
@@ -9756,8 +10570,7 @@ int main(const int argumentCount, char** arguments)
                             maximumLuminance = std::max(
                                 maximumLuminance,
                                 luminance);
-                            // 金属面は太陽の反射以外が暗いため、
-                            // 低い閾値で反射部分を数えます。
+                            // 金属面は太陽の反射以外が暗いため、低い閾値で反射部分を数えます。
                             if (luminance > 40)
                             {
                                 ++bright;
@@ -9766,22 +10579,28 @@ int main(const int argumentCount, char** arguments)
                     }
                     return bright;
                 };
+                // pointPeak: pointの最大値。
                 int pointPeak{};
+                // realPeak: realの最大値。
                 int realPeak{};
+                // widePeak: wideの最大値。
                 int widePeak{};
 
                 sun.SetAngularDiameterDegrees(0.0f);
                 Stage("frame-sun-point");
+                // pointHighlight: brightest pixel in the point-light region。
                 const int pointHighlight =
                     countHighlight("sun-size-point", pointPeak);
 
                 sun.SetAngularDiameterDegrees(0.53f);
                 Stage("frame-sun-real");
+                // realHighlight: brightest pixel in the realistic-light region。
                 const int realHighlight =
                     countHighlight("sun-size-real", realPeak);
 
                 sun.SetAngularDiameterDegrees(8.0f);
                 Stage("frame-sun-wide");
+                // wideHighlight: brightest pixel in the wide-light region。
                 const int wideHighlight =
                     countHighlight("sun-size-wide", widePeak);
 
@@ -9794,8 +10613,7 @@ int main(const int argumentCount, char** arguments)
                     << " real=" << realPeak
                     << " wide=" << widePeak
                     << std::endl;
-                // 角度がシェーダーへ反映されることを検出するため、
-                // 広い光源でハイライトが200画素以上増えることを要求します。
+                // 角度がシェーダーへ反映されることを検出するため、広い光源でハイライトが200画素以上増えることを要求します。
                 Require(
                     wideHighlight > pointHighlight + 200,
                     "A larger angular diameter must widen the"
@@ -9817,20 +10635,26 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // Screen Space Lens Flare。明るい点から出るゴーストと
-            // ハローなので、「切ったときとの差」で確かめます。
+            // Screen Space Lens Flare。
+            // 明るい点から出るゴーストとハローなので、「切ったときとの差」で確かめます。
             // 太陽を画面へ入れて光源を作ります。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
+                // savedSunAngles: 退避済み sun Angles。
                 const auto savedSunAngles =
                     sunObject.GetTransform().EulerAngles();
+                // savedSky: 退避済み sky。
                 const auto savedSky = scene.Sky();
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -9844,35 +10668,45 @@ int main(const int argumentCount, char** arguments)
                 // 太陽をカメラの正面・少し上へ置いて空に描かせます。
                 sunObject.GetTransform().SetEulerAngles(
                     { -0.22f, 3.14159265f, 0.0f });
+                // flareSky: sky settings for the lens-flare test。
                 auto flareSky = scene.Sky();
                 flareSky.enabled = true;
                 flareSky.sunDriven = true;
                 flareSky.cubemapPath.clear();
                 scene.SetSkySettings(flareSky);
 
+                // flare: lens-flare settings under test。
                 auto flare = scene.ScreenSpaceLensFlare();
                 flare.enabled = false;
                 scene.SetScreenSpaceLensFlareSettings(flare);
                 Stage("frame-lensflare-off");
+                // offFrame: 無効の描画結果。
                 const auto offFrame = renderComposedFrame();
                 DumpFrame("lensflare-off", offFrame);
 
                 flare.enabled = true;
                 scene.SetScreenSpaceLensFlareSettings(flare);
                 Stage("frame-lensflare-on");
+                // onFrame: 有効の描画結果。
                 const auto onFrame = renderComposedFrame();
                 DumpFrame("lensflare-on", onFrame);
 
-                // 1画素あたりの増分で見ます。合計値へ定数を置くと、
-                // 効いていなくても画素数で越えてしまいます。
+                // 1画素あたりの増分で見ます。
+                // 合計値へ定数を置くと、効いていなくても画素数で越えてしまいます。
                 double added{};
+                // changed: number of pixels changed by the feature。
                 int changed{};
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0; x < Width; ++x)
                     {
+                        // before: 前。
                         const auto& before = At(offFrame, x, y);
+                        // after: 後。
                         const auto& after = At(onFrame, x, y);
+                        // delta: 差分。
                         const int delta =
                             (static_cast<int>(after.red)
                                 - static_cast<int>(before.red))
@@ -9889,6 +10723,7 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
                 }
+                // perPixel: per sampled pixel color。
                 const double perPixel = changed > 0
                     ? added / changed
                     : 0.0;
@@ -9896,12 +10731,8 @@ int main(const int argumentCount, char** arguments)
                     << "lens flare: changed=" << changed
                     << " perPixel=" << perPixel
                     << std::endl;
-                // レンズフレアは画面の一部にだけ出るものなので、
-                // 「広い面積が薄く変わる」ではなく「狭い面積が
-                // はっきり明るくなる」ことを見ます。
-                //
-                // 小さい太陽でも局所的な効果を検出できるよう、20画素超かつ
-                // 1画素あたりの差20超を要求します。
+                // レンズフレアは画面の一部にだけ出るものなので、「広い面積が薄く変わる」ではなく「狭い面積がはっきり明るくなる」ことを見ます。
+                // 小さい太陽でも局所的な効果を検出できるよう、20画素超かつ1画素あたりの差20超を要求します。
                 Require(
                     changed > 20,
                     "Screen space lens flare must brighten a"
@@ -9912,8 +10743,7 @@ int main(const int argumentCount, char** arguments)
                     " per pixel, not a faint wash.");
 
                 // アナモルフィック風（十字に長く伸びる筋）。
-                // 多段パスが効いていないと筋が出ないので、ゴースト
-                // だけの上の状態と比べて差が出ることを見ます。
+                // 多段パスが効いていないと筋が出ないので、ゴーストだけの上の状態と比べて差が出ることを見ます。
                 auto anamorphic = flare;
                 anamorphic.enabled = true;
                 anamorphic.threshold = 1.0f;
@@ -9926,20 +10756,27 @@ int main(const int argumentCount, char** arguments)
                 scene.SetScreenSpaceLensFlareSettings(
                     anamorphic);
                 Stage("frame-lensflare-anamorphic");
+                // anamorphicFrame: anamorphicの描画結果。
                 const auto anamorphicFrame =
                     renderComposedFrame();
                 DumpFrame(
                     "lensflare-anamorphic",
                     anamorphicFrame);
 
+                // streakChanged: pixel count changed by the anamorphic streak。
                 int streakChanged{};
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0; x < Width; ++x)
                     {
+                        // before: 前。
                         const auto& before = At(onFrame, x, y);
+                        // after: 後。
                         const auto& after =
                             At(anamorphicFrame, x, y);
+                        // delta: 差分。
                         const int delta =
                             (static_cast<int>(after.red)
                                 - static_cast<int>(before.red))
@@ -9958,9 +10795,8 @@ int main(const int argumentCount, char** arguments)
                 std::cout
                     << "lens flare streaks: changed="
                     << streakChanged << std::endl;
-                // 筋は画面を横切るので、ゴーストだけの44画素とは
-                // 桁が違う面積になるはずです。多段パスが効かないと
-                // ここが伸びません。
+                // 筋は画面を横切るので、ゴーストだけの44画素とは桁が違う面積になるはずです。
+                // 多段パスが効かないとここが伸びません。
                 Require(
                     streakChanged > 500,
                     "Multi-pass streaks must cover far more"
@@ -9981,41 +10817,46 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 被写界深度（DoF）。
-            //
-            // 手前と奥の同じ立方体で焦点位置を入れ替え、焦点側の輪郭だけが
-            // 鋭くなることを両方向で確認します。
+            // 手前と奥の同じ立方体で焦点位置を入れ替え、焦点側の輪郭だけが鋭くなることを両方向で確認します。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedSubjectScale: 退避済み Subjectのscale。
                 const auto savedSubjectScale =
                     subject.GetTransform().scale;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCloneScale: 退避済み Cloneのscale。
                 const auto savedCloneScale =
                     clone.GetTransform().scale;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
+                // savedSky: 退避済み sky。
                 const auto savedSky = scene.Sky();
+                // savedTemporal: 退避済み temporal。
                 const auto savedTemporal =
                     scene.TemporalAntiAliasing();
+                // savedQuality: 退避済み quality。
                 const auto savedQuality = graphics.Settings();
 
-                // 背景を単色にします。空を描くとぼけても模様が
-                // 変わらない領域が増えて、測る値が薄まります。
+                // 背景を単色にします。
+                // 空を描くとぼけても模様が変わらない領域が増えて、測る値が薄まります。
                 auto flatSky = scene.Sky();
                 flatSky.enabled = false;
                 scene.SetSkySettings(flatSky);
-                // TAAは前フレームと混ぜるので、1枚ずつ撮るこの検証
-                // では2枚が互いに汚染します。ここだけ切ります。
+                // TAAは前フレームと混ぜるので、1枚ずつ撮るこの検証では2枚が互いに汚染します。
+                // ここだけ切ります。
                 auto noTemporal = scene.TemporalAntiAliasing();
                 noTemporal.enabled = false;
                 scene.SetTemporalAntiAliasingSettings(
                     noTemporal);
-                // 品質側のDoFを明示的に有効にします（プリセットの
-                // 既定に依存させると、既定を変えた日に無言で
-                // 対象を測定できません）。
+                // 品質側のDoFを明示的に有効にします（プリセットの既定に依存させると、既定を変えた日に無言で対象を測定できません）。
                 auto depthOfFieldQuality = graphics.Settings();
                 depthOfFieldQuality.depthOfFieldEnabled = true;
                 depthOfFieldQuality.depthOfFieldSampleCount = 24;
@@ -10023,8 +10864,7 @@ int main(const int argumentCount, char** arguments)
                     depthOfFieldQuality);
 
                 // カメラは原点から-Zを向きます（既定の回転）。
-                // 立方体は一辺2（scale 2の単位立方体）なので、
-                // 手前の1個は深度5〜7、奥の1個は29〜31を占めます。
+                // 立方体は一辺2（scale 2の単位立方体）なので、手前の1個は深度5〜7、奥の1個は29〜31を占めます。
                 cameraObject.GetTransform().position =
                     { 0.0f, 0.0f, 0.0f };
                 cameraObject.GetTransform().SetEulerAngles(
@@ -10038,17 +10878,24 @@ int main(const int argumentCount, char** arguments)
                 clone.GetTransform().scale =
                     { 2.0f, 2.0f, 2.0f };
 
-                // 320x180、縦画角45度で各立方体の輪郭を含み、
-                // 地面と空の境界を避ける帯を測定します。
+                // 320x180、縦画角45度で各立方体の輪郭を含み、地面と空の境界を避ける帯を測定します。
                 constexpr std::uint32_t NearMinimumX = 78;
+                // NearMaximumX: 近距離 Maximum X。
                 constexpr std::uint32_t NearMaximumX = 124;
+                // NearMinimumY: 近距離 Minimum Y。
                 constexpr std::uint32_t NearMinimumY = 58;
+                // NearMaximumY: 近距離 Maximum Y。
                 constexpr std::uint32_t NearMaximumY = 104;
+                // FarMinimumX: 遠距離 Minimum X。
                 constexpr std::uint32_t FarMinimumX = 164;
+                // FarMaximumX: 遠距離 Maximum X。
                 constexpr std::uint32_t FarMaximumX = 208;
+                // FarMinimumY: 遠距離 Minimum Y。
                 constexpr std::uint32_t FarMinimumY = 84;
+                // FarMaximumY: 遠距離 Maximum Y。
                 constexpr std::uint32_t FarMaximumY = 96;
 
+                // depthOfField: depth-of-field settings under test。
                 LamaPon::DepthOfFieldSettings depthOfField{};
                 depthOfField.enabled = true;
                 depthOfField.focusRange = 2.0f;
@@ -10059,6 +10906,7 @@ int main(const int argumentCount, char** arguments)
                 depthOfField.focusDistance = 6.0f;
                 scene.SetDepthOfFieldSettings(depthOfField);
                 Stage("frame-dof-focus-near");
+                // focusNearFrame: focus 近距離の描画結果。
                 const auto focusNearFrame =
                     renderComposedFrame();
                 DumpFrame("dof-focus-near", focusNearFrame);
@@ -10067,10 +10915,12 @@ int main(const int argumentCount, char** arguments)
                 depthOfField.focusDistance = 30.0f;
                 scene.SetDepthOfFieldSettings(depthOfField);
                 Stage("frame-dof-focus-far");
+                // focusFarFrame: focus 遠距離の描画結果。
                 const auto focusFarFrame =
                     renderComposedFrame();
                 DumpFrame("dof-focus-far", focusFarFrame);
 
+                // nearWhenFocusedNear: 近距離 When Focused 近距離。
                 const double nearWhenFocusedNear =
                     RegionSharpness(
                         focusNearFrame,
@@ -10078,6 +10928,7 @@ int main(const int argumentCount, char** arguments)
                         NearMaximumX,
                         NearMinimumY,
                         NearMaximumY);
+                // nearWhenFocusedFar: 近距離 When Focused 遠距離。
                 const double nearWhenFocusedFar =
                     RegionSharpness(
                         focusFarFrame,
@@ -10085,6 +10936,7 @@ int main(const int argumentCount, char** arguments)
                         NearMaximumX,
                         NearMinimumY,
                         NearMaximumY);
+                // farWhenFocusedFar: 遠距離 When Focused 遠距離。
                 const double farWhenFocusedFar =
                     RegionSharpness(
                         focusFarFrame,
@@ -10092,6 +10944,7 @@ int main(const int argumentCount, char** arguments)
                         FarMaximumX,
                         FarMinimumY,
                         FarMaximumY);
+                // farWhenFocusedNear: 遠距離 When Focused 近距離。
                 const double farWhenFocusedNear =
                     RegionSharpness(
                         focusNearFrame,
@@ -10108,18 +10961,15 @@ int main(const int argumentCount, char** arguments)
                     << " -> " << farWhenFocusedNear
                     << std::endl;
 
-                // まず両方の帯に輪郭があること。帯の置き場所を間違えて
-                // 立方体の内側（真っ平ら）だけを測っていると比の判定が
-                // 無意味になるため、先に確認します。
-                //
+                // まず両方の帯に輪郭があること。
+                // 帯の置き場所を間違えて立方体の内側（真っ平ら）だけを測っていると比の判定が無意味になるため、先に確認します。
                 // 測定帯が輪郭を含むことを保証するため、鋭さ100超を要求します。
                 Require(
                     nearWhenFocusedNear > 100.0
                         && farWhenFocusedFar > 100.0,
                     "Both cubes must show an edge when they"
                     " are in focus.");
-                // 焦点位置を無視する一様なぼかしを除外するため、
-                // 焦点を外した側の鋭さが3分の1未満になることを要求します。
+                // 焦点位置を無視する一様なぼかしを除外するため、焦点を外した側の鋭さが3分の1未満になることを要求します。
                 Require(
                     nearWhenFocusedNear
                         > nearWhenFocusedFar * 3.0,
@@ -10149,44 +10999,51 @@ int main(const int argumentCount, char** arguments)
             }
 
             // モーションブラー（カメラの動きによるブレ）。
-            //
-            // カメラ移動による差を除くため、まったく同じカメラの動き
-            // に対して、ブラーのオン/オフだけを変えた2枚を撮って比べます。
-            // さらに「カメラを動かさなければオンでもオフと同じ」ことも
-            // 見ます。効果がゼロになる条件を用意するのがいちばん強い
-            // 確かめ方です。
+            // カメラ移動による差を除くため、まったく同じカメラの動きに対して、ブラーのオン/オフだけを変えた2枚を撮って比べます。
+            // さらに「カメラを動かさなければオンでもオフと同じ」ことも見ます。
+            // 効果がゼロになる条件を用意するのがいちばん強い確かめ方です。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedSubjectScale: 退避済み Subjectのscale。
                 const auto savedSubjectScale =
                     subject.GetTransform().scale;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
+                // savedSky: 退避済み sky。
                 const auto savedSky = scene.Sky();
+                // savedTemporal: 退避済み temporal。
                 const auto savedTemporal =
                     scene.TemporalAntiAliasing();
+                // savedQuality: 退避済み quality。
                 const auto savedQuality = graphics.Settings();
 
+                // flatSky: sky settings with no gradient。
                 auto flatSky = scene.Sky();
                 flatSky.enabled = false;
                 scene.SetSkySettings(flatSky);
-                // TAAは前フレームと混ぜるので、フレームを跨いで比べる
-                // この検証では2枚が互いに汚染します。ここだけ切ります。
+                // TAAは前フレームと混ぜるので、フレームを跨いで比べるこの検証では2枚が互いに汚染します。
+                // ここだけ切ります。
                 auto noTemporal = scene.TemporalAntiAliasing();
                 noTemporal.enabled = false;
                 scene.SetTemporalAntiAliasingSettings(
                     noTemporal);
+                // motionQuality: graphics quality settings for motion blur。
                 auto motionQuality = graphics.Settings();
                 motionQuality.motionBlurEnabled = true;
                 motionQuality.motionBlurSampleCount = 12;
                 graphics.SetGraphicsSettings(motionQuality);
 
-                // 立方体を1つだけ正面に置きます。輪郭が縦なので、
-                // 横へ動かしたときのブレがそのまま横の甘さになります。
+                // 立方体を1つだけ正面に置きます。
+                // 輪郭が縦なので、横へ動かしたときのブレがそのまま横の甘さになります。
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
                 subject.GetTransform().position =
@@ -10197,24 +11054,27 @@ int main(const int argumentCount, char** arguments)
                 clone.GetTransform().position =
                     { 0.0f, 100.0f, 0.0f };
 
+                // motionBlur: motion-blur settings under test。
                 LamaPon::MotionBlurSettings motionBlur{};
                 motionBlur.intensity = 1.0f;
                 motionBlur.maximumRadius = 24.0f;
 
-                // 立方体は画面中央に幅約73画素で写るので、左の輪郭
-                // （x≒124）をまたぐ帯を測ります。上限24画素ぶんの
-                // 余白を両側に取っています。
+                // 立方体は画面中央に幅約73画素で写るので、左の輪郭（x≒124）をまたぐ帯を測ります。
+                // 上限24画素ぶんの余白を両側に取っています。
                 constexpr std::uint32_t EdgeMinimumX = 96;
+                // EdgeMaximumX: edge maximum X coordinate。
                 constexpr std::uint32_t EdgeMaximumX = 152;
+                // EdgeMinimumY: edge minimum Y coordinate。
                 constexpr std::uint32_t EdgeMinimumY = 78;
+                // EdgeMaximumY: edge maximum Y coordinate。
                 constexpr std::uint32_t EdgeMaximumY = 102;
 
-                // 「1枚目で前フレームの行列を控え、2枚目で動かす」を
-                // 毎回同じ手順で踏みます。オン/オフで動きが変わって
-                // しまうと比較になりません。
+                // 「1枚目で前フレームの行列を控え、2枚目で動かす」を毎回同じ手順で踏みます。
+                // オン/オフで動きが変わってしまうと比較になりません。
                 const auto renderAfterPan =
                     [&](const bool enabled, const float shiftX)
                 {
+                    // settings: 検証対象の設定値。
                     auto settings = motionBlur;
                     settings.enabled = enabled;
                     scene.SetMotionBlurSettings(settings);
@@ -10227,32 +11087,38 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 Stage("frame-motionblur-off");
+                // panOffFrame: pan 無効の描画結果。
                 const auto panOffFrame =
                     renderAfterPan(false, 0.35f);
                 DumpFrame("motionblur-off", panOffFrame);
                 Stage("frame-motionblur-on");
+                // panOnFrame: pan 有効の描画結果。
                 const auto panOnFrame =
                     renderAfterPan(true, 0.35f);
                 DumpFrame("motionblur-on", panOnFrame);
-                // カメラを動かさない場合。オンでも何も起きないはず
-                // （半画素も動いていないなら早期に抜ける作りです）。
+                // カメラを動かさない場合。
+                // オンでも何も起きないはず（半画素も動いていないなら早期に抜ける作りです）。
                 Stage("frame-motionblur-still");
+                // stillOnFrame: 静止 有効の描画結果。
                 const auto stillOnFrame =
                     renderAfterPan(true, 0.0f);
                 DumpFrame("motionblur-still", stillOnFrame);
 
+                // panOffSharpness: pan 無効 Sharpness。
                 const double panOffSharpness = RegionSharpness(
                     panOffFrame,
                     EdgeMinimumX,
                     EdgeMaximumX,
                     EdgeMinimumY,
                     EdgeMaximumY);
+                // panOnSharpness: pan 有効 Sharpness。
                 const double panOnSharpness = RegionSharpness(
                     panOnFrame,
                     EdgeMinimumX,
                     EdgeMaximumX,
                     EdgeMinimumY,
                     EdgeMaximumY);
+                // stillSharpness: 静止 Sharpness。
                 const double stillSharpness = RegionSharpness(
                     stillOnFrame,
                     EdgeMinimumX,
@@ -10274,13 +11140,14 @@ int main(const int argumentCount, char** arguments)
                     panOffSharpness > panOnSharpness * 2.0,
                     "Motion blur must soften the edge when the"
                     " camera pans.");
-                // 静止時はオフの絵と同じ鋭さに戻ること。ここが緩むと
-                // 「常に少しぼかしている」実装でも上の判定を通せます。
+                // 静止時はオフの絵と同じ鋭さに戻ること。
+                // ここが緩むと「常に少しぼかしている」実装でも上の判定を通せます。
                 Require(
                     stillSharpness > panOffSharpness * 0.9,
                     "Motion blur must do nothing when the camera"
                     " does not move.");
 
+                // disabled: 無効化したfeature設定。
                 LamaPon::MotionBlurSettings disabled{};
                 scene.SetMotionBlurSettings(disabled);
                 graphics.SetGraphicsSettings(savedQuality);
@@ -10298,63 +11165,72 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 自動露出（明順応・暗順応）。
-            //
-            // 「絵が明るくなった」だけでは、露出を上げるだけの実装でも
-            // 通ります。暗いシーンでは開き、明るいシーンでは絞るの
-            // 両方向を見ます。どちらもオフの絵との比で測るので、
-            // シーンの明るさそのものの差は約分されます。
+            // 「絵が明るくなった」だけでは、露出を上げるだけの実装でも通ります。
+            // 暗いシーンでは開き、明るいシーンでは絞るの両方向を見ます。
+            // どちらもオフの絵との比で測るので、シーンの明るさそのものの差は約分されます。
             {
+                // savedAmbient: 退避済み ambient。
                 const auto savedAmbient =
                     scene.AmbientLightIntensity();
+                // savedSky: 退避済み sky。
                 const auto savedSky = scene.Sky();
+                // savedTemporal: 退避済み temporal。
                 const auto savedTemporal =
                     scene.TemporalAntiAliasing();
+                // savedQuality: 退避済み quality。
                 const auto savedQuality = graphics.Settings();
 
+                // flatSky: sky settings with no gradient。
                 auto flatSky = scene.Sky();
                 flatSky.enabled = false;
                 scene.SetSkySettings(flatSky);
+                // noTemporal: なし temporal。
                 auto noTemporal = scene.TemporalAntiAliasing();
                 noTemporal.enabled = false;
                 scene.SetTemporalAntiAliasingSettings(
                     noTemporal);
+                // exposureQuality: test input or measurement used by the surrounding rendering check。
                 auto exposureQuality = graphics.Settings();
                 exposureQuality.autoExposureEnabled = true;
                 graphics.SetGraphicsSettings(exposureQuality);
 
+                // autoExposure: automatic exposure。
                 LamaPon::AutoExposureSettings autoExposure{};
                 autoExposure.keyValue = 0.18f;
                 autoExposure.minimumLuminance = 0.001f;
                 autoExposure.maximumLuminance = 20.0f;
 
-                // 明るさは画面上部の空で測ります。高輝度の地面は
-                // ACESの肩で圧縮され、露出差が画素値へ現れにくいためです。
+                // 明るさは画面上部の空で測ります。
+                // 高輝度の地面はACESの肩で圧縮され、露出差が画素値へ現れにくいためです。
                 // 輝度が低い空なら、露出の変化を直接測定できます。
                 constexpr std::uint32_t SkyMinimumY = 4;
+                // SkyMaximumY: sky maximum Y coordinate。
                 constexpr std::uint32_t SkyMaximumY = 56;
 
-                // 露出の段数そのものも見ます。画素は色調整曲線を
-                // 通った後の値なので、「測れているか」「符号が
-                // 合っているか」はこちらのほうが直接確かめられます。
+                // 露出の段数そのものも見ます。
+                // 画素は色調整曲線を通った後の値なので、「測れているか」「符号が合っているか」はこちらのほうが直接確かめられます。
                 float measuredStops{};
+                // measuredLuminance: 測定値の輝度。
                 float measuredLuminance{};
+                // measureBrightness: 画素輝度の計測処理。
                 const auto measureBrightness =
                     [&](const bool enabled,
                         const float ambientIntensity)
                 {
+                    // settings: 検証対象の設定値。
                     auto settings = autoExposure;
                     settings.enabled = enabled;
                     scene.SetAutoExposureSettings(settings);
                     scene.SetAmbientLightIntensity(
                         ambientIntensity);
-                    // 測定は1フレーム遅れで効くので数枚回します
-                    // （読めなかったフレームがあっても落ちないよう
-                    // 余裕を持たせています）。
+                    // 測定は1フレーム遅れで効くので数枚回します（読めなかったフレームがあっても落ちないよう余裕を持たせています）。
                     std::vector<std::uint8_t> frame;
+                    // 配列内の要素位置
                     for (int index = 0; index < 4; ++index)
                     {
                         frame = renderComposedFrame();
                     }
+                    // target: render target associated with the screen effect。
                     const auto* const target =
                         graphics.SceneCompositionTarget();
                     measuredStops = target != nullptr
@@ -10367,30 +11243,39 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 Stage("frame-autoexposure-dark-off");
+                // darkOffFrame: 暗部 無効の描画結果。
                 const auto darkOffFrame =
                     measureBrightness(false, 0.05f);
                 DumpFrame("autoexposure-dark-off", darkOffFrame);
                 Stage("frame-autoexposure-dark-on");
+                // darkOnFrame: 暗部 有効の描画結果。
                 const auto darkOnFrame =
                     measureBrightness(true, 0.05f);
                 DumpFrame("autoexposure-dark-on", darkOnFrame);
+                // darkStops: 暗部 Stops。
                 const float darkStops = measuredStops;
+                // darkLuminance: 暗部の輝度。
                 const float darkLuminance = measuredLuminance;
                 Stage("frame-autoexposure-bright-off");
+                // brightOffFrame: 明部 無効の描画結果。
                 const auto brightOffFrame =
                     measureBrightness(false, 2.5f);
                 DumpFrame(
                     "autoexposure-bright-off",
                     brightOffFrame);
                 Stage("frame-autoexposure-bright-on");
+                // brightOnFrame: 明部 有効の描画結果。
                 const auto brightOnFrame =
                     measureBrightness(true, 2.5f);
                 DumpFrame(
                     "autoexposure-bright-on",
                     brightOnFrame);
+                // brightStops: 明部 Stops。
                 const float brightStops = measuredStops;
+                // brightLuminance: 明部の輝度。
                 const float brightLuminance = measuredLuminance;
 
+                // darkOff: 暗部 無効。
                 const double darkOff = static_cast<double>(
                     RegionBrightness(
                         darkOffFrame,
@@ -10398,6 +11283,7 @@ int main(const int argumentCount, char** arguments)
                         Width,
                         SkyMinimumY,
                         SkyMaximumY));
+                // darkOn: 暗部 有効。
                 const double darkOn = static_cast<double>(
                     RegionBrightness(
                         darkOnFrame,
@@ -10405,6 +11291,7 @@ int main(const int argumentCount, char** arguments)
                         Width,
                         SkyMinimumY,
                         SkyMaximumY));
+                // brightOff: 明部 無効。
                 const double brightOff = static_cast<double>(
                     RegionBrightness(
                         brightOffFrame,
@@ -10412,6 +11299,7 @@ int main(const int argumentCount, char** arguments)
                         Width,
                         SkyMinimumY,
                         SkyMaximumY));
+                // brightOn: 明部 有効。
                 const double brightOn = static_cast<double>(
                     RegionBrightness(
                         brightOnFrame,
@@ -10436,14 +11324,14 @@ int main(const int argumentCount, char** arguments)
                     brightLuminance > darkLuminance * 2.0,
                     "The measured luminance must follow the"
                     " scene brightness.");
-                // 露出の段数が両方向へ振れること。暗いシーンでは
-                // 開き（正）、明るいシーンでは絞ります（負）。
+                // 露出の段数が両方向へ振れること。
+                // 暗いシーンでは開き（正）、明るいシーンでは絞ります（負）。
                 Require(
                     darkStops > 0.8f && brightStops < -0.15f,
                     "Auto exposure must open up on a dark scene"
                     " and close down on a bright one.");
-                // 振れ幅も見ます。片方だけ動く実装（明るい側で
-                // 飽和して止まるなど）を通さないためです。
+                // 振れ幅も見ます。
+                // 片方だけ動く実装（明るい側で飽和して止まるなど）を通さないためです。
                 Require(
                     darkStops - brightStops > 1.0f,
                     "The exposure must swing by more than a stop"
@@ -10458,6 +11346,7 @@ int main(const int argumentCount, char** arguments)
                     "Auto exposure must darken the pixels of a"
                     " bright scene.");
 
+                // disabled: 無効化したfeature設定。
                 LamaPon::AutoExposureSettings disabled{};
                 scene.SetAutoExposureSettings(disabled);
                 graphics.SetGraphicsSettings(savedQuality);
@@ -10465,21 +11354,24 @@ int main(const int argumentCount, char** arguments)
                     savedTemporal);
                 scene.SetSkySettings(savedSky);
                 scene.SetAmbientLightIntensity(savedAmbient);
-                // 露出を戻した状態で1枚回し、この後の段が前の露出を
-                // 引き継がないようにします。
+                // 露出を戻した状態で1枚回し、この後の段が前の露出を引き継がないようにします。
                 static_cast<void>(renderComposedFrame());
             }
 
-            // 非同期コンパイル。コンパイル中は標準Litで描いて処理を
-            // 止めず、焼き上がったら本来のシェーダーへ差し替わる
-            // ことを確かめます。ここだけ非同期へ戻します。
+            // 非同期コンパイル。
+            // コンパイル中は標準Litで描いて処理を止めず、焼き上がったら本来のシェーダーへ差し替わることを確かめます。
+            // ここだけ非同期へ戻します。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
@@ -10492,16 +11384,17 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.0f, 0.0f });
 
                 graphics.SetAsyncShaderCompilationEnabled(true);
-                // 焼き上がり済みだと一発で出てしまい非同期の道を
-                // 通らないので、キャッシュを消してから始めます。
+                // 焼き上がり済みだと一発で出てしまい非同期の道を通らないので、キャッシュを消してから始めます。
                 LamaPon::ClearShaderCache();
 
+                // asyncPlane: scene plane used by asynchronous shader compilation。
                 auto& asyncPlane =
                     scene.CreateGameObject("AsyncPlane");
                 asyncPlane.GetTransform().SetEulerAngles(
                     { -1.5707963f, 0.0f, 0.0f });
                 asyncPlane.GetTransform().scale =
                     { 4.0f, 1.0f, 2.4f };
+                // asyncRenderer: renderer component for the async shader test。
                 auto& asyncRenderer =
                     asyncPlane.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -10514,19 +11407,24 @@ int main(const int argumentCount, char** arguments)
                     / "variant-probe.hlsl");
 
                 Stage("frame-async-compiling");
+                // firstFrame: 初回の描画結果。
                 const auto firstFrame = renderComposedFrame();
                 DumpFrame("async-compiling", firstFrame);
+                // whileCompiling: compile中に表示されるpixel。
                 const auto whileCompiling = At(
                     firstFrame,
                     Width / 2,
                     Height / 2);
 
-                // 焼き上がるまで描き続けます。非同期なので何
-                // フレームかかるかは環境次第です。
+                // 焼き上がるまで描き続けます。
+                // 非同期なので何フレームかかるかは環境次第です。
                 Pixel settled{};
+                // frames: frame群。
                 int frames = 0;
+                // 非同期描画の待機回数
                 for (; frames < 600; ++frames)
                 {
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     settled = At(frame, Width / 2, Height / 2);
                     if (settled.red > 60
@@ -10554,9 +11452,9 @@ int main(const int argumentCount, char** arguments)
                     frames < 600,
                     "An asynchronously compiled shader must"
                     " eventually replace the placeholder.");
-                // variant-probeはキーワード無しで暗い赤。標準Lit
-                // （コンパイル中の代役）は白い板なので緑成分が
-                // 残ります。ここが同じなら差し替わっていません。
+                // variant-probeはキーワード無しで暗い赤。
+                // 標準Lit（コンパイル中の代役）は白い板なので緑成分が残ります。
+                // ここが同じなら差し替わっていません。
                 Require(
                     settled.red > settled.green + 20,
                     "The settled frame must show the custom"
@@ -10574,17 +11472,20 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 壊れたShaderの知らせ方。コンパイルに失敗したものを
-            // 標準Litで代役すると、動いているように見えて実は
-            // 壊れている状態になります。マゼンタで描かれること、
-            // そして直したら本来の色へ戻ることを確かめます。
+            // 壊れたShaderの知らせ方。
+            // コンパイルに失敗したものを標準Litで代役すると、動いているように見えて実は壊れている状態になります。
+            // マゼンタで描かれること、そして直したら本来の色へ戻ることを確かめます。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
@@ -10596,12 +11497,14 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
 
+                // errorPlane: scene plane used by shader-error recovery。
                 auto& errorPlane =
                     scene.CreateGameObject("ShaderErrorPlane");
                 errorPlane.GetTransform().SetEulerAngles(
                     { -1.5707963f, 0.0f, 0.0f });
                 errorPlane.GetTransform().scale =
                     { 4.0f, 1.0f, 2.4f };
+                // errorRenderer: renderer component for the error-recovery test。
                 auto& errorRenderer =
                     errorPlane.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -10609,14 +11512,15 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             1.0f, 1.0f, 1.0f, 1.0f });
 
+                // sampleShaderError: shader compilation diagnostic for the sample。
                 const auto sampleShaderError =
                     [&](const char* name) -> Pixel
                 {
                     Stage(name);
-                    // 1枚捨ててから撮ります。前の段が時間方向の
-                    // 蓄積（TAA・自動露出）を残していると、
-                    // 差し替えた直後の1枚に前の絵が混ざります。
+                    // 1枚捨ててから撮ります。
+                    // 前の段が時間方向の蓄積（TAA・自動露出）を残していると、差し替えた直後の1枚に前の絵が混ざります。
                     static_cast<void>(renderComposedFrame());
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     DumpFrame(name, frame);
                     return At(frame, Width / 2, Height / 2);
@@ -10627,6 +11531,7 @@ int main(const int argumentCount, char** arguments)
                     std::filesystem::path{
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "broken-shader.hlsl");
+                // broken: shader source that should fail compilation。
                 const auto broken =
                     sampleShaderError("shader-error-broken");
 
@@ -10635,17 +11540,19 @@ int main(const int argumentCount, char** arguments)
                     std::filesystem::path{
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "no-such-shader.hlsl");
+                // missing: 欠落。
                 const auto missing =
                     sampleShaderError("shader-error-missing");
 
-                // 2D用のシェーダーを3Dマテリアルへ設定した場合、HLSLは
-                // 「'VSMain': entrypoint not found」としか言いません。
+                // 2D用のシェーダーを3Dマテリアルへ設定した場合、HLSLは「'VSMain': entrypoint not found」としか言いません。
                 // 説明が足されて届くところまで（配線）を見ます。
                 errorRenderer.SetShaderPath(
                     std::filesystem::path{ "shaders" }
                     / "LamaPonSpriteError.hlsl");
+                // wrongKind: 不一致の 種別。
                 const auto wrongKind =
                     sampleShaderError("shader-error-wrong-kind");
+                // wrongKindMessage: 不一致の 種別 Message。
                 const auto wrongKindMessage =
                     errorRenderer.ShaderError();
                 std::cout
@@ -10653,12 +11560,13 @@ int main(const int argumentCount, char** arguments)
                     << wrongKindMessage
                     << std::endl;
 
-                // 動いていたShaderを書き間違えた場合。直前に成功
-                // したものを描き続けると「編集しても見た目が
-                // 変わらない」になります。ここが本命です。
+                // 動いていたShaderを書き間違えた場合。
+                // 直前に成功したものを描き続けると「編集しても見た目が変わらない」になります。
+                // ここが本命です。
                 const auto probePath =
                     std::filesystem::temp_directory_path()
                     / "lamapon-shader-error-probe.hlsl";
+                // writeProbe: 出力のprobe。
                 const auto writeProbe =
                     [&](const char* source)
                 {
@@ -10672,10 +11580,10 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 writeProbe("variant-probe.hlsl");
-                // 共有cacheをもう1つのMeshRendererにも持たせ、片方の
-                // reload直後にconst queryだけで追従できるか調べます。
+                // 共有cacheをもう1つのMeshRendererにも持たせ、片方のreload直後にconst queryだけで追従できるか調べます。
                 subjectRenderer.SetShaderPath(probePath);
                 errorRenderer.SetShaderPath(probePath);
+                // working: shader source restored to valid code。
                 const auto working =
                     sampleShaderError("shader-error-working");
 
@@ -10686,6 +11594,7 @@ int main(const int argumentCount, char** arguments)
                 Require(
                     !subjectRenderer.ShaderError().empty(),
                     "CanBeInstanced must refresh a shared shader replaced by another component.");
+                // edited: shader source after the edit。
                 const auto edited =
                     sampleShaderError("shader-error-edited");
 
@@ -10697,10 +11606,12 @@ int main(const int argumentCount, char** arguments)
                 Require(
                     subjectRenderer.ShaderError().empty(),
                     "IsAlphaBlended3D must refresh a shared shader replaced by another component.");
+                // repaired: shader source after repair。
                 const auto repaired =
                     sampleShaderError("shader-error-repaired");
 
                 subjectRenderer.SetShaderPath({});
+                // removeError: error returned while removing a fixture file。
                 std::error_code removeError;
                 std::filesystem::remove(probePath, removeError);
 
@@ -10787,17 +11698,20 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // Shaderバリアント。キーワードごとに別々のシェーダーと
-            // してコンパイルされ、マテリアルの指定で選ばれることを
-            // 色で確かめます。プリプロセッサで色を変える見本Shaderを
-            // 使うので、届いていなければ色が変わりません。
+            // Shaderバリアント。
+            // キーワードごとに別々のシェーダーとしてコンパイルされ、マテリアルの指定で選ばれることを色で確かめます。
+            // プリプロセッサで色を変える見本Shaderを使うので、届いていなければ色が変わりません。
             {
+                // savedSubject: 退避済み Subject。
                 const auto savedSubject =
                     subject.GetTransform().position;
+                // savedClone: 退避済み Clone。
                 const auto savedClone =
                     clone.GetTransform().position;
+                // savedCamera: 退避済みのcamera。
                 const auto savedCamera =
                     cameraObject.GetTransform().position;
+                // savedCameraAngles: 退避済み camera Angles。
                 const auto savedCameraAngles =
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
@@ -10809,12 +11723,14 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
 
+                // variantPlane: scene plane used for shader variants。
                 auto& variantPlane =
                     scene.CreateGameObject("VariantPlane");
                 variantPlane.GetTransform().SetEulerAngles(
                     { -1.5707963f, 0.0f, 0.0f });
                 variantPlane.GetTransform().scale =
                     { 4.0f, 1.0f, 2.4f };
+                // variantRenderer: renderer component for the variant test。
                 auto& variantRenderer =
                     variantPlane.AddComponent<
                         LamaPon::MeshRendererComponent>(
@@ -10826,10 +11742,12 @@ int main(const int argumentCount, char** arguments)
                         LAMAPON_TEST_FIXTURE_DIR }
                     / "variant-probe.hlsl");
 
+                // sampleVariant: screen-effect variant request under test。
                 const auto sampleVariant =
                     [&](const char* name) -> Pixel
                 {
                     Stage(name);
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     DumpFrame(name, frame);
                     return At(frame, Width / 2, Height / 2);
@@ -10841,16 +11759,19 @@ int main(const int argumentCount, char** arguments)
                 // GREENだけ: 暗い緑。
                 variantRenderer.EnableShaderKeyword(
                     "VARIANT_PROBE_GREEN");
+                // green: pixelの緑成分。
                 const auto green =
                     sampleVariant("variant-green");
                 // GREEN + BRIGHT: 明るい緑。
                 variantRenderer.EnableShaderKeyword(
                     "VARIANT_PROBE_BRIGHT");
+                // brightGreen: 明部 緑。
                 const auto brightGreen =
                     sampleVariant("variant-green-bright");
                 // 宣言に無いキーワードは無視されること。
                 variantRenderer.EnableShaderKeyword(
                     "VARIANT_PROBE_NOT_DECLARED");
+                // unknown: 未知。
                 const auto unknown =
                     sampleVariant("variant-unknown-keyword");
 
@@ -10895,14 +11816,17 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 朝昼夜。Directional Lightを回すだけで空と環境光が
-            // 変わることを見ます。太陽の高度を真上から真下まで
-            // 振って、明るさが単調に落ちることを確かめます。
+            // 朝昼夜。
+            // Directional Lightを回すだけで空と環境光が変わることを見ます。
+            // 太陽の高度を真上から真下まで振って、明るさが単調に落ちることを確かめます。
             {
+                // savedSunAnglesForSky: 退避済み sun Angles For sky。
                 const auto savedSunAnglesForSky =
                     sunObject.GetTransform().EulerAngles();
+                // savedSky: 退避済み sky。
                 const auto savedSky = scene.Sky();
                 sunObject.SetEnabled(true);
+                // daySky: sky settings for daytime environment lighting。
                 auto daySky = scene.Sky();
                 daySky.enabled = true;
                 daySky.sunDriven = true;
@@ -10911,41 +11835,50 @@ int main(const int argumentCount, char** arguments)
 
                 struct TimeOfDay final
                 {
+                    // name: 名前。
                     const char* name;
-                    // 太陽の高度（度）。90=真上, 0=地平線, -20=夜。
+                    // 太陽の高度（度）。
+                    // 90=真上, 0=地平線, -20=夜。
                     float elevationDegrees;
                 };
+                // times: 時刻。
                 const TimeOfDay times[]{
                     { "daynight-noon", 78.0f },
                     { "daynight-afternoon", 30.0f },
                     { "daynight-sunset", 2.0f },
                     { "daynight-night", -25.0f }
                 };
+                // previousSkyLuminance: 前回 skyの輝度。
                 double previousSkyLuminance = 1.0e9;
+                // descending: 降順。
                 bool descending = true;
+                // 評価する時間帯設定
                 for (const auto& time : times)
                 {
-                    // yaw=piのとき、光の進む向きは
-                    // (0, sin(pitch), cos(pitch)) です。太陽を
-                    // 高度eへ置くには光が下向きに sin(e) 進めば
-                    // よいので pitch = -e になります。
+                    // yaw=piのとき、光の進む向きは(0, sin(pitch), cos(pitch)) です。
+                    // 太陽を高度eへ置くには光が下向きに sin(e) 進めばよいので pitch = -e になります。
                     const float pitch =
                         -DirectX::XMConvertToRadians(
                             time.elevationDegrees);
                     sunObject.GetTransform().SetEulerAngles(
                         { pitch, 3.14159265f, 0.0f });
                     Stage(time.name);
+                    // frame: captured pixel buffer for one rendered frame。
                     const auto frame = renderComposedFrame();
                     DumpFrame(time.name, frame);
                     // 空だけを見ます（画面上部は必ず空）。
                     double sum{};
+                    // samples: 厚さ判定用のsample群。
                     int samples{};
+                    // 縦方向の走査座標
                     for (std::uint32_t y = 5; y < 30; ++y)
                     {
+                        // 横方向の走査座標
                         for (std::uint32_t x = 0;
                             x < Width;
                             x += 4)
                         {
+                            // pixel: 検査位置の画素値。
                             const auto& pixel = At(frame, x, y);
                             sum += 0.299 * pixel.red
                                 + 0.587 * pixel.green
@@ -10953,6 +11886,7 @@ int main(const int argumentCount, char** arguments)
                             ++samples;
                         }
                     }
+                    // luminance: 輝度。
                     const double luminance = sum / samples;
                     std::cout
                         << time.name << ": sky luminance="
@@ -10963,9 +11897,8 @@ int main(const int argumentCount, char** arguments)
                     }
                     previousSkyLuminance = luminance;
                 }
-                // 太陽が下がるほど空は暗くなること。追従して
-                // いなければ4枚とも同じ明るさになり、ここで
-                // 落ちます。
+                // 太陽が下がるほど空は暗くなること。
+                // 追従していなければ4枚とも同じ明るさになり、ここで落ちます。
                 Require(
                     descending,
                     "The sun-driven sky must get darker as the"
@@ -10983,18 +11916,15 @@ int main(const int argumentCount, char** arguments)
             scene.SetAmbientOcclusionSettings(occlusion);
 
             // (8) 読み込みモデル（--dump のときだけ）。
-            // スキニングモデルはDirectXTKの頂点シェーダーで変形し、
-            // ピクセルシェーダーだけをLamaPon Litへ差し替える構造の
-            // ため、PSSkinnedMainの入力セマンティクスがずれていると
-            // UVと法線が入れ替わって明確に破綻します。Lit（既定）と
-            // 従来のDirectXTK描画の2枚を出して見比べられるように
-            // します。
+            // スキニングモデルはDirectXTKの頂点シェーダーで変形し、ピクセルシェーダーだけをLamaPon Litへ差し替える構造のため、PSSkinnedMainの入力セマンティクスがずれているとUVと法線が入れ替わって明確に破綻します。
+            // Lit（既定）と従来のDirectXTK描画の2枚を出して見比べられるようにします。
             auto& modelObject =
                 scene.CreateGameObject("DumpModel");
             modelObject.GetTransform().position =
                 { 0.0f, 0.0f, 0.0f };
             modelObject.GetTransform().scale =
                 { 1.5f, 1.5f, 1.5f };
+            // modelRenderer: renderer component for the model test。
             auto& modelRenderer =
                 modelObject.AddComponent<
                     LamaPon::ModelRendererComponent>(
@@ -11009,8 +11939,8 @@ int main(const int argumentCount, char** arguments)
             DumpFrame("model-legacy", renderComposedFrame());
             modelRenderer.SetUseLegacyShading(false);
 
-            // Litでは横縞（面ごとの段差）が見える。GGXの鏡面が面の
-            // 向きの差を強調しているだけなら、粗くすれば消えるはず。
+            // Litでは横縞（面ごとの段差）が見える。
+            // GGXの鏡面が面の向きの差を強調しているだけなら、粗くすれば消えるはず。
             // 粗さを両端に振って切り分けます。
             modelRenderer.SetMaterialOverrideEnabled(true);
             modelRenderer.SetRoughness(1.0f);
@@ -11027,6 +11957,7 @@ int main(const int argumentCount, char** arguments)
             auto emissiveBloom = graphics.Settings();
             emissiveBloom.bloomEnabled = true;
             graphics.SetGraphicsSettings(emissiveBloom);
+            // bloom: scene bloom settings under test。
             auto bloom = scene.Bloom();
             bloom.enabled = true;
             scene.SetBloomSettings(bloom);
@@ -11039,27 +11970,26 @@ int main(const int argumentCount, char** arguments)
             modelRenderer.SetMaterialOverrideEnabled(false);
         }
 
-        // ベイクした間接光の保存→読み込み。GIの節で丸ごとJSONへ
-        // したシーンを別のSceneへ読み込み、同じ場所に同じ
-        // はね返りが出ることを確かめます（焼き込みデータはbase64の
-        // fp16なので、復元はビット単位で同じテクスチャになるはず）。
+        // ベイクした間接光の保存→読み込み。
+        // GIの節で丸ごとJSONへしたシーンを別のSceneへ読み込み、同じ場所に同じはね返りが出ることを確かめます（焼き込みデータはbase64のfp16なので、復元はビット単位で同じテクスチャになるはず）。
         // 主のsceneを壊さないよう、専用のSceneで行います。
         if (!giRoundTripJson.empty())
         {
             Stage("frame-gi-roundtrip");
+            // reloadedScene: serializationから復元したscene。
             LamaPon::Scene reloadedScene(graphics);
             reloadedScene.LoadFromJson(giRoundTripJson);
             Require(
                 reloadedScene.HasBakedGlobalIllumination(),
                 "The baked GI data must survive the JSON"
                 " round trip.");
-            // 保存時はenabled=trueのまま書いているので、復元後も
-            // 有効のはず。
+            // 保存時はenabled=trueのまま書いているので、復元後も有効のはず。
             Require(
                 reloadedScene.BakedGlobalIllumination()
                     .enabled,
                 "The GI enable flag must survive the JSON"
                 " round trip.");
+            // renderReloaded: 描画 再読込後。
             const auto renderReloaded =
                 [&graphics, &reloadedScene, &clearColor]
                 {
@@ -11073,8 +12003,11 @@ int main(const int argumentCount, char** arguments)
                     graphics.EndSceneComposition(
                         reloadedScene
                             .PostProcessFrameData());
+                    // width: 幅。
                     std::uint32_t width{};
+                    // height: 高さ。
                     std::uint32_t height{};
+                    // pixels: pixel群。
                     auto pixels =
                         graphics.CaptureBackBuffer(
                             width,
@@ -11082,23 +12015,31 @@ int main(const int argumentCount, char** arguments)
                     graphics.EndFrame();
                     return pixels;
                 };
+            // reloadedOnFrame: 再読込後 有効の描画結果。
             const auto reloadedOnFrame = renderReloaded();
             DumpFrame("gi-roundtrip", reloadedOnFrame);
+            // reloadedSettings: 再読込後の設定。
             auto reloadedSettings =
                 reloadedScene.BakedGlobalIllumination();
             reloadedSettings.enabled = false;
             reloadedScene
                 .SetBakedGlobalIlluminationSettings(
                     reloadedSettings);
+            // reloadedOffFrame: 再読込後 無効の描画結果。
             const auto reloadedOffFrame = renderReloaded();
+            // reloadedSkew: 再読込後 skew。
             const auto reloadedSkew =
                 [&](const std::vector<std::uint8_t>& frame)
             {
+                // skew: difference between two sample averages。
                 long long skew = 0;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 130; y < 165; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 110; x < 150; ++x)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto pixel = At(frame, x, y);
                         skew += pixel.red;
                         skew -= pixel.blue;
@@ -11106,6 +12047,7 @@ int main(const int argumentCount, char** arguments)
                 }
                 return skew;
             };
+            // reloadedDelta: 再読込後 差分。
             const long long reloadedDelta =
                 reloadedSkew(reloadedOnFrame)
                 - reloadedSkew(reloadedOffFrame);
@@ -11115,9 +12057,7 @@ int main(const int argumentCount, char** arguments)
                 << " (baked: "
                 << giRoundTripExpectedNear
                 << ")" << std::endl;
-            // 読み込んだGIの効きが、焼いた直後の効きとほぼ同じ
-            // こと（fp16の往復なので本来は完全一致。帯の外の
-            // 描画差に引きずられないよう、1割の揺れまで許します）。
+            // 読み込んだGIの効きが、焼いた直後の効きとほぼ同じこと（fp16の往復なので本来は完全一致。帯の外の描画差に引きずられないよう、1割の揺れまで許します）。
             Require(
                 reloadedDelta * 10
                         > giRoundTripExpectedNear * 9
@@ -11127,48 +12067,55 @@ int main(const int argumentCount, char** arguments)
                 " bounce light.");
         }
 
-        // 画面エフェクトの差し込み地点。Bloomの前へ置いた光は
-        // 滲み、後ろへ置いた光は滲みません。 同じShaderを同じ
-        // パラメーターで2回かけ、滲みの差だけを見ます。
-        // 「落ちない」「色が出る」だけでは、指定した位置に入ったのか
-        // 従来どおり末尾に入ったのかを区別できません。
-        //
-        // この段も絵を見る判定の最後へ置いています（後ろは時間しか
-        // 測らないベンチだけ）。途中へ差すと後ろの段の測定値が動きます。
+        // 画面エフェクトの差し込み地点。
+        // Bloomの前へ置いた光は滲み、後ろへ置いた光は滲みません。
+        // 同じShaderを同じパラメーターで2回かけ、滲みの差だけを見ます。
+        // 「落ちない」「色が出る」だけでは、指定した位置に入ったのか従来どおり末尾に入ったのかを区別できません。
+        // この段も絵を見る判定の最後へ置いています（後ろは時間しか測らないベンチだけ）。
+        // 途中へ差すと後ろの段の測定値が動きます。
         {
+            // savedGraphicsSettings: 退避済み graphicsの設定。
             const auto savedGraphicsSettings =
                 graphics.Settings();
+            // savedBloom: 退避済み bloom。
             const auto savedBloom = scene.Bloom();
+            // bloomSettings: bloomの設定。
             auto bloomSettings = graphics.Settings();
             bloomSettings.bloomEnabled = true;
             graphics.SetGraphicsSettings(bloomSettings);
+            // sceneBloom: bloom settings stored on the scene。
             auto sceneBloom = scene.Bloom();
             sceneBloom.enabled = true;
-            // 既定（radius 2）の滲みは1〜2画素しかなく、四角の縁と
-            // 見分けが付きません。判定の余白より確実に外へ出るよう、
-            // ここでは広く強くします。
+            // 既定（radius 2）の滲みは1〜2画素しかなく、四角の縁と見分けが付きません。
+            // 判定の余白より確実に外へ出るよう、ここでは広く強くします。
             sceneBloom.threshold = 0.5f;
             sceneBloom.intensity = 2.0f;
             sceneBloom.radius = 8.0f;
             scene.SetBloomSettings(sceneBloom);
 
+            // dotShader: shader that draws the bloom test dot。
             const auto dotShader =
                 std::filesystem::path{
                     LAMAPON_TEST_FIXTURE_DIR }
                 / "bright-dot.hlsl";
+            // DotRadius: dot 半径。
             constexpr float DotRadius = 0.05f;
+            // renderWithPoint: point light有効時の描画処理。
             const auto renderWithPoint =
                 [&](const LamaPon::ScreenEffectPoint point,
                     const char* stageName,
                     std::vector<std::uint8_t>& frame)
             {
+                // request: screen-effect request under test。
                 LamaPon::ScreenEffectRequest request;
                 request.shader = dotShader;
                 request.point = point;
                 request.customParameters[0] = {
                     DotRadius, 6.0f, 0.0f, 0.0f
                 };
+                // shaderError: shader compilation diagnostic text。
                 std::string shaderError;
+                // queued: screen effectのqueue登録結果。
                 const bool queued = graphics.QueueScreenEffect(
                     request,
                     nullptr,
@@ -11183,7 +12130,9 @@ int main(const int argumentCount, char** arguments)
                 DumpFrame(stageName + 6, frame);
             };
 
+            // beforeBloomFrame: 前 bloomの描画結果。
             std::vector<std::uint8_t> beforeBloomFrame;
+            // afterToneMapFrame: 後 Tone mapの描画結果。
             std::vector<std::uint8_t> afterToneMapFrame;
             renderWithPoint(
                 LamaPon::ScreenEffectPoint::BeforeBloom,
@@ -11194,28 +12143,37 @@ int main(const int argumentCount, char** arguments)
                 "frame-inject-after-tonemap",
                 afterToneMapFrame);
 
-            // 四角の中は数えません。滲みは外側に出ます。
+            // 四角の中は数えません。
+            // 滲みは外側に出ます。
             const auto insideDot =
                 [](const std::uint32_t x,
                     const std::uint32_t y)
             {
+                // u: test input or measurement used by the surrounding rendering check。
                 const float u =
                     (static_cast<float>(x) + 0.5f)
                     / static_cast<float>(Width);
+                // v: test input or measurement used by the surrounding rendering check。
                 const float v =
                     (static_cast<float>(y) + 0.5f)
                     / static_cast<float>(Height);
                 return std::abs(u - 0.5f) < DotRadius + 0.01f
                     && std::abs(v - 0.5f) < DotRadius + 0.01f;
             };
+            // dotPixels: dotのpixel群。
             std::size_t dotPixels = 0;
+            // halo: pixel count in the bloom halo。
             std::size_t halo = 0;
+            // 縦方向の走査座標
             for (std::uint32_t y = 0; y < Height; ++y)
             {
+                // 横方向の走査座標
                 for (std::uint32_t x = 0; x < Width; ++x)
                 {
+                    // bloomed: captured pixel from the bloomed region。
                     const auto bloomed =
                         At(beforeBloomFrame, x, y);
+                    // plain: 通常。
                     const auto plain =
                         At(afterToneMapFrame, x, y);
                     if (insideDot(x, y))
@@ -11227,8 +12185,10 @@ int main(const int argumentCount, char** arguments)
                         }
                         continue;
                     }
+                    // bloomedSum: bloomed 合計。
                     const int bloomedSum = bloomed.red
                         + bloomed.green + bloomed.blue;
+                    // plainSum: 通常 合計。
                     const int plainSum = plain.red
                         + plain.green + plain.blue;
                     if (bloomedSum - plainSum > 24)
@@ -11242,7 +12202,8 @@ int main(const int argumentCount, char** arguments)
                 << dotPixels
                 << " halo=" << halo
                 << std::endl;
-            // 対照が先。どちらの位置でも四角そのものは出ること。
+            // 対照が先。
+            // どちらの位置でも四角そのものは出ること。
             Require(
                 dotPixels > 200,
                 "The bright square must be drawn at both"
@@ -11255,11 +12216,11 @@ int main(const int argumentCount, char** arguments)
                 " outside the square; if it does not, it was"
                 " applied at the old fixed position.");
 
-            // Queue APIは失敗をfalse/errorで返し、画像でない補助入力を
-            // 指定しても例外を呼び出し側へ漏らさないこと。
+            // Queue APIは失敗をfalse/errorで返し、画像でない補助入力を指定しても例外を呼び出し側へ漏らさないこと。
             LamaPon::ScreenEffectRequest invalidAuxiliary;
             invalidAuxiliary.shader = dotShader;
             invalidAuxiliary.auxiliaryTextures[0] = dotShader;
+            // invalidAuxiliaryError: Auxiliaryのerror内容。
             std::string invalidAuxiliaryError;
             Require(
                 !graphics.QueueScreenEffect(
@@ -11269,8 +12230,7 @@ int main(const int argumentCount, char** arguments)
                     && !invalidAuxiliaryError.empty(),
                 "A screen effect with an unreadable auxiliary texture must return false and an error.");
 
-            // 同じframeでqueue済みのEffectをinvalidateして差し替えても、
-            // 先に積んだ描画が共有所有した旧Effectを安全に使い切ること。
+            // 同じframeでqueue済みのEffectをinvalidateして差し替えても、先に積んだ描画が共有所有した旧Effectを安全に使い切ること。
             LamaPon::ScreenEffectRequest lifetimeProbe;
             lifetimeProbe.shader = dotShader;
             lifetimeProbe.point =
@@ -11278,6 +12238,7 @@ int main(const int argumentCount, char** arguments)
             lifetimeProbe.customParameters[0] = {
                 DotRadius, 6.0f, 0.0f, 0.0f
             };
+            // lifetimeError: shader lifetime diagnostic text。
             std::string lifetimeError;
             Require(
                 graphics.QueueScreenEffect(
@@ -11293,6 +12254,7 @@ int main(const int argumentCount, char** arguments)
                     &lifetimeError),
                 "The reloaded same-frame lifetime probe must queue.");
             Stage("frame-screen-effect-reload-lifetime");
+            // lifetimeFrame: lifetimeの描画結果。
             const auto lifetimeFrame = renderComposedFrame();
             Require(
                 lifetimeFrame.size()
@@ -11305,22 +12267,23 @@ int main(const int argumentCount, char** arguments)
         }
 
         // テセレーションした形で影を落とせること。
-        //
-        // 検証シーンを全段で共有するため、この段は描画判定の最後に置き、
-        // 後続の測定値へ影響しないようにします。
+        // 検証シーンを全段で共有するため、この段は描画判定の最後に置き、後続の測定値へ影響しないようにします。
         {
+            // benchSavedCameraPosition: 退避済み benchmark cameraのposition。
             const auto benchSavedCameraPosition =
                 cameraObject.GetTransform().position;
+            // benchSavedCameraRotation: 退避済み benchmark cameraのrotation。
             const auto benchSavedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
-            // 板は水平（XZ）なので真上から。影の落ち先が見えるよう
-            // 引いて撮ります。
+            // 板は水平（XZ）なので真上から。
+            // 影の落ち先が見えるよう引いて撮ります。
             cameraObject.GetTransform().position =
                 { 0.0f, 14.0f, 0.0f };
             cameraObject.GetTransform().SetEulerAngles(
                 { -1.5707963f, 0.0f, 0.0f });
             sunObject.SetEnabled(true);
 
+            // receiver: scene object receiving the shadow。
             auto& receiver =
                 scene.CreateGameObject("ShadowFloor");
             receiver.GetTransform().position =
@@ -11333,11 +12296,8 @@ int main(const int argumentCount, char** arguments)
                 DirectX::XMFLOAT4{
                     1.0f, 1.0f, 1.0f, 1.0f });
 
-            // 対照が先です。同じ大きさ・同じ位置の普通の板
-            // が影を落とせているかを見ておかないと、下の判定が
-            // 0でも「テセレーションが原因」とは言えません
-            // （カメラの向きや太陽の角度で影が画面外へ出て
-            // いるだけかもしれない）。
+            // 対照が先です。
+            // 同じ大きさ・同じ位置の普通の板が影を落とせているかを見ておかないと、下の判定が0でも「テセレーションが原因」とは言えません（カメラの向きや太陽の角度で影が画面外へ出ているだけかもしれない）。
             auto& plainCaster =
                 scene.CreateGameObject("PlainCaster");
             plainCaster.GetTransform().position =
@@ -11350,6 +12310,7 @@ int main(const int argumentCount, char** arguments)
                 DirectX::XMFLOAT4{
                     1.0f, 1.0f, 1.0f, 1.0f });
             Stage("frame-tessellation-shadow-plain");
+            // plainFrame: 通常の描画結果。
             const auto plainFrame =
                 renderComposedFrame();
             DumpFrame(
@@ -11358,12 +12319,14 @@ int main(const int argumentCount, char** arguments)
             static_cast<void>(
                 scene.DestroyGameObject(plainCaster));
 
+            // caster: scene object casting the shadow。
             auto& caster =
                 scene.CreateGameObject("TessCaster");
             caster.GetTransform().position =
                 { 0.0f, 0.0f, 0.0f };
             caster.GetTransform().scale =
                 { 8.0f, 1.0f, 8.0f };
+            // casterRenderer: renderer component attached to the shadow caster。
             auto& casterRenderer =
                 caster.AddComponent<
                     LamaPon::MeshRendererComponent>(
@@ -11387,52 +12350,61 @@ int main(const int argumentCount, char** arguments)
                     16.0f, 0.0f, 0.0f, 0.0f });
 
             Stage("frame-tessellation-shadow");
+            // shadowFrame: shadowの描画結果。
             const auto shadowFrame =
                 renderComposedFrame();
             DumpFrame(
                 "tessellation-shadow",
                 shadowFrame);
 
-            // 対照。落とす側を消して同じ絵を撮ります。
+            // 対照。
+            // 落とす側を消して同じ絵を撮ります。
             static_cast<void>(
                 scene.DestroyGameObject(caster));
+            // particleLitFrame: particle litの描画結果。
             const auto particleLitFrame = renderComposedFrame();
             DumpFrame(
                 "tessellation-shadow-none",
                 particleLitFrame);
 
-            // 影＝「落とす側が無いときは明るく、あるときは
-            // 暗い」画素。板そのものが写っている場所は緑に
-            // なるので数えません（そこは影ではなく遮蔽）。
-            // 普通の板は受け面と同じ白＆同じ向きなので、
-            // 板の写る場所は明るさがほぼ変わりません。つまり
-            // 対照側で数えられるのは影だけです。
+            // 影＝「落とす側が無いときは明るく、あるときは暗い」画素。
+            // 板そのものが写っている場所は緑になるので数えません（そこは影ではなく遮蔽）。
+            // 普通の板は受け面と同じ白＆同じ向きなので、板の写る場所は明るさがほぼ変わりません。
+            // つまり対照側で数えられるのは影だけです。
             const auto countShadowed =
                 [&particleLitFrame](
                     const std::vector<std::uint8_t>&
                         frame)
             {
+                // total: 累積した測定値。
                 std::size_t total = 0;
+                // 縦方向の走査座標
                 for (std::uint32_t y = 0;
                     y < Height;
                     ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x = 0;
                         x < Width;
                         ++x)
                     {
+                        // with: 対象frameのpixel。
                         const auto with =
                             At(frame, x, y);
+                        // without: 対照frameのpixel。
                         const auto without =
                             At(particleLitFrame, x, y);
+                        // greenish: 緑成分が突出したpixelか。
                         const bool greenish =
                             with.green > with.red + 20
                             && with.green
                                 > with.blue + 20;
+                        // lit: 対照pixelのRGB輝度。
                         const int lit =
                             without.red
                             + without.green
                             + without.blue;
+                        // now: 対象pixelのRGB輝度。
                         const int now = with.red
                             + with.green
                             + with.blue;
@@ -11446,8 +12418,10 @@ int main(const int argumentCount, char** arguments)
                 }
                 return total;
             };
+            // plainShadowed: 通常 shadowあり。
             const auto plainShadowed =
                 countShadowed(plainFrame);
+            // shadowed: shadowあり。
             const auto shadowed =
                 countShadowed(shadowFrame);
             std::cout
@@ -11455,8 +12429,8 @@ int main(const int argumentCount, char** arguments)
                 << plainShadowed
                 << " tessellated=" << shadowed
                 << std::endl;
-            // 対照が先。普通の板でも影が見えないなら、
-            // カメラか太陽の置き方の問題です。
+            // 対照が先。
+            // 普通の板でも影が見えないなら、カメラか太陽の置き方の問題です。
             Require(
                 plainShadowed > 300,
                 "A plain plane of the same size must"
@@ -11476,26 +12450,24 @@ int main(const int argumentCount, char** arguments)
                 benchSavedCameraRotation);
         }
 
-        // エディターの「シーンビュー経路」と「ゲームビュー経路」の
-        // A/B計測（--benchmark/--dump時のみの診断）。WARPの絶対時間は
-        // 環境に依存するため判定せず、同じ環境で相対比較します。
-        //
-        // エディターでゲームビューのFPSがシーンビューより低い、という
-        // 報告の切り分け用です。両経路は同じターゲット・同じポスト
-        // 処理・同じ2Dを通るはずなので、ここで差が出るなら経路の中、
-        // 出ないなら解像度など経路の外に原因があります。
+        // エディターの「シーンビュー経路」と「ゲームビュー経路」のA/B計測（--benchmark/--dump時のみの診断）。
+        // WARPの絶対時間は環境に依存するため判定せず、同じ環境で相対比較します。
+        // エディターでゲームビューのFPSがシーンビューより低い、という報告の切り分け用です。
+        // 両経路は同じターゲット・同じポスト処理・同じ2Dを通るはずなので、ここで差が出るなら経路の中、出ないなら解像度など経路の外に原因があります。
         if (g_runBenchmarks)
         {
             Stage("frame-gameview-bench");
+            // benchCamera: benchmarkのcamera。
             auto* benchCamera = scene.MainCamera();
             if (benchCamera != nullptr)
             {
+                // benchTarget: benchmarkのrender target。
                 LamaPon::RenderTarget benchTarget;
 
-                // GPUがコマンドを消化し終えるまで待ちます。待たずに
-                // 計ると「積んだ時間」だけになり、描画の重さが
-                // 見えません。
+                // GPUがコマンドを消化し終えるまで待ちます。
+                // 待たずに計ると「積んだ時間」だけになり、描画の重さが見えません。
                 Microsoft::WRL::ComPtr<ID3D11Query> fence;
+                // queryDescription: D3D11 API descriptor。
                 D3D11_QUERY_DESC queryDescription{};
                 queryDescription.Query = D3D11_QUERY_EVENT;
                 Require(
@@ -11503,9 +12475,11 @@ int main(const int argumentCount, char** arguments)
                         &queryDescription,
                         fence.ReleaseAndGetAddressOf())),
                     "bench query creation must succeed");
+                // waitForGpu: GPU queryの完了待ち処理。
                 const auto waitForGpu = [&]
                 {
                     D3D11Access::Context(graphics)->End(fence.Get());
+                    // done: GPU query完了状態。
                     BOOL done = FALSE;
                     while (D3D11Access::Context(graphics)->GetData(
                             fence.Get(),
@@ -11517,9 +12491,9 @@ int main(const int argumentCount, char** arguments)
                     }
                 };
 
-                // 提出ごとの固定費を抑えるため複数フレームをまとめて実行し、
-                // 1回だけ待機して1フレームあたりの時間へ換算します。
+                // 提出ごとの固定費を抑えるため複数フレームをまとめて実行し、1回だけ待機して1フレームあたりの時間へ換算します。
                 constexpr int benchBatch = 8;
+                // benchSamples: benchmark測定の反復回数。
                 constexpr int benchSamples = 5;
 
                 Microsoft::WRL::ComPtr<ID3D11Query>
@@ -11530,12 +12504,15 @@ int main(const int argumentCount, char** arguments)
                     timestampEndQuery;
                 Microsoft::WRL::ComPtr<ID3D11Query>
                     pipelineStatisticsQuery;
+                // disjointDescription: D3D11 API descriptor。
                 D3D11_QUERY_DESC disjointDescription{};
                 disjointDescription.Query =
                     D3D11_QUERY_TIMESTAMP_DISJOINT;
+                // timestampDescription: D3D11 API descriptor。
                 D3D11_QUERY_DESC timestampDescription{};
                 timestampDescription.Query =
                     D3D11_QUERY_TIMESTAMP;
+                // pipelineDescription: D3D11 API descriptor。
                 D3D11_QUERY_DESC pipelineDescription{};
                 pipelineDescription.Query =
                     D3D11_QUERY_PIPELINE_STATISTICS;
@@ -11559,14 +12536,21 @@ int main(const int argumentCount, char** arguments)
 
                 struct BenchMeasurement final
                 {
+                    // cpuMilliseconds: CPUの時間(ms)。
                     double cpuMilliseconds{};
+                    // gpuMilliseconds: GPUの時間(ms)。
                     double gpuMilliseconds{};
+                    // inputAssemblerVertices: 入力 Assembler vertex数。
                     std::uint64_t inputAssemblerVertices{};
+                    // inputAssemblerPrimitives: 入力 Assembler primitive数。
                     std::uint64_t inputAssemblerPrimitives{};
+                    // vertexShaderInvocations: vertex shader 実行回数。
                     std::uint64_t vertexShaderInvocations{};
+                    // pixelShaderInvocations: pixel shader 実行回数。
                     std::uint64_t pixelShaderInvocations{};
                 };
 
+                // measure: 描画性能の測定処理。
                 const auto measure =
                     [&](const std::uint32_t width,
                         const std::uint32_t height,
@@ -11578,8 +12562,10 @@ int main(const int argumentCount, char** arguments)
                         benchTarget,
                         width,
                         height);
+                    // benchClear: benchmarkのclear色。
                     constexpr float benchClear[]{
                         0.0f, 0.0f, 0.0f, 1.0f };
+                    // drawOnce: 単発描画処理。
                     const auto drawOnce = [&]
                     {
                         graphics.SetUIViewportSize(
@@ -11615,15 +12601,17 @@ int main(const int argumentCount, char** arguments)
                             benchTarget);
                     };
 
-                    // 1周目はシェーダーのバリアント切り替え等で
-                    // 揺れるので捨てます。
+                    // 1周目はシェーダーのバリアント切り替え等で揺れるので捨てます。
                     drawOnce();
                     waitForGpu();
 
+                    // cpuSamples: CPU計測時間のsample群。
                     std::vector<double> cpuSamples;
+                    // gpuSamples: GPU計測時間のsample群。
                     std::vector<double> gpuSamples;
                     D3D11_QUERY_DATA_PIPELINE_STATISTICS
                         pipelineStatistics{};
+                    // 計測反復の番号
                     for (int sample = 0;
                         sample < sampleCount;
                         ++sample)
@@ -11634,14 +12622,17 @@ int main(const int argumentCount, char** arguments)
                             pipelineStatisticsQuery.Get());
                         D3D11Access::Context(graphics)->End(
                             timestampBeginQuery.Get());
+                        // cpuBegin: test input or measurement used by the surrounding rendering check。
                         const auto cpuBegin =
                             std::chrono::steady_clock::now();
+                        // 計測バッチ内の描画番号
                         for (int frame = 0;
                             frame < batch;
                             ++frame)
                         {
                             drawOnce();
                         }
+                        // cpuEnd: test input or measurement used by the surrounding rendering check。
                         const auto cpuEnd =
                             std::chrono::steady_clock::now();
                         D3D11Access::Context(graphics)->End(
@@ -11661,7 +12652,9 @@ int main(const int argumentCount, char** arguments)
                         {
                             std::this_thread::yield();
                         }
+                        // gpuBegin: test input or measurement used by the surrounding rendering check。
                         std::uint64_t gpuBegin{};
+                        // gpuEnd: test input or measurement used by the surrounding rendering check。
                         std::uint64_t gpuEnd{};
                         while (D3D11Access::Context(graphics)->GetData(
                                 timestampBeginQuery.Get(),
@@ -11722,10 +12715,12 @@ int main(const int argumentCount, char** arguments)
                     };
                 };
 
+                // sceneSmall: scene 小。
                 const auto sceneSmall =
                     measure(
                         320, 180, false,
                         benchBatch, benchSamples);
+                // gameSmall: game 小。
                 const auto gameSmall =
                     measure(
                         320, 180, true,
@@ -11739,14 +12734,17 @@ int main(const int argumentCount, char** arguments)
                     << gameSmall.cpuMilliseconds << "ms gpu="
                     << gameSmall.gpuMilliseconds << "ms"
                     << std::endl;
+                // game360: render target configured for 360p。
                 const auto game360 =
                     measure(
                         640, 360, true,
                         benchBatch, benchSamples);
+                // game720: render target configured for 720p。
                 const auto game720 =
                     measure(
                         1280, 720, true,
                         benchBatch, benchSamples);
+                // game1080: render target configured for 1080p。
                 const auto game1080 =
                     measure(
                         1920, 1080, true,
@@ -11760,17 +12758,23 @@ int main(const int argumentCount, char** arguments)
                     << std::endl;
 
                 Stage("frame-many-objects-bench");
+                // savedCameraPosition: 退避済み cameraのposition。
                 const auto savedCameraPosition =
                     cameraObject.GetTransform().position;
+                // savedCameraRotation: 退避済み cameraのrotation。
                 const auto savedCameraRotation =
                     cameraObject.GetTransform().EulerAngles();
+                // savedFrustumCulling: 退避済み frustum culling。
                 const bool savedFrustumCulling =
                     scene.FrustumCullingEnabled();
+                // savedOcclusionCulling: 退避済み occlusion culling。
                 const bool savedOcclusionCulling =
                     scene.OcclusionCullingEnabled();
+                // savedGraphicsSettings: 退避済み graphicsの設定。
                 const auto savedGraphicsSettings =
                     graphics.Settings();
                 graphics.RefreshMemoryStatistics(true);
+                // memoryBeforeStress: memory 前 stress。
                 const auto memoryBeforeStress =
                     graphics.MemoryStats();
                 cameraObject.GetTransform().position =
@@ -11780,19 +12784,26 @@ int main(const int argumentCount, char** arguments)
                 scene.SetFrustumCullingEnabled(true);
                 scene.SetOcclusionCullingEnabled(false);
 
+                // stressObjects: stress object群。
                 std::vector<LamaPon::GameObject*> stressObjects;
+                // stressObjectCount: stress objectの件数。
                 constexpr int stressObjectCount = 2048;
+                // stressVisibleCount: stress 表示対象の件数。
                 constexpr int stressVisibleCount = 256;
                 stressObjects.reserve(stressObjectCount);
+                // 配列内の要素位置
                 for (int index = 0;
                     index < stressObjectCount;
                     ++index)
                 {
+                    // object: scene object used by this rendering case。
                     auto& object = scene.CreateGameObject(
                         "Stress object " + std::to_string(index));
                     if (index < stressVisibleCount)
                     {
+                        // column: 配置列番号。
                         const int column = index % 32;
+                        // row: 配置行番号。
                         const int row = index / 32;
                         object.GetTransform().position = {
                             (static_cast<float>(column) - 15.5f)
@@ -11818,18 +12829,23 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(scene.EvaluateRenderVisibility(
                     benchCamera->ViewMatrix(),
                     benchCamera->ProjectionMatrix(16.0f / 9.0f)));
+                // visibilityBegin: 可視性 Begin。
                 const auto visibilityBegin =
                     std::chrono::steady_clock::now();
+                // stressVisibility: stress 可視性。
                 const auto stressVisibility =
                     scene.EvaluateRenderVisibility(
                         benchCamera->ViewMatrix(),
                         benchCamera->ProjectionMatrix(16.0f / 9.0f));
+                // visibilityEnd: 可視性 End。
                 const auto visibilityEnd =
                     std::chrono::steady_clock::now();
+                // stressFrame: stressの描画結果。
                 const auto stressFrame =
                     measure(
                         1280, 720, true,
                         benchBatch, benchSamples);
+                // stressDrawStats: stress 描画の統計。
                 const auto& stressDrawStats =
                     scene.VisibilityStats();
                 std::cout
@@ -11854,6 +12870,7 @@ int main(const int argumentCount, char** arguments)
                     << stressDrawStats.meshInstancedRendererCount
                     << std::endl;
 
+                // 破棄対象のscene object
                 for (auto* object : stressObjects)
                 {
                     static_cast<void>(
@@ -11861,6 +12878,7 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 Stage("frame-all-visible-high-poly-bench");
+                // baselineVisibility: 基準 可視性。
                 const auto baselineVisibility =
                     scene.EvaluateRenderVisibility(
                         benchCamera->ViewMatrix(),
@@ -11868,18 +12886,24 @@ int main(const int argumentCount, char** arguments)
                             16.0f / 9.0f));
                 std::vector<LamaPon::GameObject*>
                     highPolygonObjects;
+                // highPolygonObjectCount: 高品質 Polygon objectの件数。
                 constexpr int highPolygonObjectCount = 2048;
+                // highPolygonColumns: 高品質 Polygon Columns。
                 constexpr int highPolygonColumns = 64;
                 highPolygonObjects.reserve(
                     highPolygonObjectCount);
+                // 配列内の要素位置
                 for (int index = 0;
                     index < highPolygonObjectCount;
                     ++index)
                 {
+                    // column: 配置列番号。
                     const int column =
                         index % highPolygonColumns;
+                    // row: 配置行番号。
                     const int row =
                         index / highPolygonColumns;
+                    // object: scene object used by this rendering case。
                     auto& object = scene.CreateGameObject(
                         "High polygon sphere "
                         + std::to_string(index));
@@ -11895,6 +12919,7 @@ int main(const int argumentCount, char** arguments)
                             LamaPon::PrimitiveShape::Sphere);
                     highPolygonObjects.push_back(&object);
                 }
+                // highVisibility: 高品質 可視性。
                 const auto highVisibility =
                     scene.EvaluateRenderVisibility(
                         benchCamera->ViewMatrix(),
@@ -11905,6 +12930,7 @@ int main(const int argumentCount, char** arguments)
                         >= baselineVisibility.visibleRendererCount
                             + highPolygonObjectCount,
                     "all-visible high-polygon benchmark must keep every sphere visible");
+                // highFrame: 高品質の描画結果。
                 const auto highFrame =
                     measure(1280, 720, true, 3, 3);
                 Require(
@@ -11913,10 +12939,13 @@ int main(const int argumentCount, char** arguments)
                             highPolygonObjectCount),
                     "high-polygon benchmark must submit geometry to the GPU");
                 graphics.RefreshMemoryStatistics(true);
+                // memoryWithHighPolygon: memory With 高品質 Polygon。
                 const auto memoryWithHighPolygon =
                     graphics.MemoryStats();
+                // bytesPerMiB: byte count in one mebibyte。
                 constexpr double bytesPerMiB =
                     1024.0 * 1024.0;
+                // signedMiB: byte数をMiBへ変換する処理。
                 const auto signedMiB = [](
                     const std::uint64_t after,
                     const std::uint64_t before)
@@ -11943,14 +12972,17 @@ int main(const int argumentCount, char** arguments)
                     << std::endl;
 
                 Stage("frame-quality-preset-bench");
+                // qualityPresets: quality preset群。
                 constexpr std::array qualityPresets{
                     LamaPon::GraphicsQualityPreset::Low,
                     LamaPon::GraphicsQualityPreset::Medium,
                     LamaPon::GraphicsQualityPreset::High,
                     LamaPon::GraphicsQualityPreset::Ultra
                 };
+                // 描画品質の比較対象
                 for (const auto preset : qualityPresets)
                 {
+                    // presetSettings: presetの設定。
                     auto presetSettings =
                         LamaPon::GraphicsSettingsForPreset(preset);
                     presetSettings.vSyncEnabled = false;
@@ -11958,9 +12990,11 @@ int main(const int argumentCount, char** arguments)
                     presetSettings.renderingPath =
                         savedGraphicsSettings.renderingPath;
                     graphics.SetGraphicsSettings(presetSettings);
+                    // presetFrame: presetの描画結果。
                     const auto presetFrame =
                         measure(1280, 720, true, 2, 3);
                     graphics.RefreshMemoryStatistics(true);
+                    // presetMemory: texture memory recorded for one quality preset。
                     const auto& presetMemory =
                         graphics.MemoryStats();
                     std::cout
@@ -11988,6 +13022,7 @@ int main(const int argumentCount, char** arguments)
                 graphics.SetGraphicsSettings(
                     savedGraphicsSettings);
 
+                // 破棄対象のscene object
                 for (auto* object : highPolygonObjects)
                 {
                     static_cast<void>(
@@ -11996,6 +13031,7 @@ int main(const int argumentCount, char** arguments)
 
                 Stage("frame-texture-memory-bench");
                 graphics.RefreshMemoryStatistics(true);
+                // textureMemoryBefore: texture memory 前。
                 const auto textureMemoryBefore =
                     graphics.MemoryStats();
                 std::vector<
@@ -12005,10 +13041,13 @@ int main(const int argumentCount, char** arguments)
                     Microsoft::WRL::ComPtr<
                         ID3D11ShaderResourceView>>
                     stressTextureViews;
+                // textureStressCount: texture stressの件数。
                 constexpr std::size_t textureStressCount = 128;
+                // textureStressSize: texture stressのサイズ。
                 constexpr std::uint32_t textureStressSize = 512;
                 stressTextures.reserve(textureStressCount);
                 stressTextureViews.reserve(textureStressCount);
+                // textureDescription: D3D11 API descriptor。
                 D3D11_TEXTURE2D_DESC textureDescription{};
                 textureDescription.Width = textureStressSize;
                 textureDescription.Height = textureStressSize;
@@ -12020,14 +13059,17 @@ int main(const int argumentCount, char** arguments)
                 textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
                 textureDescription.BindFlags =
                     D3D11_BIND_SHADER_RESOURCE;
+                // texturePixels: textureのpixel群。
                 std::vector<std::uint32_t> texturePixels(
                     static_cast<std::size_t>(textureStressSize)
                         * textureStressSize,
                     0xff7f3f1fu);
+                // initialTextureData: 初回 texture Data。
                 D3D11_SUBRESOURCE_DATA initialTextureData{};
                 initialTextureData.pSysMem = texturePixels.data();
                 initialTextureData.SysMemPitch =
                     textureStressSize * sizeof(std::uint32_t);
+                // 配列内の要素位置
                 for (std::size_t index = 0;
                     index < textureStressCount;
                     ++index)
@@ -12064,6 +13106,7 @@ int main(const int argumentCount, char** arguments)
                     "texture memory benchmark must allocate at least 16 textures");
                 Microsoft::WRL::ComPtr<ID3D11Texture2D>
                     textureResidencyProbe;
+                // residencyProbeDescription: D3D11 API descriptor。
                 D3D11_TEXTURE2D_DESC residencyProbeDescription =
                     textureDescription;
                 residencyProbeDescription.Usage = D3D11_USAGE_DEFAULT;
@@ -12073,6 +13116,7 @@ int main(const int argumentCount, char** arguments)
                         nullptr,
                         textureResidencyProbe.ReleaseAndGetAddressOf())),
                     "texture memory benchmark residency probe creation must succeed");
+                // resident確認の対象texture
                 for (const auto& texture : stressTextures)
                 {
                     D3D11Access::Context(graphics)->CopyResource(
@@ -12081,6 +13125,7 @@ int main(const int argumentCount, char** arguments)
                 }
                 waitForGpu();
                 graphics.RefreshMemoryStatistics(true);
+                // textureMemoryAfter: texture memory 後。
                 const auto textureMemoryAfter =
                     graphics.MemoryStats();
                 std::cout
@@ -12121,54 +13166,63 @@ int main(const int argumentCount, char** arguments)
         }
 
         // BC5圧縮後も法線マップの描画結果が保たれることを検証します。
-        //
-        // 法線マップはBC5（RGの2チャンネル）で読み込まれるように
-        // なり、シェーダーはZをxyから復元します。ここでは同じ構図で
-        // 3枚撮って突き合わせます。背景の物体は3枚とも同じなので、
-        // 差はこの平面の陰影にだけ出ます。
-        //   (1)法線マップなし (2)非圧縮の法線マップ (3)BC5の法線マップ
+        // 法線マップはBC5（RGの2チャンネル）で読み込まれるようになり、シェーダーはZをxyから復元します。
+        // ここでは同じ構図で3枚撮って突き合わせます。
+        // 背景の物体は3枚とも同じなので、差はこの平面の陰影にだけ出ます。
+        // (1)法線マップなし (2)非圧縮の法線マップ (3)BC5の法線マップ
         // (1)と(2)が違えば法線マップが効いていて、(2)と(3)が近ければ
         // BC5にしても絵が変わっていない、と言えます。
         {
+            // normalMapDirectory: directory containing compressed normal fixtures。
             const auto normalMapDirectory =
                 std::filesystem::temp_directory_path()
                 / L"LamaPonNormalMapTest";
+            // directoryError: error returned while creating the fixture directory。
             std::error_code directoryError;
             std::filesystem::create_directories(
                 normalMapDirectory,
                 directoryError);
-            // 2枚に分けるのは、読み込み済みテクスチャがパスで
-            // キャッシュされるためです。同じパスだと圧縮設定を
-            // 切り替えても前の結果が返ってきます。
+            // 2枚に分けるのは、読み込み済みテクスチャがパスでキャッシュされるためです。
+            // 同じパスだと圧縮設定を切り替えても前の結果が返ってきます。
             const auto rawNormalPath =
                 normalMapDirectory / L"normal-raw.png";
+            // compressedNormalPath: 圧縮済み normalのfile path。
             const auto compressedNormalPath =
                 normalMapDirectory / L"normal-bc5.png";
 
-            // xとyで別々に波打たせます。片方だけだとZの復元を
-            // 間違えても気付けません。
+            // xとyで別々に波打たせます。
+            // 片方だけだとZの復元を間違えても気付けません。
             constexpr std::uint32_t normalMapSize = 64;
+            // normalPixels: normalのpixel群。
             std::vector<std::uint8_t> normalPixels(
                 static_cast<std::size_t>(normalMapSize)
                     * normalMapSize * 4);
+            // 縦方向の走査座標
             for (std::uint32_t y = 0; y < normalMapSize; ++y)
             {
+                // 横方向の走査座標
                 for (std::uint32_t x = 0; x < normalMapSize; ++x)
                 {
+                    // horizontal: 横方向。
                     const float horizontal = std::sin(
                         static_cast<float>(x)
                         * 6.28318530718f / 16.0f);
+                    // vertical: 縦方向。
                     const float vertical = std::cos(
                         static_cast<float>(y)
                         * 6.28318530718f / 12.0f);
+                    // normalX: normal-map X component。
                     const float normalX = 0.55f * horizontal;
+                    // normalY: normal-map Y component。
                     const float normalY = 0.55f * vertical;
+                    // normalZ: normal-map Z component。
                     const float normalZ = std::sqrt(
                         std::max(
                             0.0f,
                             1.0f
                                 - normalX * normalX
                                 - normalY * normalY));
+                    // encode: normal値の符号化処理。
                     const auto encode =
                         [](const float value)
                         {
@@ -12179,6 +13233,7 @@ int main(const int argumentCount, char** arguments)
                                     0.0f,
                                     255.0f));
                         };
+                    // offset: buffer内のbyte offset。
                     const std::size_t offset =
                         (static_cast<std::size_t>(y)
                             * normalMapSize + x) * 4;
@@ -12205,12 +13260,14 @@ int main(const int argumentCount, char** arguments)
                 { 0.0f, 0.0f, 6.0f };
             cameraObject.GetTransform().SetEulerAngles(
                 { 0.0f, 0.0f, 0.0f });
+            // normalObject: scene object using the normal map。
             auto& normalObject =
                 scene.CreateGameObject("NormalMapSubject");
             normalObject.GetTransform().position =
                 { 0.0f, 0.0f, 0.0f };
             normalObject.GetTransform().scale =
                 { 5.0f, 5.0f, 0.5f };
+            // normalRenderer: normal map検証用renderer。
             auto& normalRenderer = normalObject.AddComponent<
                 LamaPon::MeshRendererComponent>(
                 LamaPon::PrimitiveShape::Cube,
@@ -12221,6 +13278,7 @@ int main(const int argumentCount, char** arguments)
                 1.0f);
 
             Stage("frame-normalmap-none");
+            // normalNoneFrame: normal Noneの描画結果。
             const auto normalNoneFrame = renderFrame();
             DumpFrame("normalmap-none", normalNoneFrame);
 
@@ -12228,6 +13286,7 @@ int main(const int argumentCount, char** arguments)
                 .SetRuntimeTextureCompressionEnabled(false);
             normalRenderer.SetNormalTexturePath(rawNormalPath);
             Stage("frame-normalmap-raw");
+            // normalRawFrame: normal rawの描画結果。
             const auto normalRawFrame = renderFrame();
             DumpFrame("normalmap-raw", normalRawFrame);
 
@@ -12236,21 +13295,23 @@ int main(const int argumentCount, char** arguments)
             normalRenderer.SetNormalTexturePath(
                 compressedNormalPath);
             Stage("frame-normalmap-bc5");
+            // normalBc5Frame: normal Bc 5の描画結果。
             const auto normalBc5Frame = renderFrame();
             DumpFrame("normalmap-bc5", normalBc5Frame);
 
             // 本当にBC5になっているかをフォーマットで確かめます。
-            // 絵が同じでも「圧縮されていないから同じ」では意味が
-            // ありません。
+            // 絵が同じでも「圧縮されていないから同じ」では意味がありません。
             const auto compressedAsset =
                 graphics.Assets().LoadTexture(
                     compressedNormalPath,
                     LamaPon::TextureLoader::TextureUsage::
                         NormalMap);
+            // compressedResources: 圧縮済み Resources。
             const auto compressedResources =
                 compressedAsset != nullptr
                     ? compressedAsset->resources.Acquire()
                     : nullptr;
+            // compressedView: 圧縮済みのview。
             auto* const compressedView =
                 compressedResources != nullptr
                     ? D3D11Access::
@@ -12273,6 +13334,7 @@ int main(const int argumentCount, char** arguments)
                 SUCCEEDED(compressedResource.As(
                     &compressedTexture)),
                 "the normal map must be a 2D texture");
+            // compressedDescription: D3D11 API descriptor。
             D3D11_TEXTURE2D_DESC compressedDescription{};
             compressedTexture->GetDesc(&compressedDescription);
             Require(
@@ -12280,18 +13342,23 @@ int main(const int argumentCount, char** arguments)
                     == DXGI_FORMAT_BC5_UNORM,
                 "the normal map must actually be BC5");
 
+            // changedPixelCount: 比較画像で変化したpixel数。
             const auto changedPixelCount =
                 [](const std::vector<std::uint8_t>& left,
                     const std::vector<std::uint8_t>& right,
                     const int tolerance)
                 {
+                    // changed: number of pixels changed by the feature。
                     std::size_t changed = 0;
+                    // 配列内の要素位置
                     for (std::size_t index = 0;
                         index + 3 < left.size()
                             && index + 3 < right.size();
                         index += 4)
                     {
+                        // worst: largest pixel difference in the comparison。
                         int worst = 0;
+                        // RGB色成分の添字
                         for (std::size_t channel = 0;
                             channel < 3;
                             ++channel)
@@ -12316,17 +13383,22 @@ int main(const int argumentCount, char** arguments)
                 [](const std::vector<std::uint8_t>& left,
                     const std::vector<std::uint8_t>& right)
                 {
+                    // total: 累積した測定値。
                     double total = 0.0;
+                    // samples: 厚さ判定用のsample群。
                     std::size_t samples = 0;
+                    // 配列内の要素位置
                     for (std::size_t index = 0;
                         index + 3 < left.size()
                             && index + 3 < right.size();
                         index += 4)
                     {
+                        // RGB色成分の添字
                         for (std::size_t channel = 0;
                             channel < 3;
                             ++channel)
                         {
+                            // delta: 差分。
                             const double delta =
                                 static_cast<double>(
                                     left[index + channel])
@@ -12341,14 +13413,17 @@ int main(const int argumentCount, char** arguments)
                         : total / static_cast<double>(samples);
                 };
 
+            // mapEffect: difference measured with the normal map。
             const auto mapEffect = changedPixelCount(
                 normalNoneFrame,
                 normalRawFrame,
                 8);
+            // compressionEffect: 圧縮のeffect。
             const auto compressionEffect = changedPixelCount(
                 normalRawFrame,
                 normalBc5Frame,
                 8);
+            // compressionError: 圧縮のerror内容。
             const double compressionError =
                 meanSquaredDifference(
                     normalRawFrame,
@@ -12359,8 +13434,7 @@ int main(const int argumentCount, char** arguments)
                 << " changed-by-bc5=" << compressionEffect
                 << " bc5-mse=" << compressionError
                 << std::endl;
-            // GPU差を許容しつつ法線マップ未適用を検出するため、
-            // 変化した画素数の下限を1000にします。
+            // GPU差を許容しつつ法線マップ未適用を検出するため、変化した画素数の下限を1000にします。
             Require(
                 mapEffect > 1000,
                 "the normal map must visibly change the shading");
@@ -12372,16 +13446,15 @@ int main(const int argumentCount, char** arguments)
                 "BC5 shading error must stay small per pixel");
         }
 
-        // 1つのglTFにskin付き／無しのprimitiveが混在するとき、
-        // Manifestのskinned roleだけへモデル全体を寄せず、primitive
-        // ごとにskinned/forwardを選ぶことを実描画で確かめます。
-        // RiggedSimple.glbのmesh nodeを複製し、複製側からskinだけを
-        // 外したGLBを、ほかの実行時生成物と同じtest-outputへ置きます。
+        // 1つのglTFにskin付き／無しのprimitiveが混在するとき、Manifestのskinned roleだけへモデル全体を寄せず、primitiveごとにskinned/forwardを選ぶことを実描画で確かめます。
+        // RiggedSimple.glbのmesh nodeを複製し、複製側からskinだけを外したGLBを、ほかの実行時生成物と同じtest-outputへ置きます。
         {
+            // outputRoot: 出力 Root。
             const auto outputRoot =
                 std::filesystem::current_path()
                 / "test-output"
                 / "mixed-manifest-runtime";
+            // directoryError: error returned while creating the fixture directory。
             std::error_code directoryError;
             std::filesystem::create_directories(
                 outputRoot,
@@ -12390,13 +13463,18 @@ int main(const int argumentCount, char** arguments)
                 !directoryError,
                 "The mixed Manifest runtime output directory could not be created.");
 
+            // modelPath: modelのfile path。
             const auto modelPath = outputRoot / "mixed-rigged.glb";
+            // manifestPath: manifestのfile path。
             const auto manifestPath = outputRoot
                 / "mixed-role.lamashader.json";
+            // shaderPath: shaderのfile path。
             const auto shaderPath = outputRoot / "mixed-role.hlsl";
+            // colorIncludePath: 色 includeのfile path。
             const auto colorIncludePath = outputRoot
                 / "mixed-colors.hlsli";
 
+            // readUint32: bufferからuint32値を読む処理。
             const auto readUint32 = [](
                 const std::vector<std::uint8_t>& bytes,
                 const std::size_t offset)
@@ -12412,6 +13490,7 @@ int main(const int argumentCount, char** arguments)
                     | (static_cast<std::uint32_t>(bytes[offset + 3])
                         << 24u);
             };
+            // appendUint32: byte列へuint32値を追加する処理。
             const auto appendUint32 = [](
                 std::vector<std::uint8_t>& bytes,
                 const std::uint32_t value)
@@ -12425,6 +13504,7 @@ int main(const int argumentCount, char** arguments)
                 bytes.push_back(
                     static_cast<std::uint8_t>(value >> 24u));
             };
+            // storeUint32: byte列へuint32値を書き込む処理。
             const auto storeUint32 = [](
                 std::vector<std::uint8_t>& bytes,
                 const std::size_t offset,
@@ -12442,6 +13522,7 @@ int main(const int argumentCount, char** arguments)
                     static_cast<std::uint8_t>(value >> 24u);
             };
 
+            // sourceModel: fixture元のmodel file。
             std::ifstream sourceModel(
                 std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
                     / "models"
@@ -12450,11 +13531,14 @@ int main(const int argumentCount, char** arguments)
             Require(
                 static_cast<bool>(sourceModel),
                 "RiggedSimple.glb could not be opened for the mixed model probe.");
+            // sourceBytes: fixture元のGLB byte列。
             const std::vector<std::uint8_t> sourceBytes{
                 std::istreambuf_iterator<char>{ sourceModel },
                 std::istreambuf_iterator<char>{}
             };
+            // GlbMagic: GLB file signature。
             constexpr std::uint32_t GlbMagic = 0x46546c67u;
+            // JsonChunk: GLB JSON chunk signature。
             constexpr std::uint32_t JsonChunk = 0x4e4f534au;
             Require(
                 sourceBytes.size() >= 20
@@ -12462,19 +13546,23 @@ int main(const int argumentCount, char** arguments)
                     && readUint32(sourceBytes, 4) == 2u
                     && readUint32(sourceBytes, 16) == JsonChunk,
                 "RiggedSimple.glb is not a GLB 2.0 file with a JSON first chunk.");
+            // sourceJsonLength: source JSONの長さ。
             const auto sourceJsonLength =
                 readUint32(sourceBytes, 12);
+            // sourceTailOffset: GLB JSON chunk終端のbyte offset。
             const auto sourceTailOffset =
                 std::size_t{ 20 } + sourceJsonLength;
             Require(
                 sourceTailOffset <= sourceBytes.size(),
                 "RiggedSimple.glb has a truncated JSON chunk.");
 
+            // sourceJson: fixture元のJSON document。
             const std::string sourceJson{
                 reinterpret_cast<const char*>(
                     sourceBytes.data() + 20),
                 sourceJsonLength
             };
+            // gltf: fixtureを展開したglTF document。
             auto gltf = nlohmann::json::parse(sourceJson);
             Require(
                 gltf.contains("nodes")
@@ -12485,21 +13573,23 @@ int main(const int argumentCount, char** arguments)
                     && gltf["nodes"][2].contains("skin"),
                 "RiggedSimple.glb no longer has the expected rigged mesh node layout.");
 
-            // node 1のローカルYはZ-up変換後の画面X方向です。元の
-            // skin nodeと複製したstatic nodeを左右へ離し、片方が
-            // もう片方を隠して誤判定しない構図にします。
+            // node 1のローカルYはZ-up変換後の画面X方向です。
+            // 元のskin nodeと複製したstatic nodeを左右へ離し、片方がもう片方を隠して誤判定しない構図にします。
             gltf["nodes"][2]["translation"] =
                 nlohmann::json::array({ 0.0, -2.2, 0.0 });
+            // staticNode: duplicate node without skin data。
             auto staticNode = gltf["nodes"][2];
             staticNode.erase("skin");
             staticNode["name"] = "StaticRoleProbe";
             staticNode["translation"] =
                 nlohmann::json::array({ 0.0, 2.2, 0.0 });
+            // staticNodeIndex: index assigned to the duplicate node。
             const auto staticNodeIndex = gltf["nodes"].size();
             gltf["nodes"].push_back(std::move(staticNode));
             gltf["nodes"][1]["children"].push_back(
                 staticNodeIndex);
 
+            // generatedJson: 生成済み JSON。
             auto generatedJson = gltf.dump();
             while ((generatedJson.size() & 3u) != 0u)
             {
@@ -12510,6 +13600,7 @@ int main(const int argumentCount, char** arguments)
                     <= std::numeric_limits<std::uint32_t>::max(),
                 "The generated mixed model JSON chunk is too large.");
 
+            // mixedBytes: 混在のbyte列。
             std::vector<std::uint8_t> mixedBytes;
             mixedBytes.reserve(
                 20 + generatedJson.size()
@@ -12540,6 +13631,7 @@ int main(const int argumentCount, char** arguments)
                 8,
                 static_cast<std::uint32_t>(mixedBytes.size()));
             {
+                // output: 検証用fileのoutput stream。
                 std::ofstream output(modelPath, std::ios::binary);
                 output.write(
                     reinterpret_cast<const char*>(
@@ -12552,6 +13644,7 @@ int main(const int argumentCount, char** arguments)
             }
 
             {
+                // output: 検証用fileのoutput stream。
                 std::ofstream output(
                     manifestPath,
                     std::ios::binary | std::ios::trunc);
@@ -12582,92 +13675,128 @@ int main(const int argumentCount, char** arguments)
                     "The mixed role Manifest could not be written.");
             }
 
+            // writeRoleShader: role検証用shaderの出力処理。
             const auto writeRoleShader = [&shaderPath]
             {
+                // output: 検証用fileのoutput stream。
                 std::ofstream output(
                     shaderPath,
                     std::ios::binary | std::ios::trunc);
                 output << R"hlsl(#include "mixed-colors.hlsli"
 
+// ObjectBuffer: ObjectBuffer shader data。
 cbuffer ObjectBuffer : register(b0)
 {
+    // World: world transform matrix。
     row_major float4x4 World;
+    // ViewProjection: view-projection matrix。
     row_major float4x4 ViewProjection;
+    // WorldInverseTranspose: inverse-transpose world matrix。
     row_major float4x4 WorldInverseTranspose;
+    // MaterialColor: material tint supplied to the shader。
     float4 MaterialColor;
 };
 
+// BoneBuffer: BoneBuffer shader data。
 cbuffer BoneBuffer : register(b2)
 {
+    // BoneTransforms: bone transform array。
     float4x3 BoneTransforms[72];
 };
 
 struct ModelVertex
 {
+    // Position: vertex position。
     float3 Position : SV_Position;
+    // Normal: vertex normal。
     float3 Normal : NORMAL;
+    // Tangent: vertex tangent。
     float4 Tangent : TANGENT;
+    // Color: vertex color。
     float4 Color : COLOR;
+    // TexCoord: texture coordinates。
     float2 TexCoord : TEXCOORD0;
+    // BlendIndices: bone indices。
     uint4 BlendIndices : BLENDINDICES0;
+    // BlendWeights: bone weights。
     float4 BlendWeights : BLENDWEIGHT0;
 };
 
 struct PixelInput
 {
+    // Position: vertex position。
     float4 Position : SV_Position;
 };
 
+// ForwardVertex(input: model-space vertex): Transforms position to clip space.
 PixelInput ForwardVertex(ModelVertex input)
 {
+    // output: shader output。
     PixelInput output;
+    // worldPosition: world-space vertex position。
     const float4 worldPosition =
         mul(float4(input.Position, 1.0f), World);
     output.Position = mul(worldPosition, ViewProjection);
     return output;
 }
 
+// ForwardPixel(input: interpolated pixel data): Returns the forward test color.
 float4 ForwardPixel(PixelInput input) : SV_Target
 {
     return float4(FORWARD_COLOR, 1.0f);
 }
 
+// SkinnedVertex(input: model-space skinned vertex): Blends bones and transforms position to clip space.
 PixelInput SkinnedVertex(ModelVertex input)
 {
+    // skinning: weighted bone transform。
     float4x3 skinning = 0.0f;
     [unroll]
+    // 配列内の要素位置
     for (uint index = 0u; index < 4u; ++index)
     {
+        // bone: current bone index。
         const uint bone = min(input.BlendIndices[index], 71u);
         skinning += BoneTransforms[bone]
             * input.BlendWeights[index];
     }
+    // skinnedPosition: skinned vertex position。
     const float3 skinnedPosition =
         mul(float4(input.Position, 1.0f), skinning);
+    // output: shader output。
     PixelInput output;
+    // worldPosition: world-space vertex position。
     const float4 worldPosition =
         mul(float4(skinnedPosition, 1.0f), World);
     output.Position = mul(worldPosition, ViewProjection);
     return output;
 }
 
+// SkinnedPixel(input: interpolated pixel data): Returns the skinned test color.
 float4 SkinnedPixel(PixelInput input) : SV_Target
 {
     return float4(SKINNED_COLOR, 1.0f);
 }
 
+// SceneTexture: scene color texture。
 Texture2D SceneTexture : register(t0);
+// SceneSampler: scene color sampler。
 SamplerState SceneSampler : register(s0);
 
 struct ScreenVertexOutput
 {
+    // Position: vertex position。
     float4 Position : SV_Position;
+    // TexCoord: texture coordinates。
     float2 TexCoord : TEXCOORD0;
 };
 
+// VSMain(vertexId: fullscreen vertex index): Builds a fullscreen triangle from the vertex index.
 ScreenVertexOutput VSMain(uint vertexId : SV_VertexID)
 {
+    // output: shader output。
     ScreenVertexOutput output;
+    // uv: texture coordinates。
     const float2 uv = float2(
         (vertexId << 1) & 2,
         vertexId & 2);
@@ -12679,14 +13808,17 @@ ScreenVertexOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+// PSMain(input: interpolated fullscreen vertex): Samples the scene color texture.
 float4 PSMain(ScreenVertexOutput input) : SV_Target
 {
     return SceneTexture.Sample(SceneSampler, input.TexCoord);
 }
 
+// OutputTexture: compute output texture。
 RWTexture2D<float4> OutputTexture : register(u0);
 
 [numthreads(8, 8, 1)]
+// CSMain(id: compute dispatch coordinate): Writes the test color to the output texture.
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     OutputTexture[id.xy] = float4(FORWARD_COLOR, 1.0f);
@@ -12696,11 +13828,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     static_cast<bool>(output),
                     "The mixed role HLSL could not be written.");
             };
+            // writeRoleColors: role検証用色の出力処理。
             const auto writeRoleColors =
                 [&colorIncludePath](
                     const char* const forwardColor,
                     const char* const skinnedColor)
             {
+                // output: 検証用fileのoutput stream。
                 std::ofstream output(
                     colorIncludePath,
                     std::ios::binary | std::ios::trunc);
@@ -12718,9 +13852,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 "0.95f, 0.02f, 0.02f",
                 "0.02f, 0.95f, 0.02f");
 
+            // AssetRootScope temporarily redirects fixture asset loading and restores the prior root.
             class AssetRootScope final
             {
             public:
+                // AssetRootScope(assets: asset manager, root: fixture root): Redirects asset loading.
                 AssetRootScope(
                     LamaPon::AssetManager& assets,
                     const std::filesystem::path& root)
@@ -12730,6 +13866,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     m_assets.SetAssetRoot(root, false);
                 }
 
+                // ~AssetRootScope(): Restores the previous asset root.
                 ~AssetRootScope()
                 {
                     try
@@ -12746,10 +13883,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     const AssetRootScope&) = delete;
 
             private:
+                // m_assets: テストが使うAssetManager。
                 LamaPon::AssetManager& m_assets;
+                // m_previous: 差し替え前のasset path。
                 std::filesystem::path m_previous;
             } assetRootScope{ graphics.Assets(), outputRoot };
 
+            // shaderPrefetch: shader preload operation used to expose compile races。
             const auto shaderPrefetch =
                 graphics.Assets().PrefetchFiles({
                     "mixed-role.lamashader.json",
@@ -12762,19 +13902,24 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 "The mixed Manifest hot-reload probe could not prefetch "
                 "its shader files.");
 
+            // mixedScene: 複数shader roleのscene。
             LamaPon::Scene mixedScene(graphics);
+            // mixedCameraObject: 混在 cameraのobject。
             auto& mixedCameraObject =
                 mixedScene.CreateGameObject("MixedRoleCamera");
             mixedCameraObject.GetTransform().position =
                 { 0.0f, 0.0f, 9.0f };
+            // mixedCamera: 混在のcamera。
             auto& mixedCamera = mixedCameraObject.AddComponent<
                 LamaPon::CameraComponent>();
             mixedScene.SetMainCamera(mixedCamera);
 
+            // mixedModelObject: 混在 Modelのobject。
             auto& mixedModelObject =
                 mixedScene.CreateGameObject("MixedRoleModel");
             mixedModelObject.GetTransform().scale =
                 { 0.65f, 0.65f, 0.65f };
+            // mixedRenderer: 混在のrenderer。
             auto& mixedRenderer = mixedModelObject.AddComponent<
                 LamaPon::ModelRendererComponent>(
                     "mixed-rigged.glb");
@@ -12785,10 +13930,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 mixedRenderer.ShaderError().empty(),
                 "The mixed model Manifest must compile both forward and skinned roles.");
 
+            // renderMixed: 描画 混在。
             const auto renderMixed =
                 [&graphics, &mixedScene](
                     const char* const stageName)
             {
+                // clear: frame初期化用color。
                 constexpr float clear[]{
                     0.0f, 0.0f, 0.0f, 1.0f
                 };
@@ -12801,8 +13948,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     graphics.SceneCompositionTarget());
                 graphics.EndSceneComposition(
                     mixedScene.PostProcessFrameData());
+                // width: 幅。
                 std::uint32_t width{};
+                // height: 高さ。
                 std::uint32_t height{};
+                // pixels: pixel群。
                 auto pixels = graphics.CaptureBackBuffer(
                     width,
                     height);
@@ -12813,20 +13963,29 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 DumpFrame(stageName + 6, pixels);
                 return pixels;
             };
+            // countColor: 指定色pixelの計数処理。
             const auto countColor = [](
                 const std::vector<std::uint8_t>& frame,
                 const char dominant,
                 const char secondary = '\0')
             {
+                // count: 集計対象数。
                 std::size_t count{};
+                // 縦方向の走査座標
                 for (std::uint32_t y{}; y < Height; ++y)
                 {
+                    // 横方向の走査座標
                     for (std::uint32_t x{}; x < Width; ++x)
                     {
+                        // pixel: 検査位置の画素値。
                         const auto pixel = At(frame, x, y);
+                        // red: pixelの赤成分。
                         const int red = pixel.red;
+                        // green: pixelの緑成分。
                         const int green = pixel.green;
+                        // blue: pixelの青成分。
                         const int blue = pixel.blue;
+                        // match: 画素一致の判定結果。
                         const bool match = secondary == '\0'
                             ? (dominant == 'r'
                                 ? red > green + 45
@@ -12852,9 +14011,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 return count;
             };
 
+            // initialFrame: 初回の描画結果。
             const auto initialFrame = renderMixed(
                 "frame-mixed-model-manifest");
+            // forwardRed: forward shaderの赤pixel数。
             const auto forwardRed = countColor(initialFrame, 'r');
+            // skinnedGreen: skinned shaderの緑pixel数。
             const auto skinnedGreen = countColor(initialFrame, 'g');
             std::cout
                 << "mixed Manifest roles: forward-red="
@@ -12865,11 +14027,12 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 forwardRed > 150 && skinnedGreen > 150,
                 "A mixed glTF must draw visible coverage from both its forward and skinned Manifest roles.");
 
-            // 同じroot HLSLをScreen/Computeとしても一度compileし、3系統
-            // すべてがinclude-only保存を個別に検出できる状態にします。
+            // 同じroot HLSLをScreen/Computeとしても一度compileし、3系統すべてがinclude-only保存を個別に検出できる状態にします。
             LamaPon::ScreenEffectRequest includeScreen;
             includeScreen.shader = "mixed-role.hlsl";
+            // initialScreenGeneration: reload前のscreen shader generation。
             std::uint64_t initialScreenGeneration{};
+            // includeScreenError: screen shader include-reload diagnostic。
             std::string includeScreenError;
             Require(
                 graphics.QueueScreenEffect(
@@ -12880,11 +14043,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     && initialScreenGeneration != 0,
                 "The include hot-reload ScreenEffect probe must compile.");
 
+            // includeCompute: compute request that reads the shared include。
             LamaPon::ComputeEffectRequest includeCompute;
             includeCompute.shader = "mixed-role.hlsl";
             includeCompute.outputTexture = "mixedIncludeCompute";
             includeCompute.outputWidth = 8;
             includeCompute.outputHeight = 8;
+            // includeComputeError: compute shader include-reload diagnostic。
             std::string includeComputeError;
             Require(
                 graphics.DispatchComputeEffect(
@@ -12893,16 +14058,16 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     && includeComputeError.empty(),
                 "The include hot-reload ComputeEffect probe must compile.");
 
-            // Scene prefetchには古いbyte列が残ったままです。root HLSLや
-            // Manifestには触れずincludeだけを保存します。明示的な
-            // ReloadShaderなしで次の描画が変更を検出し、fresh readした
-            // 内容から両roleを再構築することを確かめます。
+            // Scene prefetchには古いbyte列が残ったままです。
+            // root HLSLやManifestには触れずincludeだけを保存します。
+            // 明示的なReloadShaderなしで次の描画が変更を検出し、fresh readした内容から両roleを再構築することを確かめます。
             writeRoleColors(
                 "0.02f, 0.02f, 0.95f",
                 "0.95f, 0.95f, 0.02f");
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(300));
 
+            // reloadedScreenGeneration: reload後のscreen shader generation。
             std::uint64_t reloadedScreenGeneration{};
             Require(
                 graphics.QueueScreenEffect(
@@ -12913,6 +14078,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     && reloadedScreenGeneration
                         > initialScreenGeneration,
                 "ScreenEffect must reload when only an included file changes.");
+            // computeStatsBeforeReload: reload前のcompute shader統計。
             const auto computeStatsBeforeReload =
                 LamaPon::ShaderCompileStatistics();
             Require(
@@ -12921,6 +14087,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     &includeComputeError)
                     && includeComputeError.empty(),
                 "ComputeEffect must reload when only an included file changes.");
+            // computeStatsAfterReload: reload後のcompute shader統計。
             const auto computeStatsAfterReload =
                 LamaPon::ShaderCompileStatistics();
             Require(
@@ -12928,12 +14095,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     > computeStatsBeforeReload.compiledCount,
                 "ComputeEffect include reload must compile a new bytecode result.");
 
+            // reloadedFrame: 再読込後の描画結果。
             const auto reloadedFrame = renderMixed(
                 "frame-mixed-model-manifest-reloaded");
             Require(
                 mixedRenderer.ShaderError().empty(),
                 "Include-only hot reload must rebuild both mixed model Manifest roles.");
+            // forwardBlue: forward shaderの青pixel数。
             const auto forwardBlue = countColor(reloadedFrame, 'b');
+            // skinnedYellow: skinned shaderの黄pixel数。
             const auto skinnedYellow = countColor(
                 reloadedFrame,
                 'r',
@@ -12948,13 +14118,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 "Hot reload must update both the forward and skinned role effects of a mixed glTF.");
 
             // Compileが依存一覧を読んだ直後にincludeをもう一度保存します。
-            // 終了後のrevisionをbaselineにすると、この二度目の保存を
-            // 消費してしまい、次のpollで再compileされません。
+            // 終了後のrevisionをbaselineにすると、この二度目の保存を消費してしまい、次のpollで再compileされません。
             writeRoleColors(
                 "0.71f, 0.11f, 0.021f",
                 "0.61f, 0.12f, 0.031f");
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(300));
+            // compileRaceHookCalled: compile競合hookの呼出し状態。
             bool compileRaceHookCalled{};
             LamaPon::SetShaderCompileCompletionHookForTesting(
                 [&]()
@@ -12964,6 +14134,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                         "0.54321f, 0.23456f, 0.76543f");
                     compileRaceHookCalled = true;
                 });
+            // raceScreenGeneration: compile競合時のscreen shader generation。
             std::uint64_t raceScreenGeneration{};
             Require(
                 graphics.QueueScreenEffect(
@@ -12975,6 +14146,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 "The compile-race hook must save the include during ScreenEffect compilation.");
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(300));
+            // recoveredScreenGeneration: 競合回復後のscreen shader generation。
             std::uint64_t recoveredScreenGeneration{};
             Require(
                 graphics.QueueScreenEffect(
@@ -13006,10 +14178,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         return 1;
     }
 
-    // シェーダーのコンパイル状況。キャッシュが効いているかを
-    // 数字で確かめるために出します。1回目はcompiled、2回目は
-    // cacheHitが中心になります。
+    // シェーダーのコンパイル状況。
+    // キャッシュが効いているかを数字で確かめるために出します。
+    // 1回目はcompiled、2回目はcacheHitが中心になります。
     {
+        // stats: shader compile統計。
         const auto stats = LamaPon::ShaderCompileStatistics();
         std::cout
             << "shader compile: compiled="

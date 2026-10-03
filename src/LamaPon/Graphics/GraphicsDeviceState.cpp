@@ -15,5 +15,6 @@ namespace LamaPon
         m_gpuProfiler.SetSectionListener(&m_frameDebugger);
     }
 
+    // 所有資源を宣言の逆順で解放する。
     GraphicsDevice::State::~State() = default;
 }

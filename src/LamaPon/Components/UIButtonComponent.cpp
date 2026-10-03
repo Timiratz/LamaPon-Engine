@@ -18,6 +18,7 @@
 
 namespace
 {
+    // RGBへアルファを乗算した描画色を返します(color: アルファ乗算前のRGBA色)。
     DirectX::XMFLOAT4 Premultiply(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -120,6 +121,7 @@ namespace LamaPon
     void UIButtonComponent::SetTexturePath(
         std::filesystem::path path)
     {
+        // 読み込みに成功した置換画像
         std::shared_ptr<const TextureAsset>
             texture;
         if (m_assets != nullptr
@@ -149,8 +151,7 @@ namespace LamaPon
     void UIButtonComponent::OnUpdate(float)
     {
         m_clicked = false;
-        // シーン遷移の途中は、覆われて見えないボタンや表示し終える前の
-        // 新シーンのボタンを押せないようにします（二重の遷移も防ぎます）。
+        // シーン遷移中は入力を停止して見えないボタンや重複遷移を防ぎます。
         if (m_graphics == nullptr
             || !m_interactable
             || Owner().GetScene().Scenes().IsInputBlocked())
@@ -160,9 +161,12 @@ namespace LamaPon
             return;
         }
 
+        // 今回のポインター入力状態
         const auto& pointer =
             m_graphics->Input().Pointer();
+        // 描画・入力の矩形ピクセル
         UIRect rect;
+        // 所有物体のUI矩形設定
         if (const auto* transform =
             Owner().GetComponent<
                 UIRectTransformComponent>())
@@ -175,6 +179,7 @@ namespace LamaPon
         }
         else
         {
+            // 配置位置を持つワールド変換
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
@@ -194,16 +199,20 @@ namespace LamaPon
         if (m_hovered && m_circularHitArea)
         {
             // 矩形に内接する楕円の内側だけを有効にします。
+            // 入力楕円の横半径ピクセル
             const float halfW =
                 (rect.maximum.x - rect.minimum.x) * 0.5f;
+            // 入力楕円の縦半径ピクセル
             const float halfH =
                 (rect.maximum.y - rect.minimum.y) * 0.5f;
             if (halfW > 0.0f && halfH > 0.0f)
             {
+                // 楕円中心からのX半径比
                 const float dx =
                     (pointer.position.x
                         - (rect.minimum.x + halfW))
                     / halfW;
+                // 楕円中心からのY半径比
                 const float dy =
                     (pointer.position.y
                         - (rect.minimum.y + halfH))
@@ -230,16 +239,16 @@ namespace LamaPon
         {
             if (!m_clickEventName.empty())
             {
-                // 名前付きイベントとして発行します
-                // （Script::Onで受信できます）。
+                // 名前付きイベントとして発行します（Script::Onで受信できます）。
+                // 所有物体を送信元とする引数
                 EventArgs eventArgs;
                 eventArgs.sender = &Owner();
                 Owner().GetScene().Events().Publish(
                     m_clickEventName,
                     eventArgs);
             }
-            // シーン遷移の失敗を握りつぶすと「押しても何も
-            // 起きない」状態になるため、必ず理由をログへ残します。
+            // シーン要求に失敗した場合は理由をログへ記録します。
+            // シーン読み込みの要求先
             auto& scenes = Owner().GetScene().Scenes();
             if (m_reloadCurrentScene)
             {
@@ -252,6 +261,7 @@ namespace LamaPon
             }
             else if (!m_targetScene.empty())
             {
+                // シーン読み込み要求の成否
                 const bool requested =
                     m_loadTargetAdditive
                         ? scenes.
@@ -282,7 +292,9 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 描画・入力の矩形ピクセル
         UIRect rect;
+        // 所有物体のUI矩形設定
         if (const auto* transform =
             Owner().GetComponent<
                 UIRectTransformComponent>();
@@ -297,6 +309,7 @@ namespace LamaPon
         }
         else
         {
+            // 配置位置を持つワールド変換
             XMFLOAT4X4 world{};
             XMStoreFloat4x4(
                 &world,
@@ -309,12 +322,14 @@ namespace LamaPon
                 }
             };
         }
+        // 表示幅・高さピクセル
         const auto size = rect.Size();
         if (size.x <= 0.0f || size.y <= 0.0f)
         {
             return;
         }
 
+        // 状態別の背景RGBA色の参照
         const XMFLOAT4* color =
             !m_interactable
                 ? &m_disabledColor
@@ -323,27 +338,33 @@ namespace LamaPon
                     : m_hovered
                         ? &m_hoveredColor
                         : &m_normalColor;
+        // アルファ乗算済みの背景色
         const auto premultiplied =
             Premultiply(*color);
+        // 背景画像の幅ピクセル
         const float textureWidth =
             m_texture
                 ? static_cast<float>(
                     m_texture->width)
                 : 1.0f;
+        // 背景画像の高ピクセル
         const float textureHeight =
             m_texture
                 ? static_cast<float>(
                     m_texture->height)
                 : 1.0f;
+        // 背景画像の保持ビュー
         GraphicsViewHandle textureView;
         if (m_texture)
         {
+            // 背景画像のGPU資源の保持
             const auto resources =
                 m_texture->resources.Acquire();
             textureView = resources
                 ? resources->shaderResourceView
                 : GraphicsViewHandle{};
         }
+        // 背景画像の描画要求
         SpriteDrawRequest backgroundRequest;
         backgroundRequest.texture = textureView;
         backgroundRequest.position = rect.minimum;
@@ -356,8 +377,10 @@ namespace LamaPon
 
         if (m_textTexture)
         {
+            // 文字画像のGPU資源の保持
             const auto textResources =
                 m_textTexture->resources.Acquire();
+            // 文字画像の保持ビュー
             const auto textTextureView = textResources
                 ? textResources->shaderResourceView
                 : GraphicsViewHandle{};
@@ -365,13 +388,15 @@ namespace LamaPon
             {
                 return;
             }
+            // 文字画像を矩形へ伸縮する倍率
             const XMFLOAT2 labelScale{
                 size.x / static_cast<float>(
                     m_textTexture->width),
                 size.y / static_cast<float>(
                     m_textTexture->height)
             };
-            // 文字テクスチャは白で焼いてあるので色はここで掛けます。
+            // 白い文字画像へアルファ乗算済みの色を掛けます。
+            // 文字画像の描画要求
             SpriteDrawRequest textRequest;
             textRequest.texture = textTextureView;
             textRequest.position = rect.minimum;

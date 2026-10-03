@@ -12,9 +12,7 @@ namespace LamaPon
 
     void RotatorComponent::OnUpdate(const float deltaTime)
     {
-        // 回転の合成はクォータニオンで行います。オイラー角の成分を
-        // 足す書き方だと、軸が絡んだときに順序依存で誤差が溜まり、
-        // ピッチ90度付近では意図しない向きへ跳ねます。
+        // オイラー増分をクォータニオンに変換して合成します。
         GetTransform().RotateEuler({
             m_angularVelocity.x * deltaTime,
             m_angularVelocity.y * deltaTime,

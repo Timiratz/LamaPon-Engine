@@ -13,17 +13,19 @@ namespace LamaPon::Detail
         m_advancing = std::isfinite(deltaTime) && deltaTime > 0.0f;
         if (!m_advancing)
         {
-            // 停止中は最後に表示した補間位置を保持します。alphaを0へ戻すと、
-            // 停止／再開時に直前の固定位置へ巻き戻るためです。
+            // 停止・再開時に姿勢が巻き戻らないよう、最後の補間位置を保持します。
             return;
         }
         m_timing.fixedDeltaTime =
             std::isfinite(fixedDeltaTime) && fixedDeltaTime > 0.0f
                 ? fixedDeltaTime : 1.0f / 60.0f;
         m_maximumCatchUpSteps = std::max(std::size_t{ 1 }, maximumCatchUpSteps);
+        // 0.1秒以下に制限した進行時間
         const double acceptedDelta = static_cast<double>(
             std::min(deltaTime, 0.1f));
+        // 以前の未実行分と今回の合計秒数
         const double pendingTime = m_accumulator + acceptedDelta;
+        // 固定更新の上限で消化できる秒数
         const double capacity = static_cast<double>(m_timing.fixedDeltaTime)
             * static_cast<double>(m_maximumCatchUpSteps);
         m_accumulator = std::min(pendingTime, capacity);
@@ -34,6 +36,7 @@ namespace LamaPon::Detail
 
     bool PhysicsFrameClock::PendingStep() const noexcept
     {
+        // 現在の固定刻みの秒数
         const double step = static_cast<double>(m_timing.fixedDeltaTime);
         return m_advancing && m_timing.fixedSteps < m_maximumCatchUpSteps
             && m_accumulator + step * 0.00001 >= step;
@@ -41,6 +44,7 @@ namespace LamaPon::Detail
 
     void PhysicsFrameClock::CompleteStep() noexcept
     {
+        // 現在の固定刻みの秒数
         const double step = static_cast<double>(m_timing.fixedDeltaTime);
         m_accumulator = std::max(0.0, m_accumulator - step);
         m_lastStepDuration = step;
@@ -57,8 +61,7 @@ namespace LamaPon::Detail
         m_timing.interpolationAlpha = std::clamp(
             static_cast<float>(m_accumulator / m_timing.fixedDeltaTime),
             0.0f, 1.0f);
-        // 最後に完了した物理ステップの長さを使います。まだ一度も進んで
-        // いないSceneには過去の姿勢がないため、遅延も0のままです。
+        // 完了済みステップがない場合は過去の姿勢がないため、補間遅延を0にします。
         m_timing.interpolationDelay = m_lastStepDuration
             * (1.0 - static_cast<double>(m_timing.interpolationAlpha));
     }

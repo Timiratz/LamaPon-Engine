@@ -1,12 +1,3 @@
-// GetScript<T>()の検証用スクリプト2本。
-//
-// 継承順が要点です。LamaPon::Scriptを「先頭以外」に書くことで、
-// Script*への上位変換にポインタ調整が必要な配置を意図的に作ります。
-// instanceをvoid*からstatic_cast<Script*>すると壊れる並びなので、
-// descriptorのasScript経由の変換が効いているかを試せます。
-//
-// 呼び出しはGame Module内から行います。利用者の実際の書き方と同じで、
-// dynamic_castも同一モジュール内で完結します。
 #include "LamaPon/LamaPon.h"
 
 #include "InterfaceProbe.h"
@@ -21,17 +12,19 @@ namespace
         , public LamaPon::Script
     {
     public:
+        // Interface経由で受けたダメージを残りHPから引く(amount: 減らすHP)。
         void ApplyDamage(const int amount) override
         {
             m_health -= amount;
         }
 
+        // 検査用に現在の残りHPを返す。
         [[nodiscard]] int RemainingHealth() const override
         {
             return m_health;
         }
 
-        // 残りHPをテストから読めるようにします。
+        // 検査側で読めるよう残りHPをJSONで保存する。
         [[nodiscard]] std::string SaveProperties() const override
         {
             return nlohmann::json{
@@ -39,9 +32,11 @@ namespace
             }.dump();
         }
 
+        // JSON Objectのhealthがあれば残りHPへ戻す(json: 読み込む保存JSON)。
         void LoadProperties(
             const std::string_view json) override
         {
+            // 例外を出さず解析した保存JSON
             const auto document = nlohmann::json::parse(
                 json,
                 nullptr,
@@ -53,16 +48,18 @@ namespace
         }
 
     private:
+        // ダメージ後の残りHP
         int m_health{ 100 };
     };
 
-    // インターフェース経由で相手を叩く側。型を知らずに
-    // GetScript<IDamageable>()で引きます。
+    // 具体的なScript型を使わずInterface経由でダメージを付与する。
     class DamageDealerProbe final : public LamaPon::Script
     {
     public:
+        // 同じObjectのIDamageableへ25ダメージを与え成功を記録する。
         void Start() override
         {
+            // 同じObjectから取得する借用Interface
             if (auto* target =
                 GetScript<SampleGame::IDamageable>())
             {
@@ -71,6 +68,7 @@ namespace
             }
         }
 
+        // ダメージ付与の成功状態を検査用のJSONで保存する。
         [[nodiscard]] std::string SaveProperties() const override
         {
             return nlohmann::json{
@@ -79,6 +77,7 @@ namespace
         }
 
     private:
+        // 起動時にダメージ付与できたか
         bool m_dealt{};
     };
 }

@@ -16,15 +16,20 @@ namespace
 
     struct ControlDescriptor final
     {
+        // 記述に対応する入力種別
         InputControl control;
+        // 設定へ保存する入力名
         std::string_view name;
+        // UIへ表示する入力名
         std::string_view displayName;
+        // 対応するDirectXTKキー
         DirectX::Keyboard::Keys key{
             DirectX::Keyboard::Keys::None };
     };
 
     using Keys = DirectX::Keyboard::Keys;
 
+    // 入力種別順の保存名とデバイス対応
     constexpr std::array ControlDescriptors{
         ControlDescriptor{ InputControl::KeyboardA, "KeyboardA", "キーボード / A", Keys::A },
         ControlDescriptor{ InputControl::KeyboardB, "KeyboardB", "キーボード / B", Keys::B },
@@ -128,8 +133,10 @@ namespace
         ControlDescriptors.size()
         == static_cast<std::size_t>(InputControl::Count));
 
+    // 入力記述がInputControlの列挙順に並ぶか検査します。
     consteval bool ControlDescriptorsAreOrdered()
     {
+        // 入力記述の照合番号
         for (std::size_t index = 0;
             index < ControlDescriptors.size();
             ++index)
@@ -147,9 +154,12 @@ namespace
         ControlDescriptorsAreOrdered(),
         "ControlDescriptors must follow InputControl order.");
 
+    // キーボード種別からデバイスのキーを求めます(control: キーボード入力種別)。
+    // キーボード以外はinvalid_argumentです。
     DirectX::Keyboard::Keys KeyboardKey(
         const InputControl control)
     {
+        // 入力種別に対応する記述番号
         const auto index =
             static_cast<std::size_t>(control);
         if (!LamaPon::IsKeyboardControl(control))
@@ -160,13 +170,17 @@ namespace
         return ControlDescriptors[index].key;
     }
 
-    // Keys列挙子の値はWin32仮想キーコードと一致します。
+    // 仮想キーから入力種別への静的対応表を返します。
+    // DirectXTKのKeys値はWin32の仮想キーコードと一致します。
     const std::array<InputControl, 256>& VirtualKeyControls()
     {
+        // 仮想キーの対応表を一度だけ構築します。
         static const auto table = []
         {
+            // 未対応をCountとする仮想キー表
             std::array<InputControl, 256> result{};
             result.fill(InputControl::Count);
+            // 仮想キー表へ登録する入力記述
             for (const auto& descriptor : ControlDescriptors)
             {
                 if (LamaPon::IsKeyboardControl(
@@ -182,15 +196,20 @@ namespace
         return table;
     }
 
+    // Win32メッセージから左右を区別したキー種別を求めます(wParam: 仮想キー, lParam: キー情報)。
+    // 未対応ならCountを返します。
     InputControl KeyboardControlFromMessage(
         const std::uint64_t wParam,
         const std::int64_t lParam) noexcept
     {
+        // 左右を識別する仮想キーコード
         auto virtualKey = static_cast<UINT>(wParam);
+        // 拡張キーの識別ビット
         const bool extended =
             (lParam & (std::int64_t{ 1 } << 24)) != 0;
         if (virtualKey == VK_SHIFT)
         {
+            // Shiftの左右を示すスキャン値
             const auto scanCode = static_cast<UINT>(
                 (lParam >> 16) & 0xFF);
             virtualKey = MapVirtualKeyW(
@@ -212,12 +231,15 @@ namespace
             : InputControl::Count;
     }
 
+    // マウス操作をアクション用の0または1へ変換します(pointer: ポインター状態, control: 入力種別)。
     float MouseControlValue(
         const LamaPon::InputPointerState& pointer,
         const InputControl control) noexcept
     {
+        // 押下か押下遷移があれば1を返します(index: マウスボタン種別)。
         const auto button = [&](const PointerButton index)
         {
+            // 対象ボタンの現在フレーム状態
             const auto& state = pointer.Button(index);
             return state.down || state.pressed
                 ? 1.0f
@@ -236,6 +258,8 @@ namespace
         }
     }
 
+    // ゲームパッド操作の値を取得します(state: デバイス状態, control: 入力種別)。
+    // 未接続または非対応の種別は0です。
     float GamePadValue(
         const DirectX::GamePad::State& state,
         const InputControl control) noexcept
@@ -271,6 +295,7 @@ namespace
         }
     }
 
+    // マウスボタン順の仮想キー一覧
     constexpr std::array PointerButtonVirtualKeys{
         VK_LBUTTON,
         VK_RBUTTON,
@@ -283,8 +308,7 @@ namespace
         PointerButtonVirtualKeys.size()
         == static_cast<std::size_t>(PointerButton::Count));
 
-    // ウィンドウプロシージャとInputSystem::Updateはどちらも
-    // メインスレッドで動くため、ロックなしのメンバー状態で十分です。
+    // 主スレッド用の非所有メッセージ転送先
     LamaPon::InputSystem* g_activeInputSystem{};
 }
 
@@ -300,6 +324,7 @@ namespace LamaPon
     float InputSnapshot::Get(
         const InputControl control) const noexcept
     {
+        // 入力種別の値の検索結果
         const auto found = values.find(control);
         return found != values.end()
             ? found->second
@@ -381,7 +406,9 @@ namespace LamaPon
                 "Input actions must contain between 1 and 64 actions.");
         }
 
+        // 重複を検査するアクション名
         std::unordered_set<std::string> names;
+        // 検証する入力アクション
         for (const auto& action : actions)
         {
             if (action.name.empty()
@@ -405,6 +432,7 @@ namespace LamaPon
                     "Each input action requires 1 to 16 bindings: "
                     + action.name);
             }
+            // 検証する入力操作の割り当て
             for (const auto& binding : action.bindings)
             {
                 if (binding.control < InputControl{}
@@ -424,12 +452,15 @@ namespace LamaPon
     std::span<const InputControl>
         AllInputControls() noexcept
     {
+        // 入力種別の連続した一覧を構築します。
         static const auto controls = []
         {
+            // 全入力種別の静的配列
             std::array<
                 InputControl,
                 static_cast<std::size_t>(
                     InputControl::Count)> result{};
+            // 配列へ格納する入力種別番号
             for (std::size_t index = 0;
                 index < result.size();
                 ++index)
@@ -445,6 +476,7 @@ namespace LamaPon
     std::string_view InputControlName(
         const InputControl control) noexcept
     {
+        // 入力種別に対応する記述番号
         const auto index =
             static_cast<std::size_t>(control);
         return index < ControlDescriptors.size()
@@ -455,6 +487,7 @@ namespace LamaPon
     std::string_view InputControlDisplayName(
         const InputControl control) noexcept
     {
+        // 入力種別に対応する記述番号
         const auto index =
             static_cast<std::size_t>(control);
         return index < ControlDescriptors.size()
@@ -465,6 +498,7 @@ namespace LamaPon
     InputControl InputControlFromName(
         const std::string_view name)
     {
+        // 保存名を照合する入力記述
         for (const auto& descriptor : ControlDescriptors)
         {
             if (descriptor.name == name)
@@ -515,16 +549,20 @@ namespace LamaPon
         const std::uint64_t wParam,
         const std::int64_t lParam) noexcept
     {
+        // 初回キー押下をイベントとして蓄積します。
         const auto pressKey = [&]
         {
+            // メッセージに対応するキー種別
             const auto control =
                 KeyboardControlFromMessage(wParam, lParam);
             if (control == InputControl::Count)
             {
                 return;
             }
+            // 対象キーの蓄積イベント
             auto& state = m_keyEvents[
                 static_cast<std::size_t>(control)];
+            // リピート前から押下済みか
             const bool wasDown =
                 (lParam & (std::int64_t{ 1 } << 30)) != 0;
             state.down = true;
@@ -533,14 +571,17 @@ namespace LamaPon
                 ++state.pressedCount;
             }
         };
+        // キー解放をイベントとして蓄積します。
         const auto releaseKey = [&]
         {
+            // メッセージに対応するキー種別
             const auto control =
                 KeyboardControlFromMessage(wParam, lParam);
             if (control == InputControl::Count)
             {
                 return;
             }
+            // 対象キーの蓄積イベント
             auto& state = m_keyEvents[
                 static_cast<std::size_t>(control)];
             state.down = false;
@@ -549,9 +590,11 @@ namespace LamaPon
                 ++state.releasedCount;
             }
         };
+        // ボタン押下をイベントとして蓄積します(button: マウスボタン種別)。
         const auto pressButton = [&](
             const PointerButton button)
         {
+            // 対象ボタンの蓄積イベント
             auto& state = m_mouseButtonEvents[
                 static_cast<std::size_t>(button)];
             state.down = true;
@@ -560,9 +603,11 @@ namespace LamaPon
                 ++state.pressedCount;
             }
         };
+        // ボタン解放をイベントとして蓄積します(button: マウスボタン種別)。
         const auto releaseButton = [&](
             const PointerButton button)
         {
+            // 対象ボタンの蓄積イベント
             auto& state = m_mouseButtonEvents[
                 static_cast<std::size_t>(button)];
             state.down = false;
@@ -571,6 +616,7 @@ namespace LamaPon
                 ++state.releasedCount;
             }
         };
+        // メッセージの追加ボタン種別を求めます。
         const auto extraButton = [&]
         {
             return GET_XBUTTON_WPARAM(
@@ -631,9 +677,10 @@ namespace LamaPon
         case WM_CHAR:
         case WM_IME_CHAR:
         {
+            // 受け付けるUTF-16コード単位
             const auto character =
                 static_cast<wchar_t>(wParam);
-            // テキスト編集で使う制御文字だけを通します。
+            // 編集用の制御文字か
             const bool editingControl =
                 character == L'\b'
                 || character == L'\r'
@@ -668,11 +715,13 @@ namespace LamaPon
 
     void InputSystem::ClearFrameEvents() noexcept
     {
+        // 消費するキーの蓄積イベント
         for (auto& state : m_keyEvents)
         {
             state.pressedCount = 0;
             state.releasedCount = 0;
         }
+        // 消費するボタンの蓄積イベント
         for (auto& state : m_mouseButtonEvents)
         {
             state.pressedCount = 0;
@@ -680,7 +729,6 @@ namespace LamaPon
         }
         m_wheelAccumulator = 0;
         m_wheelHorizontalAccumulator = 0;
-        // 蓄積分を今フレームのテキスト入力として公開します。
         m_frameTextInput.swap(m_textInputAccumulator);
         m_textInputAccumulator.clear();
     }
@@ -702,18 +750,21 @@ namespace LamaPon
             0,
             DirectX::GamePad::DEAD_ZONE_INDEPENDENT_AXES);
 
-        // ポインタ状態はマウスバインディングの入力源なので、
-        // Actionスナップショット構築前に更新します。
+        // マウスのアクション値を作るため、先にポインターを更新します。
         UpdatePointer();
 
+        // 実デバイスから構築する入力値
         InputSnapshot snapshot;
+        // 値を取得する入力種別
         for (const auto control : AllInputControls())
         {
+            // 今回の操作の入力値
             float value{};
             if (IsKeyboardControl(control))
             {
                 if (allowKeyboardActions)
                 {
+                    // キーの蓄積イベント
                     const auto& events = m_keyEvents[
                         static_cast<std::size_t>(control)];
                     if (m_keyboardState.IsKeyDown(
@@ -756,15 +807,17 @@ namespace LamaPon
 
     void InputSystem::UpdatePointer() noexcept
     {
+        // 今回構築するポインター状態
         InputPointerState next;
+        // 今回が上書き指定の更新か
         bool fromOverride = false;
         if (m_pointerOverride)
         {
             next = *m_pointerOverride;
             m_pointerOverride.reset();
             fromOverride = true;
-            // ボタン別状態が導入される前の呼び出し元は、集約left
-            // ボタンフラグ（down）だけを設定します。
+            // 集約downだけを渡す呼び出し側と互換性を保つため、左ボタンにも反映します。
+            // 上書き対象の左ボタン状態
             auto& left = next.buttons[
                 static_cast<std::size_t>(
                     PointerButton::Left)];
@@ -773,9 +826,12 @@ namespace LamaPon
         }
         else if (m_nativeWindow != nullptr)
         {
+            // ポインター座標の基準ウィンドウ
             const auto window =
                 static_cast<HWND>(m_nativeWindow);
+            // 画面からクライアントへ移す座標
             POINT cursor{};
+            // 有効性を判定するクライアント領域
             RECT client{};
             if (GetCursorPos(&cursor)
                 && ScreenToClient(window, &cursor)
@@ -809,12 +865,12 @@ namespace LamaPon
                 m_hasLastCursorPosition = false;
             }
 
+            // 実入力を読むマウスボタン番号
             for (std::size_t index = 0;
                 index < next.buttons.size();
                 ++index)
             {
-                // ウィンドウメッセージが主な入力源。非同期ポーリングは
-                // クライアント領域外へのドラッグ継続を保証します。
+                // 非同期ポーリングを併用し、領域外でもドラッグの押下を継続します。
                 next.buttons[index].down =
                     m_mouseButtonEvents[index].down
                     || (GetAsyncKeyState(
@@ -830,15 +886,17 @@ namespace LamaPon
                 / static_cast<float>(WHEEL_DELTA);
         }
 
+        // 遷移を判定するマウスボタン番号
         for (std::size_t index = 0;
             index < next.buttons.size();
             ++index)
         {
+            // 今回更新するボタン状態
             auto& button = next.buttons[index];
+            // 前フレームのボタン状態
             const auto& previous =
                 m_pointerState.buttons[index];
-            // 1フレーム内で押して離した場合も、押下と解放の両方の
-            // 遷移を報告します。
+            // 前回更新後の短い押下の有無
             const bool tapped =
                 !fromOverride
                 && m_mouseButtonEvents[index].pressedCount > 0
@@ -852,6 +910,7 @@ namespace LamaPon
                 || (tapped && !button.down);
         }
 
+        // 集約状態を作る左ボタン状態
         const auto& left = next.buttons[
             static_cast<std::size_t>(PointerButton::Left)];
         next.down = left.down;
@@ -863,6 +922,7 @@ namespace LamaPon
     float InputSystem::Value(
         const std::string_view action) const noexcept
     {
+        // 現在のアクション値の検索結果
         const auto found =
             m_values.find(std::string(action));
         return found != m_values.end()
@@ -882,10 +942,13 @@ namespace LamaPon
         const std::string_view action,
         const float threshold) const noexcept
     {
+        // 絶対値で比較する押下閾値
         const float absoluteThreshold =
             std::abs(threshold);
+        // 前フレームのアクション値を取得します。
         const float previous = [&]
         {
+            // 前フレーム値の検索結果
             const auto found = m_previousValues.find(
                 std::string(action));
             return found != m_previousValues.end()
@@ -900,10 +963,13 @@ namespace LamaPon
         const std::string_view action,
         const float threshold) const noexcept
     {
+        // 絶対値で比較する押下閾値
         const float absoluteThreshold =
             std::abs(threshold);
+        // 前フレームのアクション値を取得します。
         const float previous = [&]
         {
+            // 前フレーム値の検索結果
             const auto found = m_previousValues.find(
                 std::string(action));
             return found != m_previousValues.end()
@@ -919,6 +985,7 @@ namespace LamaPon
     {
         m_previousValues = m_values;
         m_values.clear();
+        // 今フレーム値を構築するアクション
         for (const auto& action : m_actions)
         {
             m_values.emplace(
@@ -931,7 +998,9 @@ namespace LamaPon
         const InputActionDefinition& action,
         const InputSnapshot& snapshot) noexcept
     {
+        // 操作の加算後に制限する入力値
         float value{};
+        // アクション値へ加算する割り当て
         for (const auto& binding : action.bindings)
         {
             value += snapshot.Get(binding.control)

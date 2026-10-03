@@ -14,6 +14,7 @@
 
 namespace
 {
+    // ファイルをフラッシュ後の置換で永続化します(path: 保存先, text: 保存する文書本文)。
     void WriteAtomically(
         const std::filesystem::path& path,
         const std::string_view text)
@@ -97,15 +98,19 @@ namespace LamaPon
         const std::string_view slot,
         const std::string_view json)
     {
+        // 文書へ格納するJSON本文
         const auto payload =
             nlohmann::json::parse(json);
+        // スロット名と本文を包む保存文書
         const nlohmann::json document{
             { "format", "LamaPonSaveData" },
             { "version", 1 },
             { "slot", slot },
             { "data", payload }
         };
+        // 操作するスロットファイルのパス
         const auto path = SlotPath(slot);
+        // 保存または削除の通知内容
         const Detail::LocalPersistenceCommitEvent event{
             Detail::LocalPersistenceResourceKind::SaveData,
             this,
@@ -123,12 +128,15 @@ namespace LamaPon
         SaveDataStore::LoadJson(
             const std::string_view slot) const
     {
+        // 操作するスロットファイルのパス
         const auto path = SlotPath(slot);
+        // スロット文書を読む入力ファイル
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
             return std::nullopt;
         }
+        // 読み込むスロットの保存文書
         nlohmann::json document;
         input >> document;
         static_cast<void>(
@@ -164,7 +172,9 @@ namespace LamaPon
     bool SaveDataStore::DeleteSlot(
         const std::string_view slot)
     {
+        // 操作するスロットファイルのパス
         const auto path = SlotPath(slot);
+        // 保存または削除の通知内容
         const Detail::LocalPersistenceCommitEvent event{
             Detail::LocalPersistenceResourceKind::SaveData,
             this,
@@ -176,6 +186,7 @@ namespace LamaPon
         {
             return false;
         }
+        // スロットファイルを削除できたか
         const bool removed = Detail::DurableDeleteLocalDocument(path);
         if (removed)
         {
@@ -187,7 +198,9 @@ namespace LamaPon
     std::vector<std::string>
         SaveDataStore::ListSlots() const
     {
+        // 列挙したスロット名の一覧
         std::vector<std::string> slots;
+        // 保存先の存在確認エラー
         std::error_code error;
         if (!std::filesystem::is_directory(
                 m_directory,
@@ -195,8 +208,10 @@ namespace LamaPon
         {
             return slots;
         }
+        // スロットファイルの拡張子
         constexpr std::wstring_view suffix =
             L".save.json";
+        // 保存先ディレクトリの各項目
         for (const auto& entry :
             std::filesystem::directory_iterator(
                 m_directory))
@@ -205,6 +220,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 拡張子付きのスロットファイル名
             const auto name =
                 entry.path().filename().wstring();
             if (name.size() <= suffix.size()

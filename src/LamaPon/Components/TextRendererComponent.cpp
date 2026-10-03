@@ -37,10 +37,7 @@ namespace LamaPon
     {
     }
 
-    // 以下のSetterは「値が変わっていなければ何もしない」ようにして
-    // います。文字テクスチャの作り直しはDirectWriteでの描画とGPU
-    // テクスチャ生成を伴うため、HUDのように毎フレーム同じ値を入れ直す
-    // 書き方でも無駄が出ないようにするためです。
+    // 内容・書体・サイズの同値更新は画像生成を省き、保留中だけ再試行します。
     void TextRendererComponent::SetText(std::string text)
     {
         if (m_text == text && !m_textureRefreshPending)
@@ -63,6 +60,7 @@ namespace LamaPon
 
     void TextRendererComponent::SetFontSize(const float fontSize)
     {
+        // 1以上に制限した文字サイズ
         const float clamped = std::max(fontSize, 1.0f);
         if (m_fontSize == clamped && !m_textureRefreshPending)
         {
@@ -74,9 +72,7 @@ namespace LamaPon
 
     void TextRendererComponent::SetColor(const DirectX::XMFLOAT4& color)
     {
-        // 色は文字テクスチャに焼かれていないので、作り直しは要りません
-        // （毎フレーム色を変えるフェードも軽く書けます）。作り直しが
-        // 保留になっている場合だけ、ここで拾います。
+        // 色は画像に焼かないため、生成が保留中の場合だけ再試行します。
         m_color = color;
         if (m_textureRefreshPending)
         {
@@ -148,36 +144,46 @@ namespace LamaPon
 
         using namespace DirectX;
 
+        // 所有物体のワールド変換
         XMFLOAT4X4 world{};
         XMStoreFloat4x4(&world, Owner().WorldMatrix());
 
+        // 所有物体がUI矩形を持つ指定
         const bool usesUIRect =
             Owner().GetComponent<UIRectTransformComponent>() != nullptr;
+        // 表示の基準位置ピクセル
         XMFLOAT2 position{ world._41, world._42 };
         if (!usesUIRect && m_graphics != nullptr)
         {
+            // ワールド2Dの画面補正量
             const auto& offset = m_graphics->Sprite2DOffset();
             position.x += offset.x;
             position.y += offset.y;
         }
+        // 文字画像の基準位置ピクセル
         XMFLOAT2 origin{};
+        // 文字画像から表示へのXY倍率
         XMFLOAT2 scale{
             std::sqrt(world._11 * world._11 + world._12 * world._12),
             std::sqrt(world._21 * world._21 + world._22 * world._22)
         };
+        // Z回転角ラジアン
         float rotation = std::atan2(world._12, world._11);
+        // 所有物体のUI矩形設定
         if (const auto* rectTransform =
             Owner().GetComponent<
                 UIRectTransformComponent>();
             rectTransform != nullptr
             && m_graphics != nullptr)
         {
+            // UI表示矩形ピクセル
             const auto rect =
                 rectTransform->Resolve(
                     static_cast<float>(
                         m_graphics->UIWidth()),
                     static_cast<float>(
                         m_graphics->UIHeight()));
+            // UI表示幅・高さピクセル
             const auto rectSize =
                 rect.Size();
             position = {
@@ -200,10 +206,10 @@ namespace LamaPon
             }
         }
 
-        // 文字テクスチャは白で焼いてあるので、色はここで掛けます
-        // （こうすると色を変えてもテクスチャは作り直しになりません＝
-        // フェードのような演出ができます）。
+        // 白い文字画像へアルファ乗算済みの色を掛けます。
+        // 文字画像のGPU資源の保持
         const auto resources = m_texture->resources.Acquire();
+        // 文字画像の保持ビュー
         const auto textureView = resources
             ? resources->shaderResourceView
             : GraphicsViewHandle{};
@@ -211,6 +217,7 @@ namespace LamaPon
         {
             return;
         }
+        // 文字画像・姿勢・色の描画要求
         SpriteDrawRequest request;
         request.texture = textureView;
         request.position = position;

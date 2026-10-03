@@ -10,11 +10,13 @@
 
 namespace
 {
-    // エンジンと同じリポジトリのリリースを確認します。
-    // 非公開または未リリースの間は通知せず、公開後に利用できます。
+
+    // リリース照会のAPIホスト
     constexpr wchar_t ApiHost[] = L"api.github.com";
+    // 対象リポジトリの照会パス
     constexpr wchar_t LatestReleasePath[] =
         L"/repos/Timiratz/LamaPon-Engine/releases/latest";
+    // 不正URL時のリリース一覧
     constexpr char FallbackReleasesUrl[] =
         "https://github.com/Timiratz/LamaPon-Engine/releases";
 }
@@ -25,11 +27,14 @@ namespace LamaPon::Hub
         const std::string_view responseJson,
         const std::string_view currentVersion)
     {
+        // 最新リリースの比較結果
         UpdateCheckResult result;
         try
         {
+            // GitHubのリリース応答
             const auto document = nlohmann::json::parse(
                 responseJson);
+            // 先頭vを除くリリースタグ
             std::string tag = document.value(
                 "tag_name",
                 std::string{});
@@ -64,6 +69,7 @@ namespace LamaPon::Hub
 
     UpdateCheckResult CheckForEngineUpdate()
     {
+        // 取得したリリースJSON
         const std::string response = HttpGetText(
             ApiHost,
             LatestReleasePath,
