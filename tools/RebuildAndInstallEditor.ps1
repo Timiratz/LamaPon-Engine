@@ -1,5 +1,5 @@
-# ErrorActionPreference: 予期しないPowerShellエラーを停止理由にする。
-﻿$ErrorActionPreference = "Stop"
+﻿# ErrorActionPreference: 予期しないPowerShellエラーを停止理由にする。
+$ErrorActionPreference = "Stop"
 # NonInteractive: CI実行時に入力待ちを省略する。
 $NonInteractive = $args -contains "-NonInteractive"
 
