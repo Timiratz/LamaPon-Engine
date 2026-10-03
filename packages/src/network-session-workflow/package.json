@@ -1,0 +1,10 @@
+{
+  "name": "network-session-workflow",
+  "displayName": "Network Session Workflow",
+  "description": "通信設定アセットとSceneの管理Script。P2Pの接続条件とホスト・参加・退出をゲームごとに組み合わせます。",
+  "author": "LamaPon Community",
+  "version": "0.1.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Immediate",
+  "target": "Project"
+}

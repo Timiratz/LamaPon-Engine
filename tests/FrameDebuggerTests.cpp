@@ -7,14 +7,19 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(const bool condition, const char* message)
     {
+        // 失敗理由を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // Draw eventをdebuggerへ送信します。
+    // Submit(debugger: 記録先, objectId: 対象ID, objectName: 対象名, pass: 描画pass)
     bool Submit(
         LamaPon::FrameDebugger& debugger,
         const std::uint64_t objectId,
@@ -22,6 +27,7 @@ namespace
         const LamaPon::FrameDebugPass pass =
             LamaPon::FrameDebugPass::Color)
     {
+        // 送信する描画内容の説明
         LamaPon::FrameDebugDrawDescription description;
         description.geometry = "立方体";
         description.triangleCount = 12;
@@ -34,8 +40,10 @@ namespace
             std::move(description));
     }
 
+    // 記録無効時も描画を止めずeventを保持しないことを確認します。
     void TestDisabledDebuggerIsTransparent()
     {
+        // 記録無効のFrameDebugger
         LamaPon::FrameDebugger debugger;
         debugger.SetEventLimit(0);
         Require(
@@ -48,14 +56,18 @@ namespace
             "A disabled frame debugger must not record events.");
     }
 
+    // GPU section pathがdraw eventへ反映されることを確認します。
     void TestEventsFollowGpuSections()
     {
+        // 描画eventを収集するdebugger
         LamaPon::FrameDebugger debugger;
+        // sectionの開始・終了を通知するGPU profiler
         LamaPon::GpuProfiler gpu;
         gpu.SetSectionListener(&debugger);
         debugger.SetEnabled(true);
 
         {
+            // ShadowDepth sectionの寿命を閉じるscope
             LamaPon::GpuProfiler::SectionScope shadow{ gpu, "シャドウ" };
             Require(
                 Submit(
@@ -66,7 +78,9 @@ namespace
                 "Recording without a limit must draw.");
         }
         {
+            // main rendering sectionの寿命を閉じるscope
             LamaPon::GpuProfiler::SectionScope main{ gpu, "3D描画" };
+            // opaque rendering subsectionの寿命を閉じるscope
             LamaPon::GpuProfiler::SectionScope inner{ gpu, "不透明" };
             Require(
                 Submit(debugger, 1, "Player")
@@ -79,6 +93,7 @@ namespace
         gpu.CloseFrame();
         debugger.EndFrame();
 
+        // 完了したフレームのdraw event一覧
         const auto& events = debugger.LastFrameEvents();
         Require(
             events.size() == 4 && debugger.CompletedFrames() == 1,
@@ -90,6 +105,7 @@ namespace
                 && events[2].objectName == "Ground"
                 && events[3].sectionPath.empty(),
             "Events were not grouped by the open GPU sections.");
+        // index: フレーム内event位置
         for (std::uint32_t index{}; index < events.size(); ++index)
         {
             Require(
@@ -99,21 +115,28 @@ namespace
                     && events[index].description.triangleCount == 12,
                 "Event metadata was not preserved.");
         }
+        // 後続テストへsection listenerを残さない
         gpu.SetSectionListener(nullptr);
     }
 
+    // event上限後の描画抑止と次フレームのindex再開を確認します。
     void TestLimitSkipsLaterDraws()
     {
+        // event上限を設定するdebugger
         LamaPon::FrameDebugger debugger;
         debugger.SetEnabled(true);
         debugger.SetEventLimit(1);
+        // first: 上限前, second: 上限位置, third: 超過後の送信結果
         const bool first = Submit(debugger, 1, "A");
+        // 上限位置にあるdrawを受理した結果
         const bool second = Submit(debugger, 2, "B");
+        // 上限超過後のdrawを拒否した結果
         const bool third = Submit(debugger, 3, "C");
         debugger.EndFrame();
         Require(
             first && second && !third,
             "Only draws up to the limit may be issued.");
+        // 完了フレームの送信結果一覧
         const auto& events = debugger.LastFrameEvents();
         Require(
             events.size() == 3
@@ -121,7 +144,7 @@ namespace
                 && events[2].skipped,
             "Skipped draws must still be listed so they can be selected.");
 
-        // 次のフレームは番号が0から振り直されます。
+        // 次フレームでevent indexを先頭から振り直す
         debugger.SetEventLimit(std::nullopt);
         Require(
             Submit(debugger, 1, "A")
@@ -135,8 +158,10 @@ namespace
             "Event indices must restart every frame.");
     }
 
+    // 有効化境界と対応しないsection終了の安全性を確認します。
     void TestToggleAndUnbalancedSections()
     {
+        // section状態遷移を検査するdebugger
         LamaPon::FrameDebugger debugger;
         // 有効化より前に始まった区間の終了は無視されます。
         debugger.OnGpuSectionBegin("before");
@@ -162,8 +187,10 @@ namespace
     }
 }
 
+// FrameDebuggerとGpuProfilerの連携契約を検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
         TestDisabledDebuggerIsTransparent();
@@ -173,6 +200,7 @@ int main()
         std::cout << "Frame debugger tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

@@ -32,26 +32,34 @@ namespace LamaPon
     OrientedBox3D BoxCollider3DComponent::WorldBox() const noexcept
     {
         using namespace DirectX;
+        // 所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // 変換した箱のワールド中心
         XMFLOAT3 center{};
         XMStoreFloat3(
             &center,
             XMVector3TransformCoord(
                 XMLoadFloat3(&m_offset),
                 world));
+        // 正規化したワールドXYZ軸
         std::array<XMFLOAT3, 3> axes;
+        // XYZ軸のワールド拡大倍率
         XMFLOAT3 scales{};
+        // ローカルXYZ単位軸
         const std::array localAxes{
             XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f),
             XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f),
             XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
         };
+        // 変換するXYZ軸の番号
         for (std::size_t index{}; index < 3; ++index)
         {
+            // ワールド変換した軸
             const auto transformed =
                 XMVector3TransformNormal(
                     localAxes[index],
                     world);
+            // 軸のワールド拡大倍率
             const float scale =
                 XMVectorGetX(
                     XMVector3Length(transformed));
@@ -83,9 +91,9 @@ namespace LamaPon
     bool BoxCollider3DComponent::CanCollideWith(
         const BoxCollider3DComponent& other) const noexcept
     {
+
         return (m_collisionMask & (1u << other.m_layer)) != 0
             && (other.m_collisionMask & (1u << m_layer)) != 0
-            // プロジェクト設定の衝突マトリクス（既定は全部当たる）。
             && LayersCanCollide(m_layer, other.m_layer);
     }
 
@@ -94,16 +102,23 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // 形状のデバッグRGBA色
         const DirectX::XMVECTOR color = m_isTrigger
             ? DirectX::XMVectorSet(1.0f, 0.75f, 0.1f, 1.0f)
             : DirectX::XMVectorSet(0.1f, 1.0f, 0.35f, 1.0f);
+        // ワールド箱の8隅
         const auto corners = CornersOf(WorldBox());
+        // 箱の12辺の端点列
         std::array<DirectX::XMFLOAT3, 24> lines;
+        // 次に書き込む線分端点番号
         std::size_t lineIndex{};
+        // 辺を調べる隅の番号
         for (std::size_t corner{}; corner < corners.size(); ++corner)
         {
+            // 隣接隅を選ぶ軸ビット
             for (const std::size_t bit : { 1u, 2u, 4u })
             {
+                // 隣接する隅の番号
                 const std::size_t neighbor = corner ^ bit;
                 if (corner < neighbor)
                 {

@@ -6,10 +6,9 @@ namespace LamaPon
 {
     class GraphicsDevice;
 
-    // GraphicsDeviceが所有するアセット・音声・レンダーテクスチャと、
-    // プロセス全体のメモリ量を1つのスナップショットへまとめます。
-    // labelとcapturedAtは呼び出し側が設定します。メインスレッドから
-    // 呼んでください。取得できない分類は空のまま続行します。
+    // 描画デバイスの資源内訳とプロセスのメモリー量を収集する(graphics: 対象の描画デバイス)。
+    // メインスレッドで呼び、labelとcapturedAtは呼出側で設定する。
+    // 分類ごとの標準例外を捕捉して警告し、取得済みの情報を保持して次の分類へ進む。
     [[nodiscard]] MemorySnapshot CaptureMemorySnapshot(
         GraphicsDevice& graphics);
 }

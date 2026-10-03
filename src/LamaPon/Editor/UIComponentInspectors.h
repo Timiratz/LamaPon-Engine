@@ -9,36 +9,36 @@
 namespace LamaPon
 {
     class Component;
-    struct SceneTransitionSettings;
 
     struct RenderTexturePickerResult final
     {
-        // 値の変更とUndoの確定を分け、ドラッグ中の履歴増殖を避けます。
+
+        // 更新する値・未設定なら変更なし
         std::optional<std::string> value;
+        // Undo履歴を確定するか
         bool commit{};
     };
 
-    // UIコンポーネントの編集に必要な表示値と操作だけを借用します。
-    // 参照・コールバックはDraw中にだけ使い、次のフレームへ保存しません。
-    // 選択、Scene、GraphicsDevice、Undo履歴そのものは所有しません。
+    // 参照とコールバックは描画中だけ借用し、次のフレームへ保存しません。
     struct UIInspectorContext final
     {
+        // 選択中の資産への借用参照
         const std::filesystem::path& selectedAsset;
+        // 表示領域の幅・px
         std::uint32_t viewportWidth{};
+        // 表示領域の高さ・px
         std::uint32_t viewportHeight{};
+        // Undo履歴を確定します。
         std::function<void()> recordHistory;
+        // 状態を通知します（string: 通知内容、bool: エラーか）。
         std::function<void(const std::string&, bool)> setStatus;
+        // 画像を選択します（char*: 欄のID、string: 現在値）。
         std::function<RenderTexturePickerResult(const char*, const std::string&)>
             pickRenderTexture;
-        // 空でなければ、シーン遷移の設定にGameビューでのプレビュー
-        // ボタンを表示し、押されたときに呼びます。
-        std::function<void(const SceneTransitionSettings&)>
-            previewTransition;
     };
 
-    // 呼び出し側がImGuiのウィンドウ・ComponentのID・編集可否を設定し、
-    // 各コールバックを提供します。対応したComponentならtrueを返します。
-    // 未対応なら描画・変更を行わず、次のInspectorへ委譲できます。
+    // 呼び出し側はウィンドウ・ComponentのID・編集可否を設定し、使用するコールバックを必ず提供します。
+    // 対応するUI型を編集してtrueを返し、未対応ならfalseを返します(component: 編集対象, context: 描画中だけ借用する操作)。
     [[nodiscard]] bool DrawUIComponentInspector(
         Component& component, const UIInspectorContext& context);
 }

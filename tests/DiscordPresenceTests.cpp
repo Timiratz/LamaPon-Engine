@@ -22,23 +22,30 @@ namespace
 {
     using LamaPon::Detail::FakeDiscordPresenceBackend;
 
+    // 条件不成立をテスト失敗にします。
+    // Require(condition: 成否判定, message: 失敗時の説明)
     void Require(const bool condition, const char* message)
     {
+        // 条件不成立をテスト失敗として報告します。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // 文字列を指定先へ上書き保存します。
+    // WriteFile(path: 出力先, contents: 保存する内容)
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // テストファイルの出力ストリーム
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // 出力ファイルを開けない場合はテストを止めます。
         if (!output)
         {
             throw std::runtime_error(
@@ -47,9 +54,13 @@ namespace
         output << contents;
     }
 
+    // ファイル内容を文字列として返します。
+    // ReadFile(path: 読み込むファイル)
     std::string ReadFile(const std::filesystem::path& path)
     {
+        // 入力ファイルの読込ストリーム
         std::ifstream input(path, std::ios::binary);
+        // 入力ファイルがなければ空の内容を返します。
         if (!input)
         {
             return {};
@@ -59,10 +70,10 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
-    // DiscordPresenceがbackendを破棄した後も記録を読めるよう、Fakeは
-    // テスト側で持ち続け、Presenceへは転送するだけのbackendを渡します。
+    // Presence破棄後も保持するFake
     std::optional<FakeDiscordPresenceBackend> g_backend;
 
+    // 現在の偽Discordバックエンドを返します。
     [[nodiscard]] FakeDiscordPresenceBackend& Backend()
     {
         return *g_backend;
@@ -72,38 +83,48 @@ namespace
         : public LamaPon::DiscordPresenceBackend
     {
     public:
+        // 初期化要求を偽バックエンドへ転送します。
+        // Initialize(applicationId: DiscordアプリケーションID)
         [[nodiscard]] bool Initialize(
             const std::string_view applicationId) override
         {
             return Backend().Initialize(applicationId);
         }
 
+        // 終了要求を偽バックエンドへ転送します。
         void Shutdown() noexcept override
         {
             Backend().Shutdown();
         }
 
+        // 活動更新を偽バックエンドへ転送します。
+        // SetActivity(activity: 送信する活動)
         [[nodiscard]] bool SetActivity(
             const LamaPon::DiscordActivity& activity) override
         {
             return Backend().SetActivity(activity);
         }
 
+        // 活動解除を偽バックエンドへ転送します。
         void ClearActivity() noexcept override
         {
             Backend().ClearActivity();
         }
 
+        // 経過時間を偽バックエンドへ渡します。
+        // Tick(elapsedSeconds: 前回からの経過秒)
         void Tick(const float elapsedSeconds) noexcept override
         {
             Backend().Tick(elapsedSeconds);
         }
 
+        // 偽バックエンドの接続状態を返します。
         [[nodiscard]] bool IsAvailable() const noexcept override
         {
             return Backend().IsAvailable();
         }
 
+        // 偽バックエンドの最終エラーを返します。
         [[nodiscard]] std::string_view
             LastError() const noexcept override
         {
@@ -111,6 +132,7 @@ namespace
         }
     };
 
+    // 状態を初期化して偽バックエンドを登録します。
     void InstallFakeBackendFactory()
     {
         g_backend.reset();
@@ -130,16 +152,19 @@ namespace
         LamaPon::SetDiscordPresenceBackendFactory({});
     }
 
+    // テスト用の有効設定を返します。
     [[nodiscard]] LamaPon::DiscordPresenceConfiguration
         EnabledConfiguration()
     {
+        // Discord Presenceの設定
         LamaPon::DiscordPresenceConfiguration configuration;
         configuration.enabled = true;
         configuration.applicationId = "123456789012345678";
         return configuration;
     }
 
-    // Discordの更新間隔を跨いだことにして、保留中の更新を送らせます。
+    // Discord更新間隔を超えて進めます。
+    // AdvancePastUpdateInterval(presence: 対象)
     void AdvancePastUpdateInterval(
         LamaPon::DiscordPresence& presence)
     {
@@ -148,15 +173,18 @@ namespace
             + 1.0f);
     }
 
+    // 送信を拒否するオンラインサービスを作ります。
+    // MakeOfflineOnlineServices(configuration: オンラインサービス設定)
     [[nodiscard]] std::unique_ptr<LamaPon::OnlineServices>
         MakeOfflineOnlineServices(
             LamaPon::OnlineServiceConfiguration configuration)
     {
-        // 通信は行いません。senderが呼ばれたら失敗として扱います。
+        // 通信を禁止し、誤送信をテスト失敗にします。
         return LamaPon::Detail::OnlineServicesTestAccess::Create(
             std::move(configuration),
             [](const LamaPon::HttpRequest&)
             {
+                // 通信禁止を示すテスト応答
                 LamaPon::HttpResponse response;
                 response.transportError =
                     "Presence tests never talk to a backend.";
@@ -168,8 +196,10 @@ namespace
     void TestDisabledPresenceNeverInitializes()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
 
+        // Discord Presenceの設定
         LamaPon::DiscordPresenceConfiguration configuration;
         configuration.enabled = false;
         configuration.applicationId = "123456789012345678";
@@ -199,8 +229,10 @@ namespace
     void TestMissingApplicationIdDisablesSafely()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
 
+        // Discord Presenceの設定
         LamaPon::DiscordPresenceConfiguration configuration;
         configuration.enabled = true;
         presence.Configure(configuration);
@@ -219,6 +251,7 @@ namespace
             "presence without an application ID must explain"
             " why it is disabled");
 
+        // 検証するDiscordアクティビティ
         LamaPon::DiscordActivity activity;
         activity.details = "Stage 5";
         Require(
@@ -228,8 +261,8 @@ namespace
         presence.ClearActivity();
         presence.Tick(1.0f);
 
-        // client_secretやtokenを貼り付けてしまった場合も、
-        // Discordへ送らずに無効化します。
+        // 秘密値を貼り付けてもDiscordへ送らず無効化します。
+        // 不正IDを使うPresence設定
         LamaPon::DiscordPresenceConfiguration pasted;
         pasted.enabled = true;
         pasted.applicationId = "not-an-application-id";
@@ -241,11 +274,11 @@ namespace
             "a malformed application ID must disable presence");
     }
 
-    // アダプター未登録（Discord SDKを同梱しない既定状態）でも
-    // クラッシュせず、ゲームは動き続けます。
+    // アダプター未登録（Discord SDKを同梱しない既定状態）でもクラッシュせず、ゲームは動き続けます。
     void TestMissingBackendDoesNotCrash()
     {
         RemoveBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
@@ -259,6 +292,7 @@ namespace
             "presence without an adapter must not be"
             " available");
 
+        // 検証するDiscordアクティビティ
         LamaPon::DiscordActivity activity;
         activity.details = "Year 12";
         activity.state = "Population 120000";
@@ -268,6 +302,7 @@ namespace
             " safely");
         presence.ClearActivity();
         presence.ClearActivity();
+        // frame: 更新フレーム
         for (int frame = 0; frame < 120; ++frame)
         {
             presence.Tick(1.0f / 60.0f);
@@ -283,6 +318,7 @@ namespace
     {
         InstallFakeBackendFactory();
         Backend().initializeSucceeds = false;
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
@@ -295,6 +331,7 @@ namespace
             "a backend that cannot connect must leave presence"
             " Unavailable");
 
+        // 検証するDiscordアクティビティ
         LamaPon::DiscordActivity activity;
         activity.details = "Circuit A";
         activity.state = "Time Attack";
@@ -322,8 +359,10 @@ namespace
     void TestUninitializedPresenceIsSafe()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
 
+        // 検証するDiscordアクティビティ
         LamaPon::DiscordActivity activity;
         activity.details = "Puzzle 48";
         activity.state = "87% Complete";
@@ -350,10 +389,13 @@ namespace
             " backend");
     }
 
+    // 活動の送信、既定値補完、解除を検証します。
     void TestActivityIsSentAndCleared()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
+        // Discord Presenceの設定
         auto configuration = EnabledConfiguration();
         configuration.defaultLargeImageKey = "game_icon";
         configuration.defaultLargeImageText = "My Awesome Game";
@@ -371,6 +413,7 @@ namespace
             "a connected presence without an activity must be"
             " Ready");
 
+        // 検証するDiscordアクティビティ
         LamaPon::DiscordActivity activity;
         activity.details = "Chapter 3";
         activity.state = "Boss Battle";
@@ -387,6 +430,7 @@ namespace
             Backend().activities.size() == 1,
             "the activity must reach the backend once");
 
+        // バックエンドへ送信された内容
         const auto& sent = Backend().activities.front();
         Require(
             sent.details == "Chapter 3"
@@ -408,8 +452,7 @@ namespace
             !presence.HasActivity(),
             "clearing must drop the requested activity"
             " immediately");
-        // Discordは15秒に1回しか受け付けないため、解除も次の更新枠で
-        // 送ります。
+        // Discordは15秒に1回しか受け付けないため、解除も次の更新枠で送ります。
         AdvancePastUpdateInterval(presence);
         Require(
             Backend().clearCount >= 1
@@ -420,6 +463,7 @@ namespace
                 == LamaPon::DiscordPresenceState::Ready,
             "a cleared presence must return to Ready");
 
+        // 解除要求の送信回数
         const auto clearCount = Backend().clearCount;
         presence.ClearActivity();
         presence.ClearActivity();
@@ -433,9 +477,11 @@ namespace
     void TestGenreNeutralActivities()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
+        // ジャンル別の内容例
         const std::pair<const char*, const char*> samples[]{
             { "Stage 5", "Boss Battle" },
             { "Year 12", "City Population 120,000" },
@@ -443,6 +489,7 @@ namespace
             { "Puzzle 48", "87% Complete" },
             { "Circuit A", "Time Attack" }
         };
+        // details/state: 活動の詳細と状態を順に確認します。
         for (const auto& [details, state] : samples)
         {
             Require(
@@ -464,6 +511,7 @@ namespace
     void TestUpdatesAreCoalescedToDiscordInterval()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
@@ -474,6 +522,7 @@ namespace
             Backend().activities.size() == 1,
             "the first activity must be sent immediately");
 
+        // stage: 更新段階
         for (int stage = 2; stage <= 6; ++stage)
         {
             Require(
@@ -497,12 +546,15 @@ namespace
             " interval elapses");
     }
 
+    // 規定外の活動内容が拒否されることを検証します。
     void TestInvalidActivitiesAreRejected()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
+        // 上限超過の本文を持つ活動
         LamaPon::DiscordActivity tooLong;
         tooLong.details = std::string(
             LamaPon::DiscordActivityTextMaxBytes + 1,
@@ -511,12 +563,14 @@ namespace
             !presence.SetActivity(tooLong),
             "text longer than Discord allows must be rejected");
 
+        // 制御文字を含む活動
         LamaPon::DiscordActivity controlCharacter;
         controlCharacter.details = "Chapter\n3";
         Require(
             !presence.SetActivity(controlCharacter),
             "control characters must be rejected");
 
+        // 負の時刻を持つ活動
         LamaPon::DiscordActivity negative;
         negative.details = "Chapter 3";
         negative.startTimestamp = -1;
@@ -524,6 +578,7 @@ namespace
             !presence.SetActivity(negative),
             "negative timestamps must be rejected");
 
+        // 時刻順が逆の活動
         LamaPon::DiscordActivity reversed;
         reversed.details = "Chapter 3";
         reversed.startTimestamp = 2000;
@@ -532,6 +587,7 @@ namespace
             !presence.SetActivity(reversed),
             "an end before the start must be rejected");
 
+        // 大画像なしの小画像活動
         LamaPon::DiscordActivity smallOnly;
         smallOnly.details = "Chapter 3";
         smallOnly.smallImageKey = "badge";
@@ -546,9 +602,11 @@ namespace
             " backend");
     }
 
+    // バックエンド失敗後の再送を検証します。
     void TestBackendFailureIsRetried()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
         Backend().setActivitySucceeds = false;
@@ -572,9 +630,11 @@ namespace
             " interval");
     }
 
+    // 切断後に活動を復元することを検証します。
     void TestDisconnectAndReconnect()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
         Require(
@@ -603,10 +663,12 @@ namespace
             "a restored activity must move presence to Active");
     }
 
+    // 終了時に活動と接続を解放することを検証します。
     void TestShutdownReleasesBackend()
     {
         InstallFakeBackendFactory();
         {
+            // Discord Presence
             LamaPon::DiscordPresence presence;
             presence.Configure(EnabledConfiguration());
             Require(
@@ -637,9 +699,11 @@ namespace
     void TestReconfiguringKeepsConnection()
     {
         InstallFakeBackendFactory();
+        // Discord Presence
         LamaPon::DiscordPresence presence;
         presence.Configure(EnabledConfiguration());
 
+        // 表示文だけを変えた設定
         auto updated = EnabledConfiguration();
         updated.defaultLargeImageText = "My Awesome Game";
         presence.Configure(updated);
@@ -649,6 +713,7 @@ namespace
             "changing only the default image must keep the"
             " Discord connection");
 
+        // 別アプリIDの設定
         auto other = EnabledConfiguration();
         other.applicationId = "876543210987654321";
         presence.Configure(other);
@@ -665,6 +730,7 @@ namespace
     void TestPresenceWorksWithoutAccountLinking()
     {
         InstallFakeBackendFactory();
+        // アカウント機能を持つオンラインサービス
         LamaPon::OnlineServices services;
         Require(
             services.State()
@@ -701,10 +767,12 @@ namespace
     void TestAccountLinkingWithoutPresence()
     {
         InstallFakeBackendFactory();
+        // アカウント連携の設定
         LamaPon::OnlineServiceConfiguration online;
         online.serviceBaseUrl = "https://online.example.test";
         online.gameId = "com.example.presence-test";
         online.environmentId = "staging";
+        // アカウント機能を持つオンラインサービス
         const auto services =
             MakeOfflineOnlineServices(std::move(online));
         Require(
@@ -757,6 +825,7 @@ namespace
         class PresenceScript final : public LamaPon::Script
         {
         public:
+            // サービス未登録時のScript APIを検証します。
             void RunWithoutServices()
             {
                 Require(
@@ -782,6 +851,8 @@ namespace
                     " active online services");
             }
 
+            // 登録済みサービスでScript APIを検証します。
+            // RunWithServices(services: 接続済みのオンラインサービス)
             void RunWithServices(
                 LamaPon::OnlineServices& services)
             {
@@ -789,6 +860,7 @@ namespace
                     IsDiscordPresenceAvailable(),
                     "the script API must see the configured"
                     " presence");
+                // 検証するDiscordアクティビティ
                 LamaPon::DiscordActivity activity;
                 activity.details = "Chapter 3";
                 activity.state = "Boss Battle";
@@ -815,9 +887,11 @@ namespace
             }
         };
 
+        // Script API試験用
         PresenceScript script;
         script.RunWithoutServices();
 
+        // アカウント機能を持つオンラインサービス
         LamaPon::OnlineServices services;
         services.ConfigureDiscordPresence(EnabledConfiguration());
         LamaPon::SetActiveOnlineServices(&services);
@@ -825,10 +899,14 @@ namespace
         LamaPon::SetActiveOnlineServices(nullptr);
     }
 
+    // Presence設定の保存と再読込を検証します。
+    // TestProjectSettingsRoundTrip(root: テスト用作業ディレクトリ)
     void TestProjectSettingsRoundTrip(
         const std::filesystem::path& root)
     {
+        // プロジェクト設定ファイルの場所
         const auto path = root / "presence-round-trip.json";
+        // 検証するプロジェクト設定
         LamaPon::ProjectSettings settings;
         // アカウント連携は無効のまま、Presenceだけを保存します。
         settings.online.enabled = false;
@@ -845,6 +923,7 @@ namespace
             settings,
             LamaPon::ProjectSettingsFileType::Project);
 
+        // 再読込したプロジェクト設定
         const auto loaded = LamaPon::LoadProjectSettings(path);
         Require(
             !loaded.online.enabled
@@ -860,8 +939,10 @@ namespace
             "rich presence settings must survive a project"
             " round trip without account linking");
 
+        // 設定ファイルのJSON内容
         const auto document =
             nlohmann::json::parse(ReadFile(path));
+        // JSON内のPresence設定
         const auto& presence =
             document.at("online").at("discordPresence");
         Require(
@@ -874,10 +955,12 @@ namespace
             " settings");
     }
 
-    // discordPresenceを持たない古いproject.jsonは無効として扱います。
+    // 旧形式の設定ではPresenceを無効に保ちます。
+    // TestLegacyProjectSettingsRemainDisabled(root: 保存先)
     void TestLegacyProjectSettingsRemainDisabled(
         const std::filesystem::path& root)
     {
+        // プロジェクト設定ファイルの場所
         const auto path = root / "legacy-project.json";
         WriteFile(
             path,
@@ -888,6 +971,7 @@ namespace
             R"("gameId":"com.example.legacy",)"
             R"("environmentId":"production"}})");
 
+        // 再読込したプロジェクト設定
         const auto loaded = LamaPon::LoadProjectSettings(path);
         Require(
             loaded.online.enabled
@@ -907,6 +991,7 @@ namespace
             path,
             loaded,
             LamaPon::ProjectSettingsFileType::Project);
+        // 旧形式から更新した設定
         const auto upgraded =
             LamaPon::LoadProjectSettings(path);
         Require(
@@ -916,11 +1001,14 @@ namespace
             " disabled and account linking untouched");
     }
 
-    // 手編集で壊れたdiscordPresenceは、暗黙変換せずに拒否します。
+    // 不正なPresence設定を拒否します。
+    // TestMalformedProjectSettingsAreRejected(root: 保存先)
     void TestMalformedProjectSettingsAreRejected(
         const std::filesystem::path& root)
     {
+        // プロジェクト設定ファイルの場所
         const auto path = root / "malformed-presence.json";
+        // 拒否対象の不正JSON例
         const char* const documents[]{
             R"({"format":"LamaPonProject",)"
             R"("online":{"discordPresence":true}})",
@@ -930,15 +1018,19 @@ namespace
             R"("online":{"discordPresence":)"
             R"({"applicationId":123456789012345678}}})"
         };
+        // document: 不正JSON例
         for (const auto* const document : documents)
         {
             WriteFile(path, document);
+            // 不正入力を拒否した状態
             bool rejected = false;
+            // 不正JSONの読込が拒否されるかを確かめます。
             try
             {
                 static_cast<void>(
                     LamaPon::LoadProjectSettings(path));
             }
+            // 解析例外を期待する拒否結果として記録します。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -950,10 +1042,14 @@ namespace
         }
     }
 
+    // アプリIDと既定文の検証を確認します。
+    // TestProjectSettingsValidation(root: テスト用作業ディレクトリ)
     void TestProjectSettingsValidation(
         const std::filesystem::path& root)
     {
+        // プロジェクト設定ファイルの場所
         const auto path = root / "presence-validation.json";
+        // 検証するプロジェクト設定
         LamaPon::ProjectSettings settings;
         settings.online.discordPresence.enabled = true;
 
@@ -968,21 +1064,27 @@ namespace
                 .online.discordPresence.enabled,
             "an application ID may be filled in later");
 
+        // 不正入力を拒否した状態
         const char* const rejected[]{
             "MTIzNDU2Nzg5MDEyMzQ1Njc4.secret",
             "123456789012345678901234567890123",
             "12345678901234567 "
         };
+        // applicationId: 候補ID
         for (const auto* const applicationId : rejected)
         {
+            // 不正値を設定した複製
             auto invalid = settings;
             invalid.online.discordPresence.applicationId =
                 applicationId;
+            // ID検証が例外を出した状態
             bool threw = false;
+            // 不正なアプリIDを検証します。
             try
             {
                 LamaPon::ValidateProjectSettings(invalid);
             }
+            // 入力拒否の例外が発生したことを記録します。
             catch (const std::invalid_argument&)
             {
                 threw = true;
@@ -993,16 +1095,20 @@ namespace
                 " stored");
         }
 
+        // 上限超過文を設定した複製
         auto longText = settings;
         longText.online.discordPresence.defaultLargeImageText =
             std::string(
                 LamaPon::DiscordActivityTextMaxBytes + 1,
                 'a');
+        // 本文検証が例外を出した状態
         bool threwForText = false;
+        // 文字列長の上限超過を検証します。
         try
         {
             LamaPon::ValidateProjectSettings(longText);
         }
+        // 上限超過の入力拒否を記録します。
         catch (const std::invalid_argument&)
         {
             threwForText = true;
@@ -1014,10 +1120,13 @@ namespace
     }
 }
 
+// Discord Presenceテストを実行します。
 int main()
 {
+    // テスト全体の後処理を例外経路でも実行します。
     try
     {
+        // テスト用作業ディレクトリ
         const auto root =
             std::filesystem::current_path()
             / "test-output"
@@ -1050,6 +1159,8 @@ int main()
         LamaPon::SetDiscordPresenceBackendFactory({});
         g_backend.reset();
     }
+    // error: テスト全体で発生した失敗情報
+    // 失敗を表示してオンライン機能の状態を戻します。
     catch (const std::exception& error)
     {
         LamaPon::SetActiveOnlineServices(nullptr);

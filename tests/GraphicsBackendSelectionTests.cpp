@@ -24,17 +24,21 @@ namespace
     class HiddenWindow final
     {
     public:
+        // Creates a hidden test window.
+        // HiddenWindow(width: 幅, height: 高さ)
         HiddenWindow(
             const std::uint32_t width,
             const std::uint32_t height)
             : m_instance(GetModuleHandleW(nullptr))
         {
+            // 窓クラス定義。
             WNDCLASSEXW windowClass{};
             windowClass.cbSize = sizeof(windowClass);
             windowClass.lpfnWndProc = DefWindowProcW;
             windowClass.hInstance = m_instance;
             windowClass.lpszClassName = ClassName;
             m_class = RegisterClassExW(&windowClass);
+            // Registration must succeed before the window is created.
             if (m_class == 0)
             {
                 throw std::runtime_error(
@@ -54,6 +58,7 @@ namespace
                 nullptr,
                 m_instance,
                 nullptr);
+            // Release the class if window creation fails.
             if (m_window == nullptr)
             {
                 UnregisterClassW(ClassName, m_instance);
@@ -63,32 +68,42 @@ namespace
             }
         }
 
+        // Releases the window and its registered class.
         ~HiddenWindow()
         {
+            // Destroy the native window when it was created.
             if (m_window != nullptr)
             {
                 DestroyWindow(m_window);
             }
+            // Unregister the class when registration succeeded.
             if (m_class != 0)
             {
                 UnregisterClassW(ClassName, m_instance);
             }
         }
 
+        // Prevents copying ownership of the native window.
         HiddenWindow(const HiddenWindow&) = delete;
+        // Prevents assigning ownership of the native window.
         HiddenWindow& operator=(const HiddenWindow&) = delete;
 
+        // Returns the native window handle.
         [[nodiscard]] HWND Get() const noexcept
         {
             return m_window;
         }
 
     private:
+        // 登録クラス名。
         static constexpr const wchar_t* ClassName =
             L"LamaPonGraphicsBackendSelectionD3D12Warp";
 
+        // 登録元モジュール。
         HINSTANCE m_instance{};
+        // クラス識別子。
         ATOM m_class{};
+        // 所有する窓。
         HWND m_window{};
     };
 
@@ -101,6 +116,8 @@ namespace
         : public LamaPon::DebugDrawingBackend
     {
     public:
+        // Records submitted debug lines.
+        // DrawLines(lines: 線, view: view, projection: 射影)
         void DrawLines(
             const std::span<const LamaPon::DebugLine> lines,
             const DirectX::XMFLOAT4X4& view,
@@ -112,9 +129,13 @@ namespace
             lastProjection = projection;
         }
 
+        // 描画呼び出し数。
         std::size_t drawCalls{};
+        // 直近の線一覧。
         std::vector<LamaPon::DebugLine> lastLines;
+        // 直近のview行列。
         DirectX::XMFLOAT4X4 lastView{};
+        // 直近の射影行列。
         DirectX::XMFLOAT4X4 lastProjection{};
     };
 
@@ -122,17 +143,21 @@ namespace
         : public LamaPon::GpuProfilerBackend
     {
     public:
+        // Reports whether this test backend accepts profiler calls.
         [[nodiscard]] bool
             IsSupported() const noexcept override
         {
             return supported;
         }
 
+        // Records the start of a profiler frame.
         void OpenFrame() override
         {
             ++openFrameCalls;
         }
 
+        // Records a profiler section and its depth.
+        // BeginSection(name: 区間名, depth: 深度)
         [[nodiscard]] bool BeginSection(
             const std::string_view name,
             const std::uint32_t depth) override
@@ -143,58 +168,80 @@ namespace
             return acceptSections;
         }
 
+        // Records the end of one profiler section.
         void EndSection() noexcept override
         {
             ++endSectionCalls;
         }
 
+        // Records frame closure after open sections are unwound.
         void CloseFrame() override
         {
             endSectionCallsObservedAtClose = endSectionCalls;
             ++closeFrameCalls;
         }
 
+        // Returns the last resolved section timings.
         [[nodiscard]] const std::vector<LamaPon::GpuSectionTime>&
             LatestSections() const noexcept override
         {
             return latestSections;
         }
 
+        // Returns the last resolved frame duration.
         [[nodiscard]] float
             LatestFrameMilliseconds() const noexcept override
         {
             return latestFrameMilliseconds;
         }
 
+        // Returns the last resolved pipeline counters.
         [[nodiscard]] const LamaPon::GpuPipelineStatistics&
             LatestPipelineStatistics() const noexcept override
         {
             return latestPipelineStatistics;
         }
 
+        // 計測対応可否。
         bool supported{ true };
+        // 区間受理可否。
         bool acceptSections{ true };
+        // 開始frame数。
         std::size_t openFrameCalls{};
+        // 開始区間数。
         std::size_t beginSectionCalls{};
+        // 終了区間数。
         std::size_t endSectionCalls{};
+        // 閉じる時点の終了数。
         std::size_t endSectionCallsObservedAtClose{};
+        // 終了frame数。
         std::size_t closeFrameCalls{};
+        // 記録した区間名。
         std::vector<std::string> sectionNames;
+        // 記録した区間深度。
         std::vector<std::uint32_t> sectionDepths;
+        // 直近の計測区間。
         std::vector<LamaPon::GpuSectionTime> latestSections{
             { "resolved", 1.25f, 0u }
         };
+        // 直近frame時間。
         float latestFrameMilliseconds{ 2.5f };
+        // 直近の描画統計。
         LamaPon::GpuPipelineStatistics latestPipelineStatistics{
             1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, true
         };
     };
 
+    // Fails when an expected condition is false.
+    // Require(condition: 条件, message: 失敗理由)
     void Require(const bool condition, const char* message)
     {
+        // Raise the supplied failure when the expectation is unmet.
         if (!condition) throw std::runtime_error(message);
     }
 
+    // Clears and verifies the back buffer.
+    // RequireClearColor(backend: device, expectedWidth: 幅, expectedHeight: 高さ, color: RGBA, vSyncEnabled: VSync)
     void RequireClearColor(
         LamaPon::GraphicsBackend& backend,
         const std::uint32_t expectedWidth,
@@ -204,8 +251,11 @@ namespace
     {
         backend.BindAndClearBackBuffer(color.data());
 
+        // 取得画像の幅。
         std::uint32_t capturedWidth{};
+        // 取得画像の高さ。
         std::uint32_t capturedHeight{};
+        // 取得した画素データ。
         const auto pixels = backend.CaptureBackBuffer(
             capturedWidth,
             capturedHeight);
@@ -219,14 +269,18 @@ namespace
                     * capturedHeight * 4u,
             "D3D12 back-buffer capture returned an unexpected byte count");
 
+        // 期待する色成分。
         std::array<int, 4> expected{};
+        // 色成分channelを全走査。
         for (std::size_t channel{}; channel < expected.size(); ++channel)
         {
             expected[channel] = static_cast<int>(std::lround(
                 color[channel] * 255.0f));
         }
+        // offsetで各pixelの先頭byteを指す。
         for (std::size_t offset{}; offset < pixels.size(); offset += 4u)
         {
+            // pixel内のchannelを全走査。
             for (std::size_t channel{}; channel < expected.size(); ++channel)
             {
                 Require(
@@ -241,32 +295,41 @@ namespace
         backend.Present(vSyncEnabled);
     }
 
+    // Requires the exact requested exception type.
+    // RequireThrowsExactly(function: 対象処理, message: 失敗理由)
     template <typename Exception, typename Function>
     void RequireThrowsExactly(Function&& function, const char* message)
     {
+        // Invoke the operation and inspect its exception type.
         try
         {
             function();
         }
+        // exceptionの型を指定型と照合します。
         catch (const Exception& exception)
         {
+            // 派生例外は契約違反として扱います。
             if (typeid(exception) == typeid(Exception))
             {
                 return;
             }
         }
+        // Let the final failure report unexpected exception types.
         catch (...)
         {
         }
         throw std::runtime_error(message);
     }
 
+    // Verifies backend selection without a profile.
+    // CheckSelection(requestedApi: 入力, expectedRequestedApi: 表示, expectedActiveApi: 実行, expectedFallbackReason: fallback)
     void CheckSelection(
         const LamaPon::RenderingApi requestedApi,
         const LamaPon::RenderingApi expectedRequestedApi,
         const LamaPon::RenderingApi expectedActiveApi,
         const LamaPon::RenderingApiFallbackReason expectedFallbackReason)
     {
+        // 選択結果。
         const auto selection = LamaPon::SelectGraphicsBackend(requestedApi);
         Require(selection.requestedApi == expectedRequestedApi,
             "Rendering backend selection returned an unexpected requested API");
@@ -276,6 +339,8 @@ namespace
             "Rendering backend selection returned an unexpected fallback reason");
     }
 
+    // Verifies backend selection with a profile.
+    // CheckSelection(requestedApi: 入力, profile: 起動設定, expectedRequestedApi: 表示, expectedActiveApi: 実行, expectedFallbackReason: fallback)
     void CheckSelection(
         const LamaPon::RenderingApi requestedApi,
         const LamaPon::GraphicsStartupProfile profile,
@@ -283,6 +348,7 @@ namespace
         const LamaPon::RenderingApi expectedActiveApi,
         const LamaPon::RenderingApiFallbackReason expectedFallbackReason)
     {
+        // 選択結果。
         const auto selection = LamaPon::SelectGraphicsBackend(
             requestedApi,
             profile);
@@ -300,17 +366,21 @@ namespace
     class ScopedWarpAdapterPreference final
     {
     public:
+        // Enables the software WARP adapter for this scope.
         ScopedWarpAdapterPreference()
         {
             LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
         }
 
+        // Restores the default adapter preference.
         ~ScopedWarpAdapterPreference()
         {
             LamaPon::GraphicsDevice::SetPreferWarpAdapter(false);
         }
 
+        // Prevents nested owners from restoring adapter state twice.
         ScopedWarpAdapterPreference(const ScopedWarpAdapterPreference&) = delete;
+        // Prevents assigning nested ownership of the adapter preference.
         ScopedWarpAdapterPreference& operator=(
             const ScopedWarpAdapterPreference&) = delete;
     };
@@ -334,14 +404,17 @@ static_assert(noexcept(std::declval<
             std::span<const LamaPon::GraphicsViewHandle>{},
             std::declval<const LamaPon::GraphicsViewHandle&>())));
 
+// Exercises backend selection, profiler state, and renderer contracts.
 int main()
 {
-    // D3D12 bootstrapを含むGraphicsDeviceはAssetManagerのWIC factoryを
-    // 作るため、COMを初期化してから検証します。
+    // COM初期化結果。
     const HRESULT comResult =
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // COM解放の要否。
     const bool uninitialize = SUCCEEDED(comResult);
+    // 終了コード。
     int result = 0;
+    // Run the backend contract checks and report any failure.
     try
     {
         CheckSelection(
@@ -378,8 +451,9 @@ int main()
             LamaPon::RenderingApi::DirectX11,
             LamaPon::RenderingApiFallbackReason::UnknownApi);
 
-        // 共通facadeはAPI固有driverが未接続でも安全で、
-        // 接続後は入れ子深度と確定結果だけを中継します。
+        // 未接続時の動作と接続後の中継を検証します。
+
+        // 共通計測facade。
         LamaPon::GpuProfiler profiler;
         Require(!profiler.IsSupported(),
             "A detached GPU profiler facade must be unsupported");
@@ -393,6 +467,7 @@ int main()
                 && !profiler.LatestPipelineStatistics().valid,
             "A detached GPU profiler facade must expose empty results");
 
+        // 非対応計測backend。
         RecordingGpuProfilerBackend unsupportedProfilerBackend;
         unsupportedProfilerBackend.supported = false;
         profiler.Attach(&unsupportedProfilerBackend);
@@ -410,6 +485,7 @@ int main()
                 && !profiler.LatestPipelineStatistics().valid,
             "An unsupported GPU profiler backend must remain a safe no-op");
 
+        // 計測記録backend。
         RecordingGpuProfilerBackend profilerBackend;
         profiler.Attach(&profilerBackend);
         Require(profiler.IsSupported(),
@@ -424,6 +500,7 @@ int main()
                 && profiler.LatestPipelineStatistics().valid,
             "The facade must forward resolved backend statistics");
         {
+            // 外側の計測scope。
             LamaPon::GpuProfiler::SectionScope outer{
                 profiler,
                 "outer"
@@ -440,9 +517,11 @@ int main()
                 && profilerBackend.endSectionCalls == 2u,
             "A scope must unwind its nested sections through the backend");
 
+        // 手動終了前の回数。
         const auto endsBeforeManualScope =
             profilerBackend.endSectionCalls;
         {
+            // 手動終了用scope。
             LamaPon::GpuProfiler::SectionScope manualScope{
                 profiler,
                 "manual"
@@ -456,9 +535,11 @@ int main()
             "Explicitly ending a profiler scope must be idempotent");
 
         profilerBackend.acceptSections = false;
+        // 拒否区間前の回数。
         const auto endsBeforeRejectedSection =
             profilerBackend.endSectionCalls;
         {
+            // 拒否区間のscope。
             LamaPon::GpuProfiler::SectionScope rejected{
                 profiler,
                 "rejected"
@@ -468,6 +549,7 @@ int main()
         }
         profilerBackend.acceptSections = true;
         {
+            // 拒否後のscope。
             LamaPon::GpuProfiler::SectionScope afterRejected{
                 profiler,
                 "after rejected"
@@ -482,6 +564,7 @@ int main()
 
         profiler.BeginSection("close outer");
         profiler.BeginSection("close inner");
+        // frame終了前の回数。
         const auto endsBeforeClose = profilerBackend.endSectionCalls;
         profiler.CloseFrame();
         Require(
@@ -492,10 +575,12 @@ int main()
                     == profilerBackend.endSectionCalls,
             "Closing a frame must end every open section before the backend frame");
 
+        // 切離し済みscope。
         LamaPon::GpuProfiler::SectionScope staleScope{
             profiler,
             "detach open"
         };
+        // 切離し前の終了数。
         const auto endsBeforeDetach = profilerBackend.endSectionCalls;
         profiler.Detach();
         Require(
@@ -503,11 +588,13 @@ int main()
                 && !profiler.IsSupported()
                 && profiler.LatestSections().empty(),
             "Detaching must unwind open sections and clear facade results");
+        // 再接続後のbackend。
         RecordingGpuProfilerBackend replacementProfilerBackend;
         replacementProfilerBackend.latestSections.front().name =
             "replacement";
         profiler.Attach(&replacementProfilerBackend);
         {
+            // 再接続後のscope。
             LamaPon::GpuProfiler::SectionScope replacementScope{
                 profiler,
                 "replacement scope"
@@ -526,6 +613,7 @@ int main()
             "A replacement profiler backend must not inherit old state");
         profiler.Detach();
 
+        // 未初期化D3D11 backend。
         auto backend = LamaPon::CreateGraphicsBackend(
             LamaPon::RenderingApi::DirectX11);
         Require(backend != nullptr,
@@ -537,6 +625,7 @@ int main()
         Require(
             backend->ProfilerBackend() == nullptr,
             "An uninitialized backend must not expose a profiler driver");
+        // 初期化前の空診断値。
         const auto emptyVideoMemory =
             backend->QueryVideoMemoryStatistics();
         Require(
@@ -577,12 +666,15 @@ int main()
                 {}),
             "An uninitialized backend accepted pixel shader resources");
 
-        // DirectX 12 backendのdevice / swap chain / command submissionと
-        // 共通resource契約をWARPで独立検証します。画面表示は不要です。
+        // WARPで画面表示なしにD3D12契約を検証します。
         {
+            // swap chainの幅。
             constexpr std::uint32_t D3D12Width = 64u;
+            // swap chainの高さ。
             constexpr std::uint32_t D3D12Height = 48u;
+            // 隠しテスト窓。
             HiddenWindow window{ D3D12Width, D3D12Height };
+            // 検証用D3D12 backend。
             auto d3d12Backend = LamaPon::CreateGraphicsBackend(
                 LamaPon::RenderingApi::DirectX12Experimental);
             Require(
@@ -594,6 +686,7 @@ int main()
                 !d3d12Backend->IsInitialized()
                     && !d3d12Backend->TearingAllowed(),
                 "A new DirectX 12 backend exposed initialized state");
+            // 初期化前の空診断値。
             const auto emptyD3D12Memory =
                 d3d12Backend->QueryVideoMemoryStatistics();
             Require(
@@ -605,6 +698,7 @@ int main()
                     && emptyD3D12Memory.sharedSystemBytes == 0u,
                 "An uninitialized DirectX 12 backend reported adapter state");
 
+            // device生成設定。
             const LamaPon::GraphicsBackendCreateInfo d3d12CreateInfo{
                 static_cast<void*>(window.Get()),
                 D3D12Width,
@@ -616,8 +710,10 @@ int main()
             Require(
                 d3d12Backend->IsInitialized(),
                 "The DirectX 12 WARP backend did not initialize");
+            // tearing対応可否。
             const bool tearingAllowed =
                 d3d12Backend->TearingAllowed();
+            // adapter診断値。
             const auto d3d12Memory =
                 d3d12Backend->QueryVideoMemoryStatistics();
             Require(
@@ -632,15 +728,17 @@ int main()
                         || (d3d12Memory.nonLocalUsageBytes == 0u
                             && d3d12Memory.nonLocalBudgetBytes == 0u)),
                 "Unavailable DirectX 12 memory budgets contained values");
-            // D3D11のWRITE_DISCARD相当の入口は、D3D12では更新ごとに
-            // upload resourceをrenameします。記録済みdrawが読む旧resourceを
-            // 上書きせず、旧handleもGPU完了まで有効なままです。
+            // D3D12は更新ごとにupload resourceをrenameし、GPU完了まで旧handleを保持します。
+
+            // 頂点データ。
             const std::array<float, 8> d3d12VertexData{
                 -1.0f, -1.0f, 0.0f, 1.0f,
                 1.0f, 1.0f, 0.0f, 1.0f
             };
+            // upload用頂点bytes。
             const auto d3d12VertexBytes = std::as_bytes(
                 std::span{ d3d12VertexData });
+            // 更新中の頂点buffer。
             LamaPon::GraphicsBufferHandle d3d12VertexBuffer;
             Require(
                 !d3d12Backend->UpdateDynamicVertexBuffer(
@@ -654,6 +752,7 @@ int main()
                     d3d12VertexBytes)
                     && d3d12VertexBuffer,
                 "The DirectX 12 dynamic vertex buffer was not created");
+            // 更新前の頂点buffer。
             const auto firstD3D12VertexBuffer = d3d12VertexBuffer;
             Require(
                 d3d12Backend->UpdateDynamicVertexBuffer(
@@ -662,6 +761,7 @@ int main()
                     && d3d12VertexBuffer
                     && d3d12VertexBuffer != firstD3D12VertexBuffer,
                 "The DirectX 12 dynamic vertex buffer was not renamed");
+            // 頂点slot数上限。
             constexpr std::uint32_t MaximumVertexBufferSlots = 32u;
             d3d12Backend->BindVertexBuffer(
                 firstD3D12VertexBuffer,
@@ -694,8 +794,9 @@ int main()
                 },
                 "An out-of-range DirectX 12 vertex buffer slot was accepted");
 
-            // D3D11 Effect互換の直接SRV bindはD3D12 pipelineでは使わず、
-            // 空rangeだけを共通契約のno-opとして受け付けます。
+            // D3D12は直接SRV bindを使わず、空rangeだけを受け付けます。
+
+            // SRV slot数上限。
             constexpr std::uint32_t MaximumShaderResourceSlots = 128u;
             Require(
                 d3d12Backend->TryBindPixelShaderResources(
@@ -724,10 +825,9 @@ int main()
                 { 0.125f, 0.375f, 0.625f, 1.0f },
                 false);
 
-            // Captureは同期を伴うため、その後はcapture無しで両方の
-            // frame allocatorを複数回再利用します。Resizeが直後の
-            // outstanding submissionを待てなければWARP/debug layerで
-            // allocator resetやResizeBuffersの事故になります。
+            // Capture後にframe allocatorを再利用し、Resize時のGPU待機を検証します。
+
+            // 連続frameのclear色。
             constexpr std::array<std::array<float, 4>, 6> FrameColors{
                 std::array{ 0.10f, 0.20f, 0.30f, 1.0f },
                 std::array{ 0.20f, 0.30f, 0.40f, 1.0f },
@@ -736,6 +836,7 @@ int main()
                 std::array{ 0.50f, 0.60f, 0.70f, 1.0f },
                 std::array{ 0.60f, 0.70f, 0.80f, 1.0f }
             };
+            // frameを順送りして両allocatorの再利用を確認。
             for (std::size_t frame{}; frame < FrameColors.size(); ++frame)
             {
                 d3d12Backend->BindAndClearBackBuffer(
@@ -752,7 +853,9 @@ int main()
                 { 0.75f, 0.25f, 0.50f, 1.0f },
                 true);
 
+            // resize後の幅。
             constexpr std::uint32_t ResizedWidth = 37u;
+            // resize後の高さ。
             constexpr std::uint32_t ResizedHeight = 19u;
             d3d12Backend->Resize(ResizedWidth, ResizedHeight);
             Require(
@@ -774,6 +877,7 @@ int main()
                 { 0.20f, 0.70f, 0.35f, 1.0f },
                 true);
 
+            // 検証用render target。
             LamaPon::RenderTarget offscreenTarget;
             d3d12Backend->ResizeOffscreenTarget(
                 offscreenTarget,
@@ -794,6 +898,7 @@ int main()
                         == offscreenTarget.DisplayViewHandle(),
                 "The DirectX 12 backend did not publish its offscreen "
                 "target views");
+            // offscreenのclear色。
             constexpr float offscreenClear[4]{
                 0.2f, 0.4f, 0.6f, 1.0f };
             d3d12Backend->BeginOffscreenTarget(
@@ -801,11 +906,13 @@ int main()
                 offscreenClear);
             d3d12Backend->PublishOffscreenTarget(offscreenTarget);
             d3d12Backend->BindBackBuffer();
+            // 復元するoutput状態。
             auto d3d12OutputState =
                 d3d12Backend->CaptureOutputState();
             Require(
                 d3d12OutputState != nullptr,
                 "The DirectX 12 backend did not capture its output state");
+            // 別backendのoutput状態。
             TestGraphicsOutputState foreignOutputState;
             RequireThrowsExactly<std::invalid_argument>(
                 [&]
@@ -827,6 +934,7 @@ int main()
                 !d3d12Backend->IsInitialized()
                     && !d3d12Backend->TearingAllowed(),
                 "DirectX 12 shutdown was not idempotent");
+            // 終了後の診断値。
             const auto shutdownD3D12Memory =
                 d3d12Backend->QueryVideoMemoryStatistics();
             Require(
@@ -834,7 +942,9 @@ int main()
                     && !shutdownD3D12Memory.descriptionAvailable,
                 "DirectX 12 shutdown retained adapter diagnostics");
 
+            // 再初期化後の幅。
             constexpr std::uint32_t ReinitializedWidth = 23u;
+            // 再初期化後の高さ。
             constexpr std::uint32_t ReinitializedHeight = 11u;
             d3d12Backend->Initialize({
                 static_cast<void*>(window.Get()),
@@ -863,11 +973,13 @@ int main()
                 { 0.05f, 0.45f, 0.85f, 1.0f },
                 false);
 
-            // Sprite描画が使うtexture資源は、D3D11と同じdescription /
-            // subresource契約でD3D12の同期upload経路へ送ります。
+            // Sprite用textureを共通subresource契約でD3D12へ同期uploadします。
+
+            // 不変texture。
             const auto solidTexture =
                 d3d12Backend->CreateSolidRgba8Texture(
                     { 255u, 64u, 32u, 255u });
+            // texture用SRV。
             const auto solidView =
                 d3d12Backend->CreateShaderResourceView(solidTexture);
             Require(
@@ -885,6 +997,7 @@ int main()
                         {}));
                 },
                 "An immutable DirectX 12 texture was accepted without data");
+            // 更新用RGBA pixel。
             const std::array<std::uint8_t, 4> updatePixel{
                 1u, 2u, 3u, 4u };
             RequireThrowsExactly<std::invalid_argument>(
@@ -897,6 +1010,7 @@ int main()
                 },
                 "An immutable DirectX 12 texture accepted an update");
 
+            // 段階upload用設定。
             const LamaPon::GraphicsTexture2DDescription progressiveDescription{
                 4u,
                 2u,
@@ -904,11 +1018,15 @@ int main()
                 LamaPon::GraphicsTextureFormat::Rgba8Unorm,
                 LamaPon::GraphicsTextureUpdateMode::PerMipUpdate
             };
+            // 段階upload用texture。
             const auto progressiveTexture =
                 d3d12Backend->CreateTexture2D(progressiveDescription, {});
+            // 第二mipの画素bytes。
             const std::array<std::uint8_t, 8> mip1Pixels{
                 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u };
+            // 基底mipの画素bytes。
             std::array<std::uint8_t, 32> mip0Pixels{};
+        // indexを増やしてbase mipを埋める。
             for (std::size_t index{}; index < mip0Pixels.size(); ++index)
             {
                 mip0Pixels[index] = static_cast<std::uint8_t>(index);
@@ -926,6 +1044,7 @@ int main()
                 progressiveTexture,
                 0u,
                 { std::as_bytes(std::span{ mip0Pixels }), 16u, 32u });
+            // 粗いmip用SRV。
             const auto coarseView = d3d12Backend->CreateShaderResourceView(
                 progressiveTexture,
                 { 1u, 2u });
@@ -950,12 +1069,13 @@ int main()
                 },
                 "A DirectX 12 texture accepted an out-of-range mip update");
 
-            // 記録中のframeより先にhandleを破棄しても、GPUの完了まで
-            // resourceとdescriptorを遅延解放してPresentできます。
+            // 記録中のframeより先にhandleを破棄しても、GPUの完了までresourceとdescriptorを遅延解放してPresentできます。
             {
+                // 描画frameのclear色。
                 const std::array frameColor{ 0.3f, 0.2f, 0.1f, 1.0f };
                 d3d12Backend->BindAndClearBackBuffer(frameColor.data());
                 {
+                    // 一時利用するSRV。
                     const auto transientView =
                         d3d12Backend->CreateShaderResourceView(
                             d3d12Backend->CreateSolidRgba8Texture(
@@ -977,15 +1097,21 @@ int main()
                 "A DirectX 12 view remained current after shutdown");
         }
 
-        // 通常の初期化入口からD3D12 rendererを起動でき、D3D12を
-        // 初期化できない環境ではD3D11へ一度だけフォールバックします。
+        // 通常の初期化入口からD3D12 rendererを起動でき、D3D12を初期化できない環境ではD3D11へ一度だけフォールバックします。
         {
+            // 起動時の描画幅。
             constexpr std::uint32_t BootstrapWidth = 53u;
+            // 起動時の描画高さ。
             constexpr std::uint32_t BootstrapHeight = 31u;
+            // resize後の描画幅。
             constexpr std::uint32_t ResizedBootstrapWidth = 29u;
+            // resize後の描画高さ。
             constexpr std::uint32_t ResizedBootstrapHeight = 47u;
+            // 隠しテスト窓。
             HiddenWindow window{ BootstrapWidth, BootstrapHeight };
+            // WARP選択scope。
             ScopedWarpAdapterPreference warpAdapterPreference;
+            // 起動時のgraphics device。
             LamaPon::GraphicsDevice bootstrapGraphics;
             bootstrapGraphics.Initialize(
                 window.Get(),
@@ -1001,6 +1127,7 @@ int main()
                 "The profiled graphics device did not retain the requested "
                 "DirectX 12 API");
 
+            // Check either a successful D3D12 bootstrap or a D3D11 fallback.
             if (bootstrapGraphics.ActiveRenderingApi()
                 == LamaPon::RenderingApi::DirectX12Experimental)
             {
@@ -1028,6 +1155,7 @@ int main()
                     "The DirectX 12 bootstrap did not expose current shadow "
                     "map resources");
 
+                // debug描画の端点。
                 const std::array debugPoints{
                     DirectX::XMFLOAT3{ -1.0f, 0.0f, 0.0f },
                     DirectX::XMFLOAT3{ 1.0f, 0.0f, 0.0f }
@@ -1038,11 +1166,15 @@ int main()
                     DirectX::XMMatrixIdentity(),
                     DirectX::XMMatrixIdentity());
 
+                // 起動frameのclear色。
                 constexpr std::array BootstrapColor{
                     0.15f, 0.35f, 0.55f, 1.0f };
                 bootstrapGraphics.BeginFrame(BootstrapColor.data());
+                // 取得画像の幅。
                 std::uint32_t capturedWidth{};
+                // 取得画像の高さ。
                 std::uint32_t capturedHeight{};
+                // 取得した画素データ。
                 const auto pixels = bootstrapGraphics.CaptureBackBuffer(
                     capturedWidth,
                     capturedHeight);
@@ -1063,9 +1195,11 @@ int main()
                         && bootstrapGraphics.Height() == ResizedBootstrapHeight,
                     "The DirectX 12 bootstrap resize did not update the "
                     "graphics device dimensions");
+                // resize後のclear色。
                 constexpr std::array ResizedBootstrapColor{
                     0.65f, 0.25f, 0.45f, 1.0f };
                 bootstrapGraphics.BeginFrame(ResizedBootstrapColor.data());
+                // resize後の画素bytes。
                 const auto resizedPixels = bootstrapGraphics.CaptureBackBuffer(
                     capturedWidth,
                     capturedHeight);
@@ -1080,6 +1214,7 @@ int main()
                     "captured");
                 bootstrapGraphics.EndFrame();
             }
+            // Validate the documented fallback when D3D12 is unavailable.
             else
             {
                 Require(
@@ -1100,18 +1235,26 @@ int main()
         RequireThrowsExactly<std::invalid_argument>(
             []
             {
+                // 生成拒否の検証用renderer。
                 LamaPon::DebugRenderer renderer{
                     std::unique_ptr<LamaPon::DebugDrawingBackend>{} };
             },
             "Debug renderer must reject a missing drawing backend");
+        // 描画記録backend。
         auto recordingBackend =
             std::make_unique<RecordingDebugDrawingBackend>();
+        // 記録backend参照。
         auto* const recording = recordingBackend.get();
+        // 検証対象のdebug renderer。
         LamaPon::DebugRenderer debugRenderer{
             std::move(recordingBackend) };
+        // 共通の単位行列。
         const auto identity = DirectX::XMMatrixIdentity();
+        // 共通の線色。
         const auto color =
             DirectX::XMVectorSet(0.2f, 0.4f, 0.6f, 0.8f);
+        // 線数検証lambda。
+        // requireLineCount(expected: 本数, message: 失敗理由)
         const auto requireLineCount =
             [recording](
                 const std::size_t expected,
@@ -1142,6 +1285,7 @@ int main()
         requireLineCount(6, "XZ grid must generate both axes per index");
         debugRenderer.DrawGridXY(1.0f, 1.0f, identity, identity);
         requireLineCount(6, "XY grid must generate both axes per index");
+        // 線分検証用の点列。
         const std::array linePoints{
             DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f },
             DirectX::XMFLOAT3{ 1.0f, 0.0f, 0.0f },
@@ -1186,7 +1330,9 @@ int main()
             identity,
             identity);
         requireLineCount(28, "Spot light must generate a ring and four rays");
+        // no-op前の描画数。
         const auto callsBeforeNoOp = recording->drawCalls;
+        // 奇数個の頂点。
         const std::array singlePoint{
             DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f } };
         debugRenderer.DrawLines(
@@ -1206,13 +1352,16 @@ int main()
                 && recording->lastProjection._44 == 1.0f,
             "Debug renderer must forward view and projection matrices");
 
-        // 移行用facadeは未初期化でも例外や部分的なD3D11資源を
-        // 返さず、安全に空の結果へ倒します。
+        // 未初期化facadeの操作は空結果か例外になります。
+
+        // 未初期化device。
         LamaPon::GraphicsDevice graphics;
         Require(
             !graphics.TryLoadCachedEnvironmentViews(0).IsValid(),
             "Environment cache restore must fail safely without a device");
+        // ゼロのGI係数。
         const std::array<std::uint16_t, 12> coefficients{};
+        // 初期化前の空view。
         const auto neutralBakedGiViews =
             graphics.UploadBakedGlobalIlluminationViews(
                 1,
@@ -1227,6 +1376,7 @@ int main()
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
+                // 失敗用subresource。
                 const std::array initialData{
                     LamaPon::GraphicsTextureSubresourceData{
                         std::as_bytes(std::span{ coefficients }),
@@ -1246,6 +1396,7 @@ int main()
             },
             "Texture3D creation must require an initialized device");
 
+        // 未初期化時の出力状態。
         TestGraphicsOutputState outputState;
         RequireThrowsExactly<std::logic_error>(
             [&]
@@ -1261,6 +1412,7 @@ int main()
             },
             "Restoring output state requires an initialized backend");
 
+        // 初期状態のshadow map。
         LamaPon::ShadowMap shadowMap;
         Require(
             !shadowMap.IsValid() && !shadowMap.ViewHandle(),
@@ -1288,9 +1440,12 @@ int main()
             },
             "Ending a shadow map requires an initialized backend");
 
+        // 検証用render target。
         LamaPon::RenderTarget offscreenTarget;
+        // 黒のRGBA clear色。
         constexpr float clearColor[]{
             0.0f, 0.0f, 0.0f, 1.0f };
+        // history用行列。
         const DirectX::XMFLOAT4X4 historyViewProjection{
             1.0f, 2.0f, 3.0f, 4.0f,
             5.0f, 6.0f, 7.0f, 8.0f,
@@ -1373,12 +1528,14 @@ int main()
             },
             "Publishing an offscreen target requires an initialized backend");
     }
+    // Report the first contract failure and return a failing exit code.
     catch (const std::exception& error)
     {
+        // error: Exception describing the failed contract check.
         std::cerr << error.what() << '\n';
         result = 1;
     }
-    // COM objectを借用するDevice / AssetManagerはtry内で破棄済みです。
+    // 利用者の破棄後、初期化したCOM apartmentだけを解放します。
     if (uninitialize)
     {
         CoUninitialize();

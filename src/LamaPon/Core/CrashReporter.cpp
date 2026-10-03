@@ -12,13 +12,19 @@
 
 namespace
 {
+    // 診断文書とダンプの保存先
     std::filesystem::path g_outputDirectory;
+    // 診断ファイル名に使うアプリ名
     std::string g_applicationName{ "LamaPon" };
+    // 登録前の未処理例外フィルター
     LPTOP_LEVEL_EXCEPTION_FILTER g_previousFilter{};
+    // 例外フィルターを登録済みか
     bool g_installed{};
 
+    // アプリ名をファイル名に使える文字へ整えます(value: アプリ名の複製)。
     std::string SanitizeName(std::string value)
     {
+        // ファイル名に使えない文字かを判定します(character: アプリ名の各文字)。
         std::ranges::replace_if(
             value,
             [](const char character)
@@ -33,10 +39,13 @@ namespace
         return value.empty() ? "LamaPon" : value;
     }
 
+    // UTC時刻とプロセス・スレッド番号を含む診断ファイルの拡張子前のパスを返します。
     std::filesystem::path ReportStem()
     {
+        // 診断名に付ける現在のUTC日時
         SYSTEMTIME time{};
         GetSystemTime(&time);
+        // 診断ファイル名を組み立てる領域
         std::array<char, 128> value{};
         std::snprintf(
             value.data(),
@@ -55,11 +64,13 @@ namespace
         return g_outputDirectory / value.data();
     }
 
+    // 診断文書を出力します(path: 保存先, information: SEH例外情報、なければnull, reason: 診断理由)。
     bool WriteTextFile(
         const std::filesystem::path& path,
         const EXCEPTION_POINTERS* information,
         const std::string_view reason) noexcept
     {
+        // 診断文書を書き込むハンドル
         const HANDLE file = CreateFileW(
             path.c_str(),
             GENERIC_WRITE,
@@ -73,12 +84,15 @@ namespace
             return false;
         }
 
+        // 診断文書の固定長出力領域
         std::array<char, 2048> text{};
+        // SEH例外コード、情報なしは0
         const DWORD exceptionCode =
             information != nullptr
                 && information->ExceptionRecord != nullptr
                 ? information->ExceptionRecord->ExceptionCode
                 : 0;
+        // SEH例外の発生アドレス
         const auto exceptionAddress =
             information != nullptr
                 && information->ExceptionRecord != nullptr
@@ -86,9 +100,10 @@ namespace
                     information->ExceptionRecord->
                         ExceptionAddress)
                 : 0;
-        // 例外フィルター内なのでヒープを使わず、埋め込み済みの
-        // string_viewをそのまま書きます。
+        // 実行バイナリのビルド情報
+        // 例外処理中の割り当てを避けるため、埋め込み済みの文字列を直接書きます。
         const auto& build = LamaPon::GetBuildInfo();
+        // 整形結果の必要バイト数
         const int length = std::snprintf(
             text.data(),
             text.size(),
@@ -127,7 +142,9 @@ namespace
                     reason.size(),
                     1024)),
             reason.data());
+        // ファイルへ書き込めたバイト数
         DWORD written{};
+        // 文書の整形と書き込みの成功可否
         const bool succeeded =
             length > 0
             && WriteFile(
@@ -143,17 +160,21 @@ namespace
         return succeeded;
     }
 
+    // 診断文書と必要ならダンプを出力します(information: SEH例外情報、文書だけならnull, reason: 診断理由)。
     bool WriteReport(
         EXCEPTION_POINTERS* information,
         const std::string_view reason) noexcept
     {
         try
         {
+            // 診断フォルダー作成時のエラー
             std::error_code error;
             std::filesystem::create_directories(
                 g_outputDirectory,
                 error);
+            // 診断文書とダンプの共通パス
             const auto stem = ReportStem();
+            // 診断文書を保存できたか
             const bool wroteText = WriteTextFile(
                 stem.wstring() + L".txt",
                 information,
@@ -164,6 +185,7 @@ namespace
                 return wroteText;
             }
 
+            // ダンプを書き込むハンドル
             const HANDLE dump = CreateFileW(
                 (stem.wstring() + L".dmp").c_str(),
                 GENERIC_WRITE,
@@ -177,10 +199,12 @@ namespace
                 return false;
             }
 
+            // ダンプへ渡す発生スレッドと例外
             MINIDUMP_EXCEPTION_INFORMATION dumpInformation{};
             dumpInformation.ThreadId = GetCurrentThreadId();
             dumpInformation.ExceptionPointers = information;
             dumpInformation.ClientPointers = FALSE;
+            // ダンプを保存できたか
             const bool wroteDump = MiniDumpWriteDump(
                 GetCurrentProcess(),
                 GetCurrentProcessId(),
@@ -202,6 +226,7 @@ namespace
         }
     }
 
+    // 未処理のSEH例外を記録しプロセスを終了させます(information: 発生した例外情報)。
     LONG WINAPI HandleUnhandledException(
         EXCEPTION_POINTERS* information)
     {
@@ -221,6 +246,7 @@ namespace LamaPon
             outputDirectory =
                 std::filesystem::current_path() / L"Crashes";
         }
+        // 診断フォルダー作成時のエラー
         std::error_code error;
         std::filesystem::create_directories(
             outputDirectory,

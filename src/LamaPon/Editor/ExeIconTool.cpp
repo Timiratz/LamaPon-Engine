@@ -23,32 +23,51 @@ namespace
 #pragma pack(push, 2)
     struct IcoHeader final
     {
+        // 予約領域・0
         std::uint16_t reserved;
+        // 形式識別・ICOは1
         std::uint16_t type;
+        // 格納する画像の16bit枚数
         std::uint16_t count;
     };
 
     struct IcoDirEntry final
     {
+        // 画像の幅・0は256ピクセル
         std::uint8_t width;
+        // 画像の高さ・0は256ピクセル
         std::uint8_t height;
+        // paletteの色数・true colorは0
         std::uint8_t colorCount;
+        // 予約領域・0
         std::uint8_t reserved;
+        // 色planesの数
         std::uint16_t planes;
+        // 1ピクセルの色のbit数
         std::uint16_t bitCount;
+        // 画像データのバイト数
         std::uint32_t bytesInResource;
+        // ファイル先頭からの画像位置
         std::uint32_t imageOffset;
     };
 
     struct GroupIconDirEntry final
     {
+        // 画像の幅・0は256ピクセル
         std::uint8_t width;
+        // 画像の高さ・0は256ピクセル
         std::uint8_t height;
+        // paletteの色数・true colorは0
         std::uint8_t colorCount;
+        // 予約領域・0
         std::uint8_t reserved;
+        // 色planesの数
         std::uint16_t planes;
+        // 1ピクセルの色のbit数
         std::uint16_t bitCount;
+        // 画像データのバイト数
         std::uint32_t bytesInResource;
+        // 画像本体のresource ID
         std::uint16_t resourceId;
     };
 #pragma pack(pop)
@@ -56,16 +75,20 @@ namespace
     // 呼び出しスレッドのCOMを初期化するRAII。
     struct ComScope final
     {
+        // COM初期化に成功し終了処理が必要か
         bool uninitialize{};
 
+        // 呼出し元のCOMをMTAとして初期化し成功時だけ終了処理を所有する。
         ComScope()
         {
+            // COM初期化のHRESULT
             const HRESULT result = CoInitializeEx(
                 nullptr,
                 COINIT_MULTITHREADED);
             uninitialize = SUCCEEDED(result);
         }
 
+        // このscopeで成功したCOM初期化を終了する。
         ~ComScope()
         {
             if (uninitialize)
@@ -75,6 +98,7 @@ namespace
         }
     };
 
+    // 失敗したHRESULTなら診断名と数値を含む例外を出す(result: 判定するHRESULT, message: 失敗したAPI等の診断名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* message)
@@ -90,11 +114,13 @@ namespace
         }
     }
 
+    // 指定範囲のバイト列を末尾へ複製する(destination: 追記するバイト列, data: 複製する領域の借用, size: 複製するバイト数)。
     void Append(
         std::vector<std::byte>& destination,
         const void* data,
         const std::size_t size)
     {
+        // 読取・複製するバイト列
         const auto* bytes =
             static_cast<const std::byte*>(data);
         destination.insert(
@@ -103,16 +129,18 @@ namespace
             bytes + size);
     }
 
-    // 1画像をICO格納用の32bit DIB（ヘッダー＋ボトムアップのピクセル＋
-    // ANDマスク）へ変換します。
+    // 上から下のBGRA画像を逆順の32bit DIBと全0のANDマスクへ変換する(image: 寸法を検証済みのBGRA画像)。
     std::vector<std::byte> BuildDibEntry(
         const LamaPon::IconImage& image)
     {
+        // BGRA画像の1行のバイト数
         const std::size_t rowBytes =
             static_cast<std::size_t>(image.width) * 4;
+        // 32bit境界に揃えたマスク行の長さ
         const std::size_t maskRowBytes =
             ((image.width + 31) / 32) * 4;
 
+        // ICOまたはDIBの形式ヘッダー
         BITMAPINFOHEADER header{};
         header.biSize = sizeof(header);
         header.biWidth = static_cast<LONG>(image.width);
@@ -126,10 +154,12 @@ namespace
             rowBytes * image.height
             + maskRowBytes * image.height);
 
+        // 画像の格納内容または位置情報
         std::vector<std::byte> entry;
         entry.reserve(
             sizeof(header) + header.biSizeImage);
         Append(entry, &header, sizeof(header));
+        // 下から複製する画像の1始まり行
         for (std::uint32_t row = image.height;
             row > 0;
             --row)
@@ -149,9 +179,11 @@ namespace
         return entry;
     }
 
+    // 画像文書を全バイト読み不完全な読込なら例外を出す(path: 読み取る画像文書のパス)。
     std::vector<std::byte> ReadFileBytes(
         const std::filesystem::path& path)
     {
+        // 画像文書を読むバイナリstream
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -159,6 +191,7 @@ namespace
                 "Could not open the icon image: "
                 + LamaPon::PathToUtf8(path));
         }
+        // 文書サイズに合わせた読込バッファ
         std::vector<std::byte> bytes(
             std::filesystem::file_size(path));
         input.read(
@@ -173,10 +206,11 @@ namespace
         return bytes;
     }
 
-    // .icoバイト列を検証し、各画像の格納位置を取り出します。
+    // ICOの形式・一覧長・各画像範囲を検証して位置情報を返す(icoBytes: ICO文書の全バイト)。
     std::vector<IcoDirEntry> ParseIcoEntries(
         const std::vector<std::byte>& icoBytes)
     {
+        // ICOまたはDIBの形式ヘッダー
         IcoHeader header{};
         if (icoBytes.size() < sizeof(header))
         {
@@ -192,7 +226,9 @@ namespace
                 "Icon data is not a valid .ico file.");
         }
 
+        // 画像枚数に合わせた位置情報の配列
         std::vector<IcoDirEntry> entries(header.count);
+        // ICO画像位置一覧のバイト数
         const std::size_t directoryBytes =
             sizeof(IcoDirEntry) * entries.size();
         if (icoBytes.size()
@@ -205,8 +241,10 @@ namespace
             entries.data(),
             icoBytes.data() + sizeof(header),
             directoryBytes);
+        // 画像の格納内容または位置情報
         for (const auto& entry : entries)
         {
+            // 64bitで計算した画像の末尾位置
             const std::uint64_t end =
                 static_cast<std::uint64_t>(entry.imageOffset)
                 + entry.bytesInResource;
@@ -223,9 +261,11 @@ namespace
     // リソース言語の列挙結果をまとめる入れ物。
     struct ResourceLanguageList final
     {
+        // 列挙したresource言語の一覧
         std::vector<WORD> languages;
     };
 
+    // Windows列挙callbackからresource言語を収集する(language: 検出したresource言語, parameter: 言語一覧の借用アドレス)。
     BOOL CALLBACK CollectResourceLanguage(
         HMODULE,
         LPCWSTR,
@@ -238,11 +278,13 @@ namespace
         return TRUE;
     }
 
+    // 指定resourceに存在する全言語を列挙する(module: 読込済みexeの資源, type: 列挙するresourceの種別, name: 列挙するresourceのID)。
     std::vector<WORD> FindResourceLanguages(
         const HMODULE module,
         const LPCWSTR type,
         const LPCWSTR name)
     {
+        // resource言語の列挙結果
         ResourceLanguageList list;
         EnumResourceLanguagesW(
             module,
@@ -253,18 +295,22 @@ namespace
         return std::move(list.languages);
     }
 
-    // 既存アイコングループを読み、削除すべき（ID・言語）の一覧を
-    // 集めます。グループが無ければ空を返します。
+    // 固定グループが参照する画像IDと言語の削除対象。
     struct ExistingIconResources final
     {
+        // 削除する画像IDと言語の組
         std::vector<std::pair<WORD, WORD>> icons;
+        // 削除するアイコングループの言語
         std::vector<WORD> groupLanguages;
     };
 
+    // 固定グループが参照する画像IDと言語を削除対象として集める(executablePath: 元のexeのパス)。
     ExistingIconResources CollectExistingIcons(
         const std::filesystem::path& executablePath)
     {
+        // 元アイコンの削除対象一覧
         ExistingIconResources existing;
+        // 実行せず読み込んだexe資源のhandle
         const HMODULE module = LoadLibraryExW(
             executablePath.c_str(),
             nullptr,
@@ -275,14 +321,17 @@ namespace
             return existing;
         }
 
+        // 置換する固定アイコングループID
         const auto groupName =
             MAKEINTRESOURCEW(IDI_LAMAPON_ENGINE);
         existing.groupLanguages = FindResourceLanguages(
             module,
             RT_GROUP_ICON,
             groupName);
+        // 列挙または削除するresource言語
         for (const WORD language : existing.groupLanguages)
         {
+            // 検出したグループresourceの借用
             const HRSRC resource = FindResourceExW(
                 module,
                 RT_GROUP_ICON,
@@ -292,12 +341,15 @@ namespace
             {
                 continue;
             }
+            // 読み込んだresourceデータのhandle
             const HGLOBAL loaded =
                 LoadResource(module, resource);
+            // DIBまたはresourceの画像バイト
             const auto* data = loaded != nullptr
                 ? static_cast<const std::byte*>(
                     LockResource(loaded))
                 : nullptr;
+            // resourceサイズまたは作る画像寸法
             const DWORD size =
                 SizeofResource(module, resource);
             if (data == nullptr
@@ -306,18 +358,24 @@ namespace
                 continue;
             }
 
+            // ICOまたはDIBの形式ヘッダー
             IcoHeader header{};
             std::memcpy(&header, data, sizeof(header));
+            // 取得できたグループ画像の最大数
             const std::size_t available =
                 (size - sizeof(header))
                 / sizeof(GroupIconDirEntry);
+            // 範囲内で走査する画像数
             const std::size_t count = std::min<std::size_t>(
                 header.count,
                 available);
+            // 列挙または出力する画像の番号
             for (std::size_t index = 0;
+                // 範囲内で走査する画像数
                 index < count;
                 ++index)
             {
+                // 画像の格納内容または位置情報
                 GroupIconDirEntry entry{};
                 std::memcpy(
                     &entry,
@@ -325,6 +383,7 @@ namespace
                         + sizeof(header)
                         + index * sizeof(entry),
                     sizeof(entry));
+                // 画像本体に付いたresource言語
                 for (const WORD iconLanguage :
                     FindResourceLanguages(
                         module,
@@ -341,7 +400,7 @@ namespace
         return existing;
     }
 
-    // WICで画像を読み込み、指定サイズのBGRAへ縮小します。
+    // WICで先頭画像を指定の正方形サイズのBGRAへ縮小する(factory: WIC factoryの借用, frame: デコード済み画像の借用, size: 出力画像の辺のピクセル数)。
     LamaPon::IconImage DecodeScaledImage(
         IWICImagingFactory* const factory,
         IWICBitmapFrameDecode* const frame,
@@ -349,6 +408,7 @@ namespace
     {
         using Microsoft::WRL::ComPtr;
 
+        // 指定寸法へ縮小するWIC処理の所有先
         ComPtr<IWICBitmapScaler> scaler;
         ThrowIfFailed(
             factory->CreateBitmapScaler(&scaler),
@@ -361,6 +421,7 @@ namespace
                 WICBitmapInterpolationModeFant),
             "IWICBitmapScaler::Initialize");
 
+        // BGRAへ変換するWIC処理の所有先
         ComPtr<IWICFormatConverter> converter;
         ThrowIfFailed(
             factory->CreateFormatConverter(&converter),
@@ -375,6 +436,7 @@ namespace
                 WICBitmapPaletteTypeCustom),
             "IWICFormatConverter::Initialize");
 
+        // 変換・出力するBGRA画像
         LamaPon::IconImage image;
         image.width = size;
         image.height = size;
@@ -403,8 +465,10 @@ namespace LamaPon
                 "At least one icon image is required.");
         }
 
+        // 画像ごとに組み立てたDIBバイト列
         std::vector<std::vector<std::byte>> entryData;
         entryData.reserve(images.size());
+        // 変換・出力するBGRA画像
         for (const auto& image : images)
         {
             if (image.width == 0
@@ -425,21 +489,27 @@ namespace LamaPon
             entryData.push_back(BuildDibEntry(image));
         }
 
+        // ICOまたはDIBの形式ヘッダー
         IcoHeader header{};
         header.type = 1;
         header.count =
             static_cast<std::uint16_t>(images.size());
 
+        // 返却するICO文書のバイト列
         std::vector<std::byte> ico;
         Append(ico, &header, sizeof(header));
+        // 次の画像を格納するファイル位置
         std::uint32_t offset = static_cast<std::uint32_t>(
             sizeof(IcoHeader)
             + sizeof(IcoDirEntry) * images.size());
+        // 列挙または出力する画像の番号
         for (std::size_t index = 0;
             index < images.size();
             ++index)
         {
+            // 変換・出力するBGRA画像
             const auto& image = images[index];
+            // 画像の格納内容または位置情報
             IcoDirEntry entry{};
             // 256ピクセルはICOの慣例で0と記録します。
             entry.width = static_cast<std::uint8_t>(
@@ -455,6 +525,7 @@ namespace LamaPon
             offset += entry.bytesInResource;
             Append(ico, &entry, sizeof(entry));
         }
+        // DIBまたはresourceの画像バイト
         for (const auto& data : entryData)
         {
             ico.insert(
@@ -468,7 +539,9 @@ namespace LamaPon
     std::vector<std::byte> BuildIcoFromImageFile(
         const std::filesystem::path& imagePath)
     {
+        // 画像形式の判定用の小文字拡張子
         auto extension = imagePath.extension().wstring();
+        // 拡張子を大小文字によらず比較できる表記へ変換する(value: 拡張子の文字)。
         std::transform(
             extension.begin(),
             extension.end(),
@@ -480,14 +553,17 @@ namespace LamaPon
             });
         if (extension == L".ico")
         {
+            // 読取・複製するバイト列
             auto bytes = ReadFileBytes(imagePath);
             static_cast<void>(ParseIcoEntries(bytes));
             return bytes;
         }
 
+        // 必要なCOM初期化と終了処理の番人
         const ComScope comScope;
         using Microsoft::WRL::ComPtr;
 
+        // WIC画像処理factoryの所有先
         ComPtr<IWICImagingFactory> factory;
         ThrowIfFailed(
             CoCreateInstance(
@@ -497,6 +573,7 @@ namespace LamaPon
                 IID_PPV_ARGS(&factory)),
             "CoCreateInstance(WICImagingFactory)");
 
+        // 入力画像のWIC decoderの所有先
         ComPtr<IWICBitmapDecoder> decoder;
         ThrowIfFailed(
             factory->CreateDecoderFromFilename(
@@ -507,17 +584,20 @@ namespace LamaPon
                 &decoder),
             "IWICImagingFactory::CreateDecoderFromFilename");
 
+        // 入力画像の先頭フレームの所有先
         ComPtr<IWICBitmapFrameDecode> frame;
         ThrowIfFailed(
             decoder->GetFrame(0, &frame),
             "IWICBitmapDecoder::GetFrame");
 
-        // Explorerの一覧・タイトルバー・Alt+Tabをカバーする標準サイズ。
+        // 一覧・title・Alt+Tab用の標準寸法
         constexpr std::array<std::uint32_t, 5> sizes{
             16u, 24u, 32u, 48u, 256u
         };
+        // 寸法ごとに縮小したBGRA画像一覧
         std::vector<IconImage> images;
         images.reserve(sizes.size());
+        // resourceサイズまたは作る画像寸法
         for (const auto size : sizes)
         {
             images.push_back(
@@ -533,10 +613,13 @@ namespace LamaPon
         const std::filesystem::path& executablePath,
         const std::vector<std::byte>& icoBytes)
     {
+        // 検証済みの画像位置情報の一覧
         const auto entries = ParseIcoEntries(icoBytes);
+        // 元アイコンの削除対象一覧
         const auto existing =
             CollectExistingIcons(executablePath);
 
+        // exe resourceの更新transaction
         const HANDLE update = BeginUpdateResourceW(
             executablePath.c_str(),
             FALSE);
@@ -547,13 +630,16 @@ namespace LamaPon
                 + PathToUtf8(executablePath));
         }
 
+        // 新しい画像とグループを書けたか
         bool succeeded = true;
+        // 新画像とグループに使う中立言語
         const WORD neutralLanguage =
             MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+        // 置換する固定アイコングループID
         const auto groupName =
             MAKEINTRESOURCEW(IDI_LAMAPON_ENGINE);
 
-        // 既存のアイコン本体とグループを（言語ごとに）削除します。
+        // iconId: 削除する元の画像ID、language: 元の画像resourceの言語
         for (const auto& [iconId, language] : existing.icons)
         {
             UpdateResourceW(
@@ -564,6 +650,7 @@ namespace LamaPon
                 nullptr,
                 0);
         }
+        // 列挙または削除するresource言語
         for (const WORD language : existing.groupLanguages)
         {
             UpdateResourceW(
@@ -575,18 +662,22 @@ namespace LamaPon
                 0);
         }
 
-        // 新しいアイコン本体をID 1..Nで書き込みます。
+        // 新しいアイコングループのバイト列
         std::vector<std::byte> group;
+        // 新しいグループの形式と画像数
         IcoHeader groupHeader{};
         groupHeader.type = 1;
         groupHeader.count =
             static_cast<std::uint16_t>(entries.size());
         Append(group, &groupHeader, sizeof(groupHeader));
+        // 列挙または出力する画像の番号
         for (std::size_t index = 0;
             index < entries.size();
             ++index)
         {
+            // 画像の格納内容または位置情報
             const auto& entry = entries[index];
+            // 新しい画像の1始まりresource ID
             const WORD iconId =
                 static_cast<WORD>(index + 1);
             succeeded = succeeded
@@ -601,6 +692,7 @@ namespace LamaPon
                     entry.bytesInResource)
                     != FALSE;
 
+            // 新しいグループ内の画像の参照
             GroupIconDirEntry groupEntry{};
             groupEntry.width = entry.width;
             groupEntry.height = entry.height;
@@ -622,6 +714,7 @@ namespace LamaPon
                 static_cast<DWORD>(group.size()))
                 != FALSE;
 
+        // 新画像またはグループの書込失敗なら更新をcommitせず破棄する。
         if (!succeeded)
         {
             EndUpdateResourceW(update, TRUE);

@@ -1,18 +1,9 @@
-# ビルドのたびに実行し、表示用のブランチ名とコミットを最新に保ちます。
-#
-#   cmake -DSOURCE_DIR=<src> -DBINARY_DIR=<build>
-#         -DPROJECT_VERSION=<x.y.z> -DCMAKE_GENERATOR=<...>
-#         -DCMAKE_CXX_COMPILER_ID=<...>
-#         -DCMAKE_CXX_COMPILER_VERSION=<...>
-#         -DCMAKE_SYSTEM_PROCESSOR=<...>
-#         -P cmake/GenerateBuildInfo.cmake
-#
-# 構成時にだけGitを読むと、再構成しない限りコミットを重ねても古い
-# 値が表示され続けます。出力は内容が変わったときだけ書き換えるため、
-# 変更が無いビルドではBuildInfoData.cppも再コンパイルされません。
+# 毎回Git情報を確認し、同じ内容の生成ファイルは書き換えません。
 cmake_minimum_required(VERSION 3.25)
 
+# required: 検証対象の必須CMake input名。
 foreach(required IN ITEMS SOURCE_DIR BINARY_DIR PROJECT_VERSION)
+    # 入力が指定されていない場合は構成を中止します。
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "GenerateBuildInfo.cmake requires -D${required}=...")
     endif()

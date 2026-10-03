@@ -25,11 +25,14 @@
 
 namespace
 {
+    // ASCIIの英大文字だけ小文字へ変換する(value: 変換する文字列)。
     [[nodiscard]] std::string FoldAsciiLower(
         const std::string_view value)
     {
+        // ASCII英字を小文字にした結果
         std::string folded;
         folded.reserve(value.size());
+        // 変換するASCII文字
         for (const char character : value)
         {
             if (character >= 'A' && character <= 'Z')
@@ -45,6 +48,7 @@ namespace
         return folded;
     }
 
+    // Manifestに記載する役割名を返す(role: 描画の役割)。
     [[nodiscard]] const char* ManifestRoleName(
         const LamaPon::ShaderPassRole role) noexcept
     {
@@ -66,13 +70,16 @@ namespace
         return "unknown";
     }
 
+    // Manifestの描画状態を検証して変換し、不正値なら例外を送出する(description: 合成・カリング・深度の宣言)。
     [[nodiscard]] LamaPon::ShaderRenderState
         ConvertManifestRenderState(
             const LamaPon::RenderStateDesc& description)
     {
+        // 変換する描画状態
         LamaPon::ShaderRenderState state;
         state.declared = true;
 
+        // 小文字に揃えた合成方式
         const auto blend = FoldAsciiLower(description.blend);
         if (blend == "opaque")
         {
@@ -97,6 +104,7 @@ namespace
                 "Premultiplied (received '" + description.blend + "').");
         }
 
+        // 小文字に揃えたカリング方式
         const auto cull = FoldAsciiLower(description.cull);
         if (cull == "back")
         {
@@ -117,6 +125,7 @@ namespace
                 "(received '" + description.cull + "').");
         }
 
+        // 小文字に揃えた深度比較
         const auto zTest = FoldAsciiLower(description.zTest);
         if (zTest == "lessequal")
         {
@@ -143,6 +152,7 @@ namespace
         return state;
     }
 
+    // 失敗したHRESULTを処理名付きの例外に変換する(result: 処理結果, operation: 処理名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -157,6 +167,7 @@ namespace
         }
     }
 
+    // キャッシュを利用してコンパイルし、失敗なら例外を送出する(assets: 読み込み元, path: HLSLのパス, entryPoint: エントリー名, target: シェーダーモデル, keywords: define指定)。
     Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
@@ -164,7 +175,7 @@ namespace
         const char* target,
         const std::vector<std::string>& keywords)
     {
-        // ShaderCompilerを通してコンパイル結果をディスクへキャッシュします。
+
         return LamaPon::CompileShaderCached(
             assets,
             path,
@@ -173,6 +184,7 @@ namespace
             keywords);
     }
 
+    // 任意のエントリーをコンパイルし、失敗なら空を返す(assets: 読み込み元, path: HLSLのパス, entryPoint: エントリー名, target: シェーダーモデル, keywords: define指定)。
     Microsoft::WRL::ComPtr<ID3DBlob> TryCompileShader(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
@@ -195,17 +207,20 @@ namespace
         }
     }
 
+    // 16バイト境界に合う型Tの定数バッファを生成する(device: 非空のD3D11機器)。
     template<typename T>
     Microsoft::WRL::ComPtr<ID3D11Buffer> CreateConstantBuffer(
         ID3D11Device* device)
     {
         static_assert(sizeof(T) % 16 == 0);
 
+        // 定数バッファの生成設定
         D3D11_BUFFER_DESC description{};
         description.ByteWidth = static_cast<UINT>(sizeof(T));
         description.Usage = D3D11_USAGE_DEFAULT;
         description.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 
+        // 生成した定数バッファ
         Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
         ThrowIfFailed(
             device->CreateBuffer(
@@ -235,10 +250,13 @@ namespace LamaPon
                 "LitEffect requires a Direct3D device and context.");
         }
 
+        // Manifestによる材質指定か
         const bool manifestShader = IsShaderManifestPath(shaderPath);
         if (manifestShader)
         {
+            // 読み込んだ材質Manifest
             ShaderAssetDesc shaderAsset;
+            // Manifest読み込みの詳細
             std::string manifestError;
             if (!LoadShaderAssetDesc(
                     assets,
@@ -256,9 +274,11 @@ namespace LamaPon
                     "is not 'material'.");
             }
 
+            // モデルの種類に合う通常役割
             const auto primaryRole = skinned
                 ? ShaderPassRole::Skinned
                 : ShaderPassRole::Forward;
+            // 通常描画の役割があるか調べる(pass: Manifestのパス宣言)。
             const auto hasPrimaryRole = std::ranges::any_of(
                 shaderAsset.passes,
                 [primaryRole](const ShaderPassDesc& pass)
@@ -277,8 +297,10 @@ namespace LamaPon
             }
 
             m_manifestEffect = true;
+            // 生成するManifestのパス
             for (const auto& pass : shaderAsset.passes)
             {
+                // モデルの種類で使うパスか
                 const bool relevant = skinned
                     ? pass.role == ShaderPassRole::Skinned
                         || pass.role
@@ -293,12 +315,14 @@ namespace LamaPon
                     continue;
                 }
 
+                // 検証済みのパス描画状態
                 ShaderRenderState renderState;
                 try
                 {
                     renderState = ConvertManifestRenderState(
                         pass.renderState);
                 }
+                // 不正な状態宣言の詳細
                 catch (const std::exception& exception)
                 {
                     throw std::invalid_argument(
@@ -312,7 +336,9 @@ namespace LamaPon
                         + exception.what());
                 }
 
+                // 生成するパスのシェーダー
                 ShaderProgram program;
+                // コンパイル失敗の詳細
                 std::string compileError;
                 if (!program.Compile(
                         device,
@@ -342,12 +368,10 @@ namespace LamaPon
         }
         else
         {
-            // 実行時にも必要なため、Shaderが宣言した描画状態をLitEffectで解釈します。
-            // sourceを除いた配布archiveでは、export時に保存したmetadata
-            // から同じ描画状態を復元します。loose assetの欠落は従来どおり
-            // ReadFileBytesで明示的に失敗します。
+            // HLSLの描画状態を読み取り、ソースを含まない配布では保存済みメタデータを使う。
             if (!assets.IsArchived() || assets.FileExists(shaderPath))
             {
+                // 描画状態を読むHLSLデータ
                 const auto sourceBytes =
                     assets.ReadFileBytesFresh(shaderPath);
                 m_renderState = ParseShaderRenderState(
@@ -359,9 +383,7 @@ namespace LamaPon
             }
             else
             {
-                // 新しいexport cacheならsource解析済みmetadataから
-                // 宣言を復元します。旧cacheにmetadataが無い場合だけ
-                // 後方互換の既定状態を使います。
+                // メタデータがない旧キャッシュでは既定の描画状態を使う。
                 static_cast<void>(LoadPrecompiledShaderMetadata(
                     assets,
                     shaderPath,
@@ -375,6 +397,7 @@ namespace LamaPon
                 skinned ? "VSSkinnedMain" : "VSMain",
                 "vs_5_0",
                 keywords);
+            // 通常PSのバイトコード
             const auto pixelShaderByteCode = CompileShader(
                 assets,
                 shaderPath,
@@ -400,7 +423,7 @@ namespace LamaPon
 
         if (!manifestShader && !skinned)
         {
-            // インスタンス描画用VS（定義があるシェーダーのみ）。
+
             m_instancedVertexShaderByteCode =
                 TryCompileShader(
                     assets,
@@ -423,8 +446,10 @@ namespace LamaPon
             }
         }
 
+        // ハルシェーダーのバイトコード
         Microsoft::WRL::ComPtr<ID3DBlob>
             hullShaderByteCode;
+        // ドメイン処理のバイトコード
         Microsoft::WRL::ComPtr<ID3DBlob>
             domainShaderByteCode;
         if (!manifestShader)
@@ -442,15 +467,10 @@ namespace LamaPon
                 "ds_5_0",
                 keywords);
         }
-        // ジオメトリシェーダー（定義があるシェーダーのみ）。
-        //
-        // 入力プリミティブを必ず確かめます。エンジンが流すのは
-        // 三角形（通常の描画も、テセレーションのドメイン出力も）だけ
-        // なので、point/line を宣言したGSを束ねるとD3D11では不正な
-        // 描画になります。WARPではプロセス終了につながるため、
-        // ドライバーへ渡す前に拒否します。
+        // GSへの入力は三角形のみとし、点・線入力による不正描画を生成時に拒否する。
         if (!manifestShader)
         {
+            // GSのバイトコード
             if (const auto geometryShaderByteCode =
                     TryCompileShader(
                         assets,
@@ -459,8 +479,10 @@ namespace LamaPon
                         "gs_5_0",
                         keywords))
             {
+                // GS入力を確認するリフレクション
                 Microsoft::WRL::ComPtr<ID3D11ShaderReflection>
                     reflection;
+                // GSの入力プリミティブ情報
                 D3D11_SHADER_DESC shaderDescription{};
                 if (SUCCEEDED(D3DReflect(
                         geometryShaderByteCode->GetBufferPointer(),
@@ -509,10 +531,12 @@ namespace LamaPon
 
         if (!manifestShader)
         {
+            // 輪郭VSのエントリー名
             const char* outlineVertexEntry =
                 skinned
                     ? "VSSkinnedOutline"
                     : "VSOutline";
+            // 輪郭VSのバイトコード
             const auto outlineVertexByteCode =
                 TryCompileShader(
                     assets,
@@ -520,6 +544,7 @@ namespace LamaPon
                     outlineVertexEntry,
                     "vs_5_0",
             keywords);
+            // 輪郭PSのバイトコード
             const auto outlinePixelByteCode =
                 TryCompileShader(
                     assets,
@@ -547,6 +572,7 @@ namespace LamaPon
                     "ID3D11Device::CreatePixelShader(outline)");
             }
         }
+        // 遮蔽PSのバイトコード
         Microsoft::WRL::ComPtr<ID3DBlob>
             occludedPixelByteCode;
         if (!manifestShader)
@@ -559,8 +585,7 @@ namespace LamaPon
                 keywords);
             if (skinned && !occludedPixelByteCode)
             {
-                // 既存のMaterial ShaderはPSOccludedだけを持つため、
-                // 専用入口が無い場合は従来の入口を使います。
+                // スキニング専用の遮蔽入口がなければ、互換用のPSOccludedを使う。
                 occludedPixelByteCode = TryCompileShader(
                     assets,
                     shaderPath,
@@ -585,6 +610,7 @@ namespace LamaPon
             || (m_manifestEffect
                 && PassCount(ShaderPassRole::Occluded) != 0))
         {
+            // 遮蔽用のGreater深度設定
             D3D11_DEPTH_STENCIL_DESC depthDescription{};
             depthDescription.DepthEnable = TRUE;
             depthDescription.DepthWriteMask =
@@ -609,6 +635,7 @@ namespace LamaPon
         {
             m_boneBuffer =
                 CreateConstantBuffer<BoneConstants>(device);
+            // ボーンの初期単位行列
             DirectX::XMFLOAT3X4 identity{};
             DirectX::XMStoreFloat3x4(
                 &identity,
@@ -616,7 +643,9 @@ namespace LamaPon
             m_boneConstants.transforms.fill(identity);
         }
 
+        // 平坦法線のRGBA8値
         constexpr std::uint32_t flatNormalPixel = 0xffff8080u;
+        // 代替用の1画素画像設定
         D3D11_TEXTURE2D_DESC textureDescription{};
         textureDescription.Width = 1;
         textureDescription.Height = 1;
@@ -629,10 +658,12 @@ namespace LamaPon
         textureDescription.BindFlags =
             D3D11_BIND_SHADER_RESOURCE;
 
+        // 平坦法線の初期画像データ
         D3D11_SUBRESOURCE_DATA textureData{};
         textureData.pSysMem = &flatNormalPixel;
         textureData.SysMemPitch = sizeof(flatNormalPixel);
 
+        // 保持する平坦法線画像
         Microsoft::WRL::ComPtr<ID3D11Texture2D> flatNormal;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -647,11 +678,14 @@ namespace LamaPon
                 m_flatNormalTexture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(flat normal)");
 
-        // カスタムShaderの未設定テクスチャ枠へ渡す1x1の白。
+
+        // 白のRGBA8値
         constexpr std::uint32_t whitePixel = 0xFFFFFFFFu;
+        // 白1画素の初期画像データ
         D3D11_SUBRESOURCE_DATA whiteData{};
         whiteData.pSysMem = &whitePixel;
         whiteData.SysMemPitch = sizeof(whitePixel);
+        // 保持する白1画素画像
         Microsoft::WRL::ComPtr<ID3D11Texture2D> white;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -666,6 +700,7 @@ namespace LamaPon
                 m_whiteTexture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(white)");
 
+        // 材質用のサンプラー設定
         D3D11_SAMPLER_DESC samplerDescription{};
         samplerDescription.Filter =
             D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -694,6 +729,7 @@ namespace LamaPon
                 m_pointSampler.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateSamplerState(point)");
 
+        // 影用の比較サンプラー設定
         D3D11_SAMPLER_DESC shadowSamplerDescription{};
         shadowSamplerDescription.Filter =
             D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
@@ -730,13 +766,16 @@ namespace LamaPon
             &m_objectConstants.viewProjection,
             view * projection);
 
+        // 逆行列計算時の行列式
         XMVECTOR determinant{};
+        // 法線変換用のワールド逆転置
         const XMMATRIX worldInverseTranspose =
             XMMatrixTranspose(XMMatrixInverse(&determinant, world));
         XMStoreFloat4x4(
             &m_objectConstants.worldInverseTranspose,
             worldInverseTranspose);
 
+        // カメラ位置を求める逆ビュー
         const XMMATRIX inverseView =
             XMMatrixInverse(&determinant, view);
         XMStoreFloat4(
@@ -747,14 +786,8 @@ namespace LamaPon
             XMVector3Normalize(
                 XMVectorNegate(inverseView.r[2])));
 
-        // カスタムシェーダーが揺れや流れを計算できるよう、
-        // 経過時間をフレーム単位の定数として渡します。
-        //
-        // 秒は1時間で巻き戻します。floatの仮数は24ビットしかなく、
-        // 起動から数時間そのまま渡すと下位が丸められて、波のような
-        // 高い周波数の動きがカクつき始めるためです。巻き戻す周期を
-        // 整数秒にしておくと、sin/cosを直接使う表現でも段差が
-        // 出にくくなります。
+        // 長時間起動時のfloat精度を保つため、経過秒数は1時間周期で巻き戻す。
+        // 経過秒数を巻き戻す周期
         constexpr double TimeWrapSeconds = 3600.0;
         m_objectConstants.timeParameters = {
             static_cast<float>(
@@ -773,7 +806,7 @@ namespace LamaPon
     {
         m_objectConstants.materialColor =
             material.BaseColor();
-        // zはApply直前に、バインド済み法線テクスチャの有無で上書きします。
+        // 法線の有効値はApply直前に実際の画像参照から確定する。
         m_objectConstants.materialParameters = {
             material.Roughness(),
             material.NormalStrength(),
@@ -791,9 +824,7 @@ namespace LamaPon
         ID3D11ShaderResourceView* normalTexture,
         const PbrTextures& pbrTextures) noexcept
     {
-        // アルベド未設定は白へ落とします。nullのSRVをバインドすると
-        // サンプル結果が0になり、モデルが真っ黒になります
-        // （baseColorTextureを持たないglTFにも適用します）。
+        // 色画像がない材質を黒にしないよう、未指定は白画像を使う。
         m_albedoTexture = albedoTexture != nullptr
             ? albedoTexture
             : m_whiteTexture.Get();
@@ -868,11 +899,14 @@ namespace LamaPon
                     MaximumShadowCascades))
         };
 
+        // 設定するライトまたはボーン番号
         for (std::size_t index = 0;
             index < m_lightingConstants.lightCounts[0];
             ++index)
         {
+            // 設定元のライト情報
             const auto& source = lighting.directionalLights[index];
+            // GPUへ渡すライト定数
             auto& destination =
                 m_lightingConstants.directionalLights[index];
             destination.directionIntensity = {
@@ -881,7 +915,7 @@ namespace LamaPon
                 source.direction.z,
                 source.intensity
             };
-            // cbufferのレイアウトを維持するため、color.wへ太陽の角半径を格納します。
+            // 定数バッファの配置を保ち、色のwへ太陽の角半径を格納する。
             destination.color = {
                 source.color.x,
                 source.color.y,
@@ -890,11 +924,14 @@ namespace LamaPon
             };
         }
 
+        // 設定するライトまたはボーン番号
         for (std::size_t index = 0;
             index < m_lightingConstants.lightCounts[1];
             ++index)
         {
+            // 設定元のライト情報
             const auto& source = lighting.pointLights[index];
+            // GPUへ渡すライト定数
             auto& destination =
                 m_lightingConstants.pointLights[index];
             destination.positionRange = {
@@ -911,11 +948,14 @@ namespace LamaPon
             };
         }
 
+        // 設定するライトまたはボーン番号
         for (std::size_t index = 0;
             index < m_lightingConstants.lightCounts[2];
             ++index)
         {
+            // 設定元のライト情報
             const auto& source = lighting.spotLights[index];
+            // GPUへ渡すライト定数
             auto& destination =
                 m_lightingConstants.spotLights[index];
             destination.positionRange = {
@@ -944,7 +984,9 @@ namespace LamaPon
             };
         }
 
+        // 平行光の影設定
         const auto& shadow = lighting.directionalShadow;
+        // 平行光の影を適用できるか
         const bool directionalShadowActive =
             shadow.enabled
             && views.directionalShadow != nullptr
@@ -975,12 +1017,15 @@ namespace LamaPon
             ? views.directionalShadow
             : nullptr;
 
-        // スポットライトの影スロットを対応するライトへ紐付けます。
+
+        // 有効なスポット影があるか
         bool spotShadowActive{};
+        // スポット影の配列番号
         for (std::size_t slot = 0;
             slot < MaximumSpotShadows;
             ++slot)
         {
+            // 今回のスポット影設定
             const auto& spotShadow =
                 lighting.spotShadows[slot];
             if (views.spotShadow == nullptr
@@ -1012,7 +1057,9 @@ namespace LamaPon
         m_spotShadowTexture =
             spotShadowActive ? views.spotShadow : nullptr;
 
+        // 点光源の影設定
         const auto& pointShadow = lighting.pointShadow;
+        // 点光源の影を適用できるか
         const bool pointShadowActive =
             pointShadow.enabled
             && views.pointShadow != nullptr
@@ -1033,8 +1080,7 @@ namespace LamaPon
             ? views.pointShadow
             : nullptr;
 
-        // PCF用のテクセルサイズ
-        // （x=カスケード, y=スポット, z=ポイント）。
+
         m_lightingConstants.shadowTexelSizes = {
             1.0f / std::max(
                 lighting.directionalShadowResolution,
@@ -1048,10 +1094,11 @@ namespace LamaPon
             0.0f
         };
 
-        // 画面空間AO。テクスチャが無ければ無効にして、シェーダー側の
-        // 掛け算を1.0に固定します。
+        // AO画像がなければ有効値を外して遮蔽を掛けない。
+        // 画面空間AOの設定
         const auto& screenOcclusion =
             lighting.screenAmbientOcclusion;
+        // AO画像を利用できるか
         const bool screenOcclusionActive =
             screenOcclusion.enabled
             && views.screenAmbientOcclusion != nullptr;
@@ -1067,10 +1114,11 @@ namespace LamaPon
                 ? views.screenAmbientOcclusion
                 : nullptr;
 
-        // SSR（画面空間反射）。前フレームのカラーと深度が揃って
-        // いなければ無効にします（最初のフレームは履歴が無い）。
+        // SSRは色履歴と深度画像が両方ある場合だけ有効にする。
+        // 画面空間反射の設定
         const auto& screenReflection =
             lighting.screenSpaceReflection;
+        // 反射の色と深度が揃うか
         const bool screenReflectionActive =
             screenReflection.enabled
             && views.screenSpaceReflection[0] != nullptr
@@ -1091,13 +1139,13 @@ namespace LamaPon
             screenReflection.projectionZ,
             screenReflection.projectionW
         };
+
         m_lightingConstants.screenReflectionQuality = {
             std::max(screenReflection.thickness, 0.001f),
             std::clamp(
                 screenReflection.roughnessCutoff,
                 0.0f,
                 1.0f),
-            // z=Hi-Z深度ピラミッドの最終ミップ番号。
             static_cast<float>(
                 screenReflection.depthPyramidMaximumMip),
             0.0f
@@ -1114,9 +1162,10 @@ namespace LamaPon
                 ? views.screenSpaceReflection[1]
                 : nullptr;
 
-        // クラスタライトカリング（Forward+）。SRVが揃っていなければ
-        // 無効にして従来の16灯経路へ落とします。
+        // クラスタ用の画像3本がなければ、通常のライト配列を使う。
+        // クラスタ照明の設定
         const auto& clustered = lighting.clustered;
+        // クラスタ画像3本が揃うか
         const bool clusteredActive =
             clustered.enabled
             && views.clustered[0] != nullptr
@@ -1159,12 +1208,14 @@ namespace LamaPon
             ? views.clustered[2]
             : nullptr;
 
+        // 共通の環境照明設定
         const auto& environment = lighting.environment;
+        // 環境の原画像を利用できるか
         const bool environmentActive =
             environment.enabled
             && views.environment[0] != nullptr;
-        // 事前フィルタ済みがあればそれを使い、z へ最終ミップ番号を
-        // 載せます（0なら旧来のソース直接サンプリング）。
+        // 鏡面・拡散の事前畳み込み画像が両方なければ、元の環境画像を直接読む。
+        // 鏡面と拡散の画像が揃うか
         const bool prefilteredActive =
             environmentActive
             && views.environment[1] != nullptr
@@ -1187,10 +1238,10 @@ namespace LamaPon
         m_irradianceTexture = prefilteredActive
             ? views.environment[2]
             : nullptr;
-        // ベイクした間接光（照度ボリューム）。3枚のSH係数
-        // テクスチャが揃っていなければ無効にして、シェーダーは
-        // SH係数が不足している場合はフラットな環境光を使います。
+        // 間接光のRGB別SH係数が揃わない場合は、通常の環境光を使う。
+        // 事前計算した間接光の設定
         const auto& bakedGi = lighting.bakedGlobalIllumination;
+        // 間接光のRGB画像が揃うか
         const bool bakedGiActive =
             bakedGi.enabled
             && views.bakedGlobalIllumination[0] != nullptr
@@ -1224,9 +1275,7 @@ namespace LamaPon
             ? views.bakedGlobalIllumination[2]
             : nullptr;
 
-        // プローブの2個目は前のオブジェクトの分が残らないよう
-        // 毎回外します（m_lightingConstantsは先頭で丸ごと0に
-        // していますが、テクスチャは別に持っているためです）。
+        // 前の物体の副プローブを引き継がないよう、画像参照も毎回解除する。
         m_secondaryEnvironmentTexture = nullptr;
         m_secondaryIrradianceTexture = nullptr;
     }
@@ -1241,9 +1290,7 @@ namespace LamaPon
         const ReflectionProbeEnvironment& probe,
         const D3D11ReflectionProbeViews& views) noexcept
     {
-        // リフレクションプローブによる、オブジェクト単位のIBL
-        // 差し替えです。SetLightingがシーン共通の環境を設定した後、
-        // SetLighting後、描画直前にプローブ設定を適用します。
+        // 共通の照明を設定した後、描画直前に物体用プローブを適用する。
         if (views.specular == nullptr
             || views.irradiance == nullptr)
         {
@@ -1258,11 +1305,12 @@ namespace LamaPon
         m_environmentTexture = views.specular;
         m_irradianceTexture = views.irradiance;
 
-        // ボックス射影。3軸すべてが正のときだけ有効にします
-        // （0を含むと箱の内側が定義できず、除算で破綻します）。
+
+        // 各軸の半径が正のときだけ箱射影を有効にする(extents: 箱のxyz半径)。
         const auto boxParameters =
             [](const DirectX::XMFLOAT3& extents)
             {
+                // 箱の3軸の半径が正か
                 const bool active =
                     extents.x > 0.0f
                     && extents.y > 0.0f
@@ -1283,8 +1331,7 @@ namespace LamaPon
         m_lightingConstants.reflectionBoxParameters =
             boxParameters(probe.boxExtents);
 
-        // 2個目のプローブ。混ぜないときは比率0にしておけば、
-        // Shader側は1個目だけを読みます（テクスチャも外します）。
+        // 副プローブの画像が不足するか比率がゼロなら、参照と混合定数を解除する。
         if (views.secondarySpecular == nullptr
             || views.secondaryIrradiance == nullptr
             || !(probe.secondaryWeight > 0.0f))
@@ -1329,8 +1376,11 @@ namespace LamaPon
         {
             return;
         }
+        // 上限72本以内のボーン数
         const auto safeCount = std::min(count, MaximumBones);
+        // 設定するライトまたはボーン番号
         for (std::size_t index = 0;
+            // 上限72本以内のボーン数
             index < safeCount;
             ++index)
         {
@@ -1368,6 +1418,7 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // 役割に属するManifestパス列
         const auto& passes = m_manifestPasses[RoleIndex(role)];
         return index < passes.size() ? &passes[index] : nullptr;
     }
@@ -1390,12 +1441,14 @@ namespace LamaPon
 
         if (primaryOnly)
         {
+            // 通常パスの先頭シェーダー
             const auto* const primary = ManifestPassAt(
                 PrimaryRole(),
                 0);
             return primary != nullptr ? &primary->program : nullptr;
         }
 
+        // 参照する描画の役割
         ShaderPassRole role = PrimaryRole();
         if (m_manifestRoleOverride)
         {
@@ -1405,6 +1458,7 @@ namespace LamaPon
         {
             role = ShaderPassRole::Instanced;
         }
+        // 役割内で選択したパス
         const auto* const selected = SelectedManifestPass(role);
         return selected != nullptr ? &selected->program : nullptr;
     }
@@ -1450,6 +1504,7 @@ namespace LamaPon
         const ShaderPassRole role,
         const std::size_t index)
     {
+        // 役割内の選択可能なパス数
         const auto count = PassCount(role);
         if (index >= count)
         {
@@ -1469,6 +1524,7 @@ namespace LamaPon
     const ShaderRenderState& LitEffect::SelectedPassRenderState(
         const ShaderPassRole role) const
     {
+        // 参照するManifestパス
         if (const auto* const pass = SelectedManifestPass(role))
         {
             return pass->renderState;
@@ -1485,8 +1541,10 @@ namespace LamaPon
     ID3DBlob* LitEffect::SelectedPassVertexShaderByteCode(
         const ShaderPassRole role) const noexcept
     {
+        // 参照するManifestパス
         if (const auto* const pass = SelectedManifestPass(role))
         {
+            // 借用する頂点バイトコード
             if (auto* const byteCode =
                     pass->program.VertexShaderByteCode())
             {
@@ -1494,6 +1552,7 @@ namespace LamaPon
             }
             if (role == ShaderPassRole::Occluded)
             {
+                // 通常パスの先頭シェーダー
                 const auto* const primary = ManifestPassAt(
                     PrimaryRole(),
                     0);
@@ -1519,6 +1578,7 @@ namespace LamaPon
     {
         if (m_manifestEffect)
         {
+            // 参照するManifestパス
             const auto* pass = SelectedManifestPass(role);
             if (role == ShaderPassRole::Occluded)
             {
@@ -1542,6 +1602,7 @@ namespace LamaPon
     {
         if (m_manifestEffect)
         {
+            // 参照するManifestパス
             const auto* pass = SelectedManifestPass(role);
             if (role == ShaderPassRole::Occluded)
             {
@@ -1574,6 +1635,7 @@ namespace LamaPon
     {
         if (m_manifestEffect)
         {
+            // 参照するManifestパス
             if (const auto* const pass = ManifestPassAt(
                     PrimaryRole(),
                     index))
@@ -1596,6 +1658,7 @@ namespace LamaPon
     {
         if (m_manifestEffect)
         {
+            // 参照するManifestパス
             const auto* const pass = ManifestPassAt(
                 PrimaryRole(),
                 index);
@@ -1610,9 +1673,11 @@ namespace LamaPon
     {
         if (m_manifestEffect)
         {
+            // 参照する描画の役割
             const auto role = m_instancingEnabled
                 ? ShaderPassRole::Instanced
                 : PrimaryRole();
+            // 参照するManifestパス
             if (const auto* const pass = SelectedManifestPass(role))
             {
                 return pass->renderState;
@@ -1623,6 +1688,7 @@ namespace LamaPon
 
     bool LitEffect::HasTessellation() const noexcept
     {
+        // 現在のManifestシェーダー
         if (const auto* const program = ActiveManifestProgram(m_depthOnly))
         {
             return program->HullShader() != nullptr
@@ -1633,6 +1699,7 @@ namespace LamaPon
 
     bool LitEffect::HasGeometryShader() const noexcept
     {
+        // 現在のManifestシェーダー
         if (const auto* const program = ActiveManifestProgram(m_depthOnly))
         {
             return program->GeometryShader() != nullptr;
@@ -1663,28 +1730,36 @@ namespace LamaPon
 
     void LitEffect::Apply(ID3D11DeviceContext* deviceContext)
     {
+        // 今回使う描画コンテキスト
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
+        // 今回使うManifestプログラム
         const auto* const manifestProgram =
             ActiveManifestProgram(m_depthOnly);
+        // 今回使う頂点シェーダー
         auto* const activeVertexShader = manifestProgram != nullptr
             ? manifestProgram->VertexShader()
             : m_instancingEnabled
                 ? m_instancedVertexShader.Get()
                 : m_vertexShader.Get();
+        // 今回使うピクセルシェーダー
         auto* const activePixelShader = manifestProgram != nullptr
             ? manifestProgram->PixelShader()
             : m_pixelShader.Get();
+        // 今回使うハルシェーダー
         auto* const activeHullShader = manifestProgram != nullptr
             ? manifestProgram->HullShader()
             : m_hullShader.Get();
+        // 今回使うドメインシェーダー
         auto* const activeDomainShader = manifestProgram != nullptr
             ? manifestProgram->DomainShader()
             : m_domainShader.Get();
+        // 今回使うジオメトリシェーダー
         auto* const activeGeometryShader = manifestProgram != nullptr
             ? manifestProgram->GeometryShader()
             : m_geometryShader.Get();
+        // パッチ用処理を設定するか
         const bool bindTessellation = m_tessellationDraw
             && activeHullShader != nullptr
             && activeDomainShader != nullptr;
@@ -1696,8 +1771,7 @@ namespace LamaPon
             &m_objectConstants,
             0,
             0);
-        // 深度専用（シャドウ）パスはピクセルシェーダーを外し、
-        // ライティング関連の更新とバインドを省略します。
+        // 深度専用パスではPSと照明を省き、頂点の変形に必要な定数だけ設定する。
         if (m_depthOnly)
         {
             if (m_skinned && m_boneBuffer)
@@ -1709,6 +1783,7 @@ namespace LamaPon
                     &m_boneConstants,
                     0,
                     0);
+                // 頂点処理用の定数参照
                 ID3D11Buffer* vertexBuffers[]{
                     m_objectBuffer.Get(),
                     nullptr,
@@ -1722,6 +1797,7 @@ namespace LamaPon
             }
             else
             {
+                // 頂点処理用の定数参照
                 ID3D11Buffer* vertexBuffers[]{
                     m_objectBuffer.Get()
                 };
@@ -1734,15 +1810,7 @@ namespace LamaPon
                 activeVertexShader,
                 nullptr,
                 0);
-            // 深度だけのパスでも、パッチで描くなら束ねます。外すと
-            // 位置を出す段（ドメイン）が無くなるので、影の形が
-            // 分割前の板にならず、描画自体が失敗します。
-            // 描く側が明示したときだけ束ねるのは通常のApplyと同じで、
-            // 「持っているか」ではなく「今それで描くか」で決めます。
-            // b3（自作Shaderのベクトル枠）は深度パスでは更新して
-            // いなかったので、頂点より後ろの段を使うときだけ揃えます。
-            // 揃えないと前の描画の値で形が決まり、影だけ形が違う
-            // という追いにくい絵になります。
+            // 影も本体と同じ形にするため、パッチ描画やGSを使う深度パスには変形用の追加定数も設定する。
             if (bindTessellation || activeGeometryShader != nullptr)
             {
                 context->UpdateSubresource(
@@ -1755,6 +1823,7 @@ namespace LamaPon
             }
             if (bindTessellation)
             {
+                // 変形処理用の物体定数参照
                 ID3D11Buffer* tessellationBuffers[]{
                     m_objectBuffer.Get()
                 };
@@ -1766,6 +1835,7 @@ namespace LamaPon
                     0,
                     1,
                     tessellationBuffers);
+                // b3の追加ベクトル定数参照
                 ID3D11Buffer* customVectorBuffer[]{
                     m_customVectorBuffer.Get()
                 };
@@ -1786,10 +1856,10 @@ namespace LamaPon
                 bindTessellation ? activeDomainShader : nullptr,
                 nullptr,
                 0);
-            // 深度パスでもジオメトリシェーダーは束ねます。外すと
-            // 影だけGSの前の形になり、本体と影がずれます。
+            // 影も本体と同じ変形になるよう、深度パスのGSを設定する。
             if (activeGeometryShader != nullptr)
             {
+                // GS用の物体定数参照
                 ID3D11Buffer* geometryBuffers[]{
                     m_objectBuffer.Get()
                 };
@@ -1797,6 +1867,7 @@ namespace LamaPon
                     0,
                     1,
                     geometryBuffers);
+                // b3の追加ベクトル定数参照
                 ID3D11Buffer* customVectorBuffer[]{
                     m_customVectorBuffer.Get()
                 };
@@ -1839,6 +1910,7 @@ namespace LamaPon
 
         if (m_skinned)
         {
+            // 頂点処理用の定数参照
             ID3D11Buffer* vertexBuffers[]{
                 m_objectBuffer.Get(),
                 nullptr,
@@ -1851,6 +1923,7 @@ namespace LamaPon
         }
         else
         {
+            // 頂点処理用の定数参照
             ID3D11Buffer* vertexBuffers[]{
                 m_objectBuffer.Get()
             };
@@ -1860,6 +1933,7 @@ namespace LamaPon
                 vertexBuffers);
         }
 
+        // ピクセル処理用の定数参照
         ID3D11Buffer* pixelBuffers[]{
             m_objectBuffer.Get(),
             m_lightingBuffer.Get()
@@ -1868,6 +1942,7 @@ namespace LamaPon
             0,
             2,
             pixelBuffers);
+        // b3の追加ベクトル定数参照
         ID3D11Buffer* customVectorBuffer[]{
             m_customVectorBuffer.Get()
         };
@@ -1887,6 +1962,7 @@ namespace LamaPon
             3,
             1,
             customVectorBuffer);
+        // 変形処理用の物体定数参照
         ID3D11Buffer* tessellationBuffers[]{
             m_objectBuffer.Get()
         };
@@ -1910,8 +1986,7 @@ namespace LamaPon
             activeVertexShader,
             nullptr,
             0);
-        // パッチで描くときだけ束ねます。三角形リストのままハル
-        // シェーダーが刺さっていると描画そのものが不正になります。
+        // 三角形リストにハル処理を設定しないよう、明示したパッチ描画の場合だけ使う。
         context->HSSetShader(
             bindTessellation ? activeHullShader : nullptr,
             nullptr,
@@ -1920,8 +1995,7 @@ namespace LamaPon
             bindTessellation ? activeDomainShader : nullptr,
             nullptr,
             0);
-        // 入力が三角形以外のGSはコンパイル時に拒否されるため、
-        // 有効なジオメトリシェーダーをそのまま設定します。
+
         context->GSSetShader(
             activeGeometryShader,
             nullptr,
@@ -1929,10 +2003,9 @@ namespace LamaPon
         context->PSSetShader(activePixelShader, nullptr, 0);
         BindMaterialAndShadowTextures(context);
         BindPbrTextures(context);
-        // クラスタライトカリング（t16〜t18）。無効時はnullptrのまま
-        // 渡します（シェーダーは有効フラグを見てから読むので、
-        // nullを読むことはありません）。
+
         {
+            // t16～t18のクラスタ参照
             ID3D11ShaderResourceView* clusterViews[]{
                 m_clusterLights,
                 m_clusterIndexList,
@@ -1944,11 +2017,9 @@ namespace LamaPon
                     std::size(clusterViews)),
                 clusterViews);
         }
-        // 2個目のリフレクションプローブ（t19/t20）。t7〜t10は下の
-        // カスタムテクスチャ枠なので、そこは使えません。混ぜない
-        // フレームはnullptrのままで、シェーダーは比率0を見て
-        // 読みに行きません。
+
         {
+            // t19・t20の副プローブ参照
             ID3D11ShaderResourceView* secondaryProbe[]{
                 m_secondaryEnvironmentTexture,
                 m_secondaryIrradianceTexture
@@ -1959,9 +2030,9 @@ namespace LamaPon
                     std::size(secondaryProbe)),
                 secondaryProbe);
         }
-        // SSR（t21=前フレームのカラー, t22=深度）。無効なフレームは
-        // nullptrのままで、シェーダーは有効フラグを見てから読みます。
+
         {
+            // t21・t22のSSR参照
             ID3D11ShaderResourceView* reflectionViews[]{
                 m_screenReflectionColorTexture,
                 m_screenReflectionDepthTexture
@@ -1972,9 +2043,9 @@ namespace LamaPon
                     std::size(reflectionViews)),
                 reflectionViews);
         }
-        // ベイクした間接光のSH係数（t23〜t25）。無効時はnullptrの
-        // ままで、シェーダーは有効フラグを見てから読みます。
+
         {
+            // t23～t25の間接光参照
             ID3D11ShaderResourceView* bakedGiViews[]{
                 m_bakedGiRedTexture,
                 m_bakedGiGreenTexture,
@@ -1986,12 +2057,13 @@ namespace LamaPon
                     std::size(bakedGiViews)),
                 bakedGiViews);
         }
-        // カスタムShader用の追加テクスチャ（t7以降）。未設定の枠は
-        // 白テクスチャにして、シェーダー側の分岐を不要にします。
+        // 未指定の追加画像は、シェーダーが分岐せず読めるよう白を使う。
+        // t7以降へ渡す追加画像の参照
         std::array<
             ID3D11ShaderResourceView*,
             LitMaterial::CustomTextureCount>
             customTextures{};
+        // 追加テクスチャの枠番号
         for (std::size_t index = 0;
             index < customTextures.size();
             ++index)
@@ -2006,6 +2078,7 @@ namespace LamaPon
                 LitMaterial::CustomTextureFirstSlot),
             static_cast<UINT>(customTextures.size()),
             customTextures.data());
+        // 今回使うサンプラーの参照
         ID3D11SamplerState* samplers[]{
             ActiveMaterialSampler(),
             m_shadowSampler.Get()
@@ -2020,13 +2093,17 @@ namespace LamaPon
         {
             return;
         }
+        // 今回使う描画コンテキスト
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
         if (m_manifestEffect)
         {
+            // 変更前の役割強制指定
             const bool previousOverride = m_manifestRoleOverride;
+            // 変更前の強制描画役割
             const auto previousRole = m_manifestOverrideRole;
+            // 変更前の深度専用指定
             const bool previousDepthOnly = m_depthOnly;
             m_manifestRoleOverride = true;
             m_manifestOverrideRole = OutlineRole();
@@ -2065,6 +2142,7 @@ namespace LamaPon
                 0);
         }
 
+        // 頂点処理用の定数参照
         ID3D11Buffer* vertexBuffers[]{
             m_objectBuffer.Get(),
             nullptr,
@@ -2077,6 +2155,7 @@ namespace LamaPon
                     std::size(vertexBuffers))
                 : 1u,
             vertexBuffers);
+        // ピクセル処理用の定数参照
         ID3D11Buffer* pixelBuffers[]{
             m_objectBuffer.Get()
         };
@@ -2087,17 +2166,18 @@ namespace LamaPon
             0);
         context->HSSetShader(nullptr, nullptr, 0);
         context->DSSetShader(nullptr, nullptr, 0);
-        // 輪郭用頂点シェーダーはGSMainの入力と一致する保証がないため、
-        // ジオメトリシェーダーを設定しません。
+        // 直書きHLSLの輪郭VSはGS入力との一致を保証しないため、GSを解除する。
         context->GSSetShader(nullptr, nullptr, 0);
         context->PSSetShader(
             m_outlinePixelShader.Get(),
             nullptr,
             0);
+        // ピクセル処理用の画像参照
         ID3D11ShaderResourceView* textures[]{
             m_albedoTexture
         };
         context->PSSetShaderResources(0, 1, textures);
+        // 今回使うサンプラーの参照
         ID3D11SamplerState* samplers[]{
             ActiveMaterialSampler()
         };
@@ -2111,21 +2191,27 @@ namespace LamaPon
         {
             return;
         }
+        // 今回使う描画コンテキスト
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
         if (m_manifestEffect)
         {
-            // Occludedはstatic/skinnedいずれの入力にも同じ定義を
-            // 使えるようpixel-onlyです。primary pipelineを適用後、
-            // 選択されたrole passのPSだけを差し替えます。
+            // 静的・スキニング共通の遮蔽PSを使うため、通常パスの先頭で頂点を処理してPSだけ切り替える。
+            // 通常パスの役割
             const auto primaryRole = PrimaryRole();
+            // 通常役割の配列番号
             const auto primaryRoleIndex = RoleIndex(primaryRole);
+            // 変更前の通常パス番号
             const auto previousPrimaryIndex =
                 m_selectedManifestPasses[primaryRoleIndex];
+            // 変更前のインスタンス指定
             const bool previousInstancing = m_instancingEnabled;
+            // 変更前の深度専用指定
             const bool previousDepthOnly = m_depthOnly;
+            // 変更前の役割強制指定
             const bool previousOverride = m_manifestRoleOverride;
+            // 変更前の強制描画役割
             const auto previousOverrideRole = m_manifestOverrideRole;
             m_selectedManifestPasses[primaryRoleIndex] = 0;
             m_instancingEnabled = false;
@@ -2151,6 +2237,7 @@ namespace LamaPon
             m_depthOnly = previousDepthOnly;
             m_manifestRoleOverride = previousOverride;
             m_manifestOverrideRole = previousOverrideRole;
+            // 選択した遮蔽パス
             const auto* const occluded = SelectedManifestPass(
                 ShaderPassRole::Occluded);
             context->PSSetShader(
@@ -2175,6 +2262,7 @@ namespace LamaPon
     void LitEffect::ApplyPixelOnly(
         ID3D11DeviceContext* deviceContext)
     {
+        // 今回使う描画コンテキスト
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
@@ -2194,6 +2282,7 @@ namespace LamaPon
             0,
             0);
 
+        // ピクセル処理用の定数参照
         ID3D11Buffer* pixelBuffers[]{
             m_objectBuffer.Get(),
             m_lightingBuffer.Get()
@@ -2202,12 +2291,11 @@ namespace LamaPon
             0,
             static_cast<UINT>(std::size(pixelBuffers)),
             pixelBuffers);
-        // この経路はDirectXTKの頂点シェーダーと組み合わせて使うので、
-        // programmable geometry stagesが期待する入力とは限りません。
-        // 前のdrawのHS/DS/GSも含め、すべて明示的に外します。
+        // DirectXTKの頂点出力を使う経路では、入力の一致を保証しないHS・DS・GSを解除する。
         context->HSSetShader(nullptr, nullptr, 0);
         context->DSSetShader(nullptr, nullptr, 0);
         context->GSSetShader(nullptr, nullptr, 0);
+        // 通常パスの先頭シェーダー
         const auto* const primary = SelectedManifestPass(
             PrimaryRole());
         context->PSSetShader(
@@ -2216,10 +2304,10 @@ namespace LamaPon
                 : m_pixelShader.Get(),
             nullptr,
             0);
-        // スキニング経路でもIBLとスポット／ポイント影を使えるよう、
-        // アルベドや法線を含むt0〜t6をすべてバインドします。
+
         BindMaterialAndShadowTextures(context);
         BindPbrTextures(context);
+        // 今回使うサンプラーの参照
         ID3D11SamplerState* samplers[]{
             ActiveMaterialSampler(),
             m_shadowSampler.Get()
@@ -2233,8 +2321,8 @@ namespace LamaPon
     void LitEffect::BindMaterialAndShadowTextures(
         ID3D11DeviceContext* context) const noexcept
     {
-        // SetTextures未呼び出し時もnullを設定しないよう、
-        // 白テクスチャとフラット法線へフォールバックします。
+
+        // ピクセル処理用の画像参照
         ID3D11ShaderResourceView* textures[]{
             m_albedoTexture != nullptr
                 ? m_albedoTexture
@@ -2257,7 +2345,11 @@ namespace LamaPon
     void LitEffect::BindPbrTextures(
         ID3D11DeviceContext* context) const noexcept
     {
+
+        // 未指定マップ用の白画像
         auto* const white = m_whiteTexture.Get();
+
+        // ピクセル処理用の画像参照
         ID3D11ShaderResourceView* textures[]{
             m_roughnessTexture != nullptr
                 ? m_roughnessTexture
@@ -2271,7 +2363,6 @@ namespace LamaPon
             m_emissiveTexture != nullptr
                 ? m_emissiveTexture
                 : white,
-            // t15＝画面空間AO。未設定なら白＝遮蔽なしになります。
             m_screenAmbientOcclusionTexture != nullptr
                 ? m_screenAmbientOcclusionTexture
                 : white
@@ -2284,6 +2375,7 @@ namespace LamaPon
 
     void LitEffect::ResolveTextureFlags() noexcept
     {
+        // 平坦法線以外の画像があるか
         const bool hasNormalMap =
             m_normalTexture != nullptr
             && m_normalTexture != m_flatNormalTexture.Get();
@@ -2320,9 +2412,11 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Shader bytecode output pointers cannot be null.");
         }
+        // 借用する頂点バイトコード
         ID3DBlob* byteCode = m_vertexShaderByteCode.Get();
         if (m_manifestEffect)
         {
+            // 現在のManifestシェーダー
             const auto* const program = ActiveManifestProgram(
                 m_depthOnly);
             byteCode = program != nullptr

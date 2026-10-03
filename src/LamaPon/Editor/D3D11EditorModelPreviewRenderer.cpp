@@ -27,10 +27,11 @@ namespace LamaPon
         const LitMaterial& material,
         const bool wireframe)
     {
-        // このrenderer自身はGPU resourceを所有しません。Drawの間だけ
-        // Device / Context世代を固定し、初期化前のfactory生成は妨げません。
+        // GPU資源を所有しないため構築時に初期化を要求せず、描画中だけdevice・contextの世代を固定する。
+        // 描画中だけ世代を固定する使用権
         const auto resourceLease =
             m_graphics.AcquireResourceLease();
+        // 初期化済みD3D11 contextの借用
         auto* const context =
             Detail::GraphicsDeviceD3D11Access::Context(m_graphics);
         if (context == nullptr)
@@ -60,9 +61,11 @@ namespace LamaPon
         }
         else if (model.model)
         {
+            // textureを無効にして材質色を適用する(effect: モデルのeffectの借用)。
             model.model->UpdateEffects(
                 [&material](DirectX::IEffect* effect)
                 {
+                    // 材質色を適用するBasicEffect
                     if (auto* const basic =
                             dynamic_cast<DirectX::BasicEffect*>(effect))
                     {

@@ -59,10 +59,13 @@ namespace LamaPon
             return;
         }
 
+        // X方向の入力値
         float horizontal =
             m_input->Value(m_horizontalAction);
+        // 負Z方向の入力値
         float vertical =
             m_input->Value(m_verticalAction);
+        // XY入力ベクトルの長さ
         const float magnitude = std::sqrt(
             horizontal * horizontal
             + vertical * vertical);

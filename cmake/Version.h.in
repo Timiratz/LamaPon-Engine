@@ -6,17 +6,18 @@
 namespace LamaPon
 {
     // 互換判定用のエンジンバージョンです。
-    //
-    // パッケージのminimumEngineVersion、プロジェクトのengineVersion、
-    // 更新確認（GitHub Releasesのタグ）との比較に使います。
-    // 画面やログに出す「どのエンジンか」はLamaPon/Core/BuildInfo.hの
-    // ブランチ名とコミットで示してください。
+    // パッケージのminimumEngineVersion、プロジェクトのengineVersion、更新確認（GitHub Releasesのタグ）との比較に使います。
+    // 画面やログに出す「どのエンジンか」はLamaPon/Core/BuildInfo.hのブランチ名とコミットで示してください。
+    // 互換性判定用のメジャー番号
     inline constexpr std::uint32_t VersionMajor =
         @PROJECT_VERSION_MAJOR@;
+    // 互換性判定用のマイナー番号
     inline constexpr std::uint32_t VersionMinor =
         @PROJECT_VERSION_MINOR@;
+    // 互換性判定用のパッチ番号
     inline constexpr std::uint32_t VersionPatch =
         @PROJECT_VERSION_PATCH@;
+    // 表示・保存用の完全な版番号
     inline constexpr std::string_view VersionString{
         "@PROJECT_VERSION@"
     };

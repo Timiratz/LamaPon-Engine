@@ -19,13 +19,13 @@
 
 namespace
 {
-    // Windows標準のtar.exe（bsdtar）でZipをフォルダーへ展開します。
-    // bsdtarは既定で「..」を含むパスの展開を拒否するため、
-    // アーカイブによるフォルダー外への書き込みを防げます。
+
+    // Windowsのtarを非表示で実行して展開し、終了コードの失敗を例外にします(zipPath: 展開するZIPパス, destination: 展開先ディレクトリ)。
     void ExtractZipWithSystemTar(
         const std::filesystem::path& zipPath,
         const std::filesystem::path& destination)
     {
+        // Windowsのシステムディレクトリ
         wchar_t systemDirectory[MAX_PATH]{};
         if (GetSystemDirectoryW(
                 systemDirectory,
@@ -34,6 +34,7 @@ namespace
             throw std::runtime_error(
                 "Could not locate the Windows system directory.");
         }
+        // システムのtar実行ファイル
         const auto tarPath =
             std::filesystem::path(systemDirectory)
             / L"tar.exe";
@@ -43,13 +44,16 @@ namespace
                 "tar.exe was not found (bundled with Windows 10 and later).");
         }
 
+        // tarへ渡すコマンドライン
         std::wstring commandLine =
             L"\"" + tarPath.wstring() + L"\" -xf \""
             + zipPath.wstring() + L"\" -C \""
             + destination.wstring() + L"\"";
 
+        // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動したtarのハンドル情報
         PROCESS_INFORMATION process{};
         if (CreateProcessW(
                 tarPath.c_str(),
@@ -67,6 +71,7 @@ namespace
                 "Could not start tar.exe.");
         }
         WaitForSingleObject(process.hProcess, INFINITE);
+        // tarの終了コード
         DWORD exitCode = 1;
         GetExitCodeProcess(process.hProcess, &exitCode);
         CloseHandle(process.hThread);
@@ -79,15 +84,17 @@ namespace
         }
     }
 
-    // フォルダーの「中身」をZipへ固めます（フォルダー自身は
-    // 階層に含めないので、展開先へそのまま widened します）。
+
+    // フォルダー自体を階層に含めず、内容をZIPへ書き出します(directory: ZIPへ含める基準パス, zipPath: 出力するZIPパス)。
     void CreateZipFromDirectoryContents(
         const std::filesystem::path& directory,
         const std::filesystem::path& zipPath)
     {
+        // ZIP削除の失敗状態
         std::error_code removeError;
         std::filesystem::remove(zipPath, removeError);
 
+        // Windowsのシステムディレクトリ
         wchar_t systemDirectory[MAX_PATH]{};
         if (GetSystemDirectoryW(
                 systemDirectory,
@@ -96,6 +103,7 @@ namespace
             throw std::runtime_error(
                 "Could not locate the Windows system directory.");
         }
+        // システムのtar実行ファイル
         const auto tarPath =
             std::filesystem::path(systemDirectory)
             / L"tar.exe";
@@ -105,13 +113,16 @@ namespace
                 "tar.exe was not found (bundled with Windows 10 and later).");
         }
 
+        // tarへ渡すコマンドライン
         std::wstring commandLine =
             L"\"" + tarPath.wstring() + L"\" -a -c -f \""
             + zipPath.wstring() + L"\" -C \""
             + directory.wstring() + L"\" .";
 
+        // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動したtarのハンドル情報
         PROCESS_INFORMATION process{};
         if (CreateProcessW(
                 tarPath.c_str(),
@@ -129,6 +140,7 @@ namespace
                 "Could not start tar.exe.");
         }
         WaitForSingleObject(process.hProcess, INFINITE);
+        // tarの終了コード
         DWORD exitCode = 1;
         GetExitCodeProcess(process.hProcess, &exitCode);
         CloseHandle(process.hThread);
@@ -142,11 +154,13 @@ namespace
         }
     }
 
-    // ステージング用の一時フォルダー名（エクスポーターと同じ流儀）。
+
+    // 時刻由来の展開用パスを作り、ディレクトリ自体は作成しません(parent: 保存先の親ディレクトリ, name: パスへ含める識別名)。
     std::filesystem::path MakeStagingPath(
         const std::filesystem::path& parent,
         const std::string& name)
     {
+        // 展開フォルダー名の時刻識別子
         const auto suffix = std::to_string(
             std::chrono::steady_clock::now()
                 .time_since_epoch()
@@ -158,6 +172,7 @@ namespace
 
 namespace LamaPon
 {
+    // 反映タイミングを保存用文字列へ変換します。
     std::string_view PackageActivationName(
         const PackageActivation activation) noexcept
     {
@@ -173,6 +188,7 @@ namespace LamaPon
         }
     }
 
+    // 反映時期を解釈し、未知の値は即時反映にします。
     PackageActivation PackageActivationFromName(
         const std::string_view name) noexcept
     {
@@ -187,12 +203,14 @@ namespace LamaPon
         return PackageActivation::Immediate;
     }
 
+    // 即時反映以外に再起動を要求します。
     bool PackageRequiresRestart(
         const PackageActivation activation) noexcept
     {
         return activation != PackageActivation::Immediate;
     }
 
+    // 追加先を保存用文字列へ変換します。
     std::string_view PackageTargetName(
         const PackageTarget target) noexcept
     {
@@ -200,6 +218,7 @@ namespace LamaPon
             ? "Engine" : "Project";
     }
 
+    // 追加先を解釈し、未知の値はプロジェクト用にします。
     PackageTarget PackageTargetFromName(
         const std::string_view name) noexcept
     {
@@ -207,6 +226,7 @@ namespace LamaPon
             ? PackageTarget::Engine : PackageTarget::Project;
     }
 
+    // 保存先に許可する名前の長さと文字を検証します。
     bool IsPackageNameSafe(
         const std::string_view name) noexcept
     {
@@ -214,8 +234,10 @@ namespace LamaPon
         {
             return false;
         }
+        // 検証または変換対象の文字
         for (const char character : name)
         {
+            // パッケージ名の許可文字か
             const bool valid =
                 (character >= 'a' && character <= 'z')
                 || (character >= '0' && character <= '9')
@@ -229,9 +251,11 @@ namespace LamaPon
         return true;
     }
 
+    // SHA-256の小文字16進表記を検証します。
     bool IsCanonicalPackageSha256(
         const std::string_view value) noexcept
     {
+        // 小文字16進64桁の全ての文字を検証します(character: 検証する文字)。
         return value.size() == 64
             && std::ranges::all_of(
                 value,
@@ -242,11 +266,11 @@ namespace LamaPon
                 });
     }
 
+    // 配布先の許可URL接頭辞を検証します。
     bool IsAllowedPackageUrl(
         const std::string_view url) noexcept
     {
-        // 誤設定や一覧の改ざんに備えて、配布リポジトリ配下の
-        // URLだけを許可します。
+        // 誤設定や一覧の改ざんに備えて、配布リポジトリ配下のURLだけを許可します。
         return url.rfind(
                 "https://raw.githubusercontent.com/Timiratz/"
                 "LamaPon-Engine/",
@@ -257,17 +281,21 @@ namespace LamaPon
                 0) == 0;
     }
 
+    // HTTPSスキームのホストとパスを分割します。
     bool SplitHttpsUrl(
         const std::string_view url,
         std::wstring& host,
         std::wstring& path)
     {
+        // URLのHTTPSスキーム
         constexpr std::string_view scheme = "https://";
         if (url.rfind(scheme, 0) != 0)
         {
             return false;
         }
+        // スキームを除いたURL
         const auto rest = url.substr(scheme.size());
+        // ホストとパスの区切り位置
         const auto slash = rest.find('/');
         if (slash == std::string_view::npos
             || slash == 0)
@@ -279,9 +307,11 @@ namespace LamaPon
         return !host.empty() && !path.empty();
     }
 
+    // 配布一覧を検証して使用可能な項目を集めます。
     std::vector<PackageInfo> ParsePackageIndex(
         const std::string_view indexJson)
     {
+        // 解析済み配布一覧のJSON
         const auto document =
             nlohmann::json::parse(indexJson);
         if (document.value("format", std::string{})
@@ -292,11 +322,14 @@ namespace LamaPon
                 "Unsupported package index format.");
         }
 
+        // インストール可能な一覧
         std::vector<PackageInfo> packages;
+        // 配布一覧か出力元のファイル
         for (const auto& entry : document.value(
             "packages",
             nlohmann::json::array()))
         {
+            // インストールまたは出力する情報
             PackageInfo package;
             package.name =
                 entry.value("name", std::string{});
@@ -323,8 +356,7 @@ namespace LamaPon
             package.target = PackageTargetFromName(
                 entry.value("target", std::string{}));
 
-            // 不正なエントリは黙って除外します（他の正常な
-            // パッケージまで巻き込まないため）。
+            // 名前・バージョン・URL・SHA-256が不正な項目を除外します。
             if (!IsPackageNameSafe(package.name)
                 || package.version.empty()
                 || !IsAllowedPackageUrl(
@@ -338,6 +370,7 @@ namespace LamaPon
         return packages;
     }
 
+    // パッケージの保存先パスを返します。
     std::filesystem::path PackageInstallDirectory(
         const std::filesystem::path& assetRoot,
         const std::string_view name)
@@ -346,6 +379,7 @@ namespace LamaPon
             / PathFromUtf8(name);
     }
 
+    // 配置済みのmanifestからバージョンを読みます。
     std::string InstalledPackageVersion(
         const std::filesystem::path& assetRoot,
         const std::string_view name)
@@ -354,6 +388,7 @@ namespace LamaPon
         {
             return {};
         }
+        // package.jsonのパス
         const auto manifestPath =
             PackageInstallDirectory(assetRoot, name)
             / L"package.json";
@@ -363,10 +398,13 @@ namespace LamaPon
         }
         try
         {
+            // manifestの入力ストリーム
             std::ifstream input(
                 manifestPath,
                 std::ios::binary);
+            // 読込または生成するmanifest
             nlohmann::json manifest;
+            // 読込または生成するmanifest
             input >> manifest;
             return manifest.value(
                 "version",
@@ -378,6 +416,7 @@ namespace LamaPon
         }
     }
 
+    // 配置済みのmanifestから反映時期を読みます。
     PackageActivation InstalledPackageActivation(
         const std::filesystem::path& assetRoot,
         const std::string_view name) noexcept
@@ -388,11 +427,14 @@ namespace LamaPon
         }
         try
         {
+            // manifestの入力ストリーム
             std::ifstream input(
                 PackageInstallDirectory(assetRoot, name)
                     / L"package.json",
                 std::ios::binary);
+            // 読込または生成するmanifest
             nlohmann::json manifest;
+            // 読込または生成するmanifest
             input >> manifest;
             return PackageActivationFromName(
                 manifest.value("activation", std::string{}));
@@ -403,6 +445,7 @@ namespace LamaPon
         }
     }
 
+    // ZIPとnative宣言の検証後に旧版を退避して配置します。
     void InstallPackage(
         const std::filesystem::path& assetRoot,
         const PackageInfo& package,
@@ -419,9 +462,7 @@ namespace LamaPon
             throw std::runtime_error(
                 "Package archive is empty.");
         }
-        // 一覧のURLは配布リポジトリ配下に限っていますが、それだけでは
-        // 転送中や配布先で差し替えられたZipを検出できません。展開する
-        // 前に、一覧に載ったハッシュと照合します。
+        // 展開前に一覧のSHA-256を検証します。
         if (!IsCanonicalPackageSha256(package.sha256))
         {
             throw std::runtime_error(
@@ -442,18 +483,22 @@ namespace LamaPon
                 + PathToUtf8(assetRoot));
         }
 
+        // パッケージの保存先
         const auto packagesRoot =
             assetRoot / L"packages";
         std::filesystem::create_directories(packagesRoot);
+        // 検証と展開用の作業パス
         const auto staging = MakeStagingPath(
             packagesRoot,
             package.name);
+        // 展開用または出力先のZIPパス
         const auto zipPath = staging.wstring() + L".zip";
 
         try
         {
             std::filesystem::create_directories(staging);
             {
+                // ZIPまたはmanifestの出力
                 std::ofstream output(
                     std::filesystem::path(zipPath),
                     std::ios::binary | std::ios::trunc);
@@ -470,13 +515,14 @@ namespace LamaPon
             }
             ExtractZipWithSystemTar(zipPath, staging);
 
-            // マニフェストが無いZipには一覧の情報から生成します
-            // （インストール済み判定と更新検出に使うため）。
+            // package.jsonが無ければ一覧の情報で生成します。
+            // package.jsonのパス
             const auto manifestPath =
                 staging / L"package.json";
             if (!std::filesystem::is_regular_file(
                 manifestPath))
             {
+                // 読込または生成するmanifest
                 const nlohmann::json manifest{
                     { "name", package.name },
                     { "displayName", package.displayName },
@@ -494,19 +540,20 @@ namespace LamaPon
                         PackageTargetName(package.target)
                     }
                 };
+                // ZIPまたはmanifestの出力
                 std::ofstream output(
                     manifestPath,
                     std::ios::binary | std::ios::trunc);
                 output << manifest.dump(2) << '\n';
             }
 
-            // ネイティブ依存の宣言は、assets/へ入る前に検証します。
-            // 不正な指定はビルドと書き出しの両方へ効くため、
-            // インストール時点で止めます。
+            // 配置前にnative宣言を検証し、不正な設定を拒否します。
             {
+                // 配置前に検証するmanifestの入力
                 std::ifstream manifestInput(
                     manifestPath,
                     std::ios::binary);
+                // 検証するmanifestの全文
                 const std::string manifestText(
                     std::istreambuf_iterator<char>{
                         manifestInput },
@@ -518,32 +565,23 @@ namespace LamaPon
                         package.name));
             }
 
-            // 完成したステージングで既存を置き換えます。
-            //
-            // 既存パッケージを先に退避し、新版の配置に失敗した場合は
-            // 退避した内容を戻します。削除後に配置する方式を避けることで、
-            // ファイルロックなどでrenameが失敗しても旧版を保持します。
-            //
-            // 退避先はassets/の外（.lamapon/package-backups/）です。
-            // パッケージはC++ソースを含むことがあり、ゲーム
-            // モジュールがassets/*.cppをまとめてコンパイルするため、
-            // assets/内へ旧版のコピーが残ると同じシンボルが二重に
-            // 定義されてビルドが壊れます。
-            //
-            // 成功したら退避を1世代だけ残します。更新でフォルダーが
-            // 置き換わる仕様上、パッケージへ手を入れていた場合の
-            // 逃げ道になります（次の更新で上書きされます）。
+
+            // 旧版は重複コンパイルを防ぐためassetsの外へ一世代残し、新版の配置失敗時は復元します。
+            // インストール済みパッケージのパス
             const auto destination =
                 PackageInstallDirectory(
                     assetRoot,
                     package.name);
+            // 旧版の退避先・assetsの外
             const auto backupRoot =
                 assetRoot.parent_path()
                 / L".lamapon"
                 / L"package-backups";
+            // 一世代だけ残す旧版の退避パス
             const auto backup =
                 backupRoot / PathFromUtf8(package.name);
 
+            // 既存のパッケージがあるか
             const bool hadPrevious =
                 std::filesystem::exists(destination);
             if (hadPrevious)
@@ -552,8 +590,7 @@ namespace LamaPon
                     backupRoot);
                 // 前回の退避はここで消えます（1世代だけ）。
                 std::filesystem::remove_all(backup);
-                // ここが失敗したら何も動かしていないので、
-                // そのまま投げて旧版を守ります。
+                // ここが失敗したら何も動かしていないので、そのまま投げて旧版を守ります。
                 std::filesystem::rename(
                     destination,
                     backup);
@@ -569,6 +606,7 @@ namespace LamaPon
                 // 新版が入らなかったので旧版を戻します。
                 if (hadPrevious)
                 {
+                    // 旧版復元の失敗状態
                     std::error_code restoreError;
                     std::filesystem::rename(
                         backup,
@@ -576,9 +614,7 @@ namespace LamaPon
                         restoreError);
                     if (restoreError)
                     {
-                        // 戻しも失敗。それでも旧版のファイルは
-                        // 退避先に無傷で残っているので、場所を
-                        // 伝えて手で戻せるようにします。
+                        // 復元に失敗した旧版は退避先へ残し、場所をエラーで通知します。
                         throw std::runtime_error(
                             "パッケージの入れ替えに失敗し、"
                             "自動復元もできませんでした。"
@@ -591,6 +627,7 @@ namespace LamaPon
         }
         catch (...)
         {
+            // 展開物やZIPの片付け失敗状態
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 staging,
@@ -601,12 +638,14 @@ namespace LamaPon
             throw;
         }
 
+        // 展開物やZIPの片付け失敗状態
         std::error_code cleanupError;
         std::filesystem::remove(
             std::filesystem::path(zipPath),
             cleanupError);
     }
 
+    // 手元のZIPを調べ、取得したバイト列のハッシュで検証して配置します。
     PackageInfo InstallPackageFromFile(
         const std::filesystem::path& assetRoot,
         const std::filesystem::path& zipPath)
@@ -618,10 +657,12 @@ namespace LamaPon
                 + PathToUtf8(zipPath));
         }
 
+        // 選択ZIP全体のバイト列
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(
                 std::filesystem::file_size(zipPath)));
         {
+            // 選択ZIPの入力ストリーム
             std::ifstream input(zipPath, std::ios::binary);
             if (!input)
             {
@@ -635,18 +676,21 @@ namespace LamaPon
                     bytes.size()));
         }
 
-        // 名前とバージョンはZip内のpackage.jsonが正。無い場合は
-        // ファイル名（<name>-<version>.zip）から推測します。
+
+        // インストールまたは出力する情報
         PackageInfo package;
+        // 検証と展開用の作業パス
         const auto staging = MakeStagingPath(
             std::filesystem::temp_directory_path(),
             "inspect");
         try
         {
             std::filesystem::create_directories(staging);
+            // 内容確認用のZIPパス
             const auto tempZip =
                 staging.wstring() + L".zip";
             {
+                // ZIPまたはmanifestの出力
                 std::ofstream output(
                     std::filesystem::path(tempZip),
                     std::ios::binary | std::ios::trunc);
@@ -659,15 +703,19 @@ namespace LamaPon
             ExtractZipWithSystemTar(
                 std::filesystem::path(tempZip),
                 staging);
+            // package.jsonのパス
             const auto manifestPath =
                 staging / L"package.json";
             if (std::filesystem::is_regular_file(
                 manifestPath))
             {
+                // manifestの入力ストリーム
                 std::ifstream input(
                     manifestPath,
                     std::ios::binary);
+                // 読込または生成するmanifest
                 nlohmann::json manifest;
+                // 読込または生成するmanifest
                 input >> manifest;
                 package.name = manifest.value(
                     "name",
@@ -697,6 +745,7 @@ namespace LamaPon
                     package.target = PackageTarget::Engine;
                 }
             }
+            // 展開物やZIPの片付け失敗状態
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 staging,
@@ -707,6 +756,7 @@ namespace LamaPon
         }
         catch (...)
         {
+            // 展開物やZIPの片付け失敗状態
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 staging,
@@ -716,7 +766,9 @@ namespace LamaPon
 
         if (package.name.empty())
         {
+            // 名前とバージョン推測用の元名
             auto stem = PathToUtf8(zipPath.stem());
+            // 名前とバージョンの区切り位置
             if (const auto dash = stem.rfind('-');
                 dash != std::string::npos)
             {
@@ -727,6 +779,7 @@ namespace LamaPon
                 }
                 stem = stem.substr(0, dash);
             }
+            // ファイル名から推測したパッケージ名を小文字へ変換します(character: 変換する文字)。
             std::ranges::transform(
                 stem,
                 stem.begin(),
@@ -752,8 +805,7 @@ namespace LamaPon
                 + package.name);
         }
 
-        // 手元のZipは利用者が選んだファイルそのものが正です。
-        // 読み込んだバイト列のハッシュをそのまま照合に使います。
+        // 手元のZIPは読み込んだバイト列のハッシュを照合値に使います。
         package.sha256 = Crypto::Sha256Hex(
             bytes.data(),
             bytes.size());
@@ -761,6 +813,7 @@ namespace LamaPon
         return package;
     }
 
+    // 作者指定の設定を保持してmanifestを更新し、ZIPを書き出します。
     PackageBuildResult BuildPackage(
         const std::filesystem::path& assetRoot,
         const PackageInfo& package,
@@ -778,6 +831,7 @@ namespace LamaPon
                 "バージョンを入力してください。");
         }
 
+        // ZIPへ含めるパッケージのパス
         const auto source =
             PackageInstallDirectory(assetRoot, package.name);
         if (!std::filesystem::is_directory(source))
@@ -787,19 +841,25 @@ namespace LamaPon
                 + PathToUtf8(source));
         }
 
-        // 手で書いたnativeの宣言は、作り直しても残します
-        // （作者がSDKの置き場所を書き込む唯一の場所です）。
+        // 手で書いたnativeの宣言は、作り直しても残します（作者がSDKの置き場所を書き込む唯一の場所です）。
+        // package.jsonのパス
         const auto manifestPath =
             source / L"package.json";
+        // 保持するnative設定
         nlohmann::json nativeSection;
+        // 保持する描画バックエンド設定
         nlohmann::json graphicsBackendSection;
+        // 作者指定を優先する反映時期
         auto activation = package.activation;
+        // 作者指定を優先する追加先
         auto target = package.target;
         if (std::filesystem::is_regular_file(manifestPath))
         {
+            // manifestの入力ストリーム
             std::ifstream input(
                 manifestPath,
                 std::ios::binary);
+            // 検証するmanifestの全文
             const std::string manifestText(
                 std::istreambuf_iterator<char>{ input },
                 std::istreambuf_iterator<char>{});
@@ -811,6 +871,7 @@ namespace LamaPon
                     package.name));
             try
             {
+                // 既存manifestのJSON
                 const auto previous =
                     nlohmann::json::parse(manifestText);
                 if (previous.is_object()
@@ -841,11 +902,12 @@ namespace LamaPon
             }
             catch (const std::exception&)
             {
-                // 読めないpackage.jsonは作り直します。
+                // native検証後の付随設定の読込失敗時は、取得できた設定で再生成します。
             }
         }
 
         // フォルダー内のpackage.jsonを最新の内容で作り直します。
+        // 読込または生成するmanifest
         nlohmann::json manifest{
             { "name", package.name },
             {
@@ -880,6 +942,7 @@ namespace LamaPon
                 std::move(graphicsBackendSection);
         }
         {
+            // manifestの出力ストリーム
             std::ofstream output(
                 manifestPath,
                 std::ios::binary | std::ios::trunc);
@@ -894,17 +957,20 @@ namespace LamaPon
 
         std::filesystem::create_directories(
             outputDirectory);
+        // 展開用または出力先のZIPパス
         const auto zipPath = outputDirectory
             / PathFromUtf8(
                 package.name + "-" + package.version
                 + ".zip");
         CreateZipFromDirectoryContents(source, zipPath);
 
+        // 書き出したパッケージの情報
         PackageBuildResult result;
         result.zipPath = zipPath;
         result.manifestPath = manifestPath;
         result.sizeBytes = std::filesystem::file_size(
             zipPath);
+        // 配布一覧か出力元のファイル
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
                 source))
@@ -915,11 +981,10 @@ namespace LamaPon
             }
         }
 
-        // 一覧へ載せる場合のひな形。配布先は作者が自分で決めるため
-        // URLはプレースホルダーにしています。
+
+        // 一覧用の項目JSON
         nlohmann::json indexEntry = manifest;
-        // 一覧はパッケージを選ぶための情報だけを載せます。ビルド用の
-        // nativeはZip内のpackage.jsonが正本です。
+        // nativeとgraphicsBackendの正本はZIP内のpackage.jsonとし、一覧から除外します。
         indexEntry.erase("native");
         indexEntry.erase("graphicsBackend");
         indexEntry["downloadUrl"] =
@@ -927,7 +992,9 @@ namespace LamaPon
             + PathToUtf8(zipPath.filename());
         indexEntry["sizeBytes"] = result.sizeBytes;
         {
+            // ハッシュ照合用のZIP入力
             std::ifstream zipInput(zipPath, std::ios::binary);
+            // ハッシュ照合用のZIPバイト列
             const std::vector<std::uint8_t> zipBytes(
                 std::istreambuf_iterator<char>{ zipInput },
                 std::istreambuf_iterator<char>{});
@@ -945,6 +1012,7 @@ namespace LamaPon
         return result;
     }
 
+    // 安全な名前で指定された配置先を削除します。
     void UninstallPackage(
         const std::filesystem::path& assetRoot,
         const std::string_view name)
@@ -954,6 +1022,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Package name is not safe to uninstall.");
         }
+        // インストール済みパッケージのパス
         const auto destination =
             PackageInstallDirectory(assetRoot, name);
         if (!std::filesystem::exists(destination))

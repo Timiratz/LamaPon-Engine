@@ -34,12 +34,19 @@
   </main>
   <p id="help">Loading LamaPon Web game…</p>
   <script>
+    // Stage layout初期化: resize handlerを登録し初回表示を更新します。
     (() => {
+      // resize(): 表示領域に合わせてStage倍率と位置を更新します。
       const resize = () => {
+        // viewport: keyboardを含む現在のvisual viewport。
         const viewport = window.visualViewport;
+        // width: 利用可能なviewport幅（CSS px）。
         const width = viewport?.width || innerWidth;
+        // height: 利用可能なviewport高さ（CSS px）。
         const height = viewport?.height || innerHeight;
+        // scale: 縦横比を維持するStage倍率。
         const scale = Math.min(width / 1280, height / 720);
+        // stage: 拡縮・中央配置するDOM element。
         const stage = document.getElementById("stage");
         stage.style.transform =
           "translate(-50%, -50%) scale(" + scale + ")";

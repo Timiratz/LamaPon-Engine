@@ -11,16 +11,19 @@
 
 namespace
 {
+    // 条件不成立ならmessageで例外にします(condition: 判定, message: 失敗文)
     void Require(
         const bool condition,
         const char* message)
     {
+        // 期待値から外れていればテストを失敗させます。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // 浮動小数を許容誤差で比較します(left: 実値, right: 期待値, tolerance: 誤差)
     bool NearlyEqual(
         const float left,
         const float right,
@@ -31,10 +34,13 @@ namespace
     }
 }
 
+// Animation clipとcontrollerのJSON・補間を検証します。
 int main()
 {
+    // 検証例外をprocess failureへ変換します。
     try
     {
+        // 2-key transform clipをJSONから読み込みます。
         const auto clip =
             LamaPon::AnimationClip::FromJson(
                 R"({
@@ -68,6 +74,7 @@ int main()
                 && clip.Keyframes().size() == 2,
             "Animation clip metadata was not parsed.");
 
+        // 中間時刻の補間結果です。
         const auto middle =
             clip.Sample(1.0f);
         Require(
@@ -84,6 +91,7 @@ int main()
                 DirectX::XM_PI,
                 0.001f),
             "Rotation did not use the shortest angular path.");
+        // 中間時刻のquaternion姿勢です。
         const auto middleRotation =
             clip.SampleRotationQuaternion(1.0f);
         Require(
@@ -97,8 +105,10 @@ int main()
             "Quaternion rotation sampling did not use the"
             " shortest path.");
 
+        // clip開始より前のsampleです。
         const auto before =
             clip.Sample(-1.0f);
+        // clip終端より後のsampleです。
         const auto after =
             clip.Sample(10.0f);
         Require(
@@ -106,7 +116,9 @@ int main()
                 && NearlyEqual(after.position.x, 4.0f),
             "Animation sampling did not clamp to endpoint keyframes.");
 
+        // 重複key時刻が拒否されたことを記録します。
         bool invalidTimesRejected = false;
+        // 不正keyframe JSONの例外を検証します。
         try
         {
             static_cast<void>(
@@ -121,6 +133,7 @@ int main()
                         ]
                     })"));
         }
+        // 不正keyframe JSONを拒否したことを記録します(exception: parse error)
         catch (const std::exception&)
         {
             invalidTimesRejected = true;
@@ -129,12 +142,14 @@ int main()
             invalidTimesRejected,
             "Duplicate Animation keyframe times were accepted.");
 
+        // Timeline保存用の編集可能clipです。
         const auto editableClip =
             LamaPon::AnimationClip::Create(
                 "Timeline保存",
                 2.0f,
                 false,
                 clip.Keyframes());
+        // JSON往復後の編集可能clipです。
         const auto serializedClip =
             LamaPon::AnimationClip::FromJson(
                 editableClip.SerializeToJson());
@@ -146,12 +161,14 @@ int main()
                     == 2,
             "Editable Animation Clip did not survive JSON serialization.");
 
+        // test-output内のanimation file pathです。
         const auto outputPath =
             std::filesystem::current_path()
             / "test-output"
             / std::filesystem::path(
                 L"タイムライン.animation.json");
         editableClip.SaveToFile(outputPath);
+        // 保存fileから復元したclipです。
         const auto fileClip =
             LamaPon::AnimationClip::LoadFromFile(
                 outputPath);
@@ -167,6 +184,7 @@ int main()
                     + L".tmp"),
             "Animation Clip temporary file remained after save.");
 
+        // stateとtransitionを持つcontrollerです。
         const auto controller =
             LamaPon::AnimatorController::FromJson(
                 R"({
@@ -190,6 +208,7 @@ int main()
                 && controller.FindState("Run")->modelClip
                     == "Skeleton|Run",
             "Animator Controller metadata was not parsed.");
+        // 1D blend treeとanimation eventを持つcontrollerです。
         const auto modelController =
             LamaPon::AnimatorController::FromJson(
                 R"({
@@ -237,6 +256,7 @@ int main()
                     ->events.front().name
                     == "Footstep",
             "1D Blend Tree or Animation Event metadata was not accepted or sorted.");
+        // 2D blend treeを持つcontrollerです。
         const auto twoDimensionalController =
             LamaPon::AnimatorController::FromJson(
                 R"({
@@ -263,6 +283,7 @@ int main()
                         }
                     ]
                 })");
+        // 2D tree内のMove stateです。
         const auto* moveState =
             twoDimensionalController.FindState(
                 "Move");
@@ -282,6 +303,7 @@ int main()
                         .positionY,
                     1.0f),
             "2D Blend Tree metadata was not accepted.");
+        // 右方向のchildへ一致したblend weightです。
         const auto exactWeights =
             LamaPon::AnimatorController::
                 Calculate2DBlendWeights(
@@ -298,6 +320,7 @@ int main()
                         + exactWeights[1],
                     0.0f),
             "2D Blend Tree exact-child weighting failed.");
+        // 2D平面上で補間されたblend weightです。
         const auto mixedWeights =
             LamaPon::AnimatorController::
                 Calculate2DBlendWeights(
@@ -315,6 +338,7 @@ int main()
                 && mixedWeights[1] > 0.0f
                 && mixedWeights[2] > 0.0f,
             "2D Blend Tree weights were not normalized.");
+        // transition条件として設定するtriggerです。
         const std::unordered_set<std::string>
             runTrigger{ "Run" };
         Require(
@@ -323,6 +347,7 @@ int main()
                 0.4f,
                 runTrigger) == nullptr,
             "Animator transition ignored Exit Time.");
+        // trigger条件で選択されたtransitionです。
         const auto* runTransition =
             controller.FindTransition(
                 "Idle",
@@ -342,7 +367,9 @@ int main()
                 {}) != nullptr,
             "Animator automatic Exit Time transition was not selected.");
 
+        // entry state欠落を拒否したことを記録します。
         bool invalidControllerRejected = false;
+        // 存在しないentry stateを拒否することを検証します。
         try
         {
             static_cast<void>(
@@ -356,6 +383,7 @@ int main()
                         ]
                     })"));
         }
+        // 不正controller JSONの例外を検証します(exception: parse error)
         catch (const std::exception&)
         {
             invalidControllerRejected = true;
@@ -368,6 +396,7 @@ int main()
             << "Animation clip tests passed.\n";
         return 0;
     }
+    // 検証例外を失敗診断へ変換します(exception: failure)
     catch (const std::exception& exception)
     {
         std::cerr

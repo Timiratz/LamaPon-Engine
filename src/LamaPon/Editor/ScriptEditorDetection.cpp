@@ -12,9 +12,12 @@
 
 namespace
 {
+    // Windows既知フォルダーのパスを返し取得失敗なら空を返す(id: 調べる既知フォルダーのID)。
     std::filesystem::path KnownFolder(const KNOWNFOLDERID& id)
     {
+        // OSが割り当てた既知フォルダー文字列
         PWSTR value{};
+        // 既知フォルダー取得のHRESULT
         const HRESULT result = SHGetKnownFolderPath(
             id,
             0,
@@ -28,16 +31,19 @@ namespace
             }
             return {};
         }
+        // 返却用に複製したフォルダーパス
         const std::filesystem::path path{ value };
         CoTaskMemFree(value);
         return path;
     }
 
+    // 通常ファイルが存在して実行パスが未登録なら選択肢へ追加する(options: 追加する選択肢の一覧, label: 設定欄へ表示する名前, executablePath: 存在を確認する実行パス)。
     void AddIfExecutableExists(
         std::vector<LamaPon::ScriptEditorOption>& options,
         std::string label,
         const std::filesystem::path& executablePath)
     {
+        // 実行ファイルの存在確認エラー
         std::error_code error;
         if (!std::filesystem::is_regular_file(
                 executablePath,
@@ -45,8 +51,7 @@ namespace
         {
             return;
         }
-        // 同じ実行ファイルを重複して追加しない
-        // （例: ProgramFilesとProgramFiles(x86)を両方調べるため）。
+        // 同じ実行パスの重複を調べる(option: 登録済みのエディター)。
         const bool alreadyPresent = std::ranges::any_of(
             options,
             [&executablePath](
@@ -65,9 +70,11 @@ namespace
             });
     }
 
+    // ユーザーとシステムの既定配置先からVS Codeを探す(options: 検出結果を追加する一覧)。
     void DetectVisualStudioCode(
         std::vector<LamaPon::ScriptEditorOption>& options)
     {
+        // ユーザー単位のアプリ配置先
         const auto userPrograms =
             KnownFolder(FOLDERID_UserProgramFiles);
         if (!userPrograms.empty())
@@ -85,9 +92,11 @@ namespace
                     / L"Microsoft VS Code Insiders"
                     / L"Code - Insiders.exe");
         }
+        // 調べるProgramFilesの種別
         for (const auto& folderId :
             { FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86 })
         {
+            // システムのアプリ配置先
             const auto programFiles = KnownFolder(folderId);
             if (programFiles.empty())
             {
@@ -102,17 +111,19 @@ namespace
         }
     }
 
-    // 子プロセスの標準出力を1回のCreateProcessでキャプチャして返します
-    // （vswhere.exeの結果取得専用の小さなヘルパー）。
+    // vswhereを非表示で起動し標準出力とエラーをpipeから読み取る(executable: 起動する実行ファイル, arguments: 起動時に渡す引数)。
     std::string RunProcessCaptureOutput(
         const std::filesystem::path& executable,
         const std::wstring& arguments)
     {
+        // 書込pipeを継承させる設定
         SECURITY_ATTRIBUTES security{};
         security.nLength = sizeof(security);
         security.bInheritHandle = TRUE;
 
+        // 子の出力を読み取るpipe handle
         HANDLE readHandle{};
+        // 子へ渡す出力pipe handle
         HANDLE writeHandle{};
         if (!CreatePipe(
             &readHandle,
@@ -132,16 +143,20 @@ namespace
             return {};
         }
 
+        // 標準出力とエラーの転送先設定
         STARTUPINFOW startupInfo{};
         startupInfo.cb = sizeof(startupInfo);
         startupInfo.dwFlags = STARTF_USESTDHANDLES;
         startupInfo.hStdOutput = writeHandle;
         startupInfo.hStdError = writeHandle;
 
+        // 実行ファイルを引用した起動引数
         std::wstring commandLine =
             L"\"" + executable.wstring() + L"\" " + arguments;
 
+        // 起動した子processのhandle
         PROCESS_INFORMATION processInfo{};
+        // 子processを起動できたか
         const bool started = CreateProcessW(
             nullptr,
             commandLine.data(),
@@ -160,8 +175,11 @@ namespace
             return {};
         }
 
+        // 子processの標準出力とエラー
         std::string output;
+        // pipeから読み取る作業バッファ
         std::array<char, 4096> buffer{};
+        // pipeから今回読み取ったバイト数
         DWORD bytesRead{};
         while (ReadFile(
             readHandle,
@@ -181,35 +199,42 @@ namespace
         return output;
     }
 
+    // vswhereでprereleaseを含むMSBuild付きVisual Studioを探す(options: 検出結果を追加する一覧)。
     void DetectVisualStudio(
         std::vector<LamaPon::ScriptEditorOption>& options)
     {
+        // vswhereを探すProgramFilesX86
         const auto programFilesX86 =
             KnownFolder(FOLDERID_ProgramFilesX86);
         if (programFilesX86.empty())
         {
             return;
         }
+        // VS Installerの検出用実行パス
         const auto vswhere =
             programFilesX86
             / L"Microsoft Visual Studio"
             / L"Installer"
             / L"vswhere.exe";
+        // 実行ファイルの存在確認エラー
         std::error_code error;
         if (!std::filesystem::is_regular_file(vswhere, error))
         {
             return;
         }
 
-        // -requires Microsoft.Component.MSBuildで、C++開発に使えない
-        // 素のインストーラーだけの状態などを除外します。
+        // MSBuildを含む製品だけを列挙してインストーラーだけの状態を除く。
+        // 子processの標準出力とエラー
         const std::string output = RunProcessCaptureOutput(
             vswhere,
             L"-all -prerelease -products * "
             L"-requires Microsoft.Component.MSBuild -nologo");
 
+        // 検出した製品の表示名
         std::string label;
+        // 検出した製品の実行パス
         std::string productPath;
+        // 製品情報を登録して作業値を消す処理
         const auto flush =
             [&options, &label, &productPath]()
             {
@@ -224,13 +249,17 @@ namespace
                 productPath.clear();
             };
 
+        // 表示名の出力行を判別する接頭辞
         constexpr std::string_view displayNamePrefix{
             "displayName: "
         };
+        // 製品パスの出力行を判別する接頭辞
         constexpr std::string_view productPathPrefix{
             "productPath: "
         };
+        // vswhereの出力を1行ずつ読むstream
         std::istringstream stream(output);
+        // 解析するvswhere出力の1行
         std::string line;
         while (std::getline(stream, line))
         {
@@ -265,7 +294,9 @@ namespace LamaPon
         const std::uint32_t line,
         const std::uint32_t column)
     {
+        // 種類の判定用に小文字にしたexe名
         auto executable = editor.filename().wstring();
+        // 実行ファイル名を種類判定用の小文字へ変換する(character: 比較する文字)。
         std::ranges::transform(
             executable,
             executable.begin(),
@@ -273,6 +304,7 @@ namespace LamaPon
             {
                 return static_cast<wchar_t>(std::towlower(character));
             });
+        // 空白に備えて引用したsourceパス
         const auto quotedSource = L"\"" + source.wstring() + L"\"";
         if (line == 0)
         {
@@ -296,6 +328,7 @@ namespace LamaPon
 
     std::vector<ScriptEditorOption> DetectScriptEditors()
     {
+        // 見つかったエディターの選択肢
         std::vector<ScriptEditorOption> options;
         DetectVisualStudioCode(options);
         DetectVisualStudio(options);

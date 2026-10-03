@@ -23,50 +23,62 @@
 
 namespace
 {
+    // Require(condition: 成否, message: 失敗理由) は不成立時に例外を送出する。
     void Require(
         const bool condition,
         const char* message)
     {
+        // 条件を満たさない場合はテストを失敗させる。
         if (!condition)
         {
+            // 失敗理由を例外として呼び出し元へ伝える。
             throw std::runtime_error(message);
         }
     }
 
-    // PNGチャンク用CRC32（多項式0xEDB88320）。
+    // Crc32(data: CRC対象bytes, size: byte数) はPNG CRC-32を計算する。
     [[nodiscard]] std::uint32_t Crc32(
         const std::uint8_t* data,
         const std::size_t size) noexcept
     {
+        // CRC accumulator
         std::uint32_t crc = 0xffffffffu;
+        // index: byte
         for (std::size_t index = 0;
             index < size;
             ++index)
         {
             crc ^= data[index];
+            // bit: position
             for (int bit = 0; bit < 8; ++bit)
             {
                 crc = (crc >> 1)
                     ^ (0xedb88320u & (~(crc & 1u) + 1u));
             }
         }
+        // CRC checksumを返す。
         return crc ^ 0xffffffffu;
     }
 
-    // zlibストリーム末尾のAdler-32。
+    // Adler32(data: zlib入力) はAdler-32 checksumを計算する。
     [[nodiscard]] std::uint32_t Adler32(
         const std::vector<std::uint8_t>& data) noexcept
     {
+        // Adler low sum
         std::uint32_t a = 1;
+        // Adler high sum
         std::uint32_t b = 0;
+        // value: 入力byte
         for (const auto value : data)
         {
             a = (a + value) % 65521u;
             b = (b + a) % 65521u;
         }
+        // Adler checksumを返す。
         return (b << 16) | a;
     }
 
+    // AppendBigEndian(output: 出力バイト列, value: 32bit値) は整数をbig-endianで追加する。
     void AppendBigEndian(
         std::vector<std::uint8_t>& output,
         const std::uint32_t value)
@@ -81,6 +93,7 @@ namespace
             static_cast<std::uint8_t>(value));
     }
 
+    // AppendChunk(output: PNG bytes, type: 4文字種別, payload: chunk内容) はCRC付きchunkを追加する。
     void AppendChunk(
         std::vector<std::uint8_t>& output,
         const char* type,
@@ -89,6 +102,7 @@ namespace
         AppendBigEndian(
             output,
             static_cast<std::uint32_t>(payload.size()));
+        // chunk bytes
         std::vector<std::uint8_t> body(
             type,
             type + 4);
@@ -105,8 +119,7 @@ namespace
             Crc32(body.data(), body.size()));
     }
 
-    // RGBA8ピクセル列から無圧縮deflateのPNGを組み立てます。
-    // 外部ライブラリなしでWICデコードの入力を作るためです。
+    // BuildPng(width: pixel幅, height: pixel高, rgbaPixels: RGBA8列) はWIC用PNG fixtureを作る。
     [[nodiscard]] std::vector<std::uint8_t> BuildPng(
         const std::uint32_t width,
         const std::uint32_t height,
@@ -118,25 +131,34 @@ namespace
                     * height * 4,
             "BuildPng pixel count mismatch");
 
+        // PNG output bytes
         std::vector<std::uint8_t> png{
             0x89, 0x50, 0x4e, 0x47,
             0x0d, 0x0a, 0x1a, 0x0a };
 
+        // IHDR chunk data
         std::vector<std::uint8_t> header;
         AppendBigEndian(header, width);
         AppendBigEndian(header, height);
-        header.push_back(8);   // ビット深度
-        header.push_back(6);   // カラータイプ: RGBA
-        header.push_back(0);   // 圧縮方式
-        header.push_back(0);   // フィルター方式
-        header.push_back(0);   // 非インターレース
+        // ビット深度
+        header.push_back(8);
+        // カラータイプ: RGBA
+        header.push_back(6);
+        // 圧縮方式
+        header.push_back(0);
+        // フィルター方式
+        header.push_back(0);
+        // 非インターレース
+        header.push_back(0);
         AppendChunk(png, "IHDR", header);
 
-        // 各行の先頭にフィルター種別0（None）を付けます。
+        // scanline bytes
         std::vector<std::uint8_t> raw;
+        // y: scanline index
         for (std::uint32_t y = 0; y < height; ++y)
         {
             raw.push_back(0);
+            // filtered RGBA row
             const auto* row =
                 rgbaPixels.data()
                 + static_cast<std::size_t>(y)
@@ -144,19 +166,21 @@ namespace
             raw.insert(raw.end(), row, row + width * 4);
         }
 
-        // zlibヘッダー＋store（無圧縮）deflateブロック列。
-        // storeブロックの長さは16bitまでなので、65535バイト
-        // ずつに割り、BFINALは最後のブロックにだけ立てます。
-        // 16bitのブロック長を超えないよう、65535バイトずつに分割します。
+        // zlib IDAT stream
         std::vector<std::uint8_t> idat{ 0x78, 0x01 };
+        // block offset
         std::size_t offset = 0;
+        // Append 65535-byte stored blocks until the input is consumed.
         do
         {
+            // bytes left
             const std::size_t remaining =
                 raw.size() - offset;
+            // block size
             const auto blockLength =
                 static_cast<std::uint16_t>(
                     remaining < 65535 ? remaining : 65535);
+            // last-block flag
             const bool finalBlock =
                 offset + blockLength == raw.size();
             idat.push_back(finalBlock ? 0x01 : 0x00);
@@ -185,15 +209,18 @@ namespace
         AppendChunk(png, "IDAT", idat);
 
         AppendChunk(png, "IEND", {});
+        // 生成したPNG bytesを返す。
         return png;
     }
 
+    // WriteBytes(path: 出力先, bytes: 内容) はテスト用バイト列をファイルへ保存する。
     void WriteBytes(
         const std::filesystem::path& path,
         const std::vector<std::uint8_t>& bytes)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // output stream
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -205,18 +232,21 @@ namespace
             static_cast<std::streamsize>(bytes.size()));
     }
 
+    // SolidImage(width: 画像幅, height: 画像高, color: RGBA値) は単色画像を生成する。
     [[nodiscard]] LamaPon::TextureLoader::CpuImage
         SolidImage(
             const std::uint32_t width,
             const std::uint32_t height,
             const std::array<std::uint8_t, 4>& color)
     {
+        // decoded RGBA image
         LamaPon::TextureLoader::CpuImage image;
         image.width = width;
         image.height = height;
         image.pixels.resize(
             static_cast<std::size_t>(width)
             * height * 4);
+        // pixel: RGBA offset
         for (std::size_t pixel = 0;
             pixel < image.pixels.size();
             pixel += 4)
@@ -226,12 +256,16 @@ namespace
             image.pixels[pixel + 2] = color[2];
             image.pixels[pixel + 3] = color[3];
         }
+        // Return the completed solid-color image.
         return image;
     }
 
+    // TestMipChain() はmip寸法とbox平均色を検証する。
     void TestMipChain()
     {
+        // base image
         auto base = SolidImage(8, 4, { 10, 20, 30, 255 });
+        // generated mip levels
         const auto mips =
             LamaPon::TextureLoader::GenerateMipChain(
                 std::move(base));
@@ -254,7 +288,7 @@ namespace
                 && mips[3].pixels[3] == 255,
             "solid color must survive mip filtering");
 
-        // 2x2→1x1のボックス平均を厳密に確認します。
+        // 2x2 source image
         LamaPon::TextureLoader::CpuImage quad;
         quad.width = 2;
         quad.height = 2;
@@ -263,6 +297,7 @@ namespace
             255, 255, 255, 255,
             100, 50, 200, 255,
             60, 150, 20, 255 };
+        // averaged mip levels
         const auto quadMips =
             LamaPon::TextureLoader::GenerateMipChain(
                 std::move(quad));
@@ -277,8 +312,10 @@ namespace
             "1x1 mip must be the rounded box average");
     }
 
+    // TestBlockCompression() はBC1とBC3の端点およびindexを検証する。
     void TestBlockCompression()
     {
+        // opaque source image
         const auto opaque =
             SolidImage(4, 4, { 200, 64, 32, 255 });
         Require(
@@ -286,15 +323,19 @@ namespace
                 opaque),
             "opaque image must not report transparency");
 
+        // BC1 compressed block
         const auto bc1 =
             LamaPon::TextureLoader::CompressBC1(opaque);
         Require(
             bc1.size() == 8,
             "one BC1 block is 8 bytes");
+        // RGB565 endpoint 0
         std::uint16_t color0{};
+        // RGB565 endpoint 1
         std::uint16_t color1{};
         std::memcpy(&color0, bc1.data(), 2);
         std::memcpy(&color1, bc1.data() + 2, 2);
+        // expected RGB565
         const std::uint16_t expected565 =
             static_cast<std::uint16_t>(
                 ((200 >> 3) << 11)
@@ -304,19 +345,23 @@ namespace
             color0 == expected565
                 && color1 == expected565,
             "solid block endpoints must equal the color");
+        // BC1 pixel selectors
         std::uint32_t indices{};
         std::memcpy(&indices, bc1.data() + 4, 4);
         Require(
             indices == 0,
             "solid block must select endpoint 0 everywhere");
 
-        // アルファのグラデーションでBC3の端点を確認します。
+        // BC3 alpha fixture
         auto alphaImage =
             SolidImage(4, 4, { 128, 128, 128, 255 });
+        // row alpha values
         const std::array<std::uint8_t, 4> rowAlpha{
             255, 128, 64, 0 };
+        // y: BC3 block row
         for (std::uint32_t y = 0; y < 4; ++y)
         {
+            // x: BC3 block column
             for (std::uint32_t x = 0; x < 4; ++x)
             {
                 alphaImage.pixels[
@@ -328,6 +373,7 @@ namespace
             LamaPon::TextureLoader::HasTransparentPixels(
                 alphaImage),
             "alpha gradient must report transparency");
+        // BC3 compressed block
         const auto bc3 =
             LamaPon::TextureLoader::CompressBC3(
                 alphaImage);
@@ -339,17 +385,18 @@ namespace
             "BC3 alpha endpoints must be max/min");
     }
 
-    // BC5は法線マップ用。BC4ブロック2つ（先がR、後がG）で、
-    // それぞれBC3のアルファ部と同じ符号化です。
+    // TestNormalMapCompression() はBC5のchannel配置、format選択、容量比を検証する。
     void TestNormalMapCompression()
     {
-        // Rだけを行ごとに変化させ、RとGが別々のブロックへ
-        // 符号化されることを判別します。
+        // BC5 source image
         auto image = SolidImage(4, 4, { 0, 90, 255, 255 });
+        // row red values
         const std::array<std::uint8_t, 4> rowRed{
             255, 170, 85, 0 };
+        // y: BC5 block row
         for (std::uint32_t y = 0; y < 4; ++y)
         {
+            // x: BC5 block column
             for (std::uint32_t x = 0; x < 4; ++x)
             {
                 image.pixels[
@@ -358,6 +405,7 @@ namespace
             }
         }
 
+        // BC5 compressed block
         const auto bc5 =
             LamaPon::TextureLoader::CompressBC5(image);
         Require(
@@ -370,7 +418,7 @@ namespace
             bc5[8] == 90 && bc5[9] == 90,
             "BC5 green endpoints must come from the green channel");
 
-        // 用途で選ばれるフォーマットが変わることを確かめます。
+        // format mips
         std::vector<LamaPon::TextureLoader::CpuImage> mips;
         mips.push_back(image);
         using Usage = LamaPon::TextureLoader::TextureUsage;
@@ -400,7 +448,7 @@ namespace
                 == DXGI_FORMAT_R8G8B8A8_UNORM,
             "compression off must stay uncompressed for every usage");
 
-        // 4の倍数でない画像はどの用途でも非圧縮のままです。
+        // odd-size image
         std::vector<LamaPon::TextureLoader::CpuImage> odd;
         odd.push_back(SolidImage(6, 4, { 10, 20, 30, 255 }));
         Require(
@@ -411,7 +459,7 @@ namespace
                 == DXGI_FORMAT_R8G8B8A8_UNORM,
             "non multiple-of-four must stay uncompressed");
 
-        // 転送データの行ピッチもBC5は16バイト/ブロックです。
+        // BC5 upload data
         const auto prepared =
             LamaPon::TextureLoader::PrepareTextureData(
                 LamaPon::TextureLoader::GenerateMipChain(image),
@@ -424,8 +472,7 @@ namespace
             prepared.levels[0].rowPitch == 16,
             "a 4-wide BC5 level is one block per row");
 
-        // 削減量。BC5は16バイト/ブロック＝4x4画素なので、
-        // トップレベルはRGBA8（64バイト/4x4画素）のちょうど1/4です。
+        // RGBA8 mip data
         const auto uncompressed =
             LamaPon::TextureLoader::PrepareTextureData(
                 LamaPon::TextureLoader::GenerateMipChain(image),
@@ -439,18 +486,19 @@ namespace
                 == uncompressed.levels[0].bytes.size(),
             "the top BC5 level must be exactly a quarter of RGBA8");
 
-        // BC5は4x4未満のミップにも16バイトを使うため、末端ミップの
-        // 比率が小さい64x64画像でミップ列全体の削減量を検証します。
+        // 64x64 BC5 fixture
         const auto sizedNormal = SolidImage(
             64,
             64,
             { 128, 128, 255, 255 });
+        // compressed mip data
         const auto sizedCompressed =
             LamaPon::TextureLoader::PrepareTextureData(
                 LamaPon::TextureLoader::GenerateMipChain(
                     sizedNormal),
                 true,
                 Usage::NormalMap);
+        // RGBA8 mip data
         const auto sizedUncompressed =
             LamaPon::TextureLoader::PrepareTextureData(
                 LamaPon::TextureLoader::GenerateMipChain(
@@ -465,7 +513,7 @@ namespace
                 < sizedUncompressed.TotalBytes() * 3,
             "a 64x64 BC5 mip chain must be under 30% of RGBA8");
 
-        // 用途が鍵に入っていないと、法線用のBC5を色として引きます。
+        // cache-key bytes
         const std::array<std::uint8_t, 4> source{ 1, 2, 3, 4 };
         Require(
             LamaPon::TextureCache::ComputeKey(
@@ -479,21 +527,24 @@ namespace
             "the cache key must separate usages");
     }
 
+    // TestPngDecode() はworker thread上のRGBA decodeを検証する。
     void TestPngDecode()
     {
+        // PNG source pixels
         const std::vector<std::uint8_t> pixels{
             255, 0, 0, 255,
             0, 255, 0, 255,
             0, 0, 255, 255,
             255, 255, 255, 128 };
+        // encoded PNG bytes
         const auto png = BuildPng(2, 2, pixels);
 
-        // ワーカースレッドから呼べること（COM初期化を内包する
-        // こと）も同時に検証します。
+        // async decode result
         auto decoded = std::async(
             std::launch::async,
             [&png]
             {
+                // Return the decoded PNG image.
                 return LamaPon::TextureLoader::
                     DecodeImageBytes(png);
             }).get();
@@ -505,11 +556,14 @@ namespace
             "decoded RGBA bytes must match the source");
     }
 
+    // TestDeviceTextures() はWARP上の形式、snapshot、prefetch、disk cacheを検証する。
     void TestDeviceTextures()
     {
+        // WARP graphics device
         Microsoft::WRL::ComPtr<ID3D11Device> device;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext>
             context;
+        // WARP HRESULT
         const HRESULT deviceResult = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_WARP,
@@ -525,15 +579,19 @@ namespace
             SUCCEEDED(deviceResult),
             "WARP device creation must succeed");
 
+        // asset directory
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "texture-loader";
         std::filesystem::remove_all(root);
 
+        // opaque RGBA pixel
         const std::vector<std::uint8_t> opaquePixel{
             200, 64, 32, 255 };
+        // opaque image bytes
         std::vector<std::uint8_t> opaquePixels;
+        // pixel: image index
         for (int pixel = 0; pixel < 64; ++pixel)
         {
             opaquePixels.insert(
@@ -545,6 +603,7 @@ namespace
             root / "opaque.png",
             BuildPng(8, 8, opaquePixels));
 
+        // alpha image bytes
         auto alphaPixels = opaquePixels;
         alphaPixels[3] = static_cast<std::uint8_t>(100);
         WriteBytes(
@@ -554,15 +613,18 @@ namespace
             root / "prefetch.png",
             BuildPng(8, 8, opaquePixels));
 
+        // fixture AssetManager
         LamaPon::AssetManager assets(
             device.Get(),
             context.Get());
         assets.SetAssetRoot(root);
         assets.SetRuntimeTextureCompressionEnabled(true);
 
+        // describe(texture: asset) returns its D3D11 descriptor.
         const auto describe =
             [](const LamaPon::TextureAsset& texture)
             {
+                // resource snapshot
                 const auto resources =
                     texture.resources.Acquire();
                 Require(
@@ -579,11 +641,14 @@ namespace
                 Require(
                     SUCCEEDED(resource.As(&texture2D)),
                     "texture resource must be a Texture2D");
+                // texture description
                 D3D11_TEXTURE2D_DESC description{};
                 texture2D->GetDesc(&description);
+                // texture descriptionを返す。
                 return description;
             };
 
+        // opaque texture
         const auto opaqueTexture =
             assets.LoadTexture(L"opaque.png");
         Require(
@@ -593,6 +658,7 @@ namespace
         Require(
             !opaqueTexture->isCube,
             "2D texture must not be flagged as a cube");
+        // opaque descriptor
         const auto opaqueDescription =
             describe(*opaqueTexture);
         Require(
@@ -603,6 +669,7 @@ namespace
             opaqueDescription.MipLevels == 4,
             "8x8 must upload a full 4-level mip chain");
 
+        // alpha texture
         const auto alphaTexture =
             assets.LoadTexture(L"alpha.png");
         Require(
@@ -610,11 +677,12 @@ namespace
                 == DXGI_FORMAT_BC3_UNORM,
             "transparent PNG must compress to BC3");
 
-        // Bindingをcopyしても同じ公開slotを参照し、publish前に取得した
-        // snapshotはpublish後も内容が変化せず生存することを確認します。
+        // shared resource slot
         LamaPon::TextureResourceBinding binding;
+        // opaque snapshot
         auto opaqueResources =
             opaqueTexture->resources.Acquire();
+        // alpha snapshot
         const auto alphaResources =
             alphaTexture->resources.Acquire();
         Require(
@@ -626,16 +694,20 @@ namespace
                     != nullptr,
             "loaded textures must publish resource snapshots");
         binding.Publish(*opaqueResources);
+        // copied binding
         auto copiedBinding = binding;
+        // held snapshot
         auto heldSnapshot = binding.Acquire();
         Require(
             heldSnapshot != nullptr
                 && heldSnapshot
                     ->d3d11ShaderResourceView != nullptr,
             "the binding must expose its published snapshot");
+        // held placeholder SRV
         auto* const heldView =
             heldSnapshot->d3d11ShaderResourceView.Get();
         copiedBinding.Publish(*alphaResources);
+        // copied-slot snapshot
         const auto publishedThroughCopy = binding.Acquire();
         Require(
             publishedThroughCopy != nullptr
@@ -656,12 +728,12 @@ namespace
         heldSnapshot.reset();
         opaqueResources.reset();
 
-        // プリフェッチでワーカースレッド側からGPUテクスチャ
-        // まで作成されることを確認します。
+        // prefetch result
         const auto report = std::async(
             std::launch::async,
             [&assets]
             {
+                // Return the asynchronous prefetch report.
                 return assets.PrefetchFiles(
                     { L"prefetch.png" });
             }).get();
@@ -676,15 +748,14 @@ namespace
             assets.CachedTextureCount() == 3,
             "prefetched texture must be in the cache");
 
-        // ディスクキャッシュ経由（2回目の読み込み）でも同じ形の
-        // テクスチャになること。保存の下限（64KB）がある
-        // ので、BC1で確実に超える512x512で確かめます
-        // （256x256のBC1はミップ込み約43KBで対象外）。
         {
+            // gradient bytes
             std::vector<std::uint8_t> gradient;
             gradient.reserve(512 * 512 * 4);
+            // y: 512px row
             for (std::uint32_t y = 0; y < 512; ++y)
             {
+                // x: 512px column
                 for (std::uint32_t x = 0; x < 512; ++x)
                 {
                     gradient.push_back(
@@ -698,13 +769,14 @@ namespace
             WriteBytes(
                 root / "cached.png",
                 BuildPng(512, 512, gradient));
-            // 読み込み前のキャッシュのファイル数。後で「1つ
-            // 増えた」ことを見ます（is_emptyでは、他のテストが
-            // 書いたエントリと区別できません）。
+            // cacheEntryCount() counts files so the test can verify one new cache write.
             const auto cacheEntryCount = []
             {
+                // cache-entry count
                 std::size_t count = 0;
+                // directory error
                 std::error_code error;
+                // entry: cache file
                 for (const auto& entry :
                     std::filesystem::directory_iterator(
                         LamaPon::TextureCache::
@@ -714,16 +786,20 @@ namespace
                     static_cast<void>(entry);
                     ++count;
                 }
+                // Return the number of cache files.
                 return count;
             };
+            // initial cache count
             const auto beforeCount = cacheEntryCount();
+            // cold-cache texture
             const auto cold =
                 assets.LoadTexture(L"cached.png");
+            // cold texture format
             const auto coldDescription = describe(*cold);
+            // Emit texture metadata only when BC1 is missing.
             if (coldDescription.Format
                 != DXGI_FORMAT_BC1_UNORM)
             {
-                // 失敗時に取得した形式とミップ数を診断用に出力します。
                 std::cout
                     << "diag cached.png: format="
                     << coldDescription.Format
@@ -744,8 +820,10 @@ namespace
                 cacheEntryCount() == beforeCount + 1,
                 "the cold load must write one cache entry");
             assets.Clear();
+            // warm-cache texture
             const auto warm =
                 assets.LoadTexture(L"cached.png");
+            // warm texture format
             const auto warmDescription = describe(*warm);
             Require(
                 warmDescription.Format
@@ -756,10 +834,10 @@ namespace
                 "a disk-cache hit must produce the same"
                 " texture");
 
-            // 圧縮設定がキャッシュキーへ含まれ、無効時はRGBA8を返すこと。
             assets.SetRuntimeTextureCompressionEnabled(
                 false);
             assets.Clear();
+            // large RGBA texture
             const auto uncompressedLarge =
                 assets.LoadTexture(L"cached.png");
             Require(
@@ -771,9 +849,9 @@ namespace
                 true);
         }
 
-        // 圧縮を切れば非圧縮RGBA8のまま読み込まれます。
         assets.SetRuntimeTextureCompressionEnabled(false);
         assets.Clear();
+        // RGBA texture
         const auto uncompressed =
             assets.LoadTexture(L"opaque.png");
         Require(
@@ -782,18 +860,18 @@ namespace
             "compression toggle off must keep RGBA8");
     }
 
-    // テクスチャのディスクキャッシュについて、保存と読み込みの往復、
-    // および破損ファイルの拒否をGPUなしで検証します。
+    // TestDiskCache() はcache key、往復、破損拒否、size下限を検証する。
     void TestDiskCache()
     {
-        // 保存下限の64KBを超える256x256画像を使います。BC端点の縮退を
-        // 避けるため、画素値にはアルファのグラデーションを付けます。
+        // cache fixture image
         LamaPon::TextureLoader::CpuImage image;
         image.width = 256;
         image.height = 256;
         image.pixels.reserve(256 * 256 * 4);
+        // y: source row
         for (std::uint32_t y = 0; y < 256; ++y)
         {
+            // x: source column
             for (std::uint32_t x = 0; x < 256; ++x)
             {
                 image.pixels.push_back(
@@ -807,10 +885,11 @@ namespace
                         128 + (x % 100)));
             }
         }
+        // source PNG bytes
         const std::vector<std::uint8_t> sourceBytes =
             BuildPng(256, 256, image.pixels);
 
-        // 同じ入力は同じキー、圧縮設定または内容が異なる入力は別のキーになること。
+        // compressed cache key
         const auto keyCompressed =
             LamaPon::TextureCache::ComputeKey(
                 sourceBytes,
@@ -827,6 +906,7 @@ namespace
                     sourceBytes,
                     false),
             "the compression flag must change the key");
+        // modified PNG bytes
         auto changedBytes = sourceBytes;
         changedBytes[changedBytes.size() / 2] ^= 0xff;
         Require(
@@ -836,13 +916,14 @@ namespace
                     true),
             "changed content must change the key");
 
-        // 圧縮あり／なしの両方で、保存→読み込みがバイト単位で
-        // 一致すること。
+        // compress: BC flag
         for (const bool compress : { true, false })
         {
+            // generated mip levels
             auto mips =
                 LamaPon::TextureLoader::GenerateMipChain(
                     image);
+            // cache entry
             LamaPon::TextureCache::CachedTexture entry;
             std::copy_n(
                 mips.back().pixels.begin(),
@@ -853,6 +934,7 @@ namespace
                     std::move(mips),
                     compress);
 
+            // per-mode cache key
             const auto key =
                 LamaPon::TextureCache::ComputeKey(
                     sourceBytes,
@@ -862,6 +944,7 @@ namespace
                     .has_value(),
                 "a missing entry must be a miss");
             LamaPon::TextureCache::Store(key, entry);
+            // loaded cache entry
             const auto loaded =
                 LamaPon::TextureCache::TryLoad(key);
             Require(
@@ -878,12 +961,15 @@ namespace
                 loaded->data.levels.size()
                     == entry.data.levels.size(),
                 "the level count must round-trip");
+            // index: mip
             for (std::size_t index = 0;
                 index < entry.data.levels.size();
                 ++index)
             {
+                // expected mip layout
                 const auto& expected =
                     entry.data.levels[index];
+                // loaded mip layout
                 const auto& actual =
                     loaded->data.levels[index];
                 Require(
@@ -899,25 +985,29 @@ namespace
             }
         }
 
-        // 途中で切れたファイルと末尾に余分なデータを持つファイルを拒否し、
-        // 通常の再生成経路へ移れることを確認します。
+        // per-file cache key
         const auto key =
             LamaPon::TextureCache::ComputeKey(
                 sourceBytes,
                 true);
+        // cache file path
         const auto path =
             LamaPon::TextureCache::CacheDirectory()
             / (([&key]
                 {
+                    // name: cache filename
                     wchar_t name[32]{};
                     swprintf_s(
                         name,
                         L"%016llx.ttex",
                         key);
+                    // Return the wide cache filename.
                     return std::wstring(name);
                 })());
+        // cached file bytes
         std::vector<std::uint8_t> fileBytes;
         {
+            // cache input stream
             std::ifstream input(path, std::ios::binary);
             Require(
                 static_cast<bool>(input),
@@ -926,9 +1016,11 @@ namespace
                 (std::istreambuf_iterator<char>(input)),
                 std::istreambuf_iterator<char>());
         }
+        // writeBytes(bytes: cache content) rewrites the cache file.
         const auto writeBytes =
             [&path](const std::vector<std::uint8_t>& bytes)
         {
+            // cache output stream
             std::ofstream output(
                 path,
                 std::ios::binary | std::ios::trunc);
@@ -938,6 +1030,7 @@ namespace
                 static_cast<std::streamsize>(
                     bytes.size()));
         };
+        // short cache bytes
         auto truncated = fileBytes;
         truncated.resize(truncated.size() / 2);
         writeBytes(truncated);
@@ -945,6 +1038,7 @@ namespace
             !LamaPon::TextureCache::TryLoad(key)
                 .has_value(),
             "a truncated cache file must be rejected");
+        // extra-byte cache
         auto trailing = fileBytes;
         trailing.push_back(0);
         writeBytes(trailing);
@@ -952,6 +1046,7 @@ namespace
             !LamaPon::TextureCache::TryLoad(key)
                 .has_value(),
             "trailing garbage must be rejected");
+        // invalid-magic cache
         auto badMagic = fileBytes;
         badMagic[0] ^= 0xff;
         writeBytes(badMagic);
@@ -959,20 +1054,19 @@ namespace
             !LamaPon::TextureCache::TryLoad(key)
                 .has_value(),
             "a wrong magic must be rejected");
-        // 元へ戻せばまた読めること（検査が厳しすぎて正常な
-        // ファイルまで弾いていないことの確認）。
         writeBytes(fileBytes);
         Require(
             LamaPon::TextureCache::TryLoad(key)
                 .has_value(),
             "the intact file must load again");
 
-        // 小さすぎる結果は保存されないこと。作り直すほうが
-        // ファイルを開くより速いので、キャッシュの対象外です。
+        // Tiny fixture remains below the cache size threshold.
         {
+            // tiny RGBA image
             LamaPon::TextureLoader::CpuImage tiny;
             tiny.width = 8;
             tiny.height = 8;
+            // pixel: tiny index
             for (int pixel = 0; pixel < 64; ++pixel)
             {
                 tiny.pixels.push_back(
@@ -981,10 +1075,13 @@ namespace
                 tiny.pixels.push_back(20);
                 tiny.pixels.push_back(255);
             }
+            // tiny PNG bytes
             const auto tinyPng = BuildPng(8, 8, tiny.pixels);
+            // tiny mip levels
             auto tinyMips =
                 LamaPon::TextureLoader::GenerateMipChain(
                     tiny);
+            // tiny cache entry
             LamaPon::TextureCache::CachedTexture tinyEntry;
             std::copy_n(
                 tinyMips.back().pixels.begin(),
@@ -994,6 +1091,7 @@ namespace
                 LamaPon::TextureLoader::PrepareTextureData(
                     std::move(tinyMips),
                     true);
+            // tiny cache key
             const auto tinyKey =
                 LamaPon::TextureCache::ComputeKey(
                     tinyPng,
@@ -1005,16 +1103,15 @@ namespace
                 "tiny textures must not be stored");
         }
 
-        // WARP環境では時間を合否条件にせず、1024x1024画像の
-        // 初回処理とキャッシュ利用時の時間を診断用に出力します。
         {
+            // large RGBA fixture
             LamaPon::TextureLoader::CpuImage large;
             large.width = 1024;
             large.height = 1024;
             large.pixels.reserve(1024 * 1024 * 4);
-            // 乱数ではなく決定的なLCG。毎回同じ絵でないと
-            // 鍵が変わってキャッシュの意味が測れません。
+            // stable LCG seed
             std::uint32_t state = 12345;
+            // index: byte
             for (std::size_t index = 0;
                 index < 1024 * 1024 * 4;
                 ++index)
@@ -1023,15 +1120,19 @@ namespace
                 large.pixels.push_back(
                     static_cast<std::uint8_t>(state >> 24));
             }
+            // encoded large PNG
             const auto largePng =
                 BuildPng(1024, 1024, large.pixels);
 
+            // prepare start time
             const auto start =
                 std::chrono::steady_clock::now();
+            // large mip chain
             auto mips =
                 LamaPon::TextureLoader::GenerateMipChain(
                     LamaPon::TextureLoader::DecodeImageBytes(
                         largePng));
+            // large cache entry
             LamaPon::TextureCache::CachedTexture entry;
             std::copy_n(
                 mips.back().pixels.begin(),
@@ -1041,17 +1142,22 @@ namespace
                 LamaPon::TextureLoader::PrepareTextureData(
                     std::move(mips),
                     true);
+            // prepare finish time
             const auto prepared =
                 std::chrono::steady_clock::now();
+            // large cache key
             const auto largeKey =
                 LamaPon::TextureCache::ComputeKey(
                     largePng,
                     true);
             LamaPon::TextureCache::Store(largeKey, entry);
+            // write finish time
             const auto stored =
                 std::chrono::steady_clock::now();
+            // reloaded entry
             const auto reloaded =
                 LamaPon::TextureCache::TryLoad(largeKey);
+            // load finish time
             const auto loaded =
                 std::chrono::steady_clock::now();
             Require(
@@ -1059,9 +1165,11 @@ namespace
                     && reloaded->data.TotalBytes()
                         == entry.data.TotalBytes(),
                 "the large entry must round-trip");
+            // milliseconds(begin: start, end: finish) returns elapsed milliseconds.
             const auto milliseconds =
                 [](const auto begin, const auto end)
             {
+                // 経過時間をmillisecondsで返す。
                 return std::chrono::duration_cast<
                     std::chrono::microseconds>(
                         end - begin).count() / 1000.0;
@@ -1077,12 +1185,14 @@ namespace
         }
     }
 
-    // 大きいテクスチャの段階的GPUアップロードを検証します。
+    // TestProgressiveUpload() はplaceholder切替、段階upload、全mip公開を検証する。
     void TestProgressiveUpload()
     {
+        // WARP graphics device
         Microsoft::WRL::ComPtr<ID3D11Device> device;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext>
             context;
+        // WARP HRESULT
         const HRESULT deviceResult = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_WARP,
@@ -1098,14 +1208,17 @@ namespace
             SUCCEEDED(deviceResult),
             "WARP device creation must succeed");
 
+        // upload asset root
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "texture-progressive";
         std::filesystem::remove_all(root);
 
+        // source pixels
         std::vector<std::uint8_t> pixels;
         pixels.reserve(64 * 64 * 4);
+        // pixel: source index
         for (int pixel = 0; pixel < 64 * 64; ++pixel)
         {
             pixels.push_back(180);
@@ -1123,14 +1236,16 @@ namespace
             root / "small.png",
             BuildPng(64, 64, pixels));
 
+        // fixture AssetManager
         LamaPon::AssetManager assets(
             device.Get(),
             context.Get());
         assets.SetAssetRoot(root);
-        // しきい値1バイト＝必ず段階アップロード経路になります。
         assets.SetProgressiveUploadThreshold(1);
 
+        // large texture
         const auto texture = assets.LoadTexture(L"big.png");
+        // placeholder snapshot
         auto placeholderResources =
             texture->resources.Acquire();
         Require(
@@ -1145,12 +1260,13 @@ namespace
             assets.PendingTextureUploadCount() == 1,
             "a large texture must enter the upload queue");
 
-        // 1バイト予算でも最低1レベルは進み、SRVが実テクスチャへ
-        // 切り替わります（前進保証）。
+        // placeholder SRV
         auto* const placeholderView =
             placeholderResources
+                // A one-byte budget must still advance at least one mip.
                 ->d3d11ShaderResourceView.Get();
         assets.PumpTextureUploads(1);
+        // uploaded snapshot
         auto uploadedResources =
             texture->resources.Acquire();
         Require(
@@ -1159,14 +1275,13 @@ namespace
                     ->d3d11ShaderResourceView.Get()
                     != placeholderView,
             "the first pump must swap in the real texture");
-        // 比較後は旧snapshotを解放し、残りのupload中に古いGPU resourceの
-        // 寿命をこのテスト自身が延ばさないようにします。
         placeholderResources.reset();
         uploadedResources.reset();
         Require(
             assets.PendingTextureUploadCount() == 1,
             "a tiny budget must leave the upload unfinished");
 
+        // i: pump count
         for (int i = 0;
             i < 64
                 && assets.PendingTextureUploadCount() > 0;
@@ -1178,7 +1293,7 @@ namespace
             assets.PendingTextureUploadCount() == 0,
             "the upload queue must drain");
 
-        // 完了後のSRVは全ミップ（64x64は7レベル）を参照します。
+        // final SRV snapshot
         const auto completedResources =
             texture->resources.Acquire();
         Require(
@@ -1186,6 +1301,7 @@ namespace
                 && completedResources
                     ->d3d11ShaderResourceView != nullptr,
             "the completed upload must publish a texture view");
+        // SRV description
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
         completedResources->d3d11ShaderResourceView->GetDesc(
             &viewDescription);
@@ -1198,7 +1314,6 @@ namespace
                     == 7,
             "the finished view must expose the full mip chain");
 
-        // キャッシュから消えた保留テクスチャは転送せず破棄します。
         static_cast<void>(assets.LoadTexture(L"big2.png"));
         Require(
             assets.PendingTextureUploadCount() == 1,
@@ -1209,7 +1324,6 @@ namespace
             assets.PendingTextureUploadCount() == 0,
             "cleared textures must be dropped from the queue");
 
-        // しきい値未満のデータは一括アップロードされること。
         assets.SetProgressiveUploadThreshold(
             std::numeric_limits<std::size_t>::max());
         static_cast<void>(assets.LoadTexture(L"small.png"));
@@ -1219,16 +1333,18 @@ namespace
     }
 }
 
+// main() はCOMとcacheを初期化し、texture testsの結果を返す。
 int main()
 {
+    // Catch failures from COM setup and all texture tests.
     try
     {
+        // COM status
         const HRESULT comResult =
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
 
-        // 利用者のキャッシュと過去のテスト結果を避けるため、
-        // 全テストを専用のキャッシュディレクトリで実行します。
+        // test cache root
         const auto cacheRoot =
             std::filesystem::current_path()
             / "test-output"
@@ -1245,15 +1361,18 @@ int main()
         TestDeviceTextures();
         TestProgressiveUpload();
     }
+    // error: captured texture-test failure
     catch (const std::exception& error)
     {
         std::cerr
             << "TextureLoader tests failed: "
             << error.what()
             << '\n';
+        // Return failure after writing the exception diagnostic.
         return 1;
     }
 
     std::cout << "TextureLoader tests passed.\n";
+    // Return success after all texture tests pass.
     return 0;
 }

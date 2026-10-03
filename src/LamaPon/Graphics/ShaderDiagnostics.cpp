@@ -8,12 +8,15 @@
 
 namespace
 {
-    // コメントを空白へ置き換えます（消すと行番号がずれるため）。
+    // ソースのコメント部分を改行を残して空白へ置き換える(source: HLSLソース文字列)。
     [[nodiscard]] std::string StripComments(
         const std::string_view source)
     {
+        // コメントを空白へ置換するソース
         std::string result(source);
+        // ソース文字列のバイト数
         const std::size_t size = result.size();
+        // ソース内の確認位置
         for (std::size_t index = 0; index < size;)
         {
             if (index + 1 < size
@@ -32,6 +35,7 @@ namespace
             {
                 while (index < size)
                 {
+                    // 複数行コメントの終端有無
                     const bool end = index + 1 < size
                         && result[index] == '*'
                         && result[index + 1] == '/';
@@ -56,6 +60,7 @@ namespace
         return result;
     }
 
+    // 識別子に使う英数字か下線か判定する(character: 確認する文字)。
     [[nodiscard]] bool IsIdentifierCharacter(
         const char character) noexcept
     {
@@ -64,14 +69,16 @@ namespace
             || character == '_';
     }
 
-    // 「名前」の直後が（空白を挟んで）'(' なら関数定義とみなします。
+    // 名前の直後に括弧を持つ入口候補を探す(source: コメント除去済みソース, name: 検出する入口名)。
     [[nodiscard]] bool HasEntryPoint(
         const std::string& source,
         const std::string_view name)
     {
+        // 入口候補を探す開始位置
         std::size_t cursor = 0;
         while (true)
         {
+            // 入口名の出現位置
             const auto found = source.find(name, cursor);
             if (found == std::string::npos)
             {
@@ -79,8 +86,10 @@ namespace
             }
             cursor = found + name.size();
 
+            // 名前の左端の識別子境界
             const bool boundedLeft = found == 0
                 || !IsIdentifierCharacter(source[found - 1]);
+            // 名前の後ろの確認位置
             std::size_t after = cursor;
             while (after < source.size()
                 && std::isspace(
@@ -98,6 +107,7 @@ namespace
         }
     }
 
+    // 指定文字列が含まれるか調べる(text: 検索元の文字列, needle: 検索する文字列)。
     [[nodiscard]] bool Contains(
         const std::string_view text,
         const std::string_view needle)
@@ -105,7 +115,7 @@ namespace
         return text.find(needle) != std::string_view::npos;
     }
 
-    // そのShaderが「何用に見えるか」を一言で。
+    // 入口候補の組合せから用途の説明を作る(entryPoints: 検出済みの入口候補)。
     [[nodiscard]] std::string DescribeShaderKind(
         const LamaPon::ShaderEntryPoints& entryPoints)
     {
@@ -135,16 +145,17 @@ namespace
         return {};
     }
 
-    // HLSLコンパイラのメッセージでは対象の入口／識別子が引用符で
-    // 囲まれるため、最初の引用名を診断対象として抽出します。
+    // 診断内の最初の単一引用符の内容を借用する(message: コンパイラの診断文)。
     [[nodiscard]] std::string_view FirstQuotedName(
         const std::string_view message)
     {
+        // 先頭の単一引用符位置
         const auto begin = message.find('\'');
         if (begin == std::string_view::npos)
         {
             return {};
         }
+        // 対応する閉じ単一引用符の位置
         const auto end = message.find('\'', begin + 1);
         if (end == std::string_view::npos)
         {
@@ -153,12 +164,11 @@ namespace
         return message.substr(begin + 1, end - begin - 1);
     }
 
-    // 定数バッファ経由でエンジンが提供する識別子の一覧です。
-    // ObjectBuffer宣言が無い状態で一覧中の名前が未定義になった場合に、
-    // 組み込み識別子であることを診断へ補足します。
+    // 定数バッファが提供する既知の識別子か判定する(name: 確認する識別子)。
     [[nodiscard]] bool IsEngineProvidedName(
         const std::string_view name)
     {
+        // 定数バッファの既知の識別子
         constexpr std::array<std::string_view, 16> names{
             "World",
             "ViewProjection",
@@ -180,6 +190,7 @@ namespace
         return std::ranges::find(names, name) != names.end();
     }
 
+    // 割当用途に必要な入口の説明を返す(usage: シェーダーの割当用途)。
     [[nodiscard]] std::string RequirementFor(
         const LamaPon::ShaderUsage usage)
     {
@@ -208,28 +219,36 @@ namespace LamaPon
     std::optional<ShaderDiagnosticLocation>
         ParseShaderDiagnosticLocation(const std::string_view message)
     {
+        // 位置表記を探す開始位置
         std::size_t searchFrom{};
         while (searchFrom < message.size())
         {
+            // 位置表記の開き括弧位置
             const auto open = message.find('(', searchFrom);
             if (open == std::string_view::npos)
             {
                 return std::nullopt;
             }
+            // 位置表記の閉じ括弧位置
             const auto close = message.find(')', open + 1);
             if (close == std::string_view::npos)
             {
                 return std::nullopt;
             }
+            // 行番号と列番号の区切り位置
             const auto comma = message.find(',', open + 1);
+            // 行番号文字列の終了位置
             const auto lineEnd = comma != std::string_view::npos
                     && comma < close
                 ? comma
                 : close;
+            // 1始まりの解析した行番号
             std::uint32_t line{};
+            // 行番号を表す文字列
             const auto lineText = message.substr(
                 open + 1,
                 lineEnd - open - 1);
+            // 行番号の数値変換結果
             const auto lineResult = std::from_chars(
                 lineText.data(),
                 lineText.data() + lineText.size(),
@@ -242,12 +261,15 @@ namespace LamaPon
                 continue;
             }
 
+            // 1始まりの解析した列番号
             std::uint32_t column{ 1 };
             if (comma != std::string_view::npos && comma < close)
             {
+                // 列番号を表す文字列
                 const auto columnText = message.substr(
                     comma + 1,
                     close - comma - 1);
+                // 列番号の数値変換結果
                 const auto columnResult = std::from_chars(
                     columnText.data(),
                     columnText.data() + columnText.size(),
@@ -261,14 +283,14 @@ namespace LamaPon
                 }
             }
 
+            // 直前の改行位置
             const auto newline = message.rfind('\n', open);
+            // ファイルパスの開始位置
             auto pathStart = newline == std::string_view::npos
                 ? std::size_t{}
                 : newline + 1;
-            // ShaderCompilerはD3DCompilerの本文を
-            // "Failed to compile ...: " の後へ連結します。
-            // Windowsのドライブ区切り（"C:\\"）とは衝突しない
-            // 「コロン+空白」を使い、その説明部分を除きます。
+            // 前置き説明はコロンと空白で除き、Windowsのドライブ区切りは保持する。
+            // 前置き説明の最終区切り位置
             const auto prefix = message.rfind(": ", open);
             if (prefix != std::string_view::npos
                 && prefix + 2 > pathStart)
@@ -281,6 +303,7 @@ namespace LamaPon
             {
                 ++pathStart;
             }
+            // ファイルパスの終了位置
             auto pathEnd = open;
             while (pathEnd > pathStart
                 && std::isspace(static_cast<unsigned char>(
@@ -308,7 +331,9 @@ namespace LamaPon
     ShaderEntryPoints ParseShaderEntryPoints(
         const std::string_view source)
     {
+        // コメント除去済みのソース
         const auto stripped = StripComments(source);
+        // 検出したシェーダー入口候補
         ShaderEntryPoints entryPoints;
         entryPoints.vertex = HasEntryPoint(stripped, "VSMain");
         entryPoints.pixel = HasEntryPoint(stripped, "PSMain");
@@ -328,10 +353,10 @@ namespace LamaPon
         const std::string_view source,
         const ShaderUsage usage)
     {
+        // 元の診断へ添える説明
         std::string hint;
 
-        // X1507はincludeファイルを開けない場合に発生するため、
-        // ファイルの配置とエディターの更新方法を案内します。
+        // includeの解決失敗には配置と更新方法の説明を添える。
         if (Contains(compilerMessage, "X1507")
             || Contains(
                 compilerMessage,
@@ -343,20 +368,21 @@ namespace LamaPon
                 "エンジン同梱のものなら、プロジェクトを新しい"
                 "エディターで開き直すと揃います。";
         }
-        // X3501: 探した入口がなかった。
+        // 入口不足には用途に合う入口名を案内する。
         else if (Contains(compilerMessage, "X3501")
             || Contains(compilerMessage, "entrypoint not found"))
         {
+            // 検出したシェーダー入口候補
             const auto entryPoints =
                 ParseShaderEntryPoints(source);
+            // 診断に引用された未検出名
             const auto missing =
                 FirstQuotedName(compilerMessage);
+            // 骨格用入口の不足有無
             const bool missingSkinned =
                 missing == "VSSkinnedMain"
                 || missing == "PSSkinnedMain";
-            // 3D用としては正しく書けていて、スキニング（ボーン）
-            // モデルへ割り当てただけ、という場合。ここを一般論で
-            // 済ませると「VSMainならあるのに」と混乱します。
+            // 3Dの入口があっても骨格用入口が不足する場合は区別して案内する。
             if (missingSkinned
                 && entryPoints.vertex
                 && entryPoints.pixel)
@@ -368,6 +394,7 @@ namespace LamaPon
             }
             else
             {
+                // 入口候補から推定した用途
                 auto kind = DescribeShaderKind(entryPoints);
                 if (!kind.empty())
                 {
@@ -385,8 +412,7 @@ namespace LamaPon
                     "（Plane・Cube）のMesh Rendererだけです。";
             }
         }
-        // X3506/X3502: 戻り値や引数にセマンティクスが無い。
-        // 初めて書くときにいちばん多い形です。
+        // セマンティクス不足には用途に合う引数と戻り値の規約を添える。
         else if (Contains(compilerMessage, "X3506")
             || Contains(compilerMessage, "X3502")
             || Contains(compilerMessage, "missing semantics"))
@@ -407,11 +433,11 @@ namespace LamaPon
                     "必要です。";
             }
         }
-        // X3004/X3000: 未定義名がエンジン提供の定数と一致する場合だけ、
-        // cbuffer宣言の案内を追加します。それ以外は元の診断を保ちます。
+        // 既知の組込識別子が未定義の場合だけ定数バッファの説明を添える。
         else if (Contains(compilerMessage, "X3004")
             || Contains(compilerMessage, "undeclared identifier"))
         {
+            // 診断に引用された未定義名
             if (const auto name =
                     FirstQuotedName(compilerMessage);
                 IsEngineProvidedName(name))

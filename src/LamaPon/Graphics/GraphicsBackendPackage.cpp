@@ -14,11 +14,16 @@
 
 namespace
 {
+    // 描画パッケージ設定の排他
     std::mutex g_backendPackageMutex;
+    // パッケージ検索のアセット基点
     std::filesystem::path g_backendPackageAssetRoot;
+    // 終了まで保持する描画DLL
     HMODULE g_backendPackageModule{};
+    // 保持中の描画DLLの絶対パス
     std::filesystem::path g_loadedBackendLibrary;
 
+    // 正規化後に親へ出ない相対パスか調べる(path: 検査するパス)。
     bool IsSafeRelativePath(const std::filesystem::path& path)
     {
         if (path.empty() || path.is_absolute()
@@ -26,6 +31,7 @@ namespace
         {
             return false;
         }
+        // 正規化したパスの構成要素
         for (const auto& component : path.lexically_normal())
         {
             if (component == L"..")
@@ -36,11 +42,14 @@ namespace
         return true;
     }
 
+    // 正規化した候補が基点の内側にあるか調べる(directory: 基点フォルダー, candidate: 候補ファイル)。
     bool IsWithinDirectory(
         const std::filesystem::path& directory,
         const std::filesystem::path& candidate)
     {
+        // ファイルパス操作のエラー
         std::error_code error;
+        // 正規化した基点の文字列
         auto root = std::filesystem::weakly_canonical(
             directory,
             error).native();
@@ -48,6 +57,7 @@ namespace
         {
             return false;
         }
+        // 正規化した候補の文字列
         auto file = std::filesystem::weakly_canonical(
             candidate,
             error).native();
@@ -61,10 +71,12 @@ namespace
             || file[root.size()] == L'/';
     }
 
+    // 失敗状態と説明を検査結果へまとめる(state: 失敗の区分, message: 結果の説明)。
     LamaPon::GraphicsBackendPackageInspection Failure(
         const LamaPon::GraphicsBackendPackageState state,
         std::string message)
     {
+        // 描画パッケージの検査結果
         LamaPon::GraphicsBackendPackageInspection result;
         result.state = state;
         result.message = std::move(message);
@@ -81,14 +93,17 @@ namespace LamaPon
     {
         if (api != RenderingApi::DirectX12Experimental)
         {
+            // 描画パッケージの検査結果
             GraphicsBackendPackageInspection result;
             result.state = GraphicsBackendPackageState::BuiltIn;
             result.descriptor.api = RenderingApi::DirectX11;
             return result;
         }
 
+        // 描画パッケージの配置先
         const auto packageDirectory = assetRoot / L"packages"
             / PathFromUtf8(DirectX12BackendPackageName);
+        // パッケージ宣言のパス
         const auto manifestPath = packageDirectory / L"package.json";
         if (!std::filesystem::is_regular_file(manifestPath))
         {
@@ -97,10 +112,13 @@ namespace LamaPon
                 "DirectX 12バックエンドパッケージが未導入です。");
         }
 
+        // 読み込むパッケージ宣言
         nlohmann::json manifest;
         try
         {
+            // パッケージ宣言の入力ファイル
             std::ifstream input(manifestPath, std::ios::binary);
+            // 読み込むパッケージ宣言
             input >> manifest;
         }
         catch (const std::exception&)
@@ -112,10 +130,14 @@ namespace LamaPon
 
         try
         {
+            // 宣言されたパッケージ名
             const auto name = manifest.value("name", std::string{});
+            // 宣言されたパッケージ版
             const auto version = manifest.value("version", std::string{});
+            // 必要なエンジンの最低版
             const auto minimumVersion = manifest.value(
                 "minimumEngineVersion", std::string{});
+            // 適用に必要な再起動の方式
             const auto activation = manifest.value(
                 "activation", std::string{});
             if (name != DirectX12BackendPackageName || version.empty()
@@ -143,6 +165,7 @@ namespace LamaPon
                     GraphicsBackendPackageState::InvalidManifest,
                     "graphicsBackend宣言がありません。");
             }
+            // 描画基盤の宣言オブジェクト
             const auto& backend = manifest.at("graphicsBackend");
             if (backend.value("api", std::string{})
                 != "DirectX12Experimental")
@@ -151,6 +174,7 @@ namespace LamaPon
                     GraphicsBackendPackageState::InvalidManifest,
                     "graphicsBackend.apiがDirectX 12ではありません。");
             }
+            // 宣言された描画ABI版
             const auto abiVersion = backend.value("abiVersion", 0u);
             if (abiVersion != GraphicsBackendPackageAbiVersion)
             {
@@ -159,6 +183,7 @@ namespace LamaPon
                     "DirectX 12バックエンドのABIバージョンが一致しません。");
             }
 
+            // パッケージ内の描画DLLパス
             const auto runtimeRelative = PathFromUtf8(
                 backend.value("runtimeLibrary", std::string{}));
             if (!IsSafeRelativePath(runtimeRelative)
@@ -168,6 +193,7 @@ namespace LamaPon
                     GraphicsBackendPackageState::InvalidManifest,
                     "runtimeLibraryはパッケージ内のDLLを指定してください。");
             }
+            // 描画DLLの正規化したパス
             const auto runtimeLibrary =
                 (packageDirectory / runtimeRelative).lexically_normal();
             if (!std::filesystem::is_regular_file(runtimeLibrary))
@@ -183,6 +209,7 @@ namespace LamaPon
                     "runtimeLibraryがパッケージ外を参照しています。");
             }
 
+            // 描画パッケージの検査結果
             GraphicsBackendPackageInspection result;
             result.state = GraphicsBackendPackageState::Ready;
             result.descriptor.api = RenderingApi::DirectX12Experimental;
@@ -203,6 +230,7 @@ namespace LamaPon
     void SetGraphicsBackendPackageAssetRoot(
         std::filesystem::path assetRoot)
     {
+        // 描画パッケージ設定の排他保持
         std::scoped_lock lock(g_backendPackageMutex);
         g_backendPackageAssetRoot = std::move(assetRoot);
     }
@@ -211,6 +239,7 @@ namespace LamaPon
         const RenderingApi api,
         const std::string_view currentEngineVersion)
     {
+        // 描画パッケージ設定の排他保持
         std::scoped_lock lock(g_backendPackageMutex);
         if (g_backendPackageAssetRoot.empty())
         {
@@ -218,6 +247,7 @@ namespace LamaPon
                 GraphicsBackendPackageState::Missing,
                 "描画バックエンドのパッケージルートが未指定です。");
         }
+        // 描画パッケージの検査結果
         auto inspection = InspectGraphicsBackendPackage(
             g_backendPackageAssetRoot,
             api,
@@ -227,7 +257,9 @@ namespace LamaPon
             return inspection;
         }
 
+        // ファイルパス操作のエラー
         std::error_code error;
+        // 要求された描画DLLの絶対パス
         const auto requestedLibrary = std::filesystem::weakly_canonical(
             inspection.descriptor.runtimeLibrary,
             error);
@@ -250,6 +282,7 @@ namespace LamaPon
             return inspection;
         }
 
+        // ロードした描画DLL
         const HMODULE module = LoadLibraryExW(
             requestedLibrary.c_str(),
             nullptr,
@@ -265,10 +298,12 @@ namespace LamaPon
 
         using AbiVersionFunction = std::uint32_t (*)();
         using ApiNameFunction = const char* (*)();
+        // ABI版を取得する関数
         const auto abiVersionFunction = reinterpret_cast<
             AbiVersionFunction>(GetProcAddress(
                 module,
                 "LamaPonGraphicsBackendAbiVersion"));
+        // 描画API名を取得する関数
         const auto apiNameFunction = reinterpret_cast<ApiNameFunction>(
             GetProcAddress(module, "LamaPonGraphicsBackendApi"));
         if (abiVersionFunction == nullptr || apiNameFunction == nullptr)
@@ -279,6 +314,7 @@ namespace LamaPon
                 "DirectX 12バックエンドのABI entry pointがありません。";
             return inspection;
         }
+        // DLLが宣言する描画API名
         const char* const apiName = apiNameFunction();
         if (abiVersionFunction() != GraphicsBackendPackageAbiVersion
             || apiName == nullptr

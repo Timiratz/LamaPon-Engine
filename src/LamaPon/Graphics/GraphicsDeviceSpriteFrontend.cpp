@@ -2,8 +2,6 @@
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
-#include "LamaPon/Core/Log.h"
-#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/TextLayout.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scene/SceneTransition.h"
@@ -15,10 +13,10 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace
 {
+    // RGBへアルファを事前乗算します(color: 元のRGBA色)。
     [[nodiscard]] DirectX::XMFLOAT4 Premultiplied(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -30,6 +28,7 @@ namespace
         };
     }
 
+    // アルファだけを乗算します(color: 元のRGBA色, alpha: 追加の透明度係数)。
     [[nodiscard]] DirectX::XMFLOAT4 WithAlpha(
         const DirectX::XMFLOAT4& color,
         const float alpha) noexcept
@@ -37,6 +36,7 @@ namespace
         return { color.x, color.y, color.z, color.w * alpha };
     }
 
+    // 白画像で矩形を描きます(pass: 送信先, x: 左端の画素位置, y: 上端の画素位置, width: 矩形幅, height: 矩形高, color: 事前乗算前のRGBA色)。
     void DrawRectangle(
         LamaPon::SpriteRenderPass& pass,
         const float x,
@@ -45,6 +45,7 @@ namespace
         const float height,
         const DirectX::XMFLOAT4& color)
     {
+        // 送信する画像の描画指定
         LamaPon::SpriteDrawRequest request;
         request.position = { x, y };
         request.scale = {
@@ -54,8 +55,8 @@ namespace
         static_cast<void>(pass.Draw(request));
     }
 
-    // textureを読めない場合はnullptrを返します（組み込みやassetsの
-    // 画像が無い環境でも、遷移と読み込み画面は描き続けます）。
+
+    // 画像のSRVを保持して返し、失敗ならnullptrです(assets: 画像の取得元, path: 画像パス, width: 成功時の画像幅出力, height: 成功時の画像高出力)。
     [[nodiscard]] std::shared_ptr<const LamaPon::TextureResourceSnapshot>
         TryLoadTextureResources(
             LamaPon::AssetManager& assets,
@@ -69,6 +70,7 @@ namespace
             {
                 return nullptr;
             }
+            // 取得した画像資産
             const auto texture = assets.LoadTexture(path);
             if (texture == nullptr
                 || texture->width == 0
@@ -76,6 +78,7 @@ namespace
             {
                 return nullptr;
             }
+            // 保持する画像資源の世代
             auto resources = texture->resources.Acquire();
             if (resources == nullptr
                 || !resources->shaderResourceView)
@@ -92,6 +95,7 @@ namespace
         }
     }
 
+    // 中央寄せした文字画像を描きます(pass: 送信先, assets: 文字画像の取得元, text: 表示文, fontSize: 文字サイズ, canvasWidth: 画面幅, top: 画像の上端, color: 事前乗算前のRGBA色)。
     void DrawCenteredText(
         LamaPon::SpriteRenderPass& pass,
         LamaPon::AssetManager& assets,
@@ -105,19 +109,23 @@ namespace
         {
             return;
         }
+        // 文字配置の領域幅（画素）
         const float textWidth =
             std::min(canvasWidth * 0.8f, 720.0f);
+        // 中央寄せの文字配置設定
         const LamaPon::TextLayoutOptions layout{
             { textWidth, fontSize * 2.1f },
             LamaPon::TextHorizontalAlignment::Center,
             LamaPon::TextVerticalAlignment::Center,
             false
         };
+        // 取得した画像資産
         const auto texture = assets.LoadTextTexture(
             text,
             "Yu Gothic UI",
             fontSize,
             layout);
+        // 保持する画像資源の世代
         const auto resources = texture != nullptr
             ? texture->resources.Acquire()
             : nullptr;
@@ -126,19 +134,20 @@ namespace
         {
             return;
         }
+        // 送信する画像の描画指定
         LamaPon::SpriteDrawRequest request;
         request.texture = resources->shaderResourceView;
         request.position = {
             (canvasWidth - static_cast<float>(texture->width)) * 0.5f,
             top
         };
-        // 白で生成した文字テクスチャへ描画時の色を掛けます。
+
         request.tint = Premultiplied(color);
         static_cast<void>(pass.Draw(request));
     }
 
-    // 標準の読み込み画面です。alphaが1で追加項目が既定値のときは、
-    // 従来のDrawLoadingScreenと同じ描画になります。
+
+    // 背景・進捗・回転表示を描きます(pass: 送信先, assets: 画像の取得元, progress: 0～1の進捗, settings: 読み込み画面の設定, alpha: 全体の透明度, elapsedSeconds: 回転表示の経過秒, canvasWidth: 画面幅, canvasHeight: 画面高)。
     void DrawLoadingOverlay(
         LamaPon::SpriteRenderPass& pass,
         LamaPon::AssetManager& assets,
@@ -157,18 +166,23 @@ namespace
             canvasHeight,
             WithAlpha(settings.backgroundColor, alpha));
 
+        // 背景画像の幅（画素）
         std::uint32_t imageWidth{};
+        // 背景画像の高（画素）
         std::uint32_t imageHeight{};
+        // 背景画像の保持資源
         if (const auto image = TryLoadTextureResources(
                 assets,
                 settings.backgroundTexture,
                 imageWidth,
                 imageHeight))
         {
-            // 縦横比を保ったまま画面全体を覆う大きさにします。
+
+            // 縦横比を保つ画像の拡大率
             const float scale = std::max(
                 canvasWidth / static_cast<float>(imageWidth),
                 canvasHeight / static_cast<float>(imageHeight));
+            // 送信する画像の描画指定
             LamaPon::SpriteDrawRequest request;
             request.texture = image->shaderResourceView;
             request.position = {
@@ -182,6 +196,7 @@ namespace
             static_cast<void>(pass.Draw(request));
         }
 
+        // 進捗バーの幅（画素）
         const float barWidth =
             std::min(
                 std::clamp(
@@ -189,8 +204,11 @@ namespace
                     240.0f,
                     760.0f),
                 canvasWidth * 0.9f);
+        // 進捗バーの高（画素）
         const float barHeight = 18.0f;
+        // 進捗バーの左端（画素）
         const float barX = (canvasWidth - barWidth) * 0.5f;
+        // 進捗バーの上端（画素）
         const float barY = canvasHeight * 0.62f;
         DrawRectangle(
             pass,
@@ -207,6 +225,7 @@ namespace
             barHeight,
             WithAlpha(settings.barFillColor, alpha));
 
+        // 割合を付けた進捗の表示文
         std::string label = settings.message;
         if (settings.showPercentage)
         {
@@ -218,27 +237,33 @@ namespace
                         * 100.0f)));
             label += "%";
         }
+        // 透明度を反映した文字色
         const auto textColor = WithAlpha(settings.textColor, alpha);
         {
+            // 文字配置の領域幅（画素）
             const float textWidth =
                 std::min(canvasWidth * 0.8f, 720.0f);
+            // 中央寄せの文字配置設定
             const LamaPon::TextLayoutOptions layout{
                 { textWidth, 64.0f },
                 LamaPon::TextHorizontalAlignment::Center,
                 LamaPon::TextVerticalAlignment::Center,
                 false
             };
+            // 進捗表示文の画像資産
             const auto text = assets.LoadTextTexture(
                 label,
                 "Yu Gothic UI",
                 30.0f,
                 layout);
+            // 進捗文字画像の保持資源
             const auto textResources = text != nullptr
                 ? text->resources.Acquire()
                 : nullptr;
             if (textResources != nullptr
                 && textResources->shaderResourceView)
             {
+                // 送信する画像の描画指定
                 LamaPon::SpriteDrawRequest request;
                 request.texture =
                     textResources->shaderResourceView;
@@ -247,7 +272,7 @@ namespace
                         * 0.5f,
                     barY - 86.0f
                 };
-                // 白で生成した文字テクスチャへ描画時の色を掛けます。
+
                 request.tint = Premultiplied(textColor);
                 static_cast<void>(pass.Draw(request));
             }
@@ -266,40 +291,58 @@ namespace
         {
             return;
         }
-        // 右下で回る8つの点です。進捗が止まって見える読み込みでも、
-        // 固まっていないことが分かるようにします。
+
+        // 円画像の幅（画素）
         std::uint32_t dotWidth{};
+        // 円画像の高（画素）
         std::uint32_t dotHeight{};
+        // 円画像の保持資源
         const auto dot = TryLoadTextureResources(
             assets,
             L"builtin/circle",
             dotWidth,
             dotHeight);
+        // 回転表示の点数
         constexpr int DotCount = 8;
+        // 1周の角度（ラジアン）
         constexpr float TwoPi = 6.28318531f;
+        // 点の回転半径（画素）
         const float radius = 16.0f;
+        // 点の表示直径（画素）
         const float dotSize = 7.0f;
+        // 回転中心の画面x座標
         const float centerX = canvasWidth - 48.0f;
+        // 回転中心の画面y座標
         const float centerY = canvasHeight - 48.0f;
+        // 明るい先頭位置の周回数
         const float head = elapsedSeconds * 1.25f;
+        // 回転表示の点番号
         for (int index{}; index < DotCount; ++index)
         {
+            // 点の円周上の割合
             const float slot =
                 static_cast<float>(index) / static_cast<float>(DotCount);
+            // 点の表示角（ラジアン）
             const float angle = slot * TwoPi - TwoPi * 0.25f;
-            // 先頭の点ほど濃く、後ろへ行くほど薄くします。
+
+            // 先頭からの周回差
             float trail = head - slot;
             trail -= std::floor(trail);
+            // 当該点の表示透明度
             const float dotAlpha = alpha * (1.0f - trail * 0.8f);
+            // 画像や点の画面x座標
             const float x = centerX + std::cos(angle) * radius;
+            // 画像や点の画面y座標
             const float y = centerY + std::sin(angle) * radius;
+            // 送信する画像の描画指定
             LamaPon::SpriteDrawRequest request;
             if (dot != nullptr)
             {
-                // builtin/circleの円は一辺の112/256の半径なので、
-                // 直径がdotSizeになるように拡大します。
-                const float quad = dotSize
-                    / (2.0f * LamaPon::SceneTransitionCircleRadiusRatio);
+                // builtin/circleの円半径は画像の一辺の112/256なので、指定直径に合う矩形寸法へ補正します。
+                // 円画像の半径と一辺の比
+                constexpr float CircleRadiusRatio = 112.0f / 256.0f;
+                // 指定直径に合う画像の一辺
+                const float quad = dotSize / (2.0f * CircleRadiusRatio);
                 request.texture = dot->shaderResourceView;
                 request.position = { x - quad * 0.5f, y - quad * 0.5f };
                 request.scale = {
@@ -318,44 +361,11 @@ namespace
             static_cast<void>(pass.Draw(request));
         }
     }
-
-    // 1枚の覆いを描きます。rectangleは白の1x1、図形はtextureの大きさ
-    // （builtinは256x256）を基準に拡大します。
-    void DrawTransitionQuad(
-        LamaPon::SpriteRenderPass& pass,
-        const LamaPon::SceneTransitionQuad& quad,
-        const LamaPon::GraphicsViewHandle& texture,
-        const float textureWidth,
-        const float textureHeight)
-    {
-        LamaPon::SpriteDrawRequest request;
-        request.texture = texture;
-        request.scale = {
-            quad.width / textureWidth,
-            quad.height / textureHeight };
-        if (quad.rotation == 0.0f)
-        {
-            request.position = { quad.x, quad.y };
-        }
-        else
-        {
-            // 回転は矩形の中心を軸にします。
-            request.position = {
-                quad.x + quad.width * 0.5f,
-                quad.y + quad.height * 0.5f };
-            request.origin = {
-                textureWidth * 0.5f,
-                textureHeight * 0.5f };
-            request.rotation = quad.rotation;
-        }
-        // Sprite passの既定はNonPremultipliedなので、色はそのまま渡します。
-        request.tint = quad.color;
-        static_cast<void>(pass.Draw(request));
-    }
 }
 
 namespace LamaPon
 {
+    // 設定された読み込み画面を描きます(progress: 0～1の進捗, settings: 表示設定, width: 画面幅で0は現在値, height: 画面高で0は現在値)。
     void GraphicsDevice::DrawLoadingScreen(
         const float progress,
         const SceneLoadingScreenSettings& settings,
@@ -367,14 +377,17 @@ namespace LamaPon
             return;
         }
 
-        // AssetManagerとcanvas寸法も現在のBackend世代に属します。passを
-        // 始める前の準備中から再初期化を拒否して、世代を混在させません。
+        // 画像の取得準備から描画終了までリースを保持し、資源世代の混在を防ぎます。
+        // 再初期化を防ぐ操作リース
         [[maybe_unused]] auto operationLease =
             AcquireResourceLease();
+        // 使用する画面幅（画素）
         const std::uint32_t canvasWidth =
             width == 0 ? m_state->m_width : width;
+        // 使用する画面高（画素）
         const std::uint32_t canvasHeight =
             height == 0 ? m_state->m_height : height;
+        // 送信先のスプライトパス
         auto pass = BeginSpritePass();
         DrawLoadingOverlay(
             pass,
@@ -388,223 +401,46 @@ namespace LamaPon
         pass.End();
     }
 
-    void GraphicsDevice::DrawSceneTransition(
+    // 遷移状態に応じて読み込み画面を描きます(frame: 進捗・透明度・経過時間, settings: 表示設定, width: 画面幅で0は現在値, height: 画面高で0は現在値)。
+    void GraphicsDevice::DrawLoadingScreen(
         const SceneTransitionFrame& frame,
-        const SceneLoadingScreenSettings& loadingScreen,
+        const SceneLoadingScreenSettings& settings,
         const std::uint32_t width,
         const std::uint32_t height)
     {
-        const bool drawsCover =
-            frame.phase != SceneTransitionPhase::Idle
-            && frame.settings.effect != SceneTransitionEffect::None
-            && frame.coverage > 0.0f;
-        const float loadingAlpha =
-            std::clamp(frame.loadingScreenAlpha, 0.0f, 1.0f);
-        const bool drawsLoading =
-            loadingScreen.enabled && loadingAlpha > 0.0f;
-        if (!drawsCover && !drawsLoading)
+        // 遷移状態から求めた透明度
+        const float alpha = frame.legacyLoadingScreen
+            ? (frame.loadingScreenAlpha > 0.0f ? 1.0f : 0.0f)
+            : std::clamp(frame.loadingScreenAlpha, 0.0f, 1.0f);
+        if (!settings.enabled || alpha <= 0.0f)
         {
             return;
         }
 
+        // 再初期化を防ぐ操作リース
         [[maybe_unused]] auto operationLease =
             AcquireResourceLease();
-        const float canvasWidth = static_cast<float>(
-            width == 0 ? m_state->m_width : width);
-        const float canvasHeight = static_cast<float>(
-            height == 0 ? m_state->m_height : height);
-        const bool revealing =
-            frame.phase == SceneTransitionPhase::Revealing;
-
-        if (drawsCover)
-        {
-            auto settings = frame.settings;
-            bool drawn = false;
-            if (settings.effect == SceneTransitionEffect::Shader
-                && frame.coverage < 1.0f)
-            {
-                drawn = DrawSceneTransitionShader(
-                    settings,
-                    frame.coverage,
-                    revealing,
-                    canvasWidth,
-                    canvasHeight);
-            }
-            if (!drawn)
-            {
-                std::vector<SceneTransitionQuad> quads;
-                BuildSceneTransitionQuads(
-                    settings,
-                    frame.coverage,
-                    revealing,
-                    canvasWidth,
-                    canvasHeight,
-                    quads);
-                std::uint32_t circleWidth{};
-                std::uint32_t circleHeight{};
-                std::uint32_t irisWidth{};
-                std::uint32_t irisHeight{};
-                std::shared_ptr<const TextureResourceSnapshot> circle;
-                std::shared_ptr<const TextureResourceSnapshot> iris;
-                bool missingShape = false;
-                for (const auto& quad : quads)
-                {
-                    if (quad.shape == SceneTransitionShape::Circle
-                        && circle == nullptr)
-                    {
-                        circle = TryLoadTextureResources(
-                            Assets(),
-                            L"builtin/circle",
-                            circleWidth,
-                            circleHeight);
-                        missingShape = missingShape || circle == nullptr;
-                    }
-                    if (quad.shape
-                            == SceneTransitionShape::InverseCircle
-                        && iris == nullptr)
-                    {
-                        iris = TryLoadTextureResources(
-                            Assets(),
-                            L"builtin/iris",
-                            irisWidth,
-                            irisHeight);
-                        missingShape = missingShape || iris == nullptr;
-                    }
-                }
-                if (missingShape)
-                {
-                    // 円の画像を作れない場合も、画面は確実に覆います。
-                    settings.effect = SceneTransitionEffect::Fade;
-                    BuildSceneTransitionQuads(
-                        settings,
-                        frame.coverage,
-                        revealing,
-                        canvasWidth,
-                        canvasHeight,
-                        quads);
-                }
-                auto pass = BeginSpritePass();
-                for (const auto& quad : quads)
-                {
-                    switch (quad.shape)
-                    {
-                    case SceneTransitionShape::Circle:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            circle->shaderResourceView,
-                            static_cast<float>(circleWidth),
-                            static_cast<float>(circleHeight));
-                        break;
-                    case SceneTransitionShape::InverseCircle:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            iris->shaderResourceView,
-                            static_cast<float>(irisWidth),
-                            static_cast<float>(irisHeight));
-                        break;
-                    case SceneTransitionShape::Rectangle:
-                    default:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            {},
-                            1.0f,
-                            1.0f);
-                        break;
-                    }
-                }
-                pass.End();
-            }
-        }
-
-        if (drawsLoading)
-        {
-            auto pass = BeginSpritePass();
-            DrawLoadingOverlay(
-                pass,
-                Assets(),
-                frame.loadingProgress,
-                loadingScreen,
-                frame.legacyLoadingScreen ? 1.0f : loadingAlpha,
-                frame.loadingScreenTime,
-                canvasWidth,
-                canvasHeight);
-            pass.End();
-        }
-    }
-
-    bool GraphicsDevice::DrawSceneTransitionShader(
-        const SceneTransitionSettings& settings,
-        const float coverage,
-        const bool revealing,
-        const float canvasWidth,
-        const float canvasHeight)
-    {
-        std::uint32_t ruleWidth{};
-        std::uint32_t ruleHeight{};
-        const auto rule = TryLoadTextureResources(
+        // 使用する画面幅（画素）
+        const std::uint32_t canvasWidth =
+            width == 0 ? m_state->m_width : width;
+        // 使用する画面高（画素）
+        const std::uint32_t canvasHeight =
+            height == 0 ? m_state->m_height : height;
+        // 送信先のスプライトパス
+        auto pass = BeginSpritePass();
+        DrawLoadingOverlay(
+            pass,
             Assets(),
-            settings.ruleTexture,
-            ruleWidth,
-            ruleHeight);
-        const auto shaderFrame = BuildSceneTransitionShaderFrame(
+            frame.loadingProgress,
             settings,
-            coverage,
-            revealing,
-            canvasWidth,
-            canvasHeight,
-            rule != nullptr);
-
-        SpritePassDescription description;
-        description.pixelShader = settings.shader.empty()
-            ? std::filesystem::path(
-                std::u8string(
-                    SceneTransitionBuiltInShader.begin(),
-                    SceneTransitionBuiltInShader.end()))
-            : settings.shader;
-        description.customParameters = shaderFrame.parameters;
-        auto pass = BeginSpritePass(description);
-        const auto status = pass.ShaderStatus();
-        if (status.fallback != SpriteShaderFallback::None
-            || !status.error.empty())
-        {
-            // 代替シェーダーで全画面を塗ると画面が一瞬で隠れるため、
-            // 何も描かずにFadeへ切り替えます。
-            pass.Abort();
-            if (m_state->m_sceneTransitionShaderError != status.error)
-            {
-                m_state->m_sceneTransitionShaderError = status.error;
-                Logger::Instance().Warning(
-                    "シーン遷移のシェーダーを使えないため、フェードで"
-                    "代用します: "
-                    + PathToUtf8(description.pixelShader)
-                    + " | "
-                    + status.error);
-            }
-            return false;
-        }
-        m_state->m_sceneTransitionShaderError.clear();
-
-        SpriteDrawRequest request;
-        if (rule != nullptr)
-        {
-            request.texture = rule->shaderResourceView;
-            request.scale = {
-                canvasWidth / static_cast<float>(ruleWidth),
-                canvasHeight / static_cast<float>(ruleHeight) };
-        }
-        else
-        {
-            request.scale = { canvasWidth, canvasHeight };
-        }
-        request.tint = shaderFrame.tint;
-        static_cast<void>(pass.Draw(request));
+            alpha,
+            frame.loadingScreenTime,
+            static_cast<float>(canvasWidth),
+            static_cast<float>(canvasHeight));
         pass.End();
-        return true;
     }
 
+    // 縦横比を保って起動ロゴを描きます(logoPath: 画像パス, width: 画面幅で0は現在値, height: 画面高で0は現在値)。
     void GraphicsDevice::DrawStartupLogo(
         const std::filesystem::path& logoPath,
         const std::uint32_t width,
@@ -615,8 +451,8 @@ namespace LamaPon
             return;
         }
 
-        // FileExists/LoadTextureから描画完了まで同じAssetManagerとBackendを
-        // 使います。BeginSpritePassのleaseはpass本体だけを保護します。
+        // 画像の存在確認から描画終了までリースを保持し、資源世代の混在を防ぎます。
+        // 再初期化を防ぐ操作リース
         [[maybe_unused]] auto operationLease =
             AcquireResourceLease();
         if (!Assets().FileExists(logoPath))
@@ -624,17 +460,18 @@ namespace LamaPon
             return;
         }
 
+        // 起動ロゴの画像資産
         std::shared_ptr<const TextureAsset> logo;
         try
         {
-            // テクスチャは最初のフレームでキャッシュされるため、起動処理で
-            // 小さな画像を読み込むのは一度だけです。
+
             logo = Assets().LoadTexture(logoPath);
         }
         catch (const std::exception&)
         {
             return;
         }
+        // 起動ロゴの保持資源
         const auto logoResources = logo != nullptr
             ? logo->resources.Acquire()
             : nullptr;
@@ -646,45 +483,58 @@ namespace LamaPon
             return;
         }
 
+        // 使用する画面幅（画素）
         const std::uint32_t canvasWidth =
             width == 0 ? m_state->m_width : width;
+        // 使用する画面高（画素）
         const std::uint32_t canvasHeight =
             height == 0 ? m_state->m_height : height;
+        // ロゴの表示上限幅（画素）
         const float maximumWidth = std::min(
             static_cast<float>(canvasWidth) * 0.32f,
             360.0f);
+        // ロゴの表示上限高（画素）
         const float maximumHeight = std::min(
             static_cast<float>(canvasHeight) * 0.42f,
             360.0f);
+        // 縦横比を保つ画像の拡大率
         const float scale = std::min(
             maximumWidth / static_cast<float>(logo->width),
             maximumHeight / static_cast<float>(logo->height));
+        // ロゴの表示幅（画素）
         const float drawWidth =
             static_cast<float>(logo->width) * scale;
+        // ロゴの表示高（画素）
         const float drawHeight =
             static_cast<float>(logo->height) * scale;
+        // 画像や点の画面x座標
         const float x =
             (static_cast<float>(canvasWidth) - drawWidth) * 0.5f;
+        // 画像や点の画面y座標
         const float y =
             static_cast<float>(canvasHeight) * 0.30f
             - drawHeight * 0.5f;
 
+        // 送信する画像の描画指定
         SpriteDrawRequest request;
         request.texture =
             logoResources->shaderResourceView;
         request.position = { x, y };
         request.scale = { scale, scale };
+        // 送信先のスプライトパス
         auto pass = BeginSpritePass();
         static_cast<void>(pass.Draw(request));
         pass.End();
     }
 
+    // 2D描画の共通オフセットを設定します(offset: 画面上の移動量)。
     void GraphicsDevice::SetSprite2DOffset(
         const DirectX::XMFLOAT2& offset) noexcept
     {
         m_state->m_sprite2DOffset = offset;
     }
 
+    // 2D描画の共通オフセットを参照します。
     const DirectX::XMFLOAT2& GraphicsDevice::Sprite2DOffset() const noexcept
     {
         return m_state->m_sprite2DOffset;

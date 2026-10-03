@@ -8,95 +8,70 @@
 
 namespace LamaPon
 {
-    // プロジェクトが持つ「エンジンが正」の組み込みアセットです。
-    //
-    // 新規作成（LamaPon Hub）と既存プロジェクトの更新
-    // （MigrateProjectAssets）は、この一覧を共有します。シェーダーと
-    // そのインクルードファイルを常に同じ組み合わせでコピーします。
-    //
-    // includeされるファイル（.hlsli）も必ず入れてください。
-    // 入れ忘れると、更新した瞬間にシェーダーがコンパイルできず
-    // プロジェクトが開けなくなります。テストがincludeの取りこぼしを
-    // 検査します。
+    // 新規作成と更新で共有する組み込みアセットの相対パス一覧を返します。
+    // シェーダーを追加するときは依存するインクルードも一覧へ追加します。
     [[nodiscard]] const std::vector<std::filesystem::path>&
         BuiltInProjectAssets();
 
-    // プロジェクトに記録されたエンジンバージョンと、今動いている
-    // エンジンの関係です。
+    // プロジェクトに記録されたエンジンバージョンと、今動いているエンジンの関係です。
     enum class ProjectVersionStatus
     {
-        // 同じバージョン。何もしなくて開けます。
+        // 現行エンジンと一致する版
         Match,
-        // プロジェクトの方が古い。更新すれば開けます。
+        // 現行エンジンより古く更新対象
         Older,
-        // プロジェクトの方が新しい。開いてはいけません。
-        // 古いエンジンで書き戻すと、新しいエンジンが足した設定を
-        // 落としたり、組み込みシェーダーを巻き戻したりします。
+        // 現行エンジンより新しい版
+        // 新しい設定を失わないよう、古いエンジンでは開きません。
         Newer,
-        // バージョンの記録が無い（この仕組みより前のプロジェクト）。
-        // 古いものとして扱います。
+        // 未記録か解釈不能で更新対象
         Unrecorded
     };
 
     struct ProjectVersionInfo final
     {
+        // 現行エンジンとの版の関係
         ProjectVersionStatus status{
             ProjectVersionStatus::Unrecorded };
-        // プロジェクトに記録されていた文字列（無ければ空）。
+        // 記録済みエンジン版、なければ空
         std::string recordedVersion;
     };
 
-    // プロジェクトを開く前の判定です。ファイルは書き換えません。
-    // 例外は投げません。
+    // 記録されたエンジン版を読み取り比較します(projectRoot: プロジェクトのルート, currentEngineVersion: 現行エンジンの版番号)。
+    // 文書を変更せず、読み込み失敗や解釈不能な版は未記録として扱います。
     [[nodiscard]] ProjectVersionInfo InspectProjectVersion(
         const std::filesystem::path& projectRoot,
         std::string_view currentEngineVersion);
 
-    // プロジェクトへエンジンバージョンを記録します（他のキーは
-    // 保持）。プロジェクトの新規作成時に必ず呼ぶこと。
-    // 記録が無いと、最初にエディターで開いたとき「古いプロジェクト
-    // なので更新しますか？」と、作った直後なのに訊かれます。
-    // 例外は投げません（記録できなくても作成は成立させる）。
+    // 設定文書へエンジン版を記録します(projectRoot: プロジェクトのルート, version: 記録する版番号)。
+    // 既存の他のキーは保持し、文書を読み書きできない場合は記録を省略します。
     void RecordProjectEngineVersion(
         const std::filesystem::path& projectRoot,
         std::string_view version);
 
-    // "2026.8.5" のような版番号を数値で比べます。区切りは'.'で、
-    // 足りない桁は0として扱います（"2026.8" < "2026.8.1"）。
-    // 数字として読めない部分があれば nullopt を返します。
-    //
-    // 戻り値は左が小さいとき負、等しいとき0、大きいとき正。
+    // ドット区切りの版番号を比較します(left: 比較元の版番号, right: 比較先の版番号)。
+    // 左が小さければ-1、同じなら0、大きければ1で、不足成分は0として扱います。
+    // 空成分・数字以外・10億超の成分にはnulloptを返します。
     [[nodiscard]] std::optional<int> CompareEngineVersions(
         std::string_view left,
         std::string_view right);
 
-    // 古いエンジンで作られたプロジェクトを、現在のエンジンで安全に
-    // 開けるよう更新した結果です。
+    // 古いエンジンで作られたプロジェクトを、現在のエンジンで安全に開けるよう更新した結果です。
     struct ProjectMigrationResult final
     {
-        // 実際に何かを更新したか（falseなら最新のままでした）。
+        // 資源更新か版の記録を試みたか
         bool changed{};
-        // プロジェクトに記録されていた前回のエンジンバージョン
-        // （記録が無い旧プロジェクトでは空）。
+        // 記録済みの前回エンジン版
         std::string previousEngineVersion;
-        // 更新した組み込みアセットの相対パス。
+        // 更新できた資源の相対パス
         std::vector<std::filesystem::path> updatedAssets;
-        // 利用者が編集していたため退避（.bak）してから更新した
-        // 組み込みアセット。
+        // .bakへ退避できた資源のパス
         std::vector<std::filesystem::path> backedUpAssets;
     };
 
-    // プロジェクトの組み込みアセット（エンジンのシェーダー）を
-    // 現在のエンジンのものへ揃えます。
-    //
-    // エンジンを更新するとライティング定数バッファのレイアウトなどが
-    // 変わるため、プロジェクト側に古いシェーダーが残っていると
-    // 描画がおかしくなったりクラッシュしたりします。内容が同じなら
-    // 何もせず、利用者が改造していた場合は「<名前>.bak」へ退避して
-    // から最新版へ置き換えます。
-    //
-    // engineAssetRootが存在しない（ソースビルドでの実行など）場合は
-    // 何もしません。例外は投げません。
+    // 組み込みアセットと記録版を更新します(projectRoot: プロジェクトのルート, engineAssetRoot: 現行エンジンのアセット領域, currentEngineVersion: 記録する版番号)。
+    // 内容が違う既存資源は.bakへの退避を試みますが、退避失敗でも更新を進めます。
+    // ルートが存在しなければ更新せず、途中の失敗ではそれまでの結果を返します。
+    // changedだけでは全更新や版の記録の成功を保証しないため、資源別の結果も確認します。
     [[nodiscard]] ProjectMigrationResult MigrateProjectAssets(
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& engineAssetRoot,

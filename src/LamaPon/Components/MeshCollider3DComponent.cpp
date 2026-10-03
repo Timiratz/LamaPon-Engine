@@ -18,14 +18,15 @@ namespace
 {
     using DirectX::XMFLOAT3;
 
-    // メッシュ未設定でも選択やブロードフェーズが破綻しないよう、
-    // 原点周りの小さなAABBを返します。
+    // 未設定メッシュの境界半幅
     constexpr float FallbackHalfExtent = 0.5f;
 
+    // 8隅を変換して軸平行境界を求めます(bounds: 変換前の境界, matrix: 境界へ適用する行列)。
     LamaPon::Bounds3D TransformBoundsByMatrix(
         const LamaPon::Bounds3D& bounds,
         const DirectX::XMMATRIX matrix) noexcept
     {
+        // 変換前の境界の8隅
         const XMFLOAT3 corners[8]{
             { bounds.minimum.x, bounds.minimum.y, bounds.minimum.z },
             { bounds.maximum.x, bounds.minimum.y, bounds.minimum.z },
@@ -36,16 +37,20 @@ namespace
             { bounds.minimum.x, bounds.maximum.y, bounds.maximum.z },
             { bounds.maximum.x, bounds.maximum.y, bounds.maximum.z }
         };
+        // 変換後のXYZ最小値
         XMFLOAT3 minimum{
             std::numeric_limits<float>::max(),
             std::numeric_limits<float>::max(),
             std::numeric_limits<float>::max() };
+        // 変換後のXYZ最大値
         XMFLOAT3 maximum{
             -std::numeric_limits<float>::max(),
             -std::numeric_limits<float>::max(),
             -std::numeric_limits<float>::max() };
+        // 変換する境界の隅
         for (const auto& corner : corners)
         {
+            // ワールド変換した隅位置
             XMFLOAT3 transformed{};
             DirectX::XMStoreFloat3(
                 &transformed,
@@ -92,6 +97,7 @@ namespace LamaPon
         std::vector<DirectX::XMFLOAT3> vertices,
         std::vector<std::uint32_t> indices)
     {
+        // 構築する共有衝突メッシュ
         auto mesh = std::make_shared<CollisionMesh>();
         mesh->Build(
             std::move(vertices),
@@ -136,6 +142,7 @@ namespace LamaPon
         MeshCollider3DComponent::WorldBounds()
             const noexcept
     {
+        // メッシュか代替箱の境界
         const Bounds3D localBounds = HasMesh()
             ? m_mesh->LocalBounds()
             : Bounds3D{
@@ -162,25 +169,35 @@ namespace LamaPon
         {
             return;
         }
+        // 中心位置込みのワールド変換
         const auto worldMatrix = WorldMatrixWithOffset();
+        // ワールド変換の行列式
         DirectX::XMVECTOR determinant{};
+        // 中心位置込みの逆変換
         const auto inverseWorld = DirectX::XMMatrixInverse(
             &determinant,
             worldMatrix);
+        // 逆変換して囲んだ検索境界
         const Bounds3D localQuery =
             TransformBoundsByMatrix(
                 worldBounds,
                 inverseWorld);
 
+        // 検索境界に重なる三角形番号列
         std::vector<std::uint32_t> triangles;
         m_mesh->QueryOverlaps(localQuery, triangles);
         results.reserve(results.size() + triangles.size());
+        // 検出または描画する三角形番号
         for (const auto triangle : triangles)
         {
+            // 三角形の第1ローカル頂点
             XMFLOAT3 a{};
+            // 三角形の第2ローカル頂点
             XMFLOAT3 b{};
+            // 三角形の第3ローカル頂点
             XMFLOAT3 c{};
             m_mesh->GetTriangle(triangle, a, b, c);
+            // 三角形のワールド頂点
             MeshColliderTriangle world{};
             DirectX::XMStoreFloat3(
                 &world.a,
@@ -208,15 +225,20 @@ namespace LamaPon
         {
             return false;
         }
+        // 中心位置込みのワールド変換
         const auto worldMatrix = WorldMatrixWithOffset();
+        // ワールド変換の行列式
         DirectX::XMVECTOR determinant{};
+        // 中心位置込みの逆変換
         const auto inverseWorld = DirectX::XMMatrixInverse(
             &determinant,
             worldMatrix);
+        // 逆変換して囲んだ検索境界
         const Bounds3D localQuery =
             TransformBoundsByMatrix(
                 worldBounds,
                 inverseWorld);
+        // 検索境界に重なる三角形番号列
         std::vector<std::uint32_t> triangles;
         m_mesh->QueryOverlaps(localQuery, triangles);
         return !triangles.empty();
@@ -231,40 +253,50 @@ namespace LamaPon
         {
             return false;
         }
+        // 中心位置込みのワールド変換
         const auto worldMatrix = WorldMatrixWithOffset();
+        // ワールド変換の行列式
         DirectX::XMVECTOR determinant{};
+        // 中心位置込みの逆変換
         const auto inverseWorld = DirectX::XMMatrixInverse(
             &determinant,
             worldMatrix);
 
-        // 端点をローカルへ変換して、スケール込みの距離を保ちます。
+        // レイ両端を逆変換し、非一様スケールを含む距離上限を保ちます。
+        // レイのワールド始点
         const auto worldOrigin = DirectX::XMVectorSet(
             worldRay.origin.x,
             worldRay.origin.y,
             worldRay.origin.z,
             1.0f);
+        // レイのワールド方向
         const auto worldDirection = DirectX::XMVectorSet(
             worldRay.direction.x,
             worldRay.direction.y,
             worldRay.direction.z,
             0.0f);
+        // 距離上限のワールド終点
         const auto worldEnd = DirectX::XMVectorAdd(
             worldOrigin,
             DirectX::XMVectorScale(
                 DirectX::XMVector3Normalize(
                     worldDirection),
                 maximumDistance));
+        // 逆変換したローカル始点
         const auto localOrigin =
             DirectX::XMVector3TransformCoord(
                 worldOrigin,
                 inverseWorld);
+        // 逆変換したローカル終点
         const auto localEnd =
             DirectX::XMVector3TransformCoord(
                 worldEnd,
                 inverseWorld);
+        // ローカルのレイ変位
         const auto localDelta = DirectX::XMVectorSubtract(
             localEnd,
             localOrigin);
+        // ローカルのレイ長さ
         const float localLength =
             DirectX::XMVectorGetX(
                 DirectX::XMVector3Length(localDelta));
@@ -272,7 +304,9 @@ namespace LamaPon
         {
             return false;
         }
+        // ローカルレイの始点
         XMFLOAT3 origin{};
+        // 正規化したローカル方向
         XMFLOAT3 direction{};
         DirectX::XMStoreFloat3(&origin, localOrigin);
         DirectX::XMStoreFloat3(
@@ -281,6 +315,7 @@ namespace LamaPon
                 localDelta,
                 1.0f / localLength));
 
+        // ローカルの最も近い接触
         CollisionMeshHit localHit{};
         if (!m_mesh->Raycast(
                 origin,
@@ -291,6 +326,7 @@ namespace LamaPon
             return false;
         }
 
+        // 接触点のワールド位置
         const auto worldPoint =
             DirectX::XMVector3TransformCoord(
                 DirectX::XMVectorSet(
@@ -305,7 +341,8 @@ namespace LamaPon
                 DirectX::XMVectorSubtract(
                     worldPoint,
                     worldOrigin)));
-        // 法線は逆転置行列で変換します（非一様スケール対応）。
+
+        // 法線を変換する逆転置行列
         const auto normalMatrix =
             DirectX::XMMatrixTranspose(inverseWorld);
         DirectX::XMStoreFloat3(
@@ -325,9 +362,10 @@ namespace LamaPon
         GraphicsDevice& graphics)
     {
         m_assets = &graphics.Assets();
-        // パス未指定なら同じGameObjectのModelRendererから借ります。
+
         if (m_modelPath.empty() && !HasMesh())
         {
+            // 同じ物体のモデル描画部品
             if (const auto* renderer =
                 Owner().GetComponent<
                     ModelRendererComponent>())
@@ -351,6 +389,7 @@ namespace LamaPon
                 m_modelPath);
             m_lastError.clear();
         }
+        // メッシュ読み込みの例外
         catch (const std::exception& exception)
         {
             m_mesh.reset();
@@ -363,7 +402,9 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // ワールド形状の境界
         const auto bounds = WorldBounds();
+        // 形状のデバッグRGBA色
         const auto color = m_isTrigger
             ? DirectX::XMVectorSet(
                 1.0f, 0.75f, 0.1f, 1.0f)
@@ -379,34 +420,47 @@ namespace LamaPon
             return;
         }
 
-        // 三角形が多すぎる場合はワイヤ描画を間引きます。
+
+        // 間引く三角形数の目安
         constexpr std::size_t MaximumDebugTriangles =
             2048;
+        // 形状の全三角形数
         const std::size_t triangleCount =
             m_mesh->TriangleCount();
+        // 描画する三角形番号の間隔
         const std::size_t step = std::max<std::size_t>(
             1,
             triangleCount / MaximumDebugTriangles);
+        // 中心位置込みのワールド変換
         const auto worldMatrix = WorldMatrixWithOffset();
+        // 三角形の辺の線分端点列
         std::vector<DirectX::XMFLOAT3> lines;
         lines.reserve(
             std::min(
                 triangleCount,
                 MaximumDebugTriangles) * 6);
+        // 検出または描画する三角形番号
         for (std::size_t triangle = 0;
+            // 形状の全三角形数
             triangle < triangleCount;
             triangle += step)
         {
+            // 三角形の第1ローカル頂点
             XMFLOAT3 a{};
+            // 三角形の第2ローカル頂点
             XMFLOAT3 b{};
+            // 三角形の第3ローカル頂点
             XMFLOAT3 c{};
             m_mesh->GetTriangle(
                 static_cast<std::uint32_t>(triangle),
                 a,
                 b,
                 c);
+            // 三角形の第1ワールド頂点
             XMFLOAT3 worldA{};
+            // 三角形の第2ワールド頂点
             XMFLOAT3 worldB{};
+            // 三角形の第3ワールド頂点
             XMFLOAT3 worldC{};
             DirectX::XMStoreFloat3(
                 &worldA,

@@ -18,32 +18,28 @@ namespace LamaPon
     struct ScreenSpaceReflectionSettings;
     struct ColorGradingSettings;
 
-    // 深度専用パスへ切り替えた状態で呼ばれ、不透明ジオメトリを描画します。
+    // 深度専用の状態で不透明ジオメトリを同期描画するフック。
     using DepthPrepassHook = std::function<void()>;
 
-    // ポスト処理の途中へScreenEffectを適用する追加パスです。
-    //
-    // 決められた4地点すべてで呼ばれ、指定地点に対応するエフェクトだけを
-    // GraphicsDeviceが適用します。
-    // 定義はGraphicsDevice.hにあり、依存を減らすため前方宣言します。
+    // 四つの適用地点で追加効果を選択するための地点種別。
     enum class ScreenEffectPoint : std::uint8_t;
 
+    // 描画先と適用地点を渡して追加効果を同期実行するフック。
     using PostProcessHook =
         std::function<void(RenderTarget&, ScreenEffectPoint)>;
 
-    // SSAOまたはSSRが必要な場合に深度プリパスを実行します。
-    // ambientOcclusionResolvedがtrueならAOをLitEffectへ渡せます。
-    // depthAvailableはSSR用の深度が利用可能かを示し、SSAO無効時も
-    // trueになり得ます。どちらも不要な場合は両方falseです。
-    // 呼び出し後はGraphicsDevice::BindOffscreenTarget()でメインパスの
-    // 描画先を復元します。
-    // projectionにはこれから描く画面の射影行列を渡します。
+    // 深度プリパスと画面空間遮蔽の利用可能性。
     struct DepthPrepassResult final
     {
+        // 照明へ渡せる遮蔽の解決有無
         bool ambientOcclusionResolved{};
+        // SSRなどへ渡せる深度の有無
         bool depthAvailable{};
     };
 
+    // SSAOまたはSSRが必要なら深度を一回描画する(graphics: 描画デバイス, target: 対象の描画先, projection: 深度と一致する射影, ambientOcclusion: 遮蔽設定, screenSpaceReflection: 反射設定, drawDepthOnly: 不透明深度の描画処理)。
+    // 呼出後の主描画先はBindOffscreenTargetで復元し、終了時は深度パス種別をNoneに戻す。
+    // フック例外は伝播するため、例外時の描画先の復元も呼出側で行う。
     [[nodiscard]] DepthPrepassResult RunDepthPrepass(
         GraphicsDevice& graphics,
         RenderTarget& target,
@@ -53,89 +49,84 @@ namespace LamaPon
             screenSpaceReflection,
         const DepthPrepassHook& drawDepthOnly);
 
-    // ボリュメトリックライトに必要な、シーン側しか知らない情報。
-    // 影付きの平行光源が無いフレームでは enabled が立たないので、
-    // ポスト処理側は何もしません。
+    // Sceneが構築し、影付き方向光がある場合に有効となる散乱光のフレーム入力。
     struct VolumetricLightFrame final
     {
+        // 散乱光の設定
         VolumetricLightSettings settings{};
+        // 影・光・カメラの入力
         VolumetricLightInputs inputs{};
     };
 
-    // TAAに必要な、シーン側しか知らない情報（今と前フレームの行列）。
+    // Sceneが構築する現在の行列と設定で、過去の履歴は描画先ごとに保持する。
     struct TemporalAntiAliasingFrame final
     {
+        // 時間的平滑化の設定
         TemporalAntiAliasingSettings settings{};
+        // 現在のビュー射影と逆行列
         TemporalAntiAliasingInputs inputs{};
     };
 
-    // 被写界深度に必要な、シーン側しか知らない情報。
-    //
-    // 射影行列を運ぶためにあります。深度を「カメラからの距離」へ戻さ
-    // ないとピントが合う範囲を決められず、その変換には描いたときの
-    // 射影が必要です。ビューごとに違う（Scene Viewとカメラプレビューは
-    // 同じフレームで別の射影を使う）ので、共有せずに毎回運びます。
+    // ビューごとに実際の深度と一致する射影を運ぶ被写界深度の入力。
     struct DepthOfFieldFrame final
     {
+        // 被写界深度の設定
         DepthOfFieldSettings settings{};
-        // この絵を描いたときの射影行列（TAAのずらしを含んだもの＝
-        // 深度バッファと噛み合う方）。
+        // 深度と一致する射影行列
         DirectX::XMFLOAT4X4 projection{};
     };
 
-    // モーションブラーに必要な、シーン側しか知らない情報。
-    //
-    // 前フレームの行列そのものはRenderTargetが持ちます（ビューごとに
-    // 別なので、シーンで1つ持つとエディターの2ビューが踏み合います）。
-    // 現在フレームの逆ビュー射影と次回用ビュー射影だけを保持します。
+    // 現在の行列をSceneが渡し、前フレームの行列は描画先ごとに保持するカメラブラー入力。
     struct MotionBlurFrame final
     {
+        // カメラブラーの設定
         MotionBlurSettings settings{};
-        // 深度からワールド位置へ戻す逆ビュー射影。TAAと同じく
-        // ずらしを含まないもの。
+        // ずらしを除く逆ビュー射影
         DirectX::XMFLOAT4X4 inverseViewProjection{};
-        // 次フレームの「前フレーム」として控えるビュー射影
-        // （ずらし無し）。
+        // 履歴用のずらしを除くビュー射影
         DirectX::XMFLOAT4X4 viewProjection{};
     };
 
-    // 自動露出に必要な、シーン側しか知らない情報。
+    // Sceneが構築する自動露出の入力。
     struct AutoExposureFrame final
     {
+        // 自動露出の設定
         AutoExposureSettings settings{};
-        // 順応に使う経過時間（秒）。停止中のScene Viewでも露出が収束するよう、
-        // timeScaleの影響を受けない実時間を渡します。
+        // 停止中も進む実経過秒
         float deltaSeconds{};
     };
 
-    // ポスト処理へ渡すものを1つにまとめた入れ物。
-    //
-    // すべての描画経路へ同じポスト処理情報を渡せるよう、引数を集約します。
-    // フィールドを足すときは必ず末尾へ。
+    // 全描画経路で共有するポスト処理の入力で、項目追加は位置指定初期化を保つため末尾へ置く。
     struct PostProcessFrame final
     {
+        // ブルームの設定
         BloomSettings bloom{};
+        // 画面輪郭の設定と射影の入力
         struct ScreenOutlineFrame final
         {
+            // 画面輪郭の設定
             ScreenOutlineSettings settings{};
+            // 深度と一致する射影行列
             DirectX::XMFLOAT4X4 projection{};
         } screenOutline{};
+        // レンズフレアの設定
         ScreenSpaceLensFlareSettings lensFlare{};
+        // 被写界深度のフレーム入力
         DepthOfFieldFrame depthOfField{};
+        // カメラブラーのフレーム入力
         MotionBlurFrame motionBlur{};
+        // 自動露出のフレーム入力
         AutoExposureFrame autoExposure{};
+        // トーンマップと色調整の設定
         ColorGradingSettings colorGrading{};
+        // 散乱光のフレーム入力
         VolumetricLightFrame volumetric{};
+        // 時間的平滑化のフレーム入力
         TemporalAntiAliasingFrame temporal{};
     };
 
-    // シーンを描き終えた1枚へ、ポスト処理を順番にかけます。
-    //
-    // Scene View、Game View、カメラプレビュー、名前付きレンダー
-    // テクスチャ、ゲーム実行時で共通の描画順を定義します。描画パスを
-    // 追加するときは、この関数を更新します。
-    //
-    // Scene設定と品質設定の照合を行うため、Sceneの値を変更せずに渡します。
+
+    // フレアを無効として共通のポスト処理へ渡す(graphics: 描画デバイス, target: 対象の描画先, bloom: ブルーム設定, colorGrading: 色調整設定, volumetric: 散乱光の入力, temporal: 時間的平滑化の入力, afterToneMapping: 四地点で呼ぶ任意の処理)。
     void RunPostProcess(
         GraphicsDevice& graphics,
         RenderTarget& target,
@@ -145,6 +136,7 @@ namespace LamaPon
         const TemporalAntiAliasingFrame& temporal = {},
         const PostProcessHook& afterToneMapping = {});
 
+    // 指定の効果をフレーム入力へまとめてポスト処理を実行する(graphics: 描画デバイス, target: 対象の描画先, bloom: ブルーム設定, lensFlare: フレア設定, colorGrading: 色調整設定, volumetric: 散乱光の入力, temporal: 時間的平滑化の入力, afterToneMapping: 四地点で呼ぶ任意の処理)。
     void RunPostProcess(
         GraphicsDevice& graphics,
         RenderTarget& target,
@@ -155,8 +147,9 @@ namespace LamaPon
         const TemporalAntiAliasingFrame& temporal = {},
         const PostProcessHook& afterToneMapping = {});
 
-    // すべてのポスト処理情報を受け取る共通の入口です。
-    // Scene::PostProcessFrameData()が返すPostProcessFrameを受け取ります。
+
+    // 品質とScene設定を照合して共通の順序でポスト処理を行う(graphics: 描画デバイス, target: 対象の描画先, frame: Sceneのフレーム入力, afterToneMapping: 四地点で呼ぶ任意の処理)。
+    // 無効な描画先は無処理とし、フック例外は伝播して後続処理を実行しない。
     void RunPostProcess(
         GraphicsDevice& graphics,
         RenderTarget& target,

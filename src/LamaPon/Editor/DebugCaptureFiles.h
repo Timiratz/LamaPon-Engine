@@ -8,35 +8,29 @@
 
 namespace LamaPon
 {
-    // プロファイラーやメモリプロファイラーが保存する記録ファイルの
-    // 置き場所と名前付けをまとめます。記録はプロジェクトの.lamapon配下へ
-    // 置き、Gitの追跡対象にはしません。
+    // 端末固有の計測記録をプロジェクトの.lamapon配下へ保存しGitの共有対象から外す。
     namespace DebugCaptureFiles
     {
-        // 「ファイルを開く」ダイアログです。EditorLayerがWin32の
-        // ダイアログで実装し、パネルはキャンセル時にnulloptを受け取ります。
+        // ファイル選択を依頼しキャンセルならnulloptを返す(initialDirectory: 最初に表示するフォルダー)。
         using OpenFileDialog =
             std::function<std::optional<std::filesystem::path>(
                 const std::filesystem::path& initialDirectory)>;
 
-        // 現地時刻の「YYYYMMDD-HHMMSS」です。同じ秒に複数保存した場合も
-        // 上書きしないよう、UniqueCapturePathが連番を付けます。
+        // 現地時刻をYYYYMMDD-HHMMSS形式のファイル名用文字列で返す。
         [[nodiscard]] std::string LocalTimestamp();
 
-        // directory/prefix-時刻.extension の、まだ存在しないパスです。
+        // 連番の探索は999まででパスを予約しないため実際の保存時にも衝突を確認する。
+        // 接頭辞・時刻・必要なら連番から保存パスを探す(directory: 計測記録の保存フォルダー, prefix: ファイル名の接頭辞, extension: ドットを含む拡張子)。
         [[nodiscard]] std::filesystem::path UniqueCapturePath(
             const std::filesystem::path& directory,
             const std::string& prefix,
             const std::string& extension);
 
-        // 保存先フォルダーを作り、中身をGitの対象外にする.gitignore（*）を
-        // 置きます。プロジェクト直下の.gitignoreに記載の無い既存プロジェクト
-        // でも、端末ごとの計測値がコミットへ混ざらないようにするためです。
+        // 保存フォルダーを確認・作成し未作成の.gitignoreに全除外設定を書く(directory: 計測記録の保存フォルダー)。
         [[nodiscard]] bool EnsureCaptureDirectory(
             const std::filesystem::path& directory) noexcept;
 
-        // directory直下のextensionのファイルを新しい順に返します。
-        // フォルダーが無い、または読めない場合は空です。
+        // 拡張子が一致する直下の通常ファイルを更新時刻の降順で返す(directory: 計測記録の保存フォルダー, extension: ドットを含む拡張子)。
         [[nodiscard]] std::vector<std::filesystem::path> ListCaptures(
             const std::filesystem::path& directory,
             const std::string& extension);

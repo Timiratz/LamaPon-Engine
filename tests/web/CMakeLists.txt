@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 project(LamaPonWebTests LANGUAGES CXX)
+# EMSCRIPTENが無効ならWeb test構成を拒否します。
 if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "Configure with emcmake")
 endif()
+# engine_root: repository rootのabsolute path.
 get_filename_component(engine_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 add_executable(WebLifecycleTests
     WebLifecycleTests.cpp

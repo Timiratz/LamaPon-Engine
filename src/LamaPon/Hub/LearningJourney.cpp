@@ -18,18 +18,23 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // 共有教材の形式識別子
     constexpr std::string_view JourneyFormat =
         "LamaPonLearningJourney";
+    // 個人進捗の形式識別子
     constexpr std::string_view ProgressFormat =
         "LamaPonLearningProgress";
+    // 教材と進捗の形式バージョン
     constexpr int LearningFormatVersion = 1;
 
+    // 絶対パスを字句的に正規化する(path: 対象パス)。
     [[nodiscard]] std::filesystem::path Normalize(
         const std::filesystem::path& path)
     {
         return std::filesystem::absolute(path).lexically_normal();
     }
 
+    // 設定ファイルとassetsの存在を確認する(root: プロジェクトルート)。
     void RequireProject(const std::filesystem::path& root)
     {
         if (!std::filesystem::is_regular_file(
@@ -42,9 +47,11 @@ namespace
         }
     }
 
+    // JSONを読み、読取・解析失敗を例外で伝える(path: 保存先)。
     [[nodiscard]] Json ReadJson(
         const std::filesystem::path& path)
     {
+        // 教材JSONの入力
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -54,10 +61,13 @@ namespace
         }
         try
         {
+            // 読んだ教材または進捗JSON
             Json document;
+            // 読んだ教材または進捗JSON
             input >> document;
             return document;
         }
+        // JSON解析の失敗を保存先付きで伝える(exception: 解析エラー)。
         catch (const std::exception& exception)
         {
             throw std::runtime_error(
@@ -67,11 +77,13 @@ namespace
         }
     }
 
+    // JSONを上書き保存する(path: 保存先, value: 保存内容)。
     void WriteJson(
         const std::filesystem::path& path,
         const Json& value)
     {
         std::filesystem::create_directories(path.parent_path());
+        // 保存先の出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -90,11 +102,13 @@ namespace
         }
     }
 
+    // テキストを上書き保存する(path: 保存先, value: 保存内容)。
     void WriteText(
         const std::filesystem::path& path,
         const std::string_view value)
     {
         std::filesystem::create_directories(path.parent_path());
+        // 保存先の出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -115,6 +129,7 @@ namespace
         }
     }
 
+    // 定義済みの学習段階か判定する(phase: 段階ID)。
     [[nodiscard]] bool IsKnownPhase(const std::string_view phase)
     {
         return phase == "play"
@@ -125,6 +140,7 @@ namespace
             || phase == "choose";
     }
 
+    // 許可された役割か判定する(role: 役割ID, allowExplorer: 探索中を許すか)。
     [[nodiscard]] bool IsKnownRole(
         const std::string_view role,
         const bool allowExplorer)
@@ -136,20 +152,24 @@ namespace
             || (allowExplorer && role == "explorer");
     }
 
+    // 絶対パスと先頭の親参照を字句的に拒否する(value: 教材の相対パス)。
     [[nodiscard]] bool IsSafeLearningPath(
         const std::string& value)
     {
+        // 対象の教材・進捗パス
         const auto path = LamaPon::PathFromUtf8(value);
         if (path.empty() || path.is_absolute())
         {
             return false;
         }
+        // 字句正規化した参照パス
         const auto normalized = path.lexically_normal();
         return normalized != L".."
             && (normalized.empty()
                 || *normalized.begin() != L"..");
     }
 
+    // 学習項目をJSONへ変換する(step: 対象項目)。
     [[nodiscard]] Json StepToJson(
         const LamaPon::Hub::LearningStep& step)
     {
@@ -166,6 +186,7 @@ namespace
         };
     }
 
+    // 学習項目の必須値と参照パスを検証して読む(value: 項目JSON)。
     [[nodiscard]] LamaPon::Hub::LearningStep StepFromJson(
         const Json& value)
     {
@@ -174,6 +195,7 @@ namespace
             throw std::runtime_error(
                 "Every learning step must be an object.");
         }
+        // 処理中の学習項目
         LamaPon::Hub::LearningStep step;
         step.id = value.value("id", std::string{});
         step.phase = value.value("phase", std::string{});
@@ -210,6 +232,7 @@ namespace
                 "Learning step has invalid required fields: "
                 + step.id);
         }
+        // 対象の教材・進捗パス
         for (const auto& path : step.files)
         {
             if (!IsSafeLearningPath(path))
@@ -222,6 +245,7 @@ namespace
         return step;
     }
 
+    // 初期カリキュラムを組み立てる(startupScene: 起動Sceneの相対パス, sampleSceneIncluded: サンプルSceneの同梱有無)。
     [[nodiscard]] LamaPon::Hub::LearningJourney DefaultJourney(
         const std::string& startupScene,
         const bool sampleSceneIncluded)
@@ -310,6 +334,7 @@ namespace
         };
     }
 
+    // プロジェクト向けの学習ガイドを生成する(projectName: 表示名, startupScene: 起動Sceneの相対パス, sampleSceneIncluded: サンプルSceneの同梱有無)。
     [[nodiscard]] std::string MakeGuide(
         const std::string& projectName,
         const std::string& startupScene,
@@ -356,29 +381,28 @@ namespace
             "- **エンジンの仕組みを知る**: `validate`、`build`、`doctor`でプロジェクトの状態を確認します。\n";
     }
 
+    // 生成する教材用C++
     constexpr std::string_view StarterScript = R"LAMAPON(#include "LamaPon/LamaPon.h"
 
-// このファイルはゲームループを学ぶための最小サンプルです。
-// 変更するのはエンジン本体ではなく、プロジェクト内のassetsです。
+// 回転とJump入力を扱う教材用Script。
 class LearningPlayer final : public LamaPon::Script
 {
 public:
-    // StartはPlay開始後、最初のUpdate直前に1回だけ呼ばれます。
+    // 最初の更新前に表示倍率を初期化する。
     void Start() override
     {
         GetTransform().scale = { 1.0f, 1.0f, 1.0f };
     }
 
-    // Updateは1フレームに1回呼ばれます。
-    // deltaTime（前のフレームからの秒数）を掛けることで、PCの速さが
-    // 違っても1秒あたりの回転量を同じにできます。
+    // 毎フレーム回転とJump中の拡大を更新する(deltaTime: 前フレームからの秒数)。
     void Update(const float deltaTime) override
     {
         GetTransform().Rotate(
             { 0.0f, 1.0f, 0.0f },
             SpinSpeed * deltaTime);
 
-        // Jumpは既定でSpace／ゲームパッドAです。
+        // Jumpは既定でSpace／ゲームパッドAに割り当てられる。
+        // Jump中の表示倍率
         const float scale = Graphics().Input().IsDown("Jump")
             ? BoostScale
             : 1.0f;
@@ -386,8 +410,10 @@ public:
     }
 
 private:
-    // まずは値を変えて保存し、動きの違いを比べてください。
+
+    // 毎秒の回転角（ラジアン）
     static constexpr float SpinSpeed = 1.2f;
+    // Jump中の拡大倍率
     static constexpr float BoostScale = 1.35f;
 };
 
@@ -395,6 +421,7 @@ private:
 LAMAPON_SCRIPT(LearningPlayer);
 )LAMAPON";
 
+    // 生成する企画メモ
     constexpr std::string_view DesignNote = R"LAMAPON(# ゲーム企画メモ
 
 遊ぶ人にどのような体験をしてほしいか、短く整理します。
@@ -413,17 +440,22 @@ LAMAPON_SCRIPT(LearningPlayer);
 - 次に変えるなら:
 )LAMAPON";
 
+    // 個人進捗のパス文字列が無ければ.gitignoreへ追記する(root: プロジェクトルート)。
     void EnsureProgressIgnored(const std::filesystem::path& root)
     {
+        // 進捗除外設定の保存先
         const auto ignorePath = root / L".gitignore";
+        // .gitignoreの内容
         std::string contents;
         if (std::filesystem::is_regular_file(ignorePath))
         {
+            // .gitignoreの入力
             std::ifstream input(ignorePath, std::ios::binary);
             contents.assign(
                 std::istreambuf_iterator<char>(input),
                 std::istreambuf_iterator<char>());
         }
+        // 個人進捗の除外パス
         constexpr std::string_view entry =
             ".lamapon/learning-progress.json";
         if (contents.find(entry) != std::string::npos)
@@ -440,6 +472,7 @@ LAMAPON_SCRIPT(LearningPlayer);
         WriteText(ignorePath, contents);
     }
 
+    // 個人進捗をJSON保存する(projectRoot: プロジェクトルート, progress: 保存する進捗)。
     void SaveProgress(
         const std::filesystem::path& projectRoot,
         const LamaPon::Hub::LearningProgress& progress)
@@ -487,19 +520,25 @@ namespace LamaPon::Hub
         }
     }
 
+    // 教材を追加し、既存教材があれば書き込み前に失敗する(requestedProjectRoot: プロジェクトルート, sampleSceneIncluded: サンプルSceneの同梱有無)。
     void InitializeLearningJourney(
         const std::filesystem::path& requestedProjectRoot,
         const bool sampleSceneIncluded)
     {
+        // 正規化したプロジェクトルート
         const auto projectRoot = Normalize(requestedProjectRoot);
         RequireProject(projectRoot);
+        // プロジェクト設定
         const auto settings = LoadProjectSettings(
             projectRoot / L".lamapon" / L"project.json");
+        // 起動Sceneの相対パス
         const std::string startupScene = WideToUtf8(
             settings.startupScene.generic_wstring());
+        // 共有カリキュラム
         const auto journey = DefaultJourney(
             startupScene,
             sampleSceneIncluded);
+        // 新規教材の保存先一覧
         const std::vector<std::filesystem::path> destinations{
             LearningJourneyPath(projectRoot),
             projectRoot / L"LEARNING.md",
@@ -507,6 +546,7 @@ namespace LamaPon::Hub
             projectRoot / L"assets" / L"scripts"
                 / L"LearningPlayer.cpp"
         };
+        // 追加前に確認する保存先
         for (const auto& destination : destinations)
         {
             if (std::filesystem::exists(destination))
@@ -517,7 +557,9 @@ namespace LamaPon::Hub
             }
         }
 
+        // 保存する項目JSON配列
         Json steps = Json::array();
+        // 処理中の学習項目
         for (const auto& step : journey.steps)
         {
             steps.push_back(StepToJson(step));
@@ -550,7 +592,9 @@ namespace LamaPon::Hub
     LearningJourney LoadLearningJourney(
         const std::filesystem::path& projectRoot)
     {
+        // 対象の教材・進捗パス
         const auto path = LearningJourneyPath(projectRoot);
+        // 読んだ教材または進捗JSON
         const auto document = ReadJson(path);
         if (!document.is_object()
             || document.value("format", std::string{}) != JourneyFormat
@@ -563,6 +607,7 @@ namespace LamaPon::Hub
                 + PathToUtf8(path));
         }
 
+        // 共有カリキュラム
         LearningJourney journey;
         journey.title = document.value("title", std::string{});
         journey.conceptText = document.value(
@@ -575,9 +620,12 @@ namespace LamaPon::Hub
             throw std::runtime_error(
                 "Learning journey title, concept, and steps are required.");
         }
+        // 教材内で検出した項目ID
         std::unordered_set<std::string> ids;
+        // 読み込む項目JSON
         for (const auto& serialized : document.at("steps"))
         {
+            // 処理中の学習項目
             auto step = StepFromJson(serialized);
             if (!ids.insert(step.id).second)
             {
@@ -592,11 +640,13 @@ namespace LamaPon::Hub
     LearningProgress LoadLearningProgress(
         const std::filesystem::path& projectRoot)
     {
+        // 対象の教材・進捗パス
         const auto path = LearningProgressPath(projectRoot);
         if (!std::filesystem::is_regular_file(path))
         {
             return {};
         }
+        // 読んだ教材または進捗JSON
         const auto document = ReadJson(path);
         if (!document.is_object()
             || document.value("format", std::string{}) != ProgressFormat
@@ -607,6 +657,7 @@ namespace LamaPon::Hub
                 "Unsupported learning progress format: "
                 + PathToUtf8(path));
         }
+        // 個人の学習進捗
         LearningProgress progress;
         progress.completedStepIds = document.value(
             "completedSteps",
@@ -619,7 +670,9 @@ namespace LamaPon::Hub
             throw std::runtime_error(
                 "Unknown learning role: " + progress.selectedRole);
         }
+        // 進捗の重複除去用ID集合
         std::unordered_set<std::string> unique;
+        // 空IDと重複IDを除く(id: 完了項目ID)。
         std::erase_if(
             progress.completedStepIds,
             [&unique](const std::string& id)
@@ -632,15 +685,20 @@ namespace LamaPon::Hub
     LearningStatus GetLearningStatus(
         const std::filesystem::path& projectRoot)
     {
+        // 共有カリキュラム
         const auto journey = LoadLearningJourney(projectRoot);
+        // 個人の学習進捗
         const auto progress = LoadLearningProgress(projectRoot);
+        // 完了項目IDの検索用集合
         const std::unordered_set<std::string> completed{
             progress.completedStepIds.begin(),
             progress.completedStepIds.end()
         };
+        // 教材と進捗から作る表示状態
         LearningStatus status;
         status.totalSteps = journey.steps.size();
         status.selectedRole = progress.selectedRole;
+        // 処理中の学習項目
         for (const auto& step : journey.steps)
         {
             if (completed.contains(step.id))
@@ -659,6 +717,7 @@ namespace LamaPon::Hub
         const std::filesystem::path& projectRoot,
         const std::string& stepId)
     {
+        // 共有カリキュラム
         const auto journey = LoadLearningJourney(projectRoot);
         if (std::ranges::find(
                 journey.steps,
@@ -668,6 +727,7 @@ namespace LamaPon::Hub
             throw std::invalid_argument(
                 "Unknown learning step: " + stepId);
         }
+        // 個人の学習進捗
         auto progress = LoadLearningProgress(projectRoot);
         if (std::ranges::find(
                 progress.completedStepIds,
@@ -688,6 +748,7 @@ namespace LamaPon::Hub
             throw std::invalid_argument(
                 "Learning role must be undecided, engineer, planner, or designer.");
         }
+        // 個人の学習進捗
         auto progress = LoadLearningProgress(projectRoot);
         progress.selectedRole = role;
         SaveProgress(projectRoot, progress);
@@ -697,6 +758,7 @@ namespace LamaPon::Hub
         const std::filesystem::path& projectRoot)
     {
         static_cast<void>(LoadLearningJourney(projectRoot));
+        // 進捗削除時のエラー
         std::error_code error;
         std::filesystem::remove(
             LearningProgressPath(projectRoot),
@@ -709,13 +771,17 @@ namespace LamaPon::Hub
         }
     }
 
+    // 教材と進捗を診断し、必須項目の成否を返す(requestedProjectRoot: プロジェクトルート)。
     LearningDoctorReport DiagnoseLearningJourney(
         const std::filesystem::path& requestedProjectRoot) noexcept
     {
+        // 教材と進捗の診断結果
         LearningDoctorReport report;
         try
         {
+            // 正規化したプロジェクトルート
             const auto projectRoot = Normalize(requestedProjectRoot);
+            // 設定とassetsの存在確認結果
             const bool projectOk =
                 std::filesystem::is_regular_file(
                     projectRoot / L".lamapon" / L"project.json")
@@ -733,6 +799,7 @@ namespace LamaPon::Hub
                 return report;
             }
 
+            // 学習ガイドの存在確認結果
             const bool guideOk = std::filesystem::is_regular_file(
                 projectRoot / L"LEARNING.md");
             report.checks.push_back({
@@ -742,7 +809,9 @@ namespace LamaPon::Hub
                     : "LEARNING.mdがありません。learn initで追加できます。"
             });
 
+            // 共有カリキュラム
             std::optional<LearningJourney> journey;
+            // カリキュラムの確認内容
             std::string journeyDetail;
             try
             {
@@ -750,6 +819,7 @@ namespace LamaPon::Hub
                 journeyDetail = std::to_string(
                     journey->steps.size()) + "個のステップを確認しました。";
             }
+            // 教材の読込失敗を診断へ記録する(exception: 読込エラー)。
             catch (const std::exception& exception)
             {
                 journeyDetail = exception.what();
@@ -759,13 +829,18 @@ namespace LamaPon::Hub
                 journey.has_value(), true, std::move(journeyDetail)
             });
 
+            // 全参照教材が存在するか
             bool filesOk = journey.has_value();
+            // 存在しなかった教材パス
             std::vector<std::string> missing;
             if (journey.has_value())
             {
+                // 確認済みの参照パス
                 std::unordered_set<std::string> visited;
+                // 処理中の学習項目
                 for (const auto& step : journey->steps)
                 {
+                    // 対象の教材・進捗パス
                     for (const auto& path : step.files)
                     {
                         if (visited.insert(path).second
@@ -792,7 +867,9 @@ namespace LamaPon::Hub
                                 : std::string{})
             });
 
+            // 個人進捗が読み込めたか
             bool progressOk = true;
+            // 個人進捗の確認内容
             std::string progressDetail =
                 "未開始です（最初の完了時に作成されます）。";
             if (std::filesystem::is_regular_file(
@@ -800,12 +877,14 @@ namespace LamaPon::Hub
             {
                 try
                 {
+                    // 個人の学習進捗
                     const auto progress = LoadLearningProgress(
                         projectRoot);
                     progressDetail = std::to_string(
                         progress.completedStepIds.size())
                         + "個の完了記録を確認しました。";
                 }
+                // 進捗の読込失敗を診断へ記録する(exception: 読込エラー)。
                 catch (const std::exception& exception)
                 {
                     progressOk = false;
@@ -817,6 +896,7 @@ namespace LamaPon::Hub
                 std::move(progressDetail)
             });
         }
+        // 想定外の診断失敗を必須項目として記録する(exception: 診断エラー)。
         catch (const std::exception& exception)
         {
             report.checks.push_back({
@@ -824,6 +904,7 @@ namespace LamaPon::Hub
             });
         }
 
+        // 任意項目の失敗を準備完了判定から除く(check: 診断結果)。
         report.ready = std::ranges::all_of(
             report.checks,
             [](const LearningCheck& check)

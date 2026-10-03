@@ -10,15 +10,16 @@ namespace LamaPon
     class AssetManager;
     class SkeletalModel;
 
-    // Windows 8 ResourceLoading sample由来のVBOを、D3D11 Deviceに依存しない
-    // CPU modelへ読み込みます。DirectXTK11経路は従来loaderを維持します。
+    // VBOの位置・法線・UVをAPI非依存のCPUモデルへ変換する。
     class VboImporter final
     {
     public:
+        // VBOを読みCPUモデルへ変換する(assets: ファイルの取得元, path: 元VBOのパス)。
         [[nodiscard]] static std::shared_ptr<SkeletalModel> Load(
             AssetManager& assets,
             const std::filesystem::path& path);
 
+        // VBOの配置と範囲を検証してCPUモデルを作る(bytes: VBOのバイト列, sourcePath: 診断・ノード名用のパス)。
         [[nodiscard]] static std::shared_ptr<SkeletalModel> LoadFromMemory(
             std::span<const std::uint8_t> bytes,
             const std::filesystem::path& sourcePath);

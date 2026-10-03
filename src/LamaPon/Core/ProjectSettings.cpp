@@ -17,6 +17,7 @@
 
 namespace
 {
+    // 絶対パスと親への遡行を拒否します(path: アセット相対パス)。
     bool IsSafeRelativePath(const std::filesystem::path& path)
     {
         if (path.empty() || path.is_absolute())
@@ -24,6 +25,7 @@ namespace
             return false;
         }
 
+        // 相対パスの構成要素
         for (const auto& part : path)
         {
             if (part == L"..")
@@ -34,11 +36,14 @@ namespace
         return true;
     }
 
+    // ASCII制御文字の有無を調べます(value: 検証する文字列)。
     [[nodiscard]] bool HasControlCharacter(
         const std::string_view value) noexcept
     {
+        // 検査する文字のバイト
         for (const char character : value)
         {
+            // 符号なしの文字コード
             const auto code =
                 static_cast<unsigned char>(character);
             if (code < 0x20u || code == 0x7Fu)
@@ -49,9 +54,8 @@ namespace
         return false;
     }
 
-    // Rich Presence設定は公開情報だけです。Application IDへ
-    // client_secretやtokenを貼り付けてしまった場合に気付けるよう、
-    // ASCII数字だけを受け付けます。
+    // Rich Presenceの公開値を検証します(presence: 表示設定)。
+    // アプリIDはASCII数字に限定し、制約違反はinvalid_argumentです。
     void ValidateDiscordPresenceSettings(
         const LamaPon::DiscordPresenceProjectSettings& presence)
     {
@@ -63,6 +67,7 @@ namespace
                 throw std::invalid_argument(
                     "Discord application ID must be 1 to 32 ASCII digits.");
             }
+            // アプリIDの検査文字
             for (const char character : presence.applicationId)
             {
                 if (character < '0' || character > '9')
@@ -159,8 +164,6 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Inspector decimals must be between 0 and 6.");
         }
-        // 1.0より大きい描画スケールは高解像度で描いて縮小する
-        // スーパーサンプリング（SSAA）になります。
         switch (settings.viewport.navigationPreset)
         {
         case ViewportNavigationPreset::Fly:
@@ -200,8 +203,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Graphics settings are outside their supported range.");
         }
-        // 物理計算を停止させる0以下の値を拒否します。固定ステップは、
-        // 高速な物体の衝突を安定して検出できる範囲に制限します。
+        // 固定ステップの許容範囲は0秒より大きく0.1秒以下です。
         if (!(settings.physics.fixedTimeStep > 0.0f)
             || settings.physics.fixedTimeStep > 0.1f
             || settings.physics.maximumCatchUpSteps < 1
@@ -223,6 +225,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "A project can register up to 256 tags.");
         }
+        // 検証する登録タグ
         for (const auto& tag : settings.tags)
         {
             if (tag.empty()
@@ -234,10 +237,12 @@ namespace LamaPon
                     "Tags must be 1 to 64 bytes without leading or trailing spaces.");
             }
         }
+        // 重複検査の基準タグ番号
         for (std::size_t first = 0;
             first < settings.tags.size();
             ++first)
         {
+            // 重複を比較するタグ番号
             for (std::size_t second = first + 1;
                 second < settings.tags.size();
                 ++second)
@@ -306,6 +311,7 @@ namespace LamaPon
     ProjectSettings LoadProjectSettings(
         const std::filesystem::path& path)
     {
+        // 設定ファイルの入力ストリーム
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -314,6 +320,7 @@ namespace LamaPon
                 + PathToUtf8(path));
         }
 
+        // 読み込んだ設定文書
         nlohmann::json document;
         input >> document;
         static_cast<void>(
@@ -321,10 +328,12 @@ namespace LamaPon
                 document,
                 SerializedDocumentKind::ProjectSettings));
 
+        // 既定値から復元する設定
         ProjectSettings settings;
         settings.gameName = document.value(
             "gameName",
             settings.gameName);
+        // ウィンドウ設定のJSON項目
         if (const auto window = document.find("window");
             window != document.end() && window->is_object())
         {
@@ -362,10 +371,12 @@ namespace LamaPon
             document.value(
                 "inspectorDecimals",
                 settings.inspectorDecimals);
+        // 通信設定のJSON項目
         if (const auto network = document.find("network"); network != document.end())
         {
             settings.network = Detail::NetworkSettingsFromJson(*network);
         }
+        // オンライン設定のJSON項目
         if (const auto online = document.find("online");
             online != document.end())
         {
@@ -392,8 +403,7 @@ namespace LamaPon
             settings.online.openAuthorizationBrowser = online->value(
                 "openAuthorizationBrowser",
                 settings.online.openAuthorizationBrowser);
-            // discordPresenceを持たない古いproject.jsonでは、
-            // Rich Presenceは無効のままにします。
+            // Rich PresenceのJSON項目
             if (const auto presence =
                     online->find("discordPresence");
                 presence != online->end())
@@ -403,6 +413,7 @@ namespace LamaPon
                     throw std::runtime_error(
                         "Discord presence settings must be a JSON object.");
                 }
+                // 復元先のPresence設定
                 auto& target = settings.online.discordPresence;
                 target.enabled = presence->value(
                     "enabled",
@@ -418,10 +429,12 @@ namespace LamaPon
                     target.defaultLargeImageText);
             }
         }
+        // 描画設定のJSON項目
         if (const auto graphics = document.find("graphics");
             graphics != document.end()
             && graphics->is_object())
         {
+            // 復元する描画品質プリセット
             const auto preset =
                 GraphicsQualityPresetFromName(
                     graphics->value(
@@ -509,8 +522,7 @@ namespace LamaPon
                 graphics->value(
                     "automaticLodQuality",
                     settings.graphics.automaticLodQuality);
-            // プリセットの後に読みます。上でGraphicsSettingsForPreset
-            // が既定へ戻すので、先に読むと必ず上書きされます。
+            // 個別の描画方式は、設定全体を初期化するプリセットの適用後に復元します。
             settings.graphics.renderingPath =
                 RenderingPathFromName(
                     graphics->value(
@@ -528,6 +540,7 @@ namespace LamaPon
                                 settings.graphics
                                     .renderingApi))));
         }
+        // 視点操作設定のJSON項目
         if (const auto viewport = document.find("viewport");
             viewport != document.end()
             && viewport->is_object())
@@ -556,10 +569,12 @@ namespace LamaPon
                     "invertY",
                     settings.viewport.invertY);
         }
+        // 物理設定のJSON項目
         if (const auto physics = document.find("physics");
             physics != document.end()
             && physics->is_object())
         {
+            // 重力ベクトルのJSON項目
             if (const auto gravity = physics->find("gravity");
                 gravity != physics->end()
                 && gravity->is_object())
@@ -608,12 +623,15 @@ namespace LamaPon
                 physics->value(
                     "clampDiscreteSpeed",
                     settings.physics.clampDiscreteSpeed);
+            // 衝突レイヤー名のJSON項目
             if (const auto layerNames =
                     physics->find("layerNames");
                 layerNames != physics->end()
                 && layerNames->is_array())
             {
+                // 復元する衝突レイヤー番号
                 std::size_t index = 0;
+                // 復元するレイヤー名
                 for (const auto& name : *layerNames)
                 {
                     if (index >= CollisionLayerCount)
@@ -629,11 +647,13 @@ namespace LamaPon
                     ++index;
                 }
             }
+            // 衝突を無効にする組のJSON項目
             if (const auto collisionOff =
                     physics->find("collisionOff");
                 collisionOff != physics->end()
                 && collisionOff->is_array())
             {
+                // 衝突を無効にするレイヤー組
                 for (const auto& pair : *collisionOff)
                 {
                     if (!pair.is_array()
@@ -643,8 +663,10 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 組の先頭レイヤー番号
                     const auto first =
                         pair[0].get<std::uint32_t>();
+                    // 組の末尾レイヤー番号
                     const auto second =
                         pair[1].get<std::uint32_t>();
                     if (first >= CollisionLayerCount
@@ -661,6 +683,7 @@ namespace LamaPon
                 }
             }
         }
+        // 登録タグのJSON項目
         if (const auto tags = document.find("tags");
             tags != document.end())
         {
@@ -670,12 +693,14 @@ namespace LamaPon
                     "Tags must be a JSON array of strings.");
             }
             settings.tags.clear();
+            // 復元するタグのJSON値
             for (const auto& tagValue : *tags)
             {
                 settings.tags.push_back(
                     tagValue.get<std::string>());
             }
         }
+        // 入力割り当てのJSON項目
         if (const auto inputActions =
             document.find("inputActions");
             inputActions != document.end())
@@ -686,11 +711,14 @@ namespace LamaPon
                     "Input actions must be a JSON array.");
             }
             settings.inputActions.clear();
+            // 入力アクションのJSON値
             for (const auto& actionValue : *inputActions)
             {
+                // 復元する入力アクション
                 InputActionDefinition action;
                 action.name =
                     actionValue.at("name").get<std::string>();
+                // 入力操作の割り当て値
                 for (const auto& bindingValue :
                     actionValue.at("bindings"))
                 {
@@ -708,15 +736,7 @@ namespace LamaPon
                     std::move(action));
             }
         }
-        // 無い古い設定ファイルでは、従来どおり遷移なし・標準の
-        // 読み込み画面のままにします。
-        if (const auto transition = document.find("sceneTransition");
-            transition != document.end())
-        {
-            settings.sceneTransition = SceneTransitionFromJson(
-                *transition,
-                settings.sceneTransition);
-        }
+        // 読み込み画面のJSON項目
         if (const auto loadingScreen = document.find("loadingScreen");
             loadingScreen != document.end())
         {
@@ -724,6 +744,7 @@ namespace LamaPon
                 *loadingScreen,
                 settings.loadingScreen);
         }
+        // 文書の保存形式
         const auto fileType = document.value(
             "format",
             std::string{}) == "LamaPonGame"
@@ -745,13 +766,11 @@ namespace LamaPon
                 path.parent_path());
         }
 
-        // レイヤー名は使用中の項目だけを保存し、末尾の空欄を省きます。
-        // マトリクスはビット列ではなく「衝突しないペアの一覧」で
-        // 保存します。既定値では空配列となり、JSONだけでも設定内容を
-        // 読み取れます。
+        // 保存する衝突レイヤー名配列
         nlohmann::json layerNamesJson =
             nlohmann::json::array();
         {
+            // 末尾の空欄を除いたレイヤー数
             std::size_t used = CollisionLayerCount;
             while (used > 0
                 && settings.physics
@@ -759,6 +778,7 @@ namespace LamaPon
             {
                 --used;
             }
+            // 保存する衝突レイヤー番号
             for (std::size_t index = 0;
                 index < used;
                 ++index)
@@ -767,12 +787,15 @@ namespace LamaPon
                     settings.physics.layerNames[index]);
             }
         }
+        // 衝突を無効にする組の保存配列
         nlohmann::json collisionOffJson =
             nlohmann::json::array();
+        // 衝突検査の基準レイヤー番号
         for (std::size_t row = 0;
             row < CollisionLayerCount;
             ++row)
         {
+            // 衝突検査の相手レイヤー番号
             for (std::size_t column = row;
                 column < CollisionLayerCount;
                 ++column)
@@ -787,6 +810,8 @@ namespace LamaPon
             }
         }
 
+        // 書き出す設定文書
+        // 物理設定は配布用にも保存し、衝突の無効化は重複しない番号組で記録します。
         nlohmann::json document{
             {
                 "format",
@@ -960,9 +985,6 @@ namespace LamaPon
                     }
                 }
             },
-            // 物理は書き出したゲームでも同じでなければならないので、
-            // ProjectとGamePackageの両方へ書きます（エディター表示
-            // 用のinspectorDecimalsとはそこが違います）。
             {
                 "physics",
                 {
@@ -1007,14 +1029,11 @@ namespace LamaPon
                         settings.physics.clampDiscreteSpeed
                     },
                     { "layerNames", layerNamesJson },
-                    // 「当たらないペア」の一覧（[i, j]、i <= j）。
-                    // 空なら全レイヤーが当たる（既定）。
                     { "collisionOff", collisionOffJson }
                 }
             }
         };
-        // アイコンはExport時に実行ファイルへ埋め込むため、
-        // ゲームパッケージ側の設定には不要です。
+        // 編集用の設定と埋め込み済みアイコンのパスは配布設定へ保存しません。
         if (fileType == ProjectSettingsFileType::Project)
         {
             document["viewport"] = {
@@ -1049,20 +1068,19 @@ namespace LamaPon
                 settings.inspectorDecimals;
         }
         document["tags"] = settings.tags;
-        // 遷移と読み込み画面は配布用のLamaPonGame.jsonにも書き、
-        // 書き出したゲームの起動時に適用します。
-        document["sceneTransition"] =
-            SceneTransitionToJson(settings.sceneTransition);
         document["loadingScreen"] =
             SceneLoadingScreenToJson(settings.loadingScreen);
         document["inputActions"] =
             nlohmann::json::array();
+        // 保存する入力アクション
         for (const auto& action : settings.inputActions)
         {
+            // 入力アクションの保存値
             nlohmann::json actionValue{
                 { "name", action.name },
                 { "bindings", nlohmann::json::array() }
             };
+            // 保存する入力操作の割り当て
             for (const auto& binding : action.bindings)
             {
                 actionValue["bindings"].push_back(
@@ -1079,23 +1097,26 @@ namespace LamaPon
                 std::move(actionValue));
         }
 
-        // ProjectSettingsが知らないキーは、元のファイルから引き継ぎ
-        // ます。ここで丸ごと書き直すと、他の仕組みが書いた項目
-        // （engineVersionなど）が保存のたびに消えます。
-        // 未知のキーを保持することで、別機能が保存した設定を失いません。
         {
+            // 既存設定の入力ストリーム
             std::ifstream existing(path, std::ios::binary);
             if (existing)
             {
                 try
                 {
+                    // 未知の項目を引き継ぐ既存文書
                     nlohmann::json previous;
                     existing >> previous;
                     if (previous.is_object())
                     {
+                        // 引き継ぎを判定する既存項目
                         for (const auto& entry :
                             previous.items())
                         {
+                            if (entry.key() == "sceneTransition")
+                            {
+                                continue;
+                            }
                             if (!document.contains(
                                 entry.key()))
                             {
@@ -1107,11 +1128,12 @@ namespace LamaPon
                 }
                 catch (const std::exception&)
                 {
-                    // 壊れていたら引き継ぎません（保存は続けます）。
+                    // 既存文書が壊れている場合は、未知の項目を引き継がず保存を続けます。
                 }
             }
         }
 
+        // 設定ファイルの出力ストリーム
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);

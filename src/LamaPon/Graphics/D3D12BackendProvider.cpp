@@ -2,21 +2,22 @@
 
 #include <Windows.h>
 
-// D3D12実装を物理DLLへ移す途中の安定したABI境界です。現段階では
-// capabilityとABIだけを提供し、描画処理はLamaPonRuntime内の実装へ
-// 委譲します。後続段階で同じentry pointへBackend factoryを追加します。
+
+// バックエンドパッケージのABI版を返す。
 extern "C" __declspec(dllexport) std::uint32_t
     LamaPonGraphicsBackendAbiVersion() noexcept
 {
     return LamaPon::GraphicsBackendPackageAbiVersion;
 }
 
+// パッケージが提供する描画APIの識別名を返す。
 extern "C" __declspec(dllexport) const char*
     LamaPonGraphicsBackendApi() noexcept
 {
     return "DirectX12Experimental";
 }
 
+// 常に成功を返すDLL入口で、無名の引数は使用しない。
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID)
 {
     return TRUE;

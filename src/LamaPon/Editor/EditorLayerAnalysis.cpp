@@ -14,7 +14,7 @@
 
 #include <imgui.h>
 
-// ファイル選択ダイアログ（GetOpenFileNameW）に必要。
+
 #include <commdlg.h>
 
 #include <array>
@@ -26,33 +26,40 @@ namespace LamaPon
 {
     namespace
     {
+        // 解析パネルのメニューグループ
         constexpr const char* AnalysisMenuGroup = "解析";
     }
 
+    // プロジェクト内の解析記録先を返し、資産の基準パスが無ければ空を返します(name: 記録用途のサブフォルダー名)。
     std::filesystem::path EditorLayer::DebugCaptureDirectory(
         const std::wstring_view name) const
     {
+        // 現在の資産管理への借用参照
         const auto* assets = m_graphics.TryAssets();
         if (assets == nullptr || assets->AssetRoot().empty())
         {
             return {};
         }
-        // エディターログやprofile.jsonと同じく、Gitの追跡対象外の
-        // .lamapon配下に置きます。
+        // エディターログやprofile.jsonと同じく、Gitの追跡対象外の.lamapon配下に置きます。
         return assets->AssetRoot().parent_path()
             / L".lamapon"
             / std::filesystem::path{ std::wstring{ name } };
     }
 
+    // JSON記録を選ぶダイアログを開き、取消や失敗ならnulloptを返します(initialDirectory: 初期表示するフォルダー)。
     std::optional<std::filesystem::path>
         EditorLayer::OpenDebugCaptureDialog(
             const std::filesystem::path& initialDirectory)
     {
+        // 選択したファイル名の出力領域
         std::array<wchar_t, 32768> filename{};
+        // ダイアログの初期パス文字列
         const std::wstring initial = initialDirectory.wstring();
+        // JSON記録のファイル種別指定
         constexpr wchar_t filter[] =
             L"解析の記録 (*.json)\0*.json\0\0";
 
+        // Windowsのファイル選択情報
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -80,16 +87,20 @@ namespace LamaPon
         return std::filesystem::path{ filename.data() };
     }
 
+    // 解析パネルを生成し、描画・記録同期・終了処理を登録します。
     void EditorLayer::RegisterAnalysisExtension()
     {
+        // 解析パネルの状態通知をエディターへ渡します(message: 通知内容, error: エラー通知か)。
         auto status = [this](std::string message, const bool error)
         {
             SetStatus(std::move(message), error);
         };
+        // 解析記録の選択をダイアログへ委譲します(directory: 初期表示するフォルダー)。
         auto openFile = [this](const std::filesystem::path& directory)
         {
             return OpenDebugCaptureDialog(directory);
         };
+        // シーン内に存在する対象だけを選択します(id: 選択するオブジェクトID)。
         auto selectObject = [this](const GameObjectId id)
         {
             if (m_scene.FindGameObject(id) != nullptr)
@@ -101,6 +112,7 @@ namespace LamaPon
         m_profilerPanel = std::make_unique<ProfilerPanel>(status);
         m_profileAnalyzerPanel =
             std::make_unique<ProfileAnalyzerPanel>(status, openFile);
+        // 描画系からメモリ内訳を取得する解析パネルを生成します。
         m_memoryProfilerPanel = std::make_unique<MemoryProfilerPanel>(
             [this]
             {
@@ -108,6 +120,7 @@ namespace LamaPon
             },
             status,
             openFile);
+        // 選択通知と、描画を続けたまま再生更新を停止する処理を渡します。
         m_frameDebuggerPanel = std::make_unique<FrameDebuggerPanel>(
             m_graphics.FrameDebug(),
             selectObject,
@@ -122,10 +135,12 @@ namespace LamaPon
         m_physicsDebuggerPanel =
             std::make_unique<PhysicsDebuggerPanel>(selectObject);
 
+        // 解析パネルの拡張登録情報
         EditorExtensionDefinition analysis;
         analysis.id = "lamapon.analysis";
         analysis.displayName = "解析";
         analysis.panels = {
+            // フレーム時間を表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ProfilerPanelId },
                 "プロファイラー",
@@ -133,7 +148,9 @@ namespace LamaPon
                 true,
                 [this](bool& open)
                 {
+                    // 描画系のプロジェクト設定
                     const auto& settings = m_graphics.Settings();
+                    // 目標フレーム時間・ms
                     const float frameBudget =
                         settings.targetFrameRate > 0
                             ? 1000.0f
@@ -148,6 +165,7 @@ namespace LamaPon
                 },
                 AnalysisMenuGroup
             },
+            // 時間の集計と比較を表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ProfileAnalyzerPanelId },
                 "プロファイル分析",
@@ -162,6 +180,7 @@ namespace LamaPon
                 },
                 AnalysisMenuGroup
             },
+            // メモリ量を表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ MemoryProfilerPanelId },
                 "メモリプロファイラー",
@@ -176,6 +195,7 @@ namespace LamaPon
                 },
                 AnalysisMenuGroup
             },
+            // 描画イベントを表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ FrameDebuggerPanelId },
                 "フレームデバッガー",
@@ -187,6 +207,7 @@ namespace LamaPon
                 },
                 AnalysisMenuGroup
             },
+            // 物理状態を表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ PhysicsDebuggerPanelId },
                 "物理デバッガー",
@@ -202,6 +223,7 @@ namespace LamaPon
                 },
                 AnalysisMenuGroup
             },
+            // Dear ImGuiの内部状態を表示します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ImGuiDebuggerPanelId },
                 "ImGuiデバッガー",
@@ -209,8 +231,7 @@ namespace LamaPon
                 true,
                 [](bool& open)
                 {
-                    // Dear ImGui標準のMetrics/Debuggerです。ウィンドウ、
-                    // 描画リスト、ID、入力状態を調べられます。
+
                     if (open)
                     {
                         ImGui::ShowMetricsWindow(&open);
@@ -219,8 +240,8 @@ namespace LamaPon
                 AnalysisMenuGroup
             }
         };
-        // パネルを閉じている間は記録を止め、描画や物理の負荷を増やさない
-        // ようにします。描画より前（Draw）に毎フレーム同期します。
+
+        // パネルの開閉を描画前に毎フレーム同期し、閉じている間の記録を止めます。
         analysis.onUpdate = [this]
         {
             m_frameDebuggerPanel->SynchronizeEnabled(
@@ -229,8 +250,8 @@ namespace LamaPon
                 m_scene,
                 m_editorExtensions.IsPanelOpen(PhysicsDebuggerPanelId));
         };
-        // EditorLayerのデストラクター本体から呼ばれるため、パネルは
-        // まだ生存しています。途中で登録に失敗した場合に備えて確認します。
+
+        // EditorLayerの終了時に生存するパネルの記録を止め、登録途中の失敗も考慮します。
         analysis.onShutdown = [this]
         {
             if (m_frameDebuggerPanel != nullptr)
@@ -245,6 +266,7 @@ namespace LamaPon
             }
         };
 
+        // 解析拡張の登録失敗理由
         std::string error;
         if (!m_editorExtensions.Register(std::move(analysis), &error))
         {
@@ -253,6 +275,7 @@ namespace LamaPon
         }
     }
 
+    // 物理デバッガーがある場合にScene Viewへ補助線を描画します。
     void EditorLayer::DrawAnalysisSceneOverlay()
     {
         if (m_physicsDebuggerPanel != nullptr)

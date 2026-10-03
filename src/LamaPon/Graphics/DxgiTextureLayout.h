@@ -1,7 +1,5 @@
 #pragma once
 
-// D3D11 / D3D12 Backendが共有する、DXGI texture formatへの変換と
-// CPU側subresource範囲の検証です。Runtime内部headerで、SDKにはinstallしません。
 #include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <dxgiformat.h>
@@ -13,6 +11,7 @@
 
 namespace LamaPon::Detail
 {
+    // 対応するDXGI形式へ変換し、未対応なら例外を送出する(format: 中立のテクスチャ形式)。
     [[nodiscard]] inline DXGI_FORMAT ToDxgiTextureFormat(
         const GraphicsTextureFormat format)
     {
@@ -116,11 +115,13 @@ namespace LamaPon::Detail
         }
     }
 
+    // 各辺を半分にして必要なミップ段数を求める(width: 幅, height: 高さ, depth: 奥行数)。
     [[nodiscard]] inline std::uint32_t MaximumTextureMipLevels(
         std::uint32_t width,
         std::uint32_t height,
         std::uint32_t depth = 1) noexcept
     {
+        // 必要なミップ段数
         std::uint32_t levels = 1;
         while (width > 1 || height > 1 || depth > 1)
         {
@@ -134,15 +135,20 @@ namespace LamaPon::Detail
 
     struct TextureSubresourceLayout final
     {
+        // 一行の最小バイト数
         std::uint32_t minimumRowBytes{};
+        // 画素またはブロックの行数
         std::uint32_t rowCount{};
     };
 
+    // 対応形式の最小行バイト数と行数を求める(format: DXGI形式, width: 有効な画素幅, height: 有効な画素高さ)。
+    // 寸法は正の描画API対応値とし、BC形式の切上げ計算が整数範囲内に収まる値を渡す。
     [[nodiscard]] inline TextureSubresourceLayout RequiredTextureLayout(
         const DXGI_FORMAT format,
         const std::uint32_t width,
         const std::uint32_t height)
     {
+        // 非圧縮形式の行寸法を求める(bytesPerPixel: 一画素のバイト数)。
         const auto uncompressed = [width, height](
             const std::uint32_t bytesPerPixel)
         {
@@ -237,8 +243,9 @@ namespace LamaPon::Detail
         }
     }
 
-    // 2D textureの1 mip分として渡されたCPU dataが、row pitchとbyte範囲の
-    // 両方で必要量を満たすか検証します。slicePitchが0ならbytes全体を使います。
+
+    // 二次元ミップの転送範囲を検証する(format: DXGI形式, width: 元の幅, height: 元の高さ, mipLevels: ミップ段数, mipLevel: 転送する段の番号, data: ピッチと転送列)。
+    // 有効な元寸法と32未満のミップ番号を渡し、slicePitchがゼロなら転送列全体を一層とする。
     inline void ValidateTexture2DSubresourceData(
         const DXGI_FORMAT format,
         const std::uint32_t width,
@@ -258,8 +265,11 @@ namespace LamaPon::Detail
                 "The texture subresource data is incomplete.");
         }
 
+        // 転送するミップの幅
         const auto mipWidth = std::max(width >> mipLevel, 1u);
+        // 転送するミップの高さ
         const auto mipHeight = std::max(height >> mipLevel, 1u);
+        // ミップの最小行寸法
         const auto layout = RequiredTextureLayout(
             format,
             mipWidth,
@@ -269,10 +279,12 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The texture subresource row pitch is too small.");
         }
+        // 転送に必要なバイト数
         const auto requiredBytes =
             static_cast<std::uint64_t>(data.rowPitch)
                 * (layout.rowCount - 1u)
             + layout.minimumRowBytes;
+        // 一層の実際のバイト数
         const auto slicePitch = data.slicePitch != 0
             ? static_cast<std::uint64_t>(data.slicePitch)
             : static_cast<std::uint64_t>(data.bytes.size());
@@ -285,8 +297,9 @@ namespace LamaPon::Detail
         }
     }
 
-    // Texture3Dの1 mip分として渡されたCPU dataが、row pitch、slice pitch、
-    // byte範囲のすべてで必要量を満たすか検証します。slicePitchは省略できません。
+
+    // 三次元ミップの転送範囲を検証する(format: DXGI形式, width: 元の幅, height: 元の高さ, depth: 元の奥行数, mipLevels: ミップ段数, mipLevel: 転送する段の番号, data: ピッチと転送列)。
+    // 有効な元寸法と32未満のミップ番号を渡し、slicePitchは必ず指定する。
     inline void ValidateTexture3DSubresourceData(
         const DXGI_FORMAT format,
         const std::uint32_t width,
@@ -305,9 +318,13 @@ namespace LamaPon::Detail
                 "The Texture3D subresource data is incomplete.");
         }
 
+        // 転送するミップの幅
         const auto mipWidth = std::max(width >> mipLevel, 1u);
+        // 転送するミップの高さ
         const auto mipHeight = std::max(height >> mipLevel, 1u);
+        // 転送するミップの奥行数
         const auto mipDepth = std::max(depth >> mipLevel, 1u);
+        // ミップの最小行寸法
         const auto layout = RequiredTextureLayout(
             format,
             mipWidth,
@@ -317,10 +334,12 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The Texture3D row pitch is too small.");
         }
+        // 一層に必要なバイト数
         const auto requiredSliceBytes =
             static_cast<std::uint64_t>(data.rowPitch)
                 * (layout.rowCount - 1u)
             + layout.minimumRowBytes;
+        // 転送に必要なバイト数
         const auto requiredBytes =
             static_cast<std::uint64_t>(data.slicePitch)
                 * (mipDepth - 1u)

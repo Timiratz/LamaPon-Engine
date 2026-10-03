@@ -16,8 +16,6 @@
 #include <PrimitiveBatch.h>
 #include <VertexTypes.h>
 
-// IDXGIFactory5（ティアリング許可の問い合わせ）。d3d11.hが引く
-// dxgi.hには入っていません。
 #include <dxgi1_5.h>
 
 #include <algorithm>
@@ -37,12 +35,17 @@ namespace
         : public LamaPon::GraphicsOutputState
     {
     public:
+        // 復元元を識別するデバイス
         Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
+        // 退避した出力スロット0
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
             renderTarget;
+        // 退避した深度出力
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
             depthTarget;
+        // 退避した先頭の描画範囲
         D3D11_VIEWPORT viewport{};
+        // 描画範囲の取得成否
         bool hasViewport{};
     };
 
@@ -55,6 +58,7 @@ namespace
         : public LamaPon::Detail::GraphicsTexturePayload
     {
     public:
+        // 2D画像と資源世代を保持します(domain: 資源の世代, texture: 所有する2D画像, description: ネイティブ設定)。
         D3D11TexturePayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
@@ -65,16 +69,18 @@ namespace
         {
         }
 
+        // 所有する2D画像
         Microsoft::WRL::ComPtr<ID3D11Texture2D> native;
+        // 画像のネイティブ設定
         D3D11_TEXTURE2D_DESC description{};
     };
 
-    // 共通Texture3D handleが所有するDirectX 11側の実体です。
-    // API固有型はこのBackend内部に閉じ込めます。
+    // 3D画像のネイティブ資源を保持します。
     class D3D11Texture3DPayload final
         : public LamaPon::Detail::GraphicsTexturePayload
     {
     public:
+        // 3D画像と資源世代を保持します(domain: 資源の世代, texture: 所有する3D画像, description: ネイティブ設定)。
         D3D11Texture3DPayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             Microsoft::WRL::ComPtr<ID3D11Texture3D> texture,
@@ -85,7 +91,9 @@ namespace
         {
         }
 
+        // 所有する3D画像
         Microsoft::WRL::ComPtr<ID3D11Texture3D> native;
+        // 画像のネイティブ設定
         D3D11_TEXTURE3D_DESC description{};
     };
 
@@ -93,6 +101,7 @@ namespace
         : public LamaPon::Detail::GraphicsBufferPayload
     {
     public:
+        // バッファと資源世代を保持します(domain: 資源の世代, buffer: 所有するバッファ, byteCapacity: 確保済みバイト容量)。
         D3D11BufferPayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             Microsoft::WRL::ComPtr<ID3D11Buffer> buffer,
@@ -103,7 +112,9 @@ namespace
         {
         }
 
+        // 所有するバッファ
         Microsoft::WRL::ComPtr<ID3D11Buffer> native;
+        // 確保済みのバイト容量
         std::size_t capacity{};
     };
 
@@ -111,6 +122,7 @@ namespace
         : public LamaPon::Detail::GraphicsViewPayload
     {
     public:
+        // 画像と読み取りビューを保持します(domain: 資源の世代, kind: ビューの用途, resource: 参照元の画像, view: 所有するSRV)。
         D3D11ViewPayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             const LamaPon::GraphicsViewKind kind,
@@ -124,6 +136,7 @@ namespace
         {
         }
 
+        // バッファと読み取りビューを保持します(domain: 資源の世代, kind: ビューの用途, resource: 参照元のバッファ, view: 所有するSRV)。
         D3D11ViewPayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             const LamaPon::GraphicsViewKind kind,
@@ -137,6 +150,7 @@ namespace
         {
         }
 
+        // 所有する読み取りビュー
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> native;
     };
 
@@ -144,6 +158,7 @@ namespace
         : public LamaPon::DebugDrawingBackend
     {
     public:
+        // 補助線の描画資源を作ります(device: 有効なデバイス, context: 保持する即時コンテキスト)。
         D3D11DebugDrawingBackend(
             ID3D11Device* const device,
             ID3D11DeviceContext* const context)
@@ -160,11 +175,14 @@ namespace
             }
             m_effect->SetVertexColorEnabled(true);
 
+            // 入力形式に対応する頂点コード
             const void* shaderByteCode{};
+            // 頂点コードのバイト数
             std::size_t byteCodeLength{};
             m_effect->GetVertexShaderBytecode(
                 &shaderByteCode,
                 &byteCodeLength);
+            // 入力レイアウト作成の結果
             const HRESULT result = device->CreateInputLayout(
                 DirectX::VertexPositionColor::InputElements,
                 DirectX::VertexPositionColor::InputElementCount,
@@ -178,6 +196,7 @@ namespace
             }
         }
 
+        // 深度を無視して線分を描きます(lines: ワールド座標の線分列, view: ビュー行列, projection: 射影行列)。
         void DrawLines(
             const std::span<const LamaPon::DebugLine> lines,
             const DirectX::XMFLOAT4X4& view,
@@ -188,8 +207,7 @@ namespace
                 return;
             }
 
-            // 直前の2D/UI等が残した状態に依存せず、補助線を常に
-            // 手前へ描くという従来のDebugRenderer契約を維持します。
+            // 深度判定を無効にして補助線を常に手前へ描きます。
             m_context->OMSetBlendState(
                 m_states->NonPremultiplied(),
                 nullptr,
@@ -207,6 +225,7 @@ namespace
             m_context->IASetInputLayout(m_inputLayout.Get());
 
             m_batch->Begin();
+            // 描画する補助線
             for (const auto& line : lines)
             {
                 m_batch->DrawLine(
@@ -223,14 +242,20 @@ namespace
         }
 
     private:
+        // 保持する即時コンテキスト
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
+        // 頂点色の描画シェーダー
         std::unique_ptr<DirectX::BasicEffect> m_effect;
+        // 補助線の描画状態
         std::unique_ptr<DirectX::CommonStates> m_states;
+        // 線分をまとめる描画器
         std::unique_ptr<DirectX::PrimitiveBatch<
             DirectX::VertexPositionColor>> m_batch;
+        // 位置と色の頂点レイアウト
         Microsoft::WRL::ComPtr<ID3D11InputLayout> m_inputLayout;
     };
 
+    // 失敗したHRESULTを例外に変換します(result: APIの戻り値, operation: 例外へ記載する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -245,15 +270,17 @@ namespace
         }
     }
 
-    // format変換とsubresource検証はD3D12 Backendと同じ規則を共有します。
+
     using LamaPon::Detail::RequiredTextureLayout;
 
+    // 共通形式をDXGI形式へ変換します(format: 画像形式)。
     [[nodiscard]] DXGI_FORMAT ToDxgiFormat(
         const LamaPon::GraphicsTextureFormat format)
     {
         return LamaPon::Detail::ToDxgiTextureFormat(format);
     }
 
+    // 最大辺からミップ数の上限を返します(width: 幅, height: 高さ, depth: 奥行き)。
     [[nodiscard]] std::uint32_t MaximumMipLevels(
         const std::uint32_t width,
         const std::uint32_t height,
@@ -265,6 +292,7 @@ namespace
             depth);
     }
 
+    // 2Dミップの寸法とデータ量を検証します(texture: ネイティブ設定, mipLevel: ミップ番号, data: バイト列とピッチ)。
     void ValidateTextureSubresourceData(
         const D3D11_TEXTURE2D_DESC& texture,
         const std::uint32_t mipLevel,
@@ -279,6 +307,7 @@ namespace
             data);
     }
 
+    // 3Dミップの寸法とデータ量を検証します(texture: ネイティブ設定, mipLevel: ミップ番号, data: バイト列とピッチ)。
     void ValidateTexture3DSubresourceData(
         const D3D11_TEXTURE3D_DESC& texture,
         const std::uint32_t mipLevel,
@@ -294,12 +323,14 @@ namespace
             data);
     }
 
+    // 同世代の有効な描画先を返します(backend: 所有元のバックエンド, target: 確認する描画先, operation: 例外へ記載する操作名)。
     [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState&
         RequireCurrentOffscreenTarget(
             const LamaPon::D3D11Backend& backend,
             LamaPon::RenderTarget& target,
             const char* const operation)
     {
+        // 世代を確認する描画先の実体
         auto* const state = dynamic_cast<
             LamaPon::Detail::D3D11RenderTargetState*>(
                 LamaPon::Detail::RenderTargetBackendAccess::Get(target));
@@ -316,16 +347,17 @@ namespace
         return *state;
     }
 
-    // この環境でティアリング許可を利用できるか。対応が無い
-    // Windowsや仮想GPUではIDXGIFactory5を取得できないためfalseです。
+    // ティアリング許可を問い合わせ、確認できなければfalseを返します。
     [[nodiscard]] bool QueryTearingSupport()
     {
+        // ティアリング対応の問い合わせ元
         Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
         if (FAILED(CreateDXGIFactory1(
                 IID_PPV_ARGS(factory.GetAddressOf()))))
         {
             return false;
         }
+        // ティアリングの対応結果
         BOOL allowed = FALSE;
         if (FAILED(factory->CheckFeatureSupport(
                 DXGI_FEATURE_PRESENT_ALLOW_TEARING,
@@ -351,23 +383,26 @@ namespace LamaPon
     void D3D11Backend::Initialize(
         const GraphicsBackendCreateInfo& createInfo)
     {
-        // 同じインスタンスを再利用しても古いCOM参照を残しません。
+        // 再初期化前に旧コンテキストの参照と所有資源を解放します。
         PrepareForResourceRelease();
         Shutdown();
 
+        // 描画するウィンドウ
         const HWND window = static_cast<HWND>(
             createInfo.nativeWindow);
+        // 1画素以上の描画幅
         const std::uint32_t width = std::max(
             createInfo.width,
             1u);
+        // 1画素以上の描画高
         const std::uint32_t height = std::max(
             createInfo.height,
             1u);
 
-        // ティアリングには、環境対応、スワップチェーン作成フラグ、
-        // Presentの同期間隔0と提示フラグの組み合わせが必要です。
+        // ティアリングには、環境対応、スワップチェーン作成フラグ、Presentの同期間隔0と提示フラグの組み合わせが必要です。
         m_tearingAllowed = QueryTearingSupport();
 
+        // スワップチェーンの作成設定
         DXGI_SWAP_CHAIN_DESC swapChainDescription{};
         swapChainDescription.BufferDesc.Width = width;
         swapChainDescription.BufferDesc.Height = height;
@@ -385,12 +420,15 @@ namespace LamaPon
             ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
             : 0u;
 
+        // 要求する機能レベルの優先順
         constexpr std::array featureLevels{
             D3D_FEATURE_LEVEL_11_1,
             D3D_FEATURE_LEVEL_11_0
         };
 
+        // デバイス作成フラグ
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        // デバッグレイヤーの要求
         const bool wantDebugLayer =
 #if defined(_DEBUG)
             true;
@@ -402,7 +440,9 @@ namespace LamaPon
             flags |= D3D11_CREATE_DEVICE_DEBUG;
         }
 
+        // 作成時に選ばれた機能レベル
         D3D_FEATURE_LEVEL selectedFeatureLevel{};
+        // デバイスと表示資源を作ります(driverType: 使用ドライバー, deviceFlags: 作成フラグ)。
         const auto createDevice =
             [this,
                 &swapChainDescription,
@@ -426,14 +466,15 @@ namespace LamaPon
                 m_context.ReleaseAndGetAddressOf());
         };
 
+        // 最初に試すドライバー
         const D3D_DRIVER_TYPE primaryDriver =
             createInfo.preferWarpAdapter
                 ? D3D_DRIVER_TYPE_WARP
                 : D3D_DRIVER_TYPE_HARDWARE;
+        // デバイス作成の結果
         HRESULT result = createDevice(primaryDriver, flags);
 
-        // SDKのデバッグレイヤーが利用できない場合は、フラグを外して
-        // 描画そのものは継続します。
+        // SDKのデバッグレイヤーが利用できない場合は、フラグを外して描画そのものは継続します。
         if (wantDebugLayer
             && result == DXGI_ERROR_SDK_COMPONENT_MISSING)
         {
@@ -441,8 +482,7 @@ namespace LamaPon
             result = createDevice(primaryDriver, flags);
         }
 
-        // 対応判定後もティアリング付き作成が失敗するドライバーでは、
-        // 提示フラグを外して再作成します。
+        // 対応判定後もティアリング付き作成が失敗するドライバーでは、提示フラグを外して再作成します。
         if (FAILED(result) && m_tearingAllowed)
         {
             m_tearingAllowed = false;
@@ -457,8 +497,7 @@ namespace LamaPon
             }
         }
 
-        // GPUが使えない環境ではWARP（CPUラスタライザ）へ自動で
-        // フォールバックします。
+        // GPUが使えない環境ではWARP（CPUラスタライザ）へ自動でフォールバックします。
         if (FAILED(result) && !createInfo.preferWarpAdapter)
         {
             result = createDevice(
@@ -474,8 +513,7 @@ namespace LamaPon
 
         ThrowIfFailed(result, "D3D11CreateDeviceAndSwapChain");
 
-        // デバッガーなしでも確認できるよう、InfoQueueのメッセージを
-        // エンジンログへ転送します。
+
         if ((flags & D3D11_CREATE_DEVICE_DEBUG) != 0)
         {
             if (SUCCEEDED(m_device.As(&m_infoQueue)))
@@ -511,8 +549,7 @@ namespace LamaPon
         m_gpuProfilerBackend = CreateProfilerBackend(
             m_device.Get(),
             m_context.Get());
-        // 同じD3D11 APIでも、Initializeごとに別Device世代として扱います。
-        // 外部に残った旧handleはnative解決時にこのidentityで拒否します。
+        // 初期化ごとに資源の世代を変え、残る旧ハンドルの解決を拒否します。
         m_resourceDomain = std::make_shared<D3D11ResourceDomain>();
     }
 
@@ -527,8 +564,7 @@ namespace LamaPon
 
     void D3D11Backend::Shutdown() noexcept
     {
-        // 先に現役domainを外し、外部に残ったhandleをstaleにします。
-        // payload側のCOM参照は、そのhandleが最後に破棄されるまで安全に残ります。
+        // 先に現役世代を外し、旧ハンドルのCOM参照は最後のハンドル破棄まで保持します。
         m_resourceDomain.reset();
         m_gpuProfilerBackend.reset();
         m_infoQueue.Reset();
@@ -558,8 +594,7 @@ namespace LamaPon
         m_depthTexture.Reset();
         m_context->Flush();
 
-        // 作成時と同じフラグを渡し直し、リサイズ後もティアリング
-        // 許可を維持します。
+        // 作成時と同じフラグを渡し直し、リサイズ後もティアリング許可を維持します。
         ThrowIfFailed(
             m_swapChain->ResizeBuffers(
                 0,
@@ -581,6 +616,7 @@ namespace LamaPon
             throw std::logic_error(
                 "BindBackBuffer requires an initialized backend.");
         }
+        // バックバッファの出力配列
         ID3D11RenderTargetView* renderTargets[]{
             m_renderTargetView.Get() };
         m_context->OMSetRenderTargets(
@@ -601,11 +637,15 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized backend.");
         }
 
+        // 1画素以上の要求幅
         const std::uint32_t requestedWidth = std::max(width, 1u);
+        // 1画素以上の要求高
         const std::uint32_t requestedHeight = std::max(height, 1u);
+        // 現在の描画先の実体
         const auto* const existing = dynamic_cast<
             const Detail::D3D11RenderTargetState*>(
                 Detail::RenderTargetBackendAccess::Get(target));
+        // 計算シェーダーの書き込み可否
         const bool computeWritable =
             Detail::RenderTargetBackendAccess::ComputeWritable(target);
         if (existing != nullptr
@@ -627,8 +667,8 @@ namespace LamaPon
             return;
         }
 
-        // native資源と8本のneutral viewを一時stateへ全て作り、完成した
-        // 世代だけを公開します。途中失敗時は既存stateをそのまま保ちます。
+        // 資源と8本のビューを全て作成してから公開し、途中失敗時は旧状態を保ちます。
+        // 公開前の新しい描画先
         auto pending =
             std::make_unique<Detail::D3D11RenderTargetState>();
         pending->m_computeWritable = computeWritable;
@@ -678,6 +718,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "BeginOffscreenTarget requires a clear color.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -701,6 +742,7 @@ namespace LamaPon
             throw std::logic_error(
                 "BindOffscreenTarget requires an initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -723,6 +765,7 @@ namespace LamaPon
             throw std::logic_error(
                 "PublishOffscreenTarget requires an initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -740,8 +783,7 @@ namespace LamaPon
                 "context.");
         }
 
-        // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
-        // BeginFrameなど、既存のフレーム制御側に任せます。
+        // 表示画像へのコピー後も描画先は維持され、復帰はフレーム制御側が行います。
         state.CopyToDisplay(m_context.Get());
     }
 
@@ -754,6 +796,7 @@ namespace LamaPon
                 "BindOffscreenTargetDepthOnly requires an initialized "
                 "backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -777,6 +820,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetDepth requires an initialized "
                 "backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -801,6 +845,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetColorHistory requires an "
                 "initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -834,6 +879,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetTemporalHistory requires an "
                 "initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -860,6 +906,7 @@ namespace LamaPon
                 "TryReadOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -884,6 +931,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
+        // 検証済みの描画先の実体
         auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -910,10 +958,13 @@ namespace LamaPon
                 "InitializeShadowMap requires an initialized backend.");
         }
 
+        // 置き換える前の影の状態
         auto* const previousState =
             Detail::ShadowMapBackendAccess::Get(shadowMap);
+        // 置き換える前のD3D11資源
         auto* const previous = dynamic_cast<
             Detail::D3D11ShadowMapState*>(previousState);
+        // 旧影描画の終了が必要か
         const bool restorePrevious =
             previousState != nullptr && previousState->m_rendering;
         if (restorePrevious)
@@ -941,6 +992,7 @@ namespace LamaPon
             }
         }
 
+        // 影描画の資源と状態
         auto state =
             std::make_unique<Detail::D3D11ShadowMapState>();
         state->Initialize(
@@ -948,13 +1000,12 @@ namespace LamaPon
             resolution,
             cascadeCount,
             cube);
+        // 新規作成した影の読み取りビュー
         auto view = ImportShaderResourceViewHandle(
             state->ShaderResourceView());
         state->m_view = std::move(view);
 
-        // Begin中の同一Backend mapを置換する場合も、旧描画先とviewportを
-        // 復元してから完成済みstateへ切り替えます。作成・登録に失敗した
-        // 場合はこの地点へ来ないため、旧stateはそのままEndできます。
+        // 新規作成の成功後に旧影描画を終了して公開し、失敗時は旧状態の終了を可能に保ちます。
         if (restorePrevious)
         {
             previous->End(m_context.Get());
@@ -980,6 +1031,7 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        // 影描画の資源と状態
         auto* const state = dynamic_cast<
             Detail::D3D11ShadowMapState*>(
                 Detail::ShadowMapBackendAccess::Get(shadowMap));
@@ -998,7 +1050,7 @@ namespace LamaPon
         }
         catch (const std::invalid_argument&)
         {
-            // 別Backend世代のmapは無効な入力として何もしません。
+            // 別API・旧世代の影資源は無視します。
         }
     }
 
@@ -1017,6 +1069,7 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        // 影描画の資源と状態
         auto* const state = dynamic_cast<
             Detail::D3D11ShadowMapState*>(
                 Detail::ShadowMapBackendAccess::Get(shadowMap));
@@ -1035,7 +1088,7 @@ namespace LamaPon
         }
         catch (const std::invalid_argument&)
         {
-            // Beginと同じく、別Backend世代のmapには触れません。
+            // 別API・旧世代の影資源は無視します。
         }
     }
 
@@ -1059,9 +1112,9 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        // default構築、別Backend、古いBackend世代のfacadeは安全な
-        // 未設定状態として扱います。pipelineには触れません。
+        // 未設定・別API・旧世代の資源はライト情報を無効化して処理を終了します。
         lighting.clustered = {};
+        // Forward+の資源と状態
         auto* const state = dynamic_cast<
             Detail::D3D11ClusteredLightsState*>(
                 Detail::ClusteredLightsBackendAccess::Get(
@@ -1075,7 +1128,9 @@ namespace LamaPon
             return;
         }
 
+        // ライトを変換するビュー行列
         const auto viewMatrix = DirectX::XMLoadFloat4x4(&view);
+        // 画面範囲を求める射影行列
         const auto projectionMatrix =
             DirectX::XMLoadFloat4x4(&projection);
         state->Update(
@@ -1099,15 +1154,18 @@ namespace LamaPon
                 "backend.");
         }
 
-        // native資源と3本のneutral viewを一時stateへ全て作り、完成した
-        // 世代だけをfacadeへ公開します。途中失敗時は既存stateを保ちます。
+        // 資源と3本のビューを全て作成してから公開し、途中失敗時は旧状態を保ちます。
+        // Forward+の資源と状態
         auto state = std::make_unique<
             Detail::D3D11ClusteredLightsState>();
         state->Initialize(m_device.Get(), assets, shaderPath);
+        // ライト一覧の読み取りビュー
         auto lightView = ImportShaderResourceViewHandle(
             state->LightShaderResourceView());
+        // クラスタ別ライト番号のビュー
         auto indexListView = ImportShaderResourceViewHandle(
             state->IndexListShaderResourceView());
+        // クラスタ別ライト数のビュー
         auto countView = ImportShaderResourceViewHandle(
             state->CountShaderResourceView());
         state->m_lightView = std::move(lightView);
@@ -1133,12 +1191,14 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        // 出力スロット0の退避状態
         auto state = std::make_unique<D3D11OutputState>();
         state->ownerDevice = m_device;
         m_context->OMGetRenderTargets(
             1,
             state->renderTarget.ReleaseAndGetAddressOf(),
             state->depthTarget.ReleaseAndGetAddressOf());
+        // 取得する描画範囲の数
         UINT viewportCount = 1;
         m_context->RSGetViewports(
             &viewportCount,
@@ -1162,6 +1222,7 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        // 復元するD3D11の出力状態
         const auto* const d3d11State =
             dynamic_cast<const D3D11OutputState*>(&state);
         if (d3d11State == nullptr
@@ -1172,6 +1233,7 @@ namespace LamaPon
                 "backend.");
         }
 
+        // 復元する出力スロット0
         ID3D11RenderTargetView* renderTargets[]{
             d3d11State->renderTarget.Get() };
         m_context->OMSetRenderTargets(
@@ -1189,13 +1251,16 @@ namespace LamaPon
     GraphicsVideoMemoryStatistics
         D3D11Backend::QueryVideoMemoryStatistics() const noexcept
     {
+        // 取得成否付きのGPUメモリー統計
         GraphicsVideoMemoryStatistics statistics;
         if (!m_device)
         {
             return statistics;
         }
 
+        // アダプター取得用のデバイス
         Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+        // 統計を取得するアダプター
         Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
         if (FAILED(m_device.As(&dxgiDevice))
             || !dxgiDevice
@@ -1207,6 +1272,7 @@ namespace LamaPon
         }
         statistics.adapterAvailable = true;
 
+        // アダプターの容量情報
         DXGI_ADAPTER_DESC description{};
         if (SUCCEEDED(adapter->GetDesc(&description)))
         {
@@ -1219,13 +1285,16 @@ namespace LamaPon
                     description.SharedSystemMemory);
         }
 
+        // OS予算の問い合わせ元
         Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
         if (FAILED(adapter.As(&adapter3)) || !adapter3)
         {
             return statistics;
         }
 
+        // ローカルGPUメモリーの予算
         DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+        // 共有GPUメモリーの予算
         DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal{};
         statistics.localBudgetAvailable = SUCCEEDED(
             adapter3->QueryVideoMemoryInfo(
@@ -1272,12 +1341,14 @@ namespace LamaPon
     GraphicsTextureHandle D3D11Backend::CreateSolidRgba8Texture(
         const std::array<std::uint8_t, 4>& color)
     {
+        // 共通APIの画像設定
         const GraphicsTexture2DDescription description{
             1,
             1,
             1,
             GraphicsTextureFormat::Rgba8Unorm
         };
+        // 単色1画素の初期データ
         const std::array initialData{
             GraphicsTextureSubresourceData{
                 std::as_bytes(std::span{ color }),
@@ -1292,9 +1363,11 @@ namespace LamaPon
         const GraphicsTextureHandle& texture)
     {
         using Detail::GraphicsResourceHandleAccess;
+        // 同世代の2D画像の実体
         const auto* const texture2DPayload =
             dynamic_cast<const D3D11TexturePayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
+        // 同世代の3D画像の実体
         const auto* const texture3DPayload =
             dynamic_cast<const D3D11Texture3DPayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
@@ -1358,6 +1431,7 @@ namespace LamaPon
                 "subresource count.");
         }
 
+        // 画像またはSRVの作成設定
         D3D11_TEXTURE2D_DESC nativeDescription{};
         nativeDescription.Width = description.width;
         nativeDescription.Height = description.height;
@@ -1371,12 +1445,15 @@ namespace LamaPon
             : D3D11_USAGE_IMMUTABLE;
         nativeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
+        // ミップ順のネイティブ初期値
         std::vector<D3D11_SUBRESOURCE_DATA> nativeInitialData;
         nativeInitialData.reserve(initialData.size());
+        // 初期データのミップ番号
         for (std::size_t mipLevel = 0;
             mipLevel < initialData.size();
             ++mipLevel)
         {
+            // 対象ミップのバイト列とピッチ
             const auto& subresource = initialData[mipLevel];
             ValidateTextureSubresourceData(
                 nativeDescription,
@@ -1393,6 +1470,7 @@ namespace LamaPon
                 });
         }
 
+        // 作成した画像の所有参照
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
             m_device->CreateTexture2D(
@@ -1440,8 +1518,11 @@ namespace LamaPon
                 "subresource count.");
         }
 
+        // 画像のDXGI形式
         const auto nativeFormat = ToDxgiFormat(description.format);
+        // デバイスが対応する形式用途
         UINT formatSupport{};
+        // 必要な3D画像とサンプル用途
         constexpr UINT requiredFormatSupport =
             D3D11_FORMAT_SUPPORT_TEXTURE3D
             | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
@@ -1456,6 +1537,7 @@ namespace LamaPon
                 "format supported by the active backend.");
         }
 
+        // 画像またはSRVの作成設定
         D3D11_TEXTURE3D_DESC nativeDescription{};
         nativeDescription.Width = description.width;
         nativeDescription.Height = description.height;
@@ -1465,12 +1547,15 @@ namespace LamaPon
         nativeDescription.Usage = D3D11_USAGE_IMMUTABLE;
         nativeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
+        // ミップ順のネイティブ初期値
         std::vector<D3D11_SUBRESOURCE_DATA> nativeInitialData;
         nativeInitialData.reserve(initialData.size());
+        // 初期データのミップ番号
         for (std::size_t mipLevel{};
             mipLevel < initialData.size();
             ++mipLevel)
         {
+            // 対象ミップのバイト列とピッチ
             const auto& subresource = initialData[mipLevel];
             ValidateTexture3DSubresourceData(
                 nativeDescription,
@@ -1484,6 +1569,7 @@ namespace LamaPon
                 });
         }
 
+        // 作成した画像の所有参照
         Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
         ThrowIfFailed(
             m_device->CreateTexture3D(
@@ -1509,6 +1595,7 @@ namespace LamaPon
             throw std::logic_error(
                 "UpdateTexture2D requires an initialized backend.");
         }
+        // 更新対象の2D画像の実体
         const auto* const payload =
             dynamic_cast<const D3D11TexturePayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
@@ -1546,12 +1633,15 @@ namespace LamaPon
             throw std::logic_error(
                 "CreateShaderResourceView requires an initialized backend.");
         }
+        // 同世代の2D画像の実体
         const auto* const texture2DPayload =
             dynamic_cast<const D3D11TexturePayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
+        // 同世代の3D画像の実体
         const auto* const texture3DPayload =
             dynamic_cast<const D3D11Texture3DPayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
+        // 画像が持つミップ数
         const auto availableMipLevels = texture2DPayload != nullptr
             ? texture2DPayload->description.MipLevels
             : texture3DPayload != nullptr
@@ -1572,7 +1662,9 @@ namespace LamaPon
                 "a texture from this backend generation.");
         }
 
+        // 画像またはSRVの作成設定
         D3D11_SHADER_RESOURCE_VIEW_DESC nativeDescription{};
+        // ビューが参照する借用画像
         ID3D11Resource* nativeResource{};
         if (texture2DPayload != nullptr)
         {
@@ -1598,6 +1690,7 @@ namespace LamaPon
             nativeDescription.Texture3D.MipLevels =
                 description.mipLevels;
         }
+        // 作成した読み取りビュー
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         ThrowIfFailed(
             m_device->CreateShaderResourceView(
@@ -1624,6 +1717,7 @@ namespace LamaPon
                 "UpdateDynamicVertexBuffer requires an initialized backend.");
         }
 
+        // 更新する頂点バッファの実体
         const auto* payload = dynamic_cast<const D3D11BufferPayload*>(
             GraphicsResourceHandleAccess::Payload(buffer));
         if (buffer
@@ -1640,11 +1734,14 @@ namespace LamaPon
             return false;
         }
 
+        // 現在の確保済みバイト容量
         const std::size_t currentCapacity =
             payload != nullptr ? payload->capacity : 0;
         if (!buffer || currentCapacity < data.size())
         {
+            // 新規バッファの最小容量
             constexpr std::size_t minimumCapacity = 4096;
+            // D3D11の容量上限
             constexpr auto maximumCapacity =
                 static_cast<std::size_t>(
                     std::numeric_limits<UINT>::max());
@@ -1652,20 +1749,24 @@ namespace LamaPon
             {
                 return false;
             }
+            // 上限内で倍増した容量
             const std::size_t doubledCapacity =
                 currentCapacity > maximumCapacity / 2
                     ? maximumCapacity
                     : currentCapacity * 2;
+            // 再作成するバイト容量
             const std::size_t newCapacity = std::max({
                 data.size(),
                 doubledCapacity,
                 minimumCapacity });
 
+            // 動的頂点バッファの設定
             D3D11_BUFFER_DESC description{};
             description.ByteWidth = static_cast<UINT>(newCapacity);
             description.Usage = D3D11_USAGE_DYNAMIC;
             description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            // 再作成する頂点バッファ
             Microsoft::WRL::ComPtr<ID3D11Buffer> nativeBuffer;
             if (FAILED(m_device->CreateBuffer(
                     &description,
@@ -1675,6 +1776,7 @@ namespace LamaPon
                 return false;
             }
 
+            // 書き込み先のマップ結果
             D3D11_MAPPED_SUBRESOURCE mapped{};
             if (FAILED(m_context->Map(
                     nativeBuffer.Get(),
@@ -1688,6 +1790,7 @@ namespace LamaPon
             std::memcpy(mapped.pData, data.data(), data.size());
             m_context->Unmap(nativeBuffer.Get(), 0);
 
+            // 書き込み済みの新規ハンドル
             auto replacement =
                 GraphicsResourceHandleAccess::MakeBuffer(
                     std::make_shared<D3D11BufferPayload>(
@@ -1698,6 +1801,7 @@ namespace LamaPon
             return true;
         }
 
+        // 書き込み先のマップ結果
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (payload == nullptr
             || FAILED(m_context->Map(
@@ -1736,8 +1840,11 @@ namespace LamaPon
                 "slot, and a non-zero stride.");
         }
 
+        // 借用する頂点バッファ
         auto* const nativeBuffer = ResolveBuffer(buffer);
+        // 頂点間隔のバイト数
         const UINT nativeStride = stride;
+        // 読み取り開始のバイト位置
         const UINT nativeOffset = offset;
         m_context->IASetVertexBuffers(
             static_cast<UINT>(slot),
@@ -1759,8 +1866,10 @@ namespace LamaPon
             return false;
         }
 
+        // PSの読み取りスロット数
         constexpr std::size_t MaximumSlots =
             D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+        // 設定を始めるスロット番号
         const auto first = static_cast<std::size_t>(firstSlot);
         if (first >= MaximumSlots
             || resources.size() > MaximumSlots - first)
@@ -1772,12 +1881,16 @@ namespace LamaPon
             return true;
         }
 
+        // 連続スロットへ設定するSRV列
         std::array<
             ID3D11ShaderResourceView*,
             D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT>
             nativeResources{};
+        // 借用する代替SRV
         ID3D11ShaderResourceView* nativeFallback{};
+        // 代替SRVを解決済みか
         bool fallbackResolved = false;
+        // 代替SRVを一度だけ解決し、無効ならnullptrを返します。
         const auto resolveFallback = [&]() noexcept
         {
             if (fallbackResolved)
@@ -1800,6 +1913,7 @@ namespace LamaPon
             return nativeFallback;
         };
 
+        // 設定するビュー列の番号
         for (std::size_t index{}; index < resources.size(); ++index)
         {
             if (!resources[index])
@@ -1833,6 +1947,7 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // 同世代の資源ハンドルの実体
         const auto* const payload = dynamic_cast<const D3D11ViewPayload*>(
             GraphicsResourceHandleAccess::Payload(view));
         if (view.Kind() != GraphicsViewKind::ShaderResource
@@ -1869,6 +1984,7 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // 同世代の資源ハンドルの実体
         const auto* const payload = dynamic_cast<const D3D11BufferPayload*>(
             GraphicsResourceHandleAccess::Payload(buffer));
         if (payload == nullptr
@@ -1897,6 +2013,7 @@ namespace LamaPon
                 "ImportShaderResourceView requires a native view.");
         }
 
+        // 取り込むビューの所有デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
         view->GetDevice(ownerDevice.ReleaseAndGetAddressOf());
         if (ownerDevice.Get() != m_device.Get())
@@ -1906,19 +2023,23 @@ namespace LamaPon
                 "DirectX 11 device.");
         }
 
+        // ビューが参照する資源
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
         view->GetResource(resource.ReleaseAndGetAddressOf());
+        // 参照資源のD3D11種別
         D3D11_RESOURCE_DIMENSION dimension{};
         resource->GetType(&dimension);
+        // 取り込む画像の所有ハンドル
         GraphicsTextureHandle textureHandle;
         if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D)
         {
-            // DirectXTKが読んだDDSのvolume textureも、2Dと同じく
-            // texture handleとviewの組で公開します。
+            // 3D画像も画像ハンドルとビューの組で所有します。
+            // 取り込む3D画像
             Microsoft::WRL::ComPtr<ID3D11Texture3D> volume;
             ThrowIfFailed(
                 resource.As(&volume),
                 "ImportShaderResourceView(texture3D)");
+            // 取り込む資源のネイティブ設定
             D3D11_TEXTURE3D_DESC description{};
             volume->GetDesc(&description);
             textureHandle =
@@ -1930,10 +2051,12 @@ namespace LamaPon
         }
         else
         {
+            // 取り込む画像の所有参照
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             ThrowIfFailed(
                 resource.As(&texture),
                 "ImportShaderResourceView(texture2D)");
+            // 取り込む資源のネイティブ設定
             D3D11_TEXTURE2D_DESC description{};
             texture->GetDesc(&description);
             textureHandle =
@@ -1943,7 +2066,9 @@ namespace LamaPon
                         std::move(texture),
                         description));
         }
+        // 保持するネイティブSRV
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ownedView = view;
+        // 資源を保持するビューのハンドル
         auto viewHandle =
             Detail::GraphicsResourceHandleAccess::MakeView(
                 std::make_shared<D3D11ViewPayload>(
@@ -1972,6 +2097,7 @@ namespace LamaPon
                 "ImportShaderResourceViewHandle requires a native view.");
         }
 
+        // 取り込むビューの所有デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
         view->GetDevice(ownerDevice.ReleaseAndGetAddressOf());
         if (ownerDevice.Get() != m_device.Get())
@@ -1981,27 +2107,34 @@ namespace LamaPon
                 "DirectX 11 device.");
         }
 
+        // ビューが参照する資源
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
         view->GetResource(resource.ReleaseAndGetAddressOf());
+        // 参照資源のD3D11種別
         D3D11_RESOURCE_DIMENSION dimension{};
         resource->GetType(&dimension);
         if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
         {
+            // 2D画像とビューのハンドル組
             auto imported = ImportShaderResourceView(view);
             return std::move(imported.second);
         }
 
+        // 保持するネイティブSRV
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ownedView = view;
         switch (dimension)
         {
         case D3D11_RESOURCE_DIMENSION_BUFFER:
         {
+            // 取り込むバッファの所有参照
             Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
             ThrowIfFailed(
                 resource.As(&buffer),
                 "ImportShaderResourceViewHandle(buffer)");
+            // 取り込む資源のネイティブ設定
             D3D11_BUFFER_DESC description{};
             buffer->GetDesc(&description);
+            // 取り込むバッファのハンドル
             auto bufferHandle =
                 Detail::GraphicsResourceHandleAccess::MakeBuffer(
                     std::make_shared<D3D11BufferPayload>(
@@ -2017,12 +2150,15 @@ namespace LamaPon
         }
         case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
         {
+            // 取り込む画像の所有参照
             Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
             ThrowIfFailed(
                 resource.As(&texture),
                 "ImportShaderResourceViewHandle(texture3D)");
+            // 取り込む資源のネイティブ設定
             D3D11_TEXTURE3D_DESC description{};
             texture->GetDesc(&description);
+            // 取り込む画像の所有ハンドル
             auto textureHandle =
                 Detail::GraphicsResourceHandleAccess::MakeTexture(
                     std::make_shared<D3D11Texture3DPayload>(
@@ -2054,6 +2190,7 @@ namespace LamaPon
                 "CreateOffscreenDisplayView requires an initialized backend.");
         }
 
+        // 描画先が持つ表示ビュー
         const auto displayView = target.DisplayViewHandle();
         if (!target.IsValid()
             || !displayView
@@ -2069,6 +2206,7 @@ namespace LamaPon
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {
+        // バックバッファの出力配列
         ID3D11RenderTargetView* renderTargets[]{
             m_renderTargetView.Get() };
         m_context->OMSetRenderTargets(
@@ -2093,10 +2231,13 @@ namespace LamaPon
             return;
         }
 
+        // 回収する検証メッセージ数
         const auto stored =
             m_infoQueue->GetNumStoredMessages();
+        // 検証メッセージの番号
         for (UINT64 index = 0; index < stored; ++index)
         {
+            // メッセージ保存に必要なバイト数
             SIZE_T length = 0;
             if (FAILED(m_infoQueue->GetMessage(
                     index,
@@ -2106,7 +2247,9 @@ namespace LamaPon
             {
                 continue;
             }
+            // メッセージのバイト保存領域
             std::vector<std::byte> storage(length);
+            // 保存領域内のメッセージ
             auto* const message =
                 reinterpret_cast<D3D11_MESSAGE*>(
                     storage.data());
@@ -2118,6 +2261,7 @@ namespace LamaPon
                 continue;
             }
 
+            // 終端文字を除いた検証内容
             const std::string text(
                 message->pDescription,
                 message->DescriptionByteLength > 0
@@ -2144,7 +2288,9 @@ namespace LamaPon
     void D3D11Backend::Present(const bool vSyncEnabled)
     {
         // ALLOW_TEARINGは同期間隔0と組み合わせた時だけ有効です。
+        // 垂直同期を待たず提示するか
         const bool immediate = !vSyncEnabled;
+        // フレーム提示の結果
         const HRESULT presented = m_swapChain->Present(
             immediate ? 0u : 1u,
             (immediate && m_tearingAllowed)
@@ -2154,9 +2300,11 @@ namespace LamaPon
         if (presented == DXGI_ERROR_DEVICE_REMOVED
             || presented == DXGI_ERROR_DEVICE_RESET)
         {
+            // デバイス喪失の原因
             const HRESULT reason = m_device
                 ? m_device->GetDeviceRemovedReason()
                 : presented;
+            // 喪失原因を含む例外文面
             std::ostringstream message;
             message
                 << "The graphics device was lost while"
@@ -2184,6 +2332,7 @@ namespace LamaPon
                 "CaptureBackBuffer requires an initialized device.");
         }
 
+        // 表示画像の所有参照
         Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
         ThrowIfFailed(
             m_swapChain->GetBuffer(
@@ -2192,6 +2341,7 @@ namespace LamaPon
                     backBuffer.ReleaseAndGetAddressOf())),
             "IDXGISwapChain::GetBuffer");
 
+        // CPU読み戻し用の画像設定
         D3D11_TEXTURE2D_DESC description{};
         backBuffer->GetDesc(&description);
         description.Usage = D3D11_USAGE_STAGING;
@@ -2200,6 +2350,7 @@ namespace LamaPon
             D3D11_CPU_ACCESS_READ;
         description.MiscFlags = 0;
 
+        // CPU読み戻し用の画像
         Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
         ThrowIfFailed(
             m_device->CreateTexture2D(
@@ -2211,6 +2362,7 @@ namespace LamaPon
             staging.Get(),
             backBuffer.Get());
 
+        // 読み戻し先のマップ結果
         D3D11_MAPPED_SUBRESOURCE mapped{};
         ThrowIfFailed(
             m_context->Map(
@@ -2223,10 +2375,12 @@ namespace LamaPon
 
         width = description.Width;
         height = description.Height;
+        // 行パディングを除いたRGBA列
         std::vector<std::uint8_t> pixels(
             static_cast<std::size_t>(width)
             * height
             * 4);
+        // コピーする画像の行番号
         for (std::uint32_t row = 0; row < height; ++row)
         {
             std::memcpy(
@@ -2247,6 +2401,7 @@ namespace LamaPon
         const std::uint32_t width,
         const std::uint32_t height)
     {
+        // 表示画像の所有参照
         Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
         ThrowIfFailed(
             m_swapChain->GetBuffer(
@@ -2262,6 +2417,7 @@ namespace LamaPon
                 m_renderTargetView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateRenderTargetView");
 
+        // 主描画先の深度画像設定
         D3D11_TEXTURE2D_DESC depthDescription{};
         depthDescription.Width = width;
         depthDescription.Height = height;
@@ -2296,11 +2452,13 @@ namespace LamaPon
 
     void D3D11Backend::LogSelectedAdapter() const
     {
+        // アダプター取得用のデバイス
         Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
         if (FAILED(m_device.As(&dxgiDevice)))
         {
             return;
         }
+        // 選択されているアダプター
         Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
         if (FAILED(dxgiDevice->GetAdapter(
                 adapter.GetAddressOf()))
@@ -2308,16 +2466,20 @@ namespace LamaPon
         {
             return;
         }
+        // アダプターの名称と容量
         DXGI_ADAPTER_DESC description{};
         if (FAILED(adapter->GetDesc(&description)))
         {
             return;
         }
 
+        // CPU描画のWARPか
         const bool isWarp =
             description.VendorId == 0x1414u
             && description.DeviceId == 0x8cu;
+        // ASCIIへ変換したアダプター名
         std::string name;
+        // アダプター名の文字
         for (const auto character : description.Description)
         {
             if (character == L'\0')
@@ -2329,11 +2491,13 @@ namespace LamaPon
                     ? static_cast<char>(character)
                     : '?');
         }
+        // 専用VRAMの容量をMBで表す値
         const auto videoMemoryMegabytes =
             static_cast<std::uint64_t>(
                 description.DedicatedVideoMemory)
             / (1024u * 1024u);
 
+        // アダプター情報のログ本文
         auto message = "描画アダプター: " + name
             + "（VRAM " + std::to_string(
                 videoMemoryMegabytes)

@@ -109,8 +109,7 @@ namespace LamaPon
     void DirectionalLightComponent::SetAngularDiameterDegrees(
         const float degrees) noexcept
     {
-        // 上限は20度です。これ以上広げても「方向光」ではなく面光源の
-        // 見え方になり、代表点法の近似が崩れて縁が不自然になります。
+        // 代表点法の近似を維持するため角直径を20度以内に制限します。
         m_angularDiameterDegrees = std::clamp(
             degrees,
             0.0f,
@@ -122,8 +121,10 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 光源のワールド負Z方向
         const XMVECTOR direction =
             XMVectorNegate(Owner().WorldMatrix().r[2]);
+        // 方向ベクトルの長さの二乗
         const float lengthSquared =
             XMVectorGetX(XMVector3LengthSq(direction));
         if (lengthSquared <= 0.000001f)
@@ -131,6 +132,7 @@ namespace LamaPon
             return { 0.0f, -1.0f, 0.0f };
         }
 
+        // 正規化した光源方向
         XMFLOAT3 result{};
         XMStoreFloat3(&result, XMVector3Normalize(direction));
         return result;

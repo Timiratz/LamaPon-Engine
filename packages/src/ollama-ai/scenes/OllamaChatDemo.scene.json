@@ -1,0 +1,417 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": null,
+  "environment": {
+    "ambientColor": [
+      0.65,
+      0.72,
+      0.85
+    ],
+    "ambientIntensity": 0.35
+  },
+  "physics": {
+    "broadPhaseCellSize": 4.0
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "Ollama Canvas",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UICanvas",
+          "enabled": true,
+          "referenceResolution": [
+            1280.0,
+            720.0
+          ],
+          "matchWidthOrHeight": 0.5
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Ollama Chat",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "NativeScript",
+          "enabled": true,
+          "script": "Ollama.Chat",
+          "properties": {
+            "profile": "packages/ollama-ai/profiles/Default.asset.json",
+            "inputObject": "Ollama Input",
+            "outputObject": "Ollama Reply",
+            "waitingText": "考え中...",
+            "preload": true,
+            "sendEvent": "Ollama.Send",
+            "resetEvent": "Ollama.Reset",
+            "replyEvent": "Ollama.Reply",
+            "errorEvent": "Ollama.Error"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Ollama Title",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.12
+          ],
+          "anchorMax": [
+            0.5,
+            0.12
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            0.0,
+            0.0
+          ],
+          "sizeDelta": [
+            960.0,
+            60.0
+          ]
+        },
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "Ollama Chat（このPCのローカルモデルと会話）",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 32.0,
+          "color": [
+            0.4,
+            0.85,
+            1.0,
+            1.0
+          ],
+          "layoutSize": [
+            960.0,
+            60.0
+          ],
+          "wordWrap": false,
+          "horizontalAlignment": "Center",
+          "verticalAlignment": "Center"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Ollama Reply",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.45
+          ],
+          "anchorMax": [
+            0.5,
+            0.45
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            0.0,
+            0.0
+          ],
+          "sizeDelta": [
+            960.0,
+            300.0
+          ]
+        },
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "下の欄に文を入力して、Enterか「送信」を押してください。",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 26.0,
+          "color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "layoutSize": [
+            960.0,
+            300.0
+          ],
+          "wordWrap": true,
+          "horizontalAlignment": "Left",
+          "verticalAlignment": "Top"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Ollama Input",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.82
+          ],
+          "anchorMax": [
+            0.5,
+            0.82
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            -90.0,
+            0.0
+          ],
+          "sizeDelta": [
+            780.0,
+            56.0
+          ]
+        },
+        {
+          "type": "UIInputField",
+          "enabled": true,
+          "text": "",
+          "placeholder": "メッセージを入力...",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "maxLength": 200,
+          "interactable": true,
+          "backgroundColor": [
+            0.1,
+            0.12,
+            0.16,
+            0.96
+          ],
+          "focusedColor": [
+            0.14,
+            0.2,
+            0.3,
+            1.0
+          ],
+          "textColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "placeholderColor": [
+            0.65,
+            0.68,
+            0.75,
+            0.8
+          ],
+          "fallbackSize": [
+            780.0,
+            56.0
+          ],
+          "sortOrder": 0
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Ollama Send",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.82
+          ],
+          "anchorMax": [
+            0.5,
+            0.82
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            400.0,
+            0.0
+          ],
+          "sizeDelta": [
+            160.0,
+            56.0
+          ]
+        },
+        {
+          "type": "UIButton",
+          "enabled": true,
+          "label": "送信",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "fallbackSize": [
+            160.0,
+            56.0
+          ],
+          "normalColor": [
+            0.08,
+            0.3,
+            0.55,
+            1.0
+          ],
+          "hoveredColor": [
+            0.12,
+            0.55,
+            0.9,
+            1.0
+          ],
+          "pressedColor": [
+            0.04,
+            0.2,
+            0.4,
+            1.0
+          ],
+          "disabledColor": [
+            0.18,
+            0.2,
+            0.24,
+            0.65
+          ],
+          "textColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "interactable": true,
+          "texture": "",
+          "reloadCurrentScene": false,
+          "targetScene": "",
+          "clickEvent": "Ollama.Send",
+          "transition": {
+            "effect": "none"
+          }
+        }
+      ]
+    }
+  ]
+}

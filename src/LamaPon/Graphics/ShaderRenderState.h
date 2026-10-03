@@ -43,29 +43,25 @@ namespace LamaPon
 
     struct ShaderRenderState final
     {
+        // 色とアルファの合成方式
         ShaderBlendMode blend{ ShaderBlendMode::Opaque };
+        // 描画を省く面の指定
         ShaderCullMode cull{ ShaderCullMode::Back };
-        // falseにすると深度バッファへ書き込みません（半透明の
-        // 重ね合わせで前後の抜けを防ぎたいとき）。
+        // 深度書込フラグ
         bool depthWrite{ true };
-        // falseにすると深度テストをしません（常に手前に描く）。
+        // 深度比較フラグ
         bool depthTest{ true };
-        // 宣言ブロックがあったか。無ければ既定のまま使います。
+        // 有効なJSON宣言の有無
         bool declared{};
     };
 
-    // HLSLのテキストから宣言を読み取ります。例外は投げません。
-    // 宣言が無ければ declared=false の既定値を返します。
+    // 描画状態のJSONを読み、未宣言や構文不正なら既定値を返す(shaderSource: HLSLソース文字列)。
+    // 既知キーの値が想定型と異なる場合はJSONの型例外を送出する。
     [[nodiscard]] ShaderRenderState ParseShaderRenderState(
         std::string_view shaderSource);
 
-    // 宣言blend:additive用の純加算ブレンド（RGB: One+One）を作ります。
-    // DirectXTKのAdditive（SrcAlpha加重・dstA += srcA）と違い、
-    // 書き込み先のアルファを一切汚しません（Alpha: Zero+One）。
-    // シーンバッファのアルファは後段（被写界深度のCoC等）が意味を
-    // 持って読むため、加算描画がアルファを積み上げると後段の
-    // フレームが暗くなります。
-    // 失敗時はnullptrを返します。
+    // RGBだけを純加算する描画状態を作り、失敗時は空を返す(device: 借用するD3D11機器)。
+    // 後処理がシーンのアルファを読むため、加算描画では保存する。
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3D11BlendState>
         CreateAdditiveBlendPreservingAlpha(ID3D11Device* device);
 }

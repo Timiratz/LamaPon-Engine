@@ -11,17 +11,21 @@
 
 namespace
 {
+    // プロパティJSONの最大バイト数
     constexpr std::size_t MaximumPropertiesBytes =
         64 * 1024;
+    // 更新抑止を判定する失敗接頭辞
     constexpr std::string_view CallbackFailurePrefix =
         "Native Script callback failed: ";
 
+    // 更新を抑止するコールバック失敗が記録されているか確認する(error: 記録済みの失敗説明)。
     [[nodiscard]] bool HasCallbackFailure(
         const std::string_view error) noexcept
     {
         return error.starts_with(CallbackFailurePrefix);
     }
 
+    // モジュール内で例外を説明文字列へ変換して失敗を返す(lastError: 失敗説明の保存先, scriptType: 登録型名, callbackName: 呼び出す処理名, callback: 引数なしの実体呼び出し)。
     template <typename Callback>
     [[nodiscard]] bool InvokeScriptCallback(
         std::string& lastError,
@@ -34,11 +38,10 @@ namespace
             std::forward<Callback>(callback)();
             return true;
         }
+        // モジュール内で受け取った例外
         catch (const std::exception& exception)
         {
-            // Game Moduleが読み込まれている間にwhat()を文字列へ
-            // コピーします。DLL解放後まで例外を外へ逃がすと、例外の
-            // vtableも消えてクラッシュするため、ここが安全境界です。
+            // 例外の型情報がDLL解放で失われるため、読込中にwhat()をコピーして例外を外へ持ち出さない。
             lastError = std::string{ CallbackFailurePrefix }
                 + std::string{ scriptType }
                 + "." + std::string{ callbackName }
@@ -55,8 +58,8 @@ namespace
         return false;
     }
 
-    // 破棄・無効化はnoexcept境界です。通常の診断を残しつつ、
-    // 診断文字列やログの確保に失敗しても後続の解放を続けます。
+
+    // 解放処理と診断の例外を吸収し、後続の解放を妨げない(lastError: 失敗説明の保存先, scriptType: 登録型名, callbackName: 呼び出す解放処理名, callback: 引数なしの実体呼び出し)。
     template <typename Callback>
     void InvokeCleanupCallback(
         std::string& lastError,
@@ -92,6 +95,7 @@ namespace LamaPon
                 "Native Script type must contain 1 to 128 bytes.");
         }
         ValidateProperties(m_propertiesJson);
+        // 現在のGame Moduleホスト
         if (auto* host = GameModuleHost::Current())
         {
             host->RegisterInstance(*this);
@@ -111,6 +115,7 @@ namespace LamaPon
     {
         if (m_host != nullptr)
         {
+            // 対象型の登録情報
             if (const auto* descriptor =
                     m_host->FindComponent(m_scriptType);
                 descriptor != nullptr
@@ -134,12 +139,14 @@ namespace LamaPon
 
         try
         {
+            // 実体が返す借用JSON文字列
             const char* serialized =
                 m_descriptor->serialize(m_instance);
             if (serialized == nullptr)
             {
                 return m_propertiesJson;
             }
+            // モジュール解放前に複製したJSON
             const std::string result(serialized);
             ValidateProperties(result);
             return result;
@@ -157,6 +164,7 @@ namespace LamaPon
         {
             return {};
         }
+        // 対象型の登録情報
         const auto* descriptor =
             m_host->FindComponent(m_scriptType);
         return descriptor != nullptr
@@ -176,10 +184,7 @@ namespace LamaPon
 
     Script* NativeScriptComponent::ScriptInstance() const noexcept
     {
-        // 実体はvoid*で持っているため、上位変換はGame Module側の
-        // asScriptに任せます。ここでstatic_cast<Script*>すると、
-        // Scriptを先頭以外に継承した型（インターフェースとの多重
-        // 継承）でポインタ調整が入らず静かに壊れます。
+        // 多重継承の基底位置を正しく調整するため、void*からの変換はGame Module側へ委ねる。
         if (m_instance == nullptr
             || m_descriptor == nullptr
             || m_descriptor->asScript == nullptr)
@@ -201,6 +206,7 @@ namespace LamaPon
         m_graphics = &graphics;
         if (m_host == nullptr)
         {
+            // 現在のGame Moduleホスト
             if (auto* host = GameModuleHost::Current())
             {
                 host->RegisterInstance(*this);
@@ -223,6 +229,7 @@ namespace LamaPon
         {
             if (m_descriptor->start != nullptr)
             {
+                // 実体へ初回開始を通知し、失敗を記録する。
                 if (!InvokeScriptCallback(
                     m_lastError,
                     m_scriptType,
@@ -239,6 +246,7 @@ namespace LamaPon
         }
         if (m_descriptor->update != nullptr)
         {
+            // 実体へ通常更新を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError,
                 m_scriptType,
@@ -260,6 +268,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->lateUpdate != nullptr)
         {
+            // 実体へ後段更新を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError,
                 m_scriptType,
@@ -282,6 +291,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->fixedUpdate != nullptr)
         {
+            // 実体へ固定更新を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError,
                 m_scriptType,
@@ -303,6 +313,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->collisionEnter != nullptr)
         {
+            // 実体へ衝突開始を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnCollisionEnter",
                 [&] { m_descriptor->collisionEnter(m_instance, &event); }));
@@ -317,6 +328,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->collisionStay != nullptr)
         {
+            // 実体へ衝突継続を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnCollisionStay",
                 [&] { m_descriptor->collisionStay(m_instance, &event); }));
@@ -331,6 +343,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->collisionExit != nullptr)
         {
+            // 実体へ衝突終了を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnCollisionExit",
                 [&] { m_descriptor->collisionExit(m_instance, &event); }));
@@ -345,6 +358,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->triggerEnter != nullptr)
         {
+            // 実体へトリガー進入を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnTriggerEnter",
                 [&] { m_descriptor->triggerEnter(m_instance, &event); }));
@@ -359,6 +373,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->triggerStay != nullptr)
         {
+            // 実体へトリガー接触を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnTriggerStay",
                 [&] { m_descriptor->triggerStay(m_instance, &event); }));
@@ -373,6 +388,7 @@ namespace LamaPon
             && !HasCallbackFailure(m_lastError)
             && m_descriptor->triggerExit != nullptr)
         {
+            // 実体へトリガー退出を渡し、失敗を記録する。
             static_cast<void>(InvokeScriptCallback(
                 m_lastError, m_scriptType, "OnTriggerExit",
                 [&] { m_descriptor->triggerExit(m_instance, &event); }));
@@ -397,6 +413,7 @@ namespace LamaPon
         m_instanceActive = active;
         if (m_descriptor->setActive != nullptr)
         {
+            // 実体の有効状態を通知し、診断失敗も吸収する。
             InvokeCleanupCallback(
                 m_lastError, m_scriptType,
                 active ? "OnEnable" : "OnDisable",
@@ -414,6 +431,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Native Script properties must contain a JSON object up to 64 KiB.");
         }
+        // 検証のために解析したJSON
         const auto value = nlohmann::json::parse(
             propertiesJson.begin(),
             propertiesJson.end());
@@ -433,10 +451,7 @@ namespace LamaPon
         }
         if (m_host == nullptr)
         {
-            // Game Module Hostが無い環境（DLLを読まないツールなど）で
-            // 黙って何もしないと、「画面が空なのに理由がどこにも
-            // 出ない」ことになります。理由を残して追えるようにします
-            // （CLIのproblemsはここのLastErrorを拾います）。
+            // ホスト未登録の原因はCLIなどから参照するLastErrorへ残す。
             if (m_lastError.empty())
             {
                 m_lastError =
@@ -480,6 +495,7 @@ namespace LamaPon
                 }
             }
         }
+        // モジュール内で受け取った例外
         catch (const std::exception& exception)
         {
             m_instance = nullptr;
@@ -500,6 +516,7 @@ namespace LamaPon
             && m_descriptor != nullptr
             && m_descriptor->destroy != nullptr)
         {
+            // 実体を破棄し、診断失敗も吸収する。
             InvokeCleanupCallback(
                 m_lastError, m_scriptType, "OnDestroy",
                 [&] { m_descriptor->destroy(m_instance); });

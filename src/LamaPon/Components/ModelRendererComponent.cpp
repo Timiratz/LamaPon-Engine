@@ -40,11 +40,11 @@
 
 namespace
 {
-    // CMO／SDKMESHはD3D11でDirectXTK Modelとして描かれます。Material
-    // 上書き中の色の合成規則を、D3D12のCPU幾何経路でも揃えるために判定します。
+    // DirectXTKの材質合成を使う形式か判定する(path: モデルパス)。
     [[nodiscard]] bool UsesDirectXTKModelMaterial(
         const std::filesystem::path& path)
     {
+        // 小文字化した拡張子
         auto extension = path.extension().wstring();
         std::ranges::transform(
             extension,
@@ -55,11 +55,11 @@ namespace
             || extension == L".vbo";
     }
 
-    // DirectXTKのCreateFromCMOは既定でModelLoader_CounterClockwise、
-    // SDKMESHとVBOはModelLoader_Clockwiseで読み込みます。
+    // DirectXTK読込時に反時計回りとなる形式か判定する(path: モデルパス)。
     [[nodiscard]] bool LoadsCounterClockwiseDirectXTKModel(
         const std::filesystem::path& path)
     {
+        // 小文字化した拡張子
         auto extension = path.extension().wstring();
         std::ranges::transform(
             extension,
@@ -68,11 +68,11 @@ namespace
         return extension == L".cmo";
     }
 
-    // glTF／GLB／FBXはD3D11でSkeletalModelとして読み込まれ、Material custom
-    // shaderをDirectXTK SkinnedEffectの頂点シェーダーとPSSkinnedMainで描きます。
+    // スキニング用材質シェーダーを使う形式か判定する(path: モデルパス)。
     [[nodiscard]] bool UsesSkinnedMaterialShader(
         const std::filesystem::path& path)
     {
+        // 小文字化した拡張子
         auto extension = path.extension().wstring();
         std::ranges::transform(
             extension,
@@ -85,20 +85,29 @@ namespace
 
     struct ImportedModelVertex final
     {
+        // モデル空間の頂点位置
         DirectX::XMFLOAT3 position{};
+        // モデル空間の頂点法線
         DirectX::XMFLOAT3 normal{};
+        // 接線と従法線の向き
         DirectX::XMFLOAT4 tangent{};
+        // 圧縮RGBA頂点色
         std::uint32_t color{};
+        // 画像のUV座標
         DirectX::XMFLOAT2 textureCoordinate{};
+        // 圧縮ボーン番号
         std::uint32_t blendIndices{};
+        // 圧縮ボーン重み
         std::uint32_t blendWeights{};
     };
 
+    // DirectXTKの取込頂点と同じバイト配置を維持する。
     static_assert(
         sizeof(ImportedModelVertex)
             == sizeof(DirectX::
                 VertexPositionNormalTangentColorTextureSkinning));
 
+    // 画像の描画用ビューを取得し資源を保持する(asset: 共有画像資産)。
     [[nodiscard]] LamaPon::GraphicsViewHandle AcquireTextureView(
         const std::shared_ptr<
             const LamaPon::TextureAsset>& asset) noexcept
@@ -107,12 +116,14 @@ namespace
         {
             return {};
         }
+        // 描画中に保持する画像資源
         const auto resources = asset->resources.Acquire();
         return resources != nullptr
             ? resources->shaderResourceView
             : LamaPon::GraphicsViewHandle{};
     }
 
+    // 描画要求の上限内で照明と影の設定を転写する(lighting: シーン照明, request: 出力描画要求)。
     void CopyPrimitiveLighting(
         const LamaPon::LightingState& lighting,
         LamaPon::PrimitiveDrawRequest& request) noexcept
@@ -122,10 +133,12 @@ namespace
         request.directionalLightCount = std::min(
             request.directionalLights.size(),
             lighting.directionalLightCount);
+        // 転写または描画パスの番号
         for (std::size_t index{};
             index < request.directionalLightCount;
             ++index)
         {
+            // 転写元の照明または影
             const auto& source = lighting.directionalLights[index];
             request.directionalLights[index] = {
                 source.direction,
@@ -136,10 +149,12 @@ namespace
         request.pointLightCount = std::min(
             request.pointLights.size(),
             lighting.pointLightCount);
+        // 転写または描画パスの番号
         for (std::size_t index{};
             index < request.pointLightCount;
             ++index)
         {
+            // 転写元の照明または影
             const auto& source = lighting.pointLights[index];
             request.pointLights[index] = {
                 source.position,
@@ -150,10 +165,12 @@ namespace
         request.spotLightCount = std::min(
             request.spotLights.size(),
             lighting.spotLightCount);
+        // 転写または描画パスの番号
         for (std::size_t index{};
             index < request.spotLightCount;
             ++index)
         {
+            // 転写元の照明または影
             const auto& source = lighting.spotLights[index];
             request.spotLights[index] = {
                 source.position,
@@ -164,6 +181,7 @@ namespace
                 source.intensity,
                 source.outerConeCosine };
         }
+        // 平行光の影設定
         const auto& shadow = lighting.directionalShadow;
         request.directionalShadow.lightViewProjections =
             shadow.lightViewProjections;
@@ -180,10 +198,12 @@ namespace
                 lighting.directionalShadowResolution,
                 1.0f);
         request.directionalShadow.enabled = shadow.enabled;
+        // 転写または描画パスの番号
         for (std::size_t index{};
             index < request.spotShadows.size();
             ++index)
         {
+            // 転写元の照明または影
             const auto& source = lighting.spotShadows[index];
             request.spotShadows[index] = {
                 source.lightViewProjection,
@@ -209,6 +229,7 @@ namespace
             lighting.screenAmbientOcclusion.inverseWidth,
             lighting.screenAmbientOcclusion.inverseHeight,
             lighting.screenAmbientOcclusion.enabled };
+        // 画面空間反射の設定
         const auto& reflection = lighting.screenSpaceReflection;
         request.screenSpaceReflection = {
             reflection.texture,
@@ -223,6 +244,7 @@ namespace
             reflection.stepCount,
             reflection.depthPyramidMaximumMip,
             reflection.enabled };
+        // 環境反射の設定
         const auto& environment = lighting.environment;
         request.environment = {
             environment.texture,
@@ -238,6 +260,7 @@ namespace
             lighting.fog.density,
             LamaPon::PrimitiveFogModel::LamaPonLit,
             lighting.fog.enabled };
+        // クラスタ照明の設定
         const auto& clustered = lighting.clustered;
         request.clustered = {
             clustered.lights,
@@ -249,6 +272,7 @@ namespace
             clustered.inverseHeight,
             clustered.lightCount,
             clustered.enabled };
+        // 焼き込み間接光の設定
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         request.bakedGlobalIllumination = {
             bakedGi.redCoefficients,
@@ -261,18 +285,7 @@ namespace
             bakedGi.enabled };
     }
 
-    // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
-    // Cube）のMesh Rendererだけです。
-    // モデルにはパッチで描く経路が無いので、ハル／ドメインは束ねられず、
-    // テセレーション前提の頂点シェーダーだけが刺さります。この頂点
-    // シェーダーはSV_Positionを出さない（出すのはドメインの仕事）ため、
-    // ラスタライザーへ位置が届かず何も描かれません。黙って消えるより
-    // 理由を出してマゼンタの代役を描きます。
-    //
-    // 差し替えを1箇所にまとめてあるのは、Effectを選ぶ入口が
-    // RefreshShaderとRebuildCommonLitResourcesの2つあるからです。
-    // 片方だけ直すと、もう片方が生のEffectでm_effectを上書きして
-    // 元へ戻してしまいます。
+    // モデル非対応のテセレーションを代替描画へ差し替える(effect: 選択効果, graphics: 描画機器, skinned: 骨格描画フラグ, shaderError: 出力診断)。
     LamaPon::LitEffect* SubstituteUnsupportedTessellation(
         LamaPon::LitEffect* effect,
         LamaPon::GraphicsDevice& graphics,
@@ -283,7 +296,9 @@ namespace
         {
             return effect;
         }
+        // 非対応パスの有無
         bool hasTessellation{};
+        // 確認または復帰する描画種別
         const std::array roles{
             skinned
                 ? LamaPon::ShaderPassRole::Skinned
@@ -293,10 +308,14 @@ namespace
                 : LamaPon::ShaderPassRole::Outline,
             LamaPon::ShaderPassRole::Instanced
         };
+        // 対象の描画種別
         for (const auto role : roles)
         {
+            // 対象種別のパス数
             const auto passCount = effect->PassCount(role);
+            // 転写または描画パスの番号
             for (std::size_t index = 0;
+                // 対象種別のパス数
                 index < passCount;
                 ++index)
             {
@@ -321,6 +340,7 @@ namespace
                 " shape can be split into quad patches"
                 " (Plane and Cube).";
         }
+        // 借用する代替描画効果
         if (auto* const placeholder =
                 graphics.ShaderErrorPlaceholder(skinned))
         {
@@ -329,13 +349,11 @@ namespace
         return effect;
     }
 
-    // LitEffectはGraphicsDevice内で共有されます。Manifestの
-    // 選択中passと一時フラグを別componentへ持ち越さず、
-    // programmable geometry stageも後続描画へ漏らさないための
-    // スコープです。
+    // 共有効果の選択パスと一時状態を次のコンポーネントへ持ち越さない。
     class MaterialPassScope final
     {
     public:
+        // 共有効果と描画コンテキストを借りて復帰を管理する(effect: 共有描画効果, context: 借用コンテキスト)。
         MaterialPassScope(
             LamaPon::LitEffect& effect,
             ID3D11DeviceContext* context) noexcept
@@ -344,14 +362,18 @@ namespace
         {
         }
 
+        // 復帰処理の重複を防ぐためコピーを禁止する。
         MaterialPassScope(const MaterialPassScope&) = delete;
+        // 復帰処理の重複を防ぐためコピー代入を禁止する。
         MaterialPassScope& operator=(const MaterialPassScope&) = delete;
 
+        // 一時フラグを解除し各描画種別の先頭パスへ戻す。
         ~MaterialPassScope()
         {
             m_effect.SetTessellationDrawEnabled(false);
             m_effect.SetDepthOnlyEnabled(false);
             m_effect.SetInstancingEnabled(false);
+            // 確認または復帰する描画種別
             constexpr std::array roles{
                 LamaPon::ShaderPassRole::Forward,
                 LamaPon::ShaderPassRole::Skinned,
@@ -360,6 +382,7 @@ namespace
                 LamaPon::ShaderPassRole::SkinnedOutline,
                 LamaPon::ShaderPassRole::Occluded
             };
+            // 対象の描画種別
             for (const auto role : roles)
             {
                 if (m_effect.PassCount(role) == 0)
@@ -372,9 +395,7 @@ namespace
                 }
                 catch (...)
                 {
-                    // 有効なindex 0への復帰なので通常は失敗
-                    // しません。destructorから例外を出さない
-                    // ため、万一の場合だけ無視します。
+                    // 後続描画の状態復帰を優先し、復帰時の例外を破棄する。
                 }
             }
             if (m_context != nullptr)
@@ -386,19 +407,20 @@ namespace
         }
 
     private:
+        // 借用する共有描画効果
         LamaPon::LitEffect& m_effect;
+        // 借用するD3D11コンテキスト
         ID3D11DeviceContext* m_context{};
     };
 
-    // glTF/FBXインポータの頂点はDirectX::Modelと表面の
-    // 向きが反対です。Manifestの描画状態を適用するときも
-    // 従来のSkeletalModel描画と同じcull規約にします。
+    // 取込モデルの表面方向に合わせて描画状態を適用する(context: 借用コンテキスト, graphics: 描画機器, state: 宣言描画状態, doubleSided: 両面描画フラグ)。
     void ApplyImportedModelRenderState(
         ID3D11DeviceContext* const context,
         LamaPon::GraphicsDevice& graphics,
         const LamaPon::ShaderRenderState& state,
         const bool doubleSided)
     {
+        // 借用する標準描画状態
         auto& states =
             LamaPon::Detail::GraphicsDeviceD3D11Access::States(graphics);
         switch (state.blend)
@@ -449,10 +471,7 @@ namespace
         }
     }
 
-    // DirectXTKの頂点宣言は位置をSV_Positionとしますが、
-    // 一般的な自作HLSLはPOSITIONを使います。データ形式は
-    // 同じなので、最初の作成が失敗したときだけ位置semantic
-    // を入れ替えて再試行します。
+    // 位置セマンティクスを交換してレイアウト作成を再試行する(device: 借用描画機器, elements: 頂点要素配列, elementCount: 要素数, byteCode: 頂点シェーダー, layout: 出力レイアウト)。
     HRESULT CreateInputLayoutWithPositionAlias(
         ID3D11Device* const device,
         const D3D11_INPUT_ELEMENT_DESC* const elements,
@@ -460,6 +479,7 @@ namespace
         ID3DBlob* const byteCode,
         ID3D11InputLayout** const layout)
     {
+        // 頂点配置の作成結果
         HRESULT result = device->CreateInputLayout(
             elements,
             elementCount,
@@ -476,10 +496,13 @@ namespace
             *layout = nullptr;
         }
 
+        // 位置要素名を変更する頂点宣言
         std::vector<D3D11_INPUT_ELEMENT_DESC> aliases(
             elements,
             elements + elementCount);
+        // 位置要素名の変更有無
         bool changed{};
+        // 確認する頂点要素
         for (auto& element : aliases)
         {
             if (element.SemanticName == nullptr
@@ -510,8 +533,10 @@ namespace
             : result;
     }
 
+    // 粗さを従来材質の反射指数へ変換する(roughness: 表面の粗さ)。
     float SpecularPowerFromRoughness(const float roughness) noexcept
     {
+        // 粗さの二乗
         const float squared = roughness * roughness;
         return std::clamp(
             2.0f / std::max(squared * squared, 0.0001f) - 2.0f,
@@ -519,6 +544,7 @@ namespace
             128.0f);
     }
 
+    // 粗さを従来材質の反射色へ変換する(roughness: 表面の粗さ)。
     DirectX::XMVECTOR SpecularColorFromRoughness(
         const float roughness) noexcept
     {
@@ -526,6 +552,7 @@ namespace
             std::lerp(0.45f, 0.08f, roughness));
     }
 
+    // 頂点宣言に指定のセマンティクス番号0があるか調べる(part: モデル描画部品, semantic: 要素名)。
     bool HasSemantic(
         const DirectX::ModelMeshPart& part,
         const char* semantic) noexcept
@@ -535,6 +562,7 @@ namespace
             return false;
         }
 
+        // 番号0の要素名を比較する(element: 確認する頂点要素)。
         return std::ranges::any_of(
             *part.vbDecl,
             [semantic](
@@ -548,9 +576,11 @@ namespace
             });
     }
 
+    // 共通照明に必要な位置・法線・UVを持つか調べる(part: モデル描画部品)。
     bool HasCommonLitVertexData(
         const DirectX::ModelMeshPart& part) noexcept
     {
+        // 位置要素の有無
         const bool hasPosition =
             HasSemantic(part, "SV_Position")
             || HasSemantic(part, "POSITION");
@@ -559,6 +589,7 @@ namespace
             && HasSemantic(part, "TEXCOORD");
     }
 
+    // 再生時刻を進めて循環または終端に制限する(time: 再生時刻秒, delta: 進行秒数, duration: クリップ長秒, loop: 循環フラグ)。
     float AdvanceClipTime(
         const float time,
         const float delta,
@@ -569,6 +600,7 @@ namespace
         {
             return 0.0f;
         }
+        // 進行後の再生時刻秒
         float result = time + delta;
         if (loop)
         {
@@ -588,6 +620,7 @@ namespace LamaPon
     LitTextureRequest
         ModelRendererComponent::BuildLitTextureRequest() const noexcept
     {
+        // 画像と材質の描画要求
         LitTextureRequest request;
         request.albedo = AcquireTextureView(m_albedoTexture);
         request.normal = AcquireTextureView(m_normalTexture);
@@ -595,6 +628,7 @@ namespace LamaPon
         request.metallic = AcquireTextureView(m_metallicTexture);
         request.occlusion = AcquireTextureView(m_occlusionTexture);
         request.emissive = AcquireTextureView(m_emissiveTexture);
+        // 追加画像または描画パスの番号
         for (std::size_t index{};
             index < request.customTextures.size();
             ++index)
@@ -626,6 +660,7 @@ namespace LamaPon
         {
             return;
         }
+        // ゼロ固定の合成係数
         constexpr float blendFactor[4]{};
         switch (state.blend)
         {
@@ -686,16 +721,22 @@ namespace LamaPon
     {
         struct Part final
         {
+            // 借用するモデルメッシュ
             DirectX::ModelMesh* mesh{};
+            // 借用するメッシュ部品
+            // 取込モデルの描画部品
             DirectX::ModelMeshPart* part{};
-            // forward/outlineはそれぞれ同じrole内で複数
-            // passを持てるため、VSごとにlayoutを分けます。
+            // 色描画パス順の頂点レイアウト
             std::vector<Microsoft::WRL::ComPtr<
                 ID3D11InputLayout>> forwardInputLayouts;
+            // 輪郭描画パス順の頂点レイアウト
             std::vector<Microsoft::WRL::ComPtr<
                 ID3D11InputLayout>> outlineInputLayouts;
+            // 埋め込み色画像の保持ビュー
             GraphicsViewHandle embeddedAlbedoTexture;
+            // 埋め込み法線画像の保持ビュー
             GraphicsViewHandle embeddedNormalTexture;
+            // 埋め込み材質のRGBA色
             DirectX::XMFLOAT4 embeddedDiffuseColor{
                 1.0f,
                 1.0f,
@@ -704,21 +745,27 @@ namespace LamaPon
             };
         };
 
+        // 共通照明で描くモデル部品
         std::vector<Part> parts;
+        // モデル内ボーンの変換行列
         std::vector<DirectX::XMMATRIX> boneTransforms;
+        // 共通照明への対応診断
         std::string status{
             "モデルの初期化待ち"
         };
+        // 共通照明への対応可否
         bool compatible{};
     };
 
     bool ModelRendererComponent::IsAlphaBlended3D() const
     {
+        // D3D12経路の使用有無
         const bool usesD3D12 = m_graphics != nullptr
             && m_graphics->ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental;
         if (usesD3D12 && !m_material.Shader().empty())
         {
+            // 対象パスの宣言描画状態
             ShaderRenderState state;
             if (m_graphics->TryGetMaterialShaderRenderState(
                     m_material.Shader(),
@@ -730,28 +777,29 @@ namespace LamaPon
                     || state.blend == ShaderBlendMode::Premultiplied;
             }
         }
-        // GraphicsDeviceのMaterial Shader cacheはhot reload時にEffectを
-        // 置き換えます。別componentが先に更新した直後でも、下で古い
-        // raw pointerを参照しないよう、const queryの論理cacheを同期します。
+        // 再読込で共有効果が置き換わるため、生ポインターの参照前にキャッシュを同期する。
         if (!usesD3D12)
         {
             const_cast<ModelRendererComponent*>(this)
                 ->RefreshShader(false);
         }
-        // 判定の条件は描画側（forceAlphaとpart->isAlpha）と同じ
-        // ものです。片方だけ直すと「並べ替えの対象から外れたのに
-        // 半透明で描かれる」パーツができるので、変えるときは両方。
+        // 半透明ソートの判定条件は描画側の合成条件と揃える。
+        // 有効な描画効果の有無
         bool hasEffect{};
+        // 全パスの状態宣言有無
         bool allPassesDeclareState = true;
+        // 確認する共有描画効果
         const std::array effects{
             m_effect,
             m_skinnedEffect,
             m_skeletalForwardEffect
         };
+        // 共有描画効果の番号
         for (std::size_t effectIndex = 0;
             effectIndex < effects.size();
             ++effectIndex)
         {
+            // 確認する共有描画効果
             const auto* const activeEffect = effects[effectIndex];
             if (activeEffect == nullptr)
             {
@@ -767,21 +815,23 @@ namespace LamaPon
                 continue;
             }
             hasEffect = true;
+            // 色描画パスの数
             const auto colorPassCount =
                 activeEffect->ColorPassCount();
             allPassesDeclareState = allPassesDeclareState
                 && colorPassCount != 0;
+            // 追加画像または描画パスの番号
             for (std::size_t index = 0;
+                // 色描画パスの数
                 index < colorPassCount;
                 ++index)
             {
+                // 対象パスの宣言描画状態
                 const auto& state =
                     activeEffect->ColorPassRenderState(index);
                 allPassesDeclareState =
                     allPassesDeclareState && state.declared;
-                // forward/skinnedのどのpassか1つでも順序依存
-                // の合成なら、オブジェクト全体を半透明ソートへ
-                // 送ります。純加算は順番によらないため除外。
+                // 順序依存の合成を含むオブジェクトは全体を半透明ソートへ送る。
                 if (state.declared
                     && (state.blend == ShaderBlendMode::Alpha
                         || state.blend
@@ -799,12 +849,10 @@ namespace LamaPon
         {
             return true;
         }
-        // モデルの中に半透明パーツが1つでもあれば対象にします。
-        // 粒度はGameObject単位なので、不透明パーツも一緒に後回しに
-        // なりますが、遠い順に描く中では手前の不透明が奥の半透明を
-        // 正しく上書きするので破綻しません。
+        // 半透明部品があればオブジェクト全体を並べ替える。
         if (m_commonLitResources)
         {
+            // 取込モデルの描画部品
             for (const auto& part :
                 m_commonLitResources->parts)
             {
@@ -817,6 +865,7 @@ namespace LamaPon
         }
         if (m_model && m_model->skeletalModel)
         {
+            // 部品に半透明の材質があるか調べる(primitive: 骨格モデルの部品)。
             return std::ranges::any_of(
                 m_model->skeletalModel->primitives,
                 [](const SkeletalPrimitive& primitive)
@@ -878,6 +927,7 @@ namespace LamaPon
 
     void ModelRendererComponent::SetModelPath(std::filesystem::path modelPath)
     {
+        // 差し替え後のモデル資産
         std::shared_ptr<const ModelAsset> model;
         if (m_assets != nullptr && !modelPath.empty())
         {
@@ -896,6 +946,7 @@ namespace LamaPon
             m_animationPlayOnStart && AnimationCount() > 0;
         if (m_animationController)
         {
+            // 参照する制御状態
             const auto* state =
                 m_animationController->FindState(
                     m_currentAnimationState);
@@ -909,12 +960,9 @@ namespace LamaPon
                 EnterAnimationState(*state);
             }
         }
-        // インスタンスバッチは個別OnRender3Dより先に
-        // CanBeInstancedを問うため、初フレームのバッチ判定までに
-        // Material Shaderとrole能力を確定させます。
+        // 初回バッチ判定より先にシェーダーと描画種別を確定する。
         RefreshShader(false);
-        // Shader identityが同じ場合はRefreshShaderが早期returnしますが、
-        // model自体は差し替わっているため、raw part参照は必ず作り直します。
+        // シェーダーが同じでもモデル部品の借用参照は必ず作り直す。
         RebuildCommonLitResources();
     }
 
@@ -951,6 +999,7 @@ namespace LamaPon
     std::vector<std::string>
         ModelRendererComponent::SkeletonNodeNames() const
     {
+        // 取得した名前の一覧
         std::vector<std::string> result;
         if (!m_model || !m_model->skeletalModel)
         {
@@ -958,6 +1007,7 @@ namespace LamaPon
         }
         result.reserve(
             m_model->skeletalModel->nodes.size());
+        // モデル内の骨格ノード
         for (const auto& node :
             m_model->skeletalModel->nodes)
         {
@@ -970,6 +1020,7 @@ namespace LamaPon
     {
         if (m_animationController)
         {
+            // 参照する制御状態
             if (const auto* state =
                     m_animationController->FindState(
                         m_currentAnimationState))
@@ -1065,11 +1116,13 @@ namespace LamaPon
     std::vector<std::string>
         ModelRendererComponent::AnimationTriggers() const
     {
+        // 取得した名前の一覧
         std::vector<std::string> result;
         if (!m_animationController)
         {
             return result;
         }
+        // 制御器の遷移定義
         for (const auto& transition :
             m_animationController->Transitions())
         {
@@ -1093,6 +1146,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Animator float parameter must be finite.");
         }
+        // 浮動小数点パラメーターの位置
         const auto found =
             m_animationFloatValues.find(parameter);
         if (found == m_animationFloatValues.end())
@@ -1107,6 +1161,7 @@ namespace LamaPon
     float ModelRendererComponent::AnimationFloat(
         const std::string_view parameter) const noexcept
     {
+        // 浮動小数点パラメーターの位置
         const auto found =
             m_animationFloatValues.find(
                 std::string{ parameter });
@@ -1150,6 +1205,7 @@ namespace LamaPon
         {
             if (m_animationIndex < AnimationCount())
             {
+                // 重み付けするクリップ
                 const auto& animation =
                     m_model->skeletalModel
                         ->animations[m_animationIndex];
@@ -1162,6 +1218,7 @@ namespace LamaPon
             return;
         }
 
+        // 状態遷移先の混合割合
         const float transitionAmount =
             !m_nextAnimationState.empty()
                 && m_animationTransitionDuration
@@ -1172,6 +1229,7 @@ namespace LamaPon
                 0.0f,
                 1.0f)
             : 0.0f;
+        // 状態内のクリップを重み付けして追加する(state: 対象制御状態, stateTime: 状態の再生時刻秒, outerWeight: 状態の混合重み)。
         const auto appendState =
             [this, &samples](
                 const AnimatorState* state,
@@ -1183,6 +1241,7 @@ namespace LamaPon
                 {
                     return;
                 }
+                // 有効なクリップの姿勢標本を追加する(name: クリップ名, weight: 子クリップの混合重み)。
                 const auto appendClip =
                     [this,
                         &samples,
@@ -1192,6 +1251,7 @@ namespace LamaPon
                         const std::string_view name,
                         const float weight)
                     {
+                        // クリップまたはノードの番号
                         const auto index =
                             ResolveAnimationIndex(name);
                         if (index >= AnimationCount()
@@ -1199,6 +1259,7 @@ namespace LamaPon
                         {
                             return;
                         }
+                        // 重み付けするクリップ
                         const auto& animation =
                             m_model->skeletalModel
                                 ->animations[index];
@@ -1224,10 +1285,12 @@ namespace LamaPon
                         1.0f);
                     return;
                 }
+                // 子クリップの混合重み
                 std::vector<float> weights;
                 CalculateBlendWeights(
                     *state,
                     weights);
+                // クリップまたはノードの番号
                 for (std::size_t index = 0;
                     index < state->
                         blendChildren.size();
@@ -1264,10 +1327,12 @@ namespace LamaPon
             return std::numeric_limits<
                 std::size_t>::max();
         }
+        // モデル内の骨格ノード一覧
         const auto& nodes =
             m_model->skeletalModel->nodes;
         if (!m_rootMotionNode.empty())
         {
+            // クリップまたはノードの番号
             for (std::size_t index = 0;
                 index < nodes.size();
                 ++index)
@@ -1281,6 +1346,7 @@ namespace LamaPon
             return std::numeric_limits<
                 std::size_t>::max();
         }
+        // クリップまたはノードの番号
         for (std::size_t index = 0;
             index < nodes.size();
             ++index)
@@ -1300,6 +1366,7 @@ namespace LamaPon
         const std::vector<SkeletalPoseSample>& before,
         const std::vector<SkeletalPoseSample>& after)
     {
+        // 移動を抽出するノード番号
         const auto node = ResolveRootMotionNode();
         if (!m_applyRootMotion
             || !m_model
@@ -1314,7 +1381,11 @@ namespace LamaPon
 
         struct RootPose final
         {
+            // モデル空間のルート位置
+            // 分解したモデル空間位置
             DirectX::XMFLOAT3 translation{};
+            // ルート回転の四元数
+            // 分解した姿勢の四元数
             DirectX::XMFLOAT4 rotation{
                 0.0f,
                 0.0f,
@@ -1322,15 +1393,18 @@ namespace LamaPon
                 1.0f
             };
         };
+        // 重み付き姿勢からルートの位置と回転を抽出する(samples: 評価する姿勢標本)。
         const auto sampleRoot =
             [this, node](
                 const std::vector<
                     SkeletalPoseSample>& samples)
             {
                 using namespace DirectX;
+                // ノードごとのローカル姿勢
                 std::vector<
                     SkeletalPoseTransform>
                     localPose;
+                // モデル空間のノード姿勢
                 std::vector<XMFLOAT4X4>
                     globalPose;
                 SkeletalModel::SampleWeightedPose(
@@ -1338,9 +1412,13 @@ namespace LamaPon
                     samples,
                     localPose,
                     globalPose);
+                // 抽出した移動と回転
                 RootPose result;
+                // 分解したモデル空間倍率
                 XMVECTOR scale{};
+                // 分解した姿勢の四元数
                 XMVECTOR rotation{};
+                // 分解したモデル空間位置
                 XMVECTOR translation{};
                 if (XMMatrixDecompose(
                         &scale,
@@ -1360,10 +1438,13 @@ namespace LamaPon
                 return result;
             };
 
+        // 進行前のルート姿勢
         const RootPose beforePose =
             sampleRoot(before);
+        // 進行後のルート姿勢
         const RootPose afterPose =
             sampleRoot(after);
+        // モデル空間の移動差分
         DirectX::XMFLOAT3 delta{
             afterPose.translation.x
                 - beforePose.translation.x,
@@ -1372,11 +1453,14 @@ namespace LamaPon
             afterPose.translation.z
                 - beforePose.translation.z
         };
+        // Y軸回転の差分ラジアン
         float yawDelta{};
+        // 四元数からY軸の向きを求める(rotation: 回転の四元数)。
         const auto yawFrom =
             [](const DirectX::XMFLOAT4& rotation)
             {
                 using namespace DirectX;
+                // 回転後のモデル前方向
                 const XMVECTOR forward =
                     XMVector3Rotate(
                         XMVectorSet(
@@ -1395,6 +1479,8 @@ namespace LamaPon
             std::numbers::pi_v<float>
                 * 2.0f);
 
+        // 同じクリップの時刻が巻き戻ったか調べる(previous: 進行前の姿勢標本)。
+        // 時刻の巻戻り検出結果
         const bool looped =
             std::ranges::any_of(
                 before,
@@ -1402,6 +1488,8 @@ namespace LamaPon
                     const SkeletalPoseSample&
                         previous)
                 {
+                    // 同じクリップの標本を探す(current: 進行後の姿勢標本)。
+                    // 同じクリップの進行後標本
                     const auto found =
                         std::ranges::find_if(
                             after,
@@ -1416,22 +1504,29 @@ namespace LamaPon
                         && found->time
                             < previous.time;
                 });
+        // 巻戻りは一回の循環として両端の移動を合算する。
         if (looped)
         {
+            // 終端時刻に変更する標本
             auto endSamples = before;
+            // 先頭時刻に変更する標本
             auto startSamples = after;
+            // 端点を評価する姿勢標本
             for (auto& sample : endSamples)
             {
                 sample.time = sample.clip
                     ? sample.clip->duration
                     : 0.0f;
             }
+            // 端点を評価する姿勢標本
             for (auto& sample : startSamples)
             {
                 sample.time = 0.0f;
             }
+            // 循環前の終端姿勢
             const RootPose endPose =
                 sampleRoot(endSamples);
+            // 循環後の先頭姿勢
             const RootPose startPose =
                 sampleRoot(startSamples);
             delta = {
@@ -1463,12 +1558,15 @@ namespace LamaPon
                         * 2.0f);
         }
 
+        // 所有物のローカル変換
         auto& transform = GetTransform();
         using namespace DirectX;
+        // 所有物の回転を適用した移動
         const XMVECTOR worldDelta =
             XMVector3Rotate(
                 XMLoadFloat3(&delta),
                 transform.RotationVector());
+        // 回転済みの移動成分
         XMFLOAT3 rotatedDelta{};
         XMStoreFloat3(
             &rotatedDelta,
@@ -1495,18 +1593,22 @@ namespace LamaPon
         {
             return;
         }
+        // 進行前の正規化時刻
         const float previous =
             std::clamp(
                 previousTime / duration,
                 0.0f,
                 1.0f);
+        // 進行後の正規化時刻
         const float current =
             std::clamp(
                 currentTime / duration,
                 0.0f,
                 1.0f);
+        // 制御状態の通知定義
         for (const auto& event : state.events)
         {
+            // 通知時刻の通過有無
             bool crossed{};
             if (forward)
             {
@@ -1539,6 +1641,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 通知は最大256件とし、満杯なら最古の通知を破棄する。
             if (m_animationEventQueue.size()
                 >= 256)
             {
@@ -1567,6 +1670,7 @@ namespace LamaPon
         const float deltaTime,
         const bool allowRootMotion)
     {
+        // 移動抽出用の進行前姿勢標本
         std::vector<SkeletalPoseSample>
             rootMotionBefore;
         if (allowRootMotion
@@ -1582,6 +1686,7 @@ namespace LamaPon
             AdvanceControllerAnimation(deltaTime);
             if (!rootMotionBefore.empty())
             {
+                // 移動抽出用の進行後姿勢標本
                 std::vector<SkeletalPoseSample>
                     rootMotionAfter;
                 CollectAnimationPoseSamples(
@@ -1592,6 +1697,7 @@ namespace LamaPon
             }
             return;
         }
+        // 再生区間の長さ秒
         const float duration = AnimationDuration();
         if (!m_animationPlaying
             || duration <= 0.0f
@@ -1623,6 +1729,7 @@ namespace LamaPon
         }
         if (!rootMotionBefore.empty())
         {
+            // 移動抽出用の進行後姿勢標本
             std::vector<SkeletalPoseSample>
                 rootMotionAfter;
             CollectAnimationPoseSamples(
@@ -1657,14 +1764,14 @@ namespace LamaPon
         }
 
         m_useLegacyShading = enabled;
-        // 既定のLitと従来のDirectXTK描画を切り替えるので、
-        // スキニング用Effectを選び直します。
+        // 描画方式の切替に合わせてスキニング効果を選び直す。
         RefreshShader(false);
     }
 
     void ModelRendererComponent::SetAlbedoTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1683,6 +1790,7 @@ namespace LamaPon
     void ModelRendererComponent::SetRoughnessTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1696,6 +1804,7 @@ namespace LamaPon
     void ModelRendererComponent::SetMetallicTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1709,6 +1818,7 @@ namespace LamaPon
     void ModelRendererComponent::SetOcclusionTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1722,6 +1832,7 @@ namespace LamaPon
     void ModelRendererComponent::SetEmissiveTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1740,6 +1851,7 @@ namespace LamaPon
         {
             return;
         }
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !path.empty())
         {
@@ -1752,6 +1864,7 @@ namespace LamaPon
     void ModelRendererComponent::SetNormalTexturePath(
         std::filesystem::path texturePath)
     {
+        // 変更後に保持する画像資産
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr && !texturePath.empty())
         {
@@ -1817,17 +1930,23 @@ namespace LamaPon
     void ModelRendererComponent::ApplyMaterial(
         const LitMaterial& material)
     {
+        // 読込後の色画像資産
         std::shared_ptr<const TextureAsset> albedo;
+        // 読込後の法線画像資産
         std::shared_ptr<const TextureAsset> normal;
+        // 読込後の粗さ画像資産
         std::shared_ptr<const TextureAsset> roughness;
+        // 読込後の金属度画像資産
         std::shared_ptr<const TextureAsset> metallic;
+        // 読込後の遮蔽画像資産
         std::shared_ptr<const TextureAsset> occlusion;
+        // 読込後の発光画像資産
         std::shared_ptr<const TextureAsset> emissive;
         if (m_assets != nullptr)
         {
-            // スロットごとに用途を渡します。法線はBC5、粗さ・
-            // 金属度・遮蔽はBC1、色はBC1/BC3です。
+            // 画像用途に合わせて読込形式を選ぶ。
             using Usage = TextureLoader::TextureUsage;
+            // 未指定の画像は空資産として返す(path: 画像パス, usage: 読込用途)。
             const auto load =
                 [this](
                     const std::filesystem::path& path,
@@ -1858,9 +1977,11 @@ namespace LamaPon
                 Usage::Color);
         }
 
+        // 色画像の解除有無
         const bool removedAlbedo =
             !m_material.AlbedoTexture().empty()
             && material.AlbedoTexture().empty();
+        // 法線画像の解除有無
         const bool removedNormal =
             !m_material.NormalTexture().empty()
             && material.NormalTexture().empty();
@@ -1895,21 +2016,27 @@ namespace LamaPon
 
         if (m_model && m_model->skeletalModel)
         {
+            // 骨格付き部品があるか調べる(primitive: 骨格モデルの部品)。
             const bool hasSkinnedPrimitive = std::ranges::any_of(
                 m_model->skeletalModel->primitives,
                 [](const SkeletalPrimitive& primitive)
                 {
                     return primitive.skin >= 0;
                 });
+            // 骨格なし部品があるか調べる(primitive: 骨格モデルの部品)。
             const bool hasForwardPrimitive = std::ranges::any_of(
                 m_model->skeletalModel->primitives,
                 [](const SkeletalPrimitive& primitive)
                 {
                     return primitive.skin < 0;
                 });
+            // 主描画効果の世代
             std::uint64_t generation{};
+            // 主描画効果の診断
             std::string primaryError;
+            // 借用する主描画効果
             LitEffect* effect{};
+            // マニフェストの指定有無
             const bool manifestRequested =
                 IsShaderManifestPath(m_material.Shader());
             if (hasSkinnedPrimitive || !manifestRequested)
@@ -1929,12 +2056,7 @@ namespace LamaPon
                     primaryError,
                     m_material.ShaderKeywords());
             }
-            // カスタムShaderが指定されていなければ、既定の
-            // LamaPon Lit（PBR）で描きます。互換トグルが有効な
-            // ときだけ従来のDirectXTK描画へ戻します。
-            // 指定があってコンパイルに失敗した場合はマゼンタの
-            // 代役が返るので、ここで標準Litへ倒すとエラーを
-            // 隠してしまいます。
+            // コンパイル失敗の代替表示を既定照明で上書きしない。
             if (effect == nullptr
                 && !m_useLegacyShading
                 && m_material.Shader().empty())
@@ -1950,17 +2072,16 @@ namespace LamaPon
                 && effect != nullptr
                 && effect == &m_graphics->Lit())
             {
-                // glTF/FBX primitiveの既存VSは常にDirectXTK
-                // SkinnedEffectです。Forward Manifestの非同期compile中も
-                // その出力semanticへ合うPSSkinnedMainで代役します。
+                // 非同期コンパイル中も既存頂点出力に合うスキニング効果を使う。
                 effect = &m_graphics->SkinnedLit();
             }
 
-            // Manifest modelでは同じファイル内にskin付きとskin無しの
-            // primitiveが共存できます。前者はskinned role、後者は
-            // forward roleなので、mixed modelだけ両Effectを保持します。
+            // 骨格の有無が混在するマニフェストモデルでは両方の描画効果を保持する。
+            // 骨格なし部品の共有描画効果
             LitEffect* forwardEffect{};
+            // 骨格なし描画効果の世代
             std::uint64_t forwardGeneration{};
+            // 骨格なし描画効果の診断
             std::string forwardError;
             if (manifestRequested
                 && hasSkinnedPrimitive
@@ -1982,7 +2103,9 @@ namespace LamaPon
                 }
             }
 
+            // 統合したシェーダー診断
             std::string compileError;
+            // 空でない診断を種別付きで追記する(destination: 診断の追記先, label: 診断種別の接頭辞, message: 追記する診断)。
             const auto appendError = [](
                 std::string& destination,
                 const char* const label,
@@ -2015,8 +2138,7 @@ namespace LamaPon
                 && m_skeletalForwardShaderGeneration
                     == forwardGeneration)
             {
-                // 入力layoutの互換性エラーはEffectのgenerationが
-                // 変わるまで保持し、毎フレームのcache照会で消しません。
+                // 頂点レイアウトの診断は描画効果の世代が変わるまで保持する。
                 if (!compileError.empty() || m_shaderError.empty())
                 {
                     m_shaderError = std::move(compileError);
@@ -2038,6 +2160,7 @@ namespace LamaPon
             m_skeletalForwardOutlineInputLayouts.clear();
             m_instancedInputLayouts.clear();
 
+            // 各パスの頂点レイアウトを作成する(manifestEffect: 共有描画効果, colorLayouts: 出力色描画レイアウト, outlineLayouts: 出力輪郭レイアウト, label: 診断種別名)。
             const auto buildManifestLayouts =
                 [this, &appendError](
                     LitEffect* const manifestEffect,
@@ -2052,7 +2175,9 @@ namespace LamaPon
                     {
                         return;
                     }
+                    // 頂点レイアウトの互換性診断
                     std::string layoutError;
+                    // 頂点レイアウトを作成し互換性診断を保持する(byteCode: 頂点シェーダー列, layout: 出力レイアウト, passLabel: 診断用のパス名)。
                     const auto createLayout =
                         [this, &layoutError](
                             ID3DBlob* const byteCode,
@@ -2066,6 +2191,7 @@ namespace LamaPon
                                     + " has no vertex shader bytecode.";
                                 return false;
                             }
+                            // 頂点レイアウトの作成結果
                             const HRESULT result =
                                 CreateInputLayoutWithPositionAlias(
                                     Detail::GraphicsDeviceD3D11Access::
@@ -2087,14 +2213,19 @@ namespace LamaPon
                             return true;
                         };
 
+                    // 全頂点レイアウトの互換性
                     bool layoutsValid = true;
+                    // 色描画パスの数
                     const auto colorPassCount =
                         manifestEffect->ColorPassCount();
                     colorLayouts.reserve(colorPassCount);
+                    // 対象描画パスの番号
                     for (std::size_t index = 0;
+                        // 色描画パスの数
                         index < colorPassCount;
                         ++index)
                     {
+                        // 対象パスの頂点レイアウト
                         Microsoft::WRL::ComPtr<
                             ID3D11InputLayout> layout;
                         layoutsValid = createLayout(
@@ -2112,18 +2243,23 @@ namespace LamaPon
                         colorLayouts.push_back(std::move(layout));
                     }
 
+                    // 輪郭描画の種別
                     const auto outlineRole =
                         manifestEffect->IsSkinned()
                         ? ShaderPassRole::SkinnedOutline
                         : ShaderPassRole::Outline;
+                    // 輪郭描画パスの数
                     const auto outlinePassCount =
                         manifestEffect->PassCount(outlineRole);
                     outlineLayouts.reserve(outlinePassCount);
+                    // 対象描画パスの番号
                     for (std::size_t index = 0;
+                        // 輪郭描画パスの数
                         layoutsValid && index < outlinePassCount;
                         ++index)
                     {
                         manifestEffect->SelectPass(outlineRole, index);
+                        // 対象パスの頂点レイアウト
                         Microsoft::WRL::ComPtr<
                             ID3D11InputLayout> layout;
                         layoutsValid = createLayout(
@@ -2173,11 +2309,14 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 借用する頂点シェーダー列
                     const void* shaderByteCode{};
+                    // 頂点シェーダーのバイト数
                     std::size_t shaderByteCodeSize{};
                     effect->GetVertexShaderBytecode(
                         &shaderByteCode,
                         &shaderByteCodeSize);
+                    // 頂点レイアウトの作成結果
                     const HRESULT result =
                         Detail::GraphicsDeviceD3D11Access::Device(
                             *m_graphics)->CreateInputLayout(
@@ -2193,6 +2332,7 @@ namespace LamaPon
                                 ReleaseAndGetAddressOf());
                     if (FAILED(result))
                     {
+                        // 頂点レイアウトの互換性診断
                         const std::string layoutError =
                             hasSkinnedPrimitive
                             ? "Skinned shader input layout is incompatible."
@@ -2220,8 +2360,11 @@ namespace LamaPon
         m_skeletalForwardOutlineInputLayouts.clear();
         m_instancedInputLayouts.clear();
         m_skeletalForwardShaderGeneration = 0;
+        // 主描画効果の世代
         std::uint64_t generation{};
+        // 統合したシェーダー診断
         std::string compileError;
+        // 借用する主描画効果
         auto* effect = &m_graphics->MaterialShader(
             m_material.Shader(),
             generation,
@@ -2249,6 +2392,7 @@ namespace LamaPon
     {
         m_assets = &graphics.Assets();
         m_graphics = &graphics;
+        // D3D11経路の使用有無
         const bool usesD3D11 = graphics.ActiveRenderingApi()
             == RenderingApi::DirectX11;
         if (usesD3D11)
@@ -2268,13 +2412,13 @@ namespace LamaPon
 
         if (!m_modelPath.empty())
         {
+            // 小文字化したモデル拡張子
             auto extension = m_modelPath.extension().wstring();
             std::ranges::transform(
                 extension,
                 extension.begin(),
                 std::towlower);
-            // CMO/SDKMESH/VBO/glTF/GLB/FBXはD3D12でもCPU幾何を共通経路で
-            // 読み込みます。
+            // CMO/SDKMESH/VBO/glTF/GLB/FBXはD3D12でもCPU幾何を共通経路で読み込みます。
             if (usesD3D11
                 || extension == L".cmo"
                 || extension == L".sdkmesh"
@@ -2324,20 +2468,20 @@ namespace LamaPon
             m_emissiveTexture = m_assets->LoadTexture(
                 m_material.EmissiveTexture());
         }
-        // カスタムShaderが宣言した追加テクスチャ（t7以降）。
+        // 追加画像をt7〜t10に割り当てる。
+        // 追加画像または頂点の番号
         for (std::size_t index = 0;
             index < LitMaterial::CustomTextureCount;
             ++index)
         {
+            // 追加画像のパス
             const auto& path =
                 m_material.CustomTexture(index);
             m_customTextures[index] = path.empty()
                 ? nullptr
                 : m_assets->LoadTexture(path);
         }
-        // Sceneのインスタンス収集は個別OnRender3Dより先に
-        // 走るので、初フレームからrole能力を利用できるよう
-        // 初期化時点でShaderを選択します。
+        // 初回のバッチ収集より先にシェーダーの描画種別を確定する。
         if (usesD3D11)
         {
             RefreshShader(false);
@@ -2355,9 +2499,7 @@ namespace LamaPon
             && m_graphics->ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental)
         {
-            // D3D12はCMO／SDKMESH／VBOのMaterial custom shaderだけが、D3D11の
-            // DrawCommonLitと同じ遮蔽表示を持ちます（glTF／FBXはD3D11でも
-            // 描かれないため、描かないまま揃えています）。
+            // 事前の遮蔽表示は材質を上書きするCMO・SDKMESH・VBOに限る。
             return !m_wireframe
                 && m_materialOverrideEnabled
                 && !m_material.Shader().empty()
@@ -2387,7 +2529,7 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        // 原作と同様、キャラクター全パーツの通常描画より先に遮蔽部分だけを描きます。
+        // モデル全体の通常描画に先行して遮蔽部分を描く。
         if (!HasPreRender3DPass())
         {
             return;
@@ -2413,14 +2555,18 @@ namespace LamaPon
         {
             return;
         }
+        // 描画する骨格モデル
         auto& model = *m_model->skeletalModel;
+        // 現在の再生クリップ
         const auto* clip = m_animationIndex < model.animations.size()
             ? &model.animations[m_animationIndex]
             : nullptr;
+        // 遷移先の再生クリップ
         const auto* blendClip = !m_nextAnimationState.empty()
                 && m_nextAnimationIndex < model.animations.size()
             ? &model.animations[m_nextAnimationIndex]
             : nullptr;
+        // 遷移先の混合割合
         const float blendAmount = blendClip != nullptr
                 && m_animationTransitionDuration > 0.0f
             ? std::clamp(
@@ -2429,11 +2575,14 @@ namespace LamaPon
                 0.0f,
                 1.0f)
             : 0.0f;
+        // 姿勢を評価するフレーム番号
         const auto poseFrame = m_graphics->FrameStats().totalFrames;
         if (m_cachedPoseFrame != poseFrame
             || m_cachedPoseModel != &model)
         {
+            // ノードのローカル姿勢
             std::vector<SkeletalPoseTransform> localPose;
+            // 重み付きの姿勢標本
             std::vector<SkeletalPoseSample> weightedSamples;
             CollectAnimationPoseSamples(weightedSamples);
             if (m_applyRootMotion
@@ -2481,60 +2630,67 @@ namespace LamaPon
             m_cachedPoseModel = &model;
         }
 
+        // 上書き画像の保持ビュー
         const auto overrideTextures = BuildLitTextureRequest();
+        // 所有物のワールド変換
         const auto ownerWorld = Owner().WorldMatrix();
+        // 深度のみを描くフラグ
         const bool depthOnly = m_graphics->IsDepthOnlyPass();
+        // 選択した詳細度の段階
         const auto lodLevel = model.SelectAutomaticLod(
             ownerWorld,
             view,
             projection,
             m_graphics->Settings().automaticLodQuality);
-        // CMOはD3D11ではDirectXTK Modelとして描かれます。Material上書き中は
-        // D3D11の共通Lit経路と同じく、内蔵のDiffuseColorを
-        // PreserveEmbeddedMaterialColorのときだけTintとして掛けます。
+        // 従来形式の埋込色は保持設定が有効なときだけ上書き色に乗算する。
+        // 従来形式の材質上書き有無
         const bool directXTKMaterialOverride =
             m_materialOverrideEnabled
             && UsesDirectXTKModelMaterial(m_modelPath);
-        // D3D11のSkeletalModel::DrawD3D11と同じく、glTF／FBXのMaterial
-        // custom shaderは既定Litの代わりに描きます。
+        // glTF・FBXは材質上書きの有無に関係なく自作シェーダーを選ぶ。
+        // 骨格用自作シェーダーの有無
         const bool skinnedMaterialShader =
             !m_material.Shader().empty()
             && UsesSkinnedMaterialShader(m_modelPath);
-        // CMO／SDKMESH／VBOは、D3D11のDrawCommonLitと同じくMaterial上書き中
-        // だけcustom shaderで描きます（上書きが無いときはDirectXTK Effectです）。
+        // 従来形式の自作シェーダーは材質上書き中に限る。
+        // 従来形式の自作シェーダー有無
         const bool directXTKMaterialShader =
             directXTKMaterialOverride
             && !m_material.Shader().empty();
-        // D3D11のDrawCommonLitと同じく、遮蔽表示と輪郭は通常のパスだけで
-        // 描き、深度・影のパスでは描きません。
+        // 遮蔽表示は通常の色描画で従来形式の自作シェーダーを使う場合に限る。
         if (occludedOnly && (depthOnly || !directXTKMaterialShader))
         {
             return;
         }
+        // 従来形式の輪郭描画有無
         const bool drawOutline = directXTKMaterialShader
             && !occludedOnly
             && !m_wireframe
             && !depthOnly
             && m_material.CustomParameter(3).x > 0.0f;
+        // 骨格形式の輪郭描画有無
         const bool drawSkinnedOutline = skinnedMaterialShader
             && !occludedOnly
             && !m_wireframe
             && !depthOnly
             && m_material.CustomParameter(3).x > 0.0f;
+        // 骨格形式の遮蔽描画有無
         const bool drawSkinnedOccluded = skinnedMaterialShader
             && !occludedOnly
             && !m_wireframe
             && !depthOnly
             && m_material.CustomParameter(4).w > 0.0f;
-        // 上書きが無いときに、モデル自身の色・粗さ・金属度だけを渡す
-        // Materialです。D3D11と同じく、custom値は既定の0です。
+        // 上書きなしの骨格形式には部品の色・粗さ・金属度を渡す。
+        // 部品材質を転写する描画材質
         LitMaterial primitiveMaterial;
+        // 半透明部品を描くフラグ
         for (const bool alphaPass : { false, true })
         {
             if (depthOnly && alphaPass)
             {
                 continue;
             }
+            // 描画対象のモデル部品
             for (const auto& primitive : model.primitives)
             {
                 if (primitive.cpuVertexStride
@@ -2548,6 +2704,7 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // 上書き規則を適用したRGBA色
                 auto baseColor = m_materialOverrideEnabled
                     ? m_material.BaseColor()
                     : primitive.baseColor;
@@ -2560,10 +2717,8 @@ namespace LamaPon
                         baseColor.z * primitive.baseColor.z,
                         baseColor.w * primitive.baseColor.w };
                 }
-                // DirectXTK Modelの上書きは、上書き色のalphaと内蔵partの
-                // alphaで半透明passを決めます。
-                // D3D11のSkeletalModelは、custom shaderの半透明passを内蔵
-                // partのalphaと色のalphaだけで決めます。
+                // 形式ごとの半透明条件をD3D11経路と揃える。
+                // 部品の半透明描画有無
                 const bool alpha = skinnedMaterialShader
                     ? primitive.alpha || baseColor.w < 0.999f
                     : directXTKMaterialOverride
@@ -2576,25 +2731,32 @@ namespace LamaPon
                     continue;
                 }
 
+                // モデル空間の部品変換
                 const auto meshGlobal = DirectX::XMLoadFloat4x4(
                     &m_cachedGlobalPose[primitive.meshNode]);
+                // 部品空間のボーン変換行列
                 std::vector<DirectX::XMMATRIX> palette;
                 if (primitive.skin >= 0)
                 {
+                    // スキンの番号
                     const auto skinIndex =
                         static_cast<std::size_t>(primitive.skin);
                     if (skinIndex >= model.skins.size())
                     {
                         continue;
                     }
+                    // 使用するスキンの定義
                     const auto& skin = model.skins[skinIndex];
+                    // モデル空間の部品逆変換
                     const auto inverseMesh =
                         DirectX::XMMatrixInverse(nullptr, meshGlobal);
                     palette.reserve(skin.joints.size());
+                    // スキン内の関節番号
                     for (std::size_t jointIndex{};
                         jointIndex < skin.joints.size();
                         ++jointIndex)
                     {
+                        // 関節のノード番号
                         const auto nodeIndex = skin.joints[jointIndex];
                         if (nodeIndex >= m_cachedGlobalPose.size())
                         {
@@ -2602,6 +2764,7 @@ namespace LamaPon
                                 DirectX::XMMatrixIdentity());
                             continue;
                         }
+                        // 初期関節姿勢の逆変換
                         const auto inverseBind =
                             jointIndex < skin.inverseBindMatrices.size()
                             ? DirectX::XMLoadFloat4x4(
@@ -2615,41 +2778,52 @@ namespace LamaPon
                     }
                 }
 
+                // CPU側の頂点数
                 const auto vertexCount = primitive.cpuVertexData.size()
                     / primitive.cpuVertexStride;
+                // CPUで変形した描画頂点
                 std::vector<PrimitiveRenderVertex> vertices;
-                // custom shaderは頂点シェーダーで骨を変形するため、CPUでの
-                // スキニングを行いません。
+                // 骨格用の自作シェーダーではCPU側の骨格変形を省く。
                 if (!skinnedMaterialShader)
                 {
                     vertices.reserve(vertexCount);
                 }
+                // 追加画像または頂点の番号
                 for (std::size_t index{};
                     !skinnedMaterialShader && index < vertexCount;
                     ++index)
                 {
+                    // 変換元の取込頂点
                     ImportedModelVertex source{};
                     std::memcpy(
                         &source,
                         primitive.cpuVertexData.data()
                             + index * primitive.cpuVertexStride,
                         sizeof(source));
+                    // 変形中の部品空間位置
                     auto position = DirectX::XMLoadFloat3(&source.position);
+                    // 変形中の部品空間法線
                     auto normal = DirectX::XMLoadFloat3(&source.normal);
                     if (!palette.empty())
                     {
+                        // 重み付きの変形後位置
                         DirectX::XMVECTOR skinnedPosition =
                             DirectX::XMVectorZero();
+                        // 重み付きの変形後法線
                         DirectX::XMVECTOR skinnedNormal =
                             DirectX::XMVectorZero();
+                        // 有効なボーン重みの合計
                         float totalWeight{};
+                        // 頂点に影響するボーン番号
                         for (std::size_t influence{};
                             influence < 4u;
                             ++influence)
                         {
+                            // ボーンパレットの番号
                             const auto bone = static_cast<std::uint8_t>(
                                 source.blendIndices
                                     >> (influence * 8u));
+                            // 頂点に掛かるボーン重み
                             const float weight = static_cast<float>(
                                 static_cast<std::uint8_t>(
                                     source.blendWeights
@@ -2684,6 +2858,7 @@ namespace LamaPon
                                 skinnedNormal);
                         }
                     }
+                    // 描画用に変換した頂点
                     PrimitiveRenderVertex converted;
                     DirectX::XMStoreFloat3(&converted.position, position);
                     DirectX::XMStoreFloat3(&converted.normal, normal);
@@ -2692,8 +2867,10 @@ namespace LamaPon
                     vertices.push_back(converted);
                 }
 
+                // 詳細度を適用した頂点索引
                 std::span<const std::uint32_t> indices =
                     primitive.cpuIndices;
+                // 選択候補の詳細度段階
                 for (std::size_t level = std::min<std::size_t>(
                         lodLevel,
                         primitive.cpuLodIndices.size());
@@ -2707,6 +2884,7 @@ namespace LamaPon
                     }
                 }
 
+                // 部品の描画要求
                 PrimitiveDrawRequest request;
                 request.shape = PrimitiveRenderShape::Procedural;
                 request.vertices = vertices;
@@ -2734,11 +2912,10 @@ namespace LamaPon
                 request.emissiveFactor = m_materialOverrideEnabled
                     ? m_material.EmissiveColor()
                     : primitive.emissiveFactor;
-                // D3D11のSkeletalModel::Draw、およびCMOの共通Lit経路と同じ
-                // merge規則です。上書き中もalbedo/normalの未指定はモデル
-                // 内蔵を継承し、PBR mapはemptyも含めて外部materialを正と
-                // します。
+                // 上書き中も空の色・法線画像は内蔵を継承し、PBR画像は空を含めて上書きする。
+                // 部品内蔵画像の保持ビュー
                 const auto& embeddedTextures = primitive.embeddedTextures;
+                // 採用するPBR画像のビュー
                 const auto& pbrTextures = m_materialOverrideEnabled
                     ? overrideTextures
                     : embeddedTextures;
@@ -2759,16 +2936,15 @@ namespace LamaPon
                 request.alphaBlend = alpha;
                 request.depthWrite = !alpha;
                 request.depthOnly = depthOnly;
-                // D3D11のModel::Draw／SkeletalModel::Drawと同じく、影や深度の
-                // パスもワイヤーフレームの形で描きます。
+                // 影・深度の描画にも線表示設定を適用する。
                 request.wireframe = m_wireframe;
                 CopyPrimitiveLighting(
                     m_graphics->Lighting(),
                     request);
                 if (!depthOnly)
                 {
-                    // D3D11と同じく、モデルの位置で選んだプローブを渡します
-                    // （解決できないプローブは描画側がSkyのIBLへ戻します）。
+                    // 所有物のワールド位置で反射プローブを選ぶ。
+                    // プローブ選択用のワールド位置
                     DirectX::XMFLOAT3 ownerPosition{};
                     DirectX::XMStoreFloat3(
                         &ownerPosition,
@@ -2776,9 +2952,7 @@ namespace LamaPon
                     request.reflectionProbe = Owner().GetScene()
                         .ReflectionProbeEnvironmentAt(ownerPosition);
                 }
-                // D3D11のCMO／SDKMESH／VBOは、Material上書きが無いとDirectXTKの
-                // Effectで描かれ、その線形霧が掛かります。glTF／FBXと上書き中の
-                // モデルはLitEffectの霧です。
+                // 上書きなしの従来形式にはDirectXTKの線形霧を適用する。
                 if (UsesDirectXTKModelMaterial(m_modelPath)
                     && !m_materialOverrideEnabled)
                 {
@@ -2804,27 +2978,27 @@ namespace LamaPon
                 }
                 if (directXTKMaterialShader)
                 {
-                    // D3D11のDrawCommonLitのpartMaterialと同じく、内蔵
-                    // DiffuseColorのTintを反映した色だけを差し替えます。
+                    // 埋込色の合成結果だけを部品材質に反映する。
+                    // 部品色を反映した描画材質
                     LitMaterial partMaterial = m_material;
                     partMaterial.SetBaseColor(baseColor);
-                    // D3D11はDirectXTKのModelLoader既定のフラグで読み込む
-                    // ため、プレマルチプライドにはならず、三角形の向きは
-                    // 形式で決まります。
+                    // 従来形式の頂点の向きをD3D11の読込規則と揃える。
+                    // 従来形式の部品描画状態
                     Detail::DirectXTKModelPartState partState;
                     partState.alphaPass = alpha;
                     partState.counterClockwise =
                         LoadsCounterClockwiseDirectXTKModel(m_modelPath);
+                    // 自作シェーダーの描画要求
                     Detail::MaterialShaderDrawRequest material;
                     material.material = &partMaterial;
                     material.shaderMaterial = &m_material;
                     material.directXTKPart = &partState;
                     material.customTextures = pbrTextures.customTextures;
+                    // 選択したシェーダーの世代
                     std::uint64_t generation{};
+                    // 自作シェーダーの描画診断
                     std::string shaderError;
-                    // D3D11のDrawCommonLitと同じく、遮蔽表示はOnPreRender3Dで
-                    // 全partを先に描き、輪郭は各partの通常描画の直前に重ねます。
-                    // どちらもShaderに入口が無ければ何も描きません。
+                    // 従来形式は遮蔽を事前描画し、輪郭を各部品の通常描画直前に重ねる。
                     if (occludedOnly || drawOutline)
                     {
                         material.pass = occludedOnly
@@ -2854,6 +3028,7 @@ namespace LamaPon
                 }
                 if (skinnedMaterialShader)
                 {
+                    // 部品描画に使う材質
                     const LitMaterial* drawMaterial = &m_material;
                     if (!m_materialOverrideEnabled)
                     {
@@ -2862,11 +3037,14 @@ namespace LamaPon
                         primitiveMaterial.SetMetallic(primitive.metallic);
                         drawMaterial = &primitiveMaterial;
                     }
+                    // GPUへ渡すボーン変換行列
                     std::vector<DirectX::XMFLOAT4X4> bones(palette.size());
+                    // ボーンパレットの番号
                     for (std::size_t bone{}; bone < palette.size(); ++bone)
                     {
                         DirectX::XMStoreFloat4x4(&bones[bone], palette[bone]);
                     }
+                    // GPU骨格描画用の幾何要求
                     Detail::SkinnedMaterialShaderGeometry geometry;
                     geometry.vertices = primitive.cpuVertexData;
                     geometry.vertexStride = primitive.cpuVertexStride;
@@ -2874,16 +3052,17 @@ namespace LamaPon
                     geometry.bones = bones;
                     geometry.alphaPass = alpha;
                     geometry.doubleSided = primitive.doubleSided;
+                    // 自作シェーダーの描画要求
                     Detail::MaterialShaderDrawRequest material;
                     material.material = drawMaterial;
                     material.shaderMaterial = &m_material;
                     material.skinned = &geometry;
                     material.customTextures = pbrTextures.customTextures;
+                    // 選択したシェーダーの世代
                     std::uint64_t generation{};
+                    // 自作シェーダーの描画診断
                     std::string shaderError;
-                    // D3D11のSkeletalModelと同じく、各primitiveで遮蔽表示、
-                    // 輪郭、通常描画の順に重ねます。入口が無いShaderでは
-                    // 追加passだけが安全に何も描きません。
+                    // 骨格形式は部品ごとに遮蔽・輪郭・通常描画の順に重ねる。
                     if (drawSkinnedOccluded)
                     {
                         material.pass = Detail::MaterialShaderPass::Occluded;
@@ -2953,7 +3132,8 @@ namespace LamaPon
             return;
         }
 
-        // MeshRendererと同じ理由です（LitEffect.hのコメント参照）。
+        // ジオメトリシェーダーを後続描画へ持ち越さない。
+        // 描画後のGS解除を管理する寿命
         const GeometryShaderScope geometryScope{
             m_effect != nullptr
                 && m_effect->HasGeometryShader()
@@ -2963,12 +3143,14 @@ namespace LamaPon
 
         if (m_model->skeletalModel)
         {
+            // 現在の再生クリップ
             const auto* clip =
                 m_animationIndex
                     < m_model->skeletalModel->animations.size()
                 ? &m_model->skeletalModel
                     ->animations[m_animationIndex]
                 : nullptr;
+            // 遷移先の再生クリップ
             const auto* blendClip =
                 !m_nextAnimationState.empty()
                     && m_nextAnimationIndex
@@ -2976,6 +3158,7 @@ namespace LamaPon
                 ? &m_model->skeletalModel
                     ->animations[m_nextAnimationIndex]
                 : nullptr;
+            // 遷移先の混合割合
             const float blendAmount =
                 blendClip != nullptr
                     && m_animationTransitionDuration > 0.0f
@@ -2985,15 +3168,19 @@ namespace LamaPon
                     0.0f,
                     1.0f)
                 : 0.0f;
+            // 姿勢を評価するフレーム番号
             const auto poseFrame =
                 m_graphics->FrameStats().totalFrames;
+            // 姿勢を評価するモデル
             const auto* poseModel =
                 m_model->skeletalModel.get();
             if (m_cachedPoseFrame != poseFrame
                 || m_cachedPoseModel != poseModel)
             {
                 LAMAPON_PROFILE_SCOPE("SkeletalModel.Pose");
+                // ノードのローカル姿勢
                 std::vector<SkeletalPoseTransform> localPose;
+                // 重み付きの姿勢標本
                 std::vector<SkeletalPoseSample>
                     weightedSamples;
                 CollectAnimationPoseSamples(
@@ -3045,17 +3232,19 @@ namespace LamaPon
                 m_cachedPoseFrame = poseFrame;
                 m_cachedPoseModel = poseModel;
             }
-            // マテリアル上書き中だけ外部texture requestを正とします。
-            // albedo/normalのemptyはモデル内蔵を継承し、PBR/customの
-            // emptyはマップ無しとして扱うmergeをDraw側で行います。
+            // 上書き中は空の色・法線画像を内蔵で補い、PBR・追加画像は空を含めて上書きする。
+            // 上書き画像の保持ビュー
             const auto textureOverride = BuildLitTextureRequest();
+            // 借用する追加画像のビュー配列
             std::array<
                 ID3D11ShaderResourceView*,
                 LitMaterial::CustomTextureCount> customTextureViews{};
+            // 追加画像の番号
             for (std::size_t index{};
                 index < customTextureViews.size();
                 ++index)
             {
+                // 追加画像の保持ビュー
                 const auto& handle =
                     textureOverride.customTextures[index];
                 if (!handle)
@@ -3072,8 +3261,10 @@ namespace LamaPon
                     return;
                 }
             }
+            // 深度のみを描くフラグ
             const bool depthOnly =
                 m_graphics->IsDepthOnlyPass();
+            // 材質上書きの有無に関係なく選択済みの照明方式を使う。
             m_model->skeletalModel->Draw(
                 *m_graphics,
                 m_graphics->Lighting(),
@@ -3097,10 +3288,6 @@ namespace LamaPon
                     ? ResolveRootMotionNode()
                     : std::numeric_limits<
                         std::size_t>::max(),
-                // マテリアル上書きの有無に関係なくLitで描きます。
-                // 上書きが無ければモデル自身の材質が使われます
-                // （互換トグル時はm_skinnedEffectがnullptrなので
-                // 従来のDirectXTK描画になります）。
                 m_skinnedEffect,
                 m_skinnedInputLayout.Get(),
                 depthOnly,
@@ -3136,38 +3323,48 @@ namespace LamaPon
             return;
         }
 
+        // 描画中に保持する色画像資源
         const auto albedoResources = m_albedoTexture
             ? m_albedoTexture->resources.Acquire()
             : nullptr;
+        // 描画中に保持する法線画像資源
         const auto normalResources = m_normalTexture
             ? m_normalTexture->resources.Acquire()
             : nullptr;
+        // 借用する色画像ビュー
         auto* const albedoView = albedoResources
             ? Detail::GraphicsDeviceD3D11Access::
                 TryResolveD3D11ShaderResourceView(
                     *m_graphics,
                     *albedoResources)
             : nullptr;
+        // 借用する法線画像ビュー
         auto* const normalView = normalResources
             ? Detail::GraphicsDeviceD3D11Access::
                 TryResolveD3D11ShaderResourceView(
                     *m_graphics,
                     *normalResources)
             : nullptr;
+        // 従来描画の効果へ上書き材質と照明を反映する(effect: 借用するモデル描画効果)。
         m_model->model->UpdateEffects(
             [this, albedoView, normalView](DirectX::IEffect* effect)
             {
                 if (m_materialOverrideEnabled)
                 {
+                    // 従来描画に適用する上書き色
                     const auto color = DirectX::XMLoadFloat4(
                         &m_material.BaseColor());
+                    // 上書き色の不透明度
                     const float alpha = m_material.BaseColor().w;
+                    // 従来材質の反射指数
                     const float specularPower =
                         SpecularPowerFromRoughness(
                             m_material.Roughness());
+                    // 従来材質の反射色
                     const auto specularColor =
                         SpecularColorFromRoughness(
                             m_material.Roughness());
+                    // 借用する法線マップ描画効果
                     if (auto* normalMap =
                         dynamic_cast<DirectX::NormalMapEffect*>(
                             effect))
@@ -3187,6 +3384,7 @@ namespace LamaPon
                             normalMap->SetNormalTexture(normalView);
                         }
                     }
+                    // 借用する標準描画効果
                     else if (auto* basic =
                         dynamic_cast<DirectX::BasicEffect*>(effect))
                     {
@@ -3200,6 +3398,7 @@ namespace LamaPon
                             basic->SetTexture(albedoView);
                         }
                     }
+                    // 借用する骨格描画効果
                     else if (auto* skinned =
                         dynamic_cast<DirectX::SkinnedEffect*>(effect))
                     {
@@ -3214,6 +3413,7 @@ namespace LamaPon
                             skinned->SetTexture(albedoView);
                         }
                     }
+                    // 借用するDGSL描画効果
                     else if (auto* dgsl =
                         dynamic_cast<DirectX::DGSLEffect*>(effect))
                     {
@@ -3227,6 +3427,7 @@ namespace LamaPon
                             dgsl->SetTexture(albedoView);
                         }
                     }
+                    // 借用する切抜き描画効果
                     else if (auto* alphaTest =
                         dynamic_cast<DirectX::AlphaTestEffect*>(
                             effect))
@@ -3238,6 +3439,7 @@ namespace LamaPon
                             alphaTest->SetTexture(albedoView);
                         }
                     }
+                    // 借用する二画像描画効果
                     else if (auto* dualTexture =
                         dynamic_cast<DirectX::DualTextureEffect*>(
                             effect))
@@ -3249,6 +3451,7 @@ namespace LamaPon
                             dualTexture->SetTexture(albedoView);
                         }
                     }
+                    // 借用する環境反射描画効果
                     else if (auto* environment =
                         dynamic_cast<
                             DirectX::EnvironmentMapEffect*>(
@@ -3263,9 +3466,11 @@ namespace LamaPon
                     }
                 }
 
+                // 借用する照明対応描画効果
                 if (auto* lights =
                     dynamic_cast<DirectX::IEffectLights*>(effect))
                 {
+                    // 照明選択用のワールド位置
                     DirectX::XMFLOAT3 position{};
                     DirectX::XMStoreFloat3(
                         &position,
@@ -3277,16 +3482,14 @@ namespace LamaPon
                 }
             });
 
-        // DirectXTK描画（CMO/SDKMESHなど）。深度パスにはレンダー
-        // ターゲットが無いのに、DirectXTKのEffectは必ずピクセル
-        // シェーダーを設定します。Applyの直後に呼ばれるこの手続きで
-        // 外して、捨てられるだけの計算が影マップの解像度ぶん走るのを
-        // 止めます。切り抜き（アルファテスト）はdiscardで影の形を
-        // 決めているので、そのときだけ残します。
+        // 従来描画の深度パスでは切抜き効果がなければピクセルシェーダーを外す。
+        // 深度のみを描くフラグ
         const bool depthOnly = m_graphics->IsDepthOnlyPass();
+        // モデル内の切抜き効果の有無
         bool hasAlphaTest = false;
         if (depthOnly)
         {
+            // 切抜き用の効果があるか調べる(effect: 借用するモデル描画効果)。
             m_model->model->UpdateEffects(
                 [&hasAlphaTest](DirectX::IEffect* effect)
                 {
@@ -3298,6 +3501,7 @@ namespace LamaPon
                     }
                 });
         }
+        // 切抜きなしの深度描画では効果適用後にピクセルシェーダーを解除する。
         m_model->model->Draw(
             m_context,
             *m_states,
@@ -3344,6 +3548,7 @@ namespace LamaPon
                 m_assets->LoadAnimatorController(
                     m_animationControllerPath);
         }
+        // 制御器のパラメーター定義
         for (const auto& parameter :
             m_animationController->FloatParameters())
         {
@@ -3351,11 +3556,13 @@ namespace LamaPon
                 parameter.name,
                 parameter.defaultValue);
         }
+        // 制御器の状態定義
         for (const auto& state :
             m_animationController->States())
         {
             if (!state.blendChildren.empty())
             {
+                // 混合する子クリップ定義
                 for (const auto& child :
                     state.blendChildren)
                 {
@@ -3376,6 +3583,7 @@ namespace LamaPon
             else if (ResolveAnimationIndex(state)
                 == std::numeric_limits<std::size_t>::max())
             {
+                // 状態が参照するクリップ名
                 const std::string clipName =
                     state.modelClip.empty()
                     ? state.name
@@ -3386,6 +3594,7 @@ namespace LamaPon
                     + clipName + "'.");
             }
         }
+        // 制御器の初期状態
         const auto* entry =
             m_animationController->FindState(
                 m_animationController->EntryState());
@@ -3405,6 +3614,7 @@ namespace LamaPon
             return ResolveAnimationIndex(
                 state.blendChildren.front().modelClip);
         }
+        // 状態が参照するクリップ名
         const std::string_view clipName =
             state.modelClip.empty()
             ? std::string_view{ state.name }
@@ -3415,6 +3625,7 @@ namespace LamaPon
     std::size_t ModelRendererComponent::ResolveAnimationIndex(
         const std::string_view modelClip) const noexcept
     {
+        // 子クリップまたは再生の番号
         for (std::size_t index = 0;
             index < AnimationCount();
             ++index)
@@ -3431,6 +3642,7 @@ namespace LamaPon
         const AnimatorState& state,
         std::vector<float>& weights) const
     {
+        // 状態内の子クリップ定義
         const auto& children =
             state.blendChildren;
         weights.assign(children.size(), 0.0f);
@@ -3452,6 +3664,7 @@ namespace LamaPon
             return;
         }
 
+        // 混合に使うパラメーター値
         const float value =
             AnimationFloat(
                 state.blendParameter);
@@ -3465,6 +3678,7 @@ namespace LamaPon
             weights.back() = 1.0f;
             return;
         }
+        // 子クリップまたは再生の番号
         for (std::size_t index = 1;
             index < children.size();
             ++index)
@@ -3473,8 +3687,11 @@ namespace LamaPon
             {
                 continue;
             }
+            // 混合区間の左端クリップ
             const auto& left = children[index - 1];
+            // 混合区間の右端クリップ
             const auto& right = children[index];
+            // 右端クリップの混合割合
             const float amount = std::clamp(
                 (value - left.threshold)
                     / std::max(
@@ -3493,9 +3710,11 @@ namespace LamaPon
     float ModelRendererComponent::StateAnimationDuration(
         const AnimatorState& state) const
     {
+        // クリップの長さを取得し、未解決なら0を返す(clip: 再生クリップ名)。
         const auto durationFor =
             [this](const std::string_view clip)
             {
+                // 子クリップまたは再生の番号
                 const auto index =
                     ResolveAnimationIndex(clip);
                 return m_model
@@ -3513,9 +3732,12 @@ namespace LamaPon
                     : std::string_view{
                         state.modelClip });
         }
+        // 子クリップの混合重み
         std::vector<float> weights;
         CalculateBlendWeights(state, weights);
+        // 重み付きの再生区間長秒
         float duration{};
+        // 子クリップまたは再生の番号
         for (std::size_t index = 0;
             index < state.blendChildren.size();
             ++index)
@@ -3533,6 +3755,7 @@ namespace LamaPon
     void ModelRendererComponent::EnterAnimationState(
         const AnimatorState& state)
     {
+        // 子クリップまたは再生の番号
         const auto index = ResolveAnimationIndex(state);
         if (index == std::numeric_limits<std::size_t>::max())
         {
@@ -3554,6 +3777,7 @@ namespace LamaPon
         {
             return;
         }
+        // 遷移先の制御状態
         const auto* target =
             m_animationController->FindState(
                 transition.to);
@@ -3561,6 +3785,7 @@ namespace LamaPon
         {
             return;
         }
+        // 遷移先の再生クリップ番号
         const auto targetIndex =
             ResolveAnimationIndex(*target);
         if (targetIndex
@@ -3596,6 +3821,7 @@ namespace LamaPon
         {
             return;
         }
+        // 遷移元の制御状態
         const auto* current =
             m_animationController->FindState(
                 m_currentAnimationState);
@@ -3603,10 +3829,13 @@ namespace LamaPon
         {
             return;
         }
+        // 遷移元の再生区間長秒
         const float currentDuration =
             StateAnimationDuration(*current);
+        // 遷移元の進行前時刻秒
         const float previousTime =
             m_animationTime;
+        // 遷移元の符号付き進行秒数
         const float currentDelta =
             deltaTime * m_animationSpeed
                 * current->speed;
@@ -3615,8 +3844,10 @@ namespace LamaPon
             currentDelta,
             currentDuration,
             current->loop);
+        // 遷移元の順再生フラグ
         const bool currentForward =
             currentDelta >= 0.0f;
+        // 遷移元の循環検出結果
         const bool currentLooped =
             current->loop
             && (currentForward
@@ -3632,10 +3863,12 @@ namespace LamaPon
 
         if (m_nextAnimationState.empty())
         {
+            // 遷移元の正規化時刻
             const float normalizedTime =
                 currentDuration > 0.0f
                 ? m_animationTime / currentDuration
                 : 1.0f;
+            // 条件を満たした遷移定義
             if (const auto* transition =
                     m_animationController->FindTransition(
                         m_currentAnimationState,
@@ -3650,6 +3883,7 @@ namespace LamaPon
             return;
         }
 
+        // 遷移先の制御状態
         const auto* next =
             m_animationController->FindState(
                 m_nextAnimationState);
@@ -3659,10 +3893,13 @@ namespace LamaPon
             m_nextAnimationState.clear();
             return;
         }
+        // 遷移先の再生区間長秒
         const float nextDuration =
             StateAnimationDuration(*next);
+        // 遷移先の進行前時刻秒
         const float previousNextTime =
             m_nextAnimationTime;
+        // 遷移先の符号付き進行秒数
         const float nextDelta =
             deltaTime * m_animationSpeed
                 * next->speed;
@@ -3671,8 +3908,10 @@ namespace LamaPon
             nextDelta,
             nextDuration,
             next->loop);
+        // 遷移先の順再生フラグ
         const bool nextForward =
             nextDelta >= 0.0f;
+        // 遷移先の循環検出結果
         const bool nextLooped =
             next->loop
             && (nextForward
@@ -3687,6 +3926,7 @@ namespace LamaPon
             nextDuration,
             nextLooped,
             nextForward);
+        // 遷移の経過時間には再生速度倍率を掛けない。
         m_animationTransitionTime += deltaTime;
         if (m_animationTransitionTime
             < m_animationTransitionDuration)
@@ -3725,8 +3965,7 @@ namespace LamaPon
     {
         if (m_model && m_model->skeletalModel)
         {
-            // スキニングは既定でLit。互換トグルやカスタムShaderの
-            // コンパイル失敗時だけEffectがnullptrになります。
+            // 骨格形式では選択済みの描画効果の有無を返す。
             return m_skinnedEffect != nullptr;
         }
         return UsesCommonLit();
@@ -3734,17 +3973,17 @@ namespace LamaPon
 
     bool ModelRendererComponent::CanBeInstanced() const
     {
+        // D3D12経路の使用有無
         const bool usesD3D12 = m_graphics != nullptr
             && m_graphics->ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental;
-        // Sceneは個別OnRender3Dより前にこの判定を呼びます。共有Effectが
-        // 他componentのhot reloadで置換済みでも、能力参照より先に
-        // generationとraw pointerを更新します。
+        // 共有効果の能力を参照する前に世代と借用ポインターを同期する。
         if (!usesD3D12)
         {
             const_cast<ModelRendererComponent*>(this)
                 ->RefreshShader(false);
         }
+        // 従来形式・線表示・深度描画はまとめ描画の対象外とする。
         if (m_wireframe
             || m_useLegacyShading
             || m_graphics == nullptr
@@ -3754,7 +3993,6 @@ namespace LamaPon
             || m_graphics->IsDepthOnlyPass()
             || !m_model
             || !m_model->skeletalModel
-            // D3D11のCMO／SDKMESH／VBOはDirectXTK Modelで、まとめて描きません。
             || (usesD3D12 && UsesDirectXTKModelMaterial(m_modelPath)))
         {
             return false;
@@ -3764,6 +4002,7 @@ namespace LamaPon
         {
             return false;
         }
+        // まとめて描く骨格モデル
         const auto& model = *m_model->skeletalModel;
         if (!model.skins.empty()
             || !model.animations.empty()
@@ -3792,6 +4031,7 @@ namespace LamaPon
         }
         else
         {
+            // 借用するまとめ描画効果
             auto* const effect = m_material.Shader().empty()
                 ? &m_graphics->Lit()
                 : m_skinnedEffect;
@@ -3801,12 +4041,15 @@ namespace LamaPon
             {
                 return false;
             }
+            // 順序依存の合成パスの有無
             bool hasOrderDependentInstancedPass{};
+            // 描画パスまたはバイトの番号
             for (std::size_t index = 0;
                 index < effect->PassCount(ShaderPassRole::Instanced);
                 ++index)
             {
                 effect->SelectPass(ShaderPassRole::Instanced, index);
+                // 対象パスの宣言描画状態
                 const auto& state = effect->SelectedPassRenderState(
                     ShaderPassRole::Instanced);
                 if (state.declared
@@ -3828,11 +4071,13 @@ namespace LamaPon
                 return false;
             }
         }
+        // 全部品が骨格なしの不透明な描画幾何か調べる(primitive: モデルの部品)。
         return std::ranges::all_of(
             model.primitives,
             [usesD3D12](const SkeletalPrimitive& primitive)
             {
-                // D3D12はGPU bufferの代わりにCPU側の頂点と索引を描きます。
+                // 使用する描画APIに対応した幾何資源を確認する。
+                // 有効な描画幾何の有無
                 const bool hasGeometry = usesD3D12
                     ? primitive.cpuVertexStride
                             >= sizeof(ImportedModelVertex)
@@ -3853,14 +4098,19 @@ namespace LamaPon
         ModelRendererComponent::InstanceBatchKey()
             const noexcept
     {
+        // プロセス内のバッチ識別値
         std::uint64_t hash = 14695981039346656037ull;
+        // バイト列をバッチ識別値へ混合する(data: 入力バイト列, byteCount: 入力バイト数)。
         const auto hashBytes = [&hash](
             const void* const data,
             const std::size_t byteCount) noexcept
         {
+            // 識別に使うバイト列
             const auto* const bytes = static_cast<
                 const unsigned char*>(data);
+            // 描画パスまたはバイトの番号
             for (std::size_t index = 0;
+                // 識別に使うバイト数
                 index < byteCount;
                 ++index)
             {
@@ -3868,10 +4118,13 @@ namespace LamaPon
                 hash *= 1099511628211ull;
             }
         };
+        // パスの長さとOS固有文字列を識別値へ混合する(path: 対象パス)。
         const auto hashPath = [&hashBytes](
             const std::filesystem::path& path) noexcept
         {
+            // OS固有形式のパス文字列
             const auto& native = path.native();
+            // 識別に使うバイト数
             const auto byteCount = native.size()
                 * sizeof(std::filesystem::path::value_type);
             hashBytes(&byteCount, sizeof(byteCount));
@@ -3879,9 +4132,11 @@ namespace LamaPon
                 native.data(),
                 byteCount);
         };
+        // 文字列の長さと内容を識別値へ混合する(value: 対象文字列)。
         const auto hashString = [&hashBytes](
             const std::string& value) noexcept
         {
+            // 識別に使うバイト数
             const auto byteCount = value.size();
             hashBytes(&byteCount, sizeof(byteCount));
             hashBytes(value.data(), value.size());
@@ -3889,30 +4144,41 @@ namespace LamaPon
 
         hashPath(m_modelPath);
         hashPath(m_material.Shader());
+        // 有効なシェーダーキーワード
         for (const auto& keyword :
             m_material.ShaderKeywords().Keywords())
         {
             hashString(keyword);
+            // 識別値に加える区切り文字
             constexpr unsigned char separator = 0xff;
             hashBytes(&separator, sizeof(separator));
         }
+        // 追加画像のパス
         for (const auto& texture : m_material.CustomTextures())
         {
             hashPath(texture);
+            // 識別値に加える区切り文字
             constexpr unsigned char separator = 0xfe;
             hashBytes(&separator, sizeof(separator));
         }
+        // 材質上書きの識別フラグ
         const std::uint8_t materialOverride =
             m_materialOverrideEnabled ? 1u : 0u;
         hashBytes(&materialOverride, sizeof(materialOverride));
         if (m_materialOverrideEnabled)
         {
+            // 上書き材質のRGBA色
             const auto& baseColor = m_material.BaseColor();
+            // 上書き材質の粗さ
             const auto roughness = m_material.Roughness();
+            // 上書き材質の法線強度
             const auto normalStrength = m_material.NormalStrength();
+            // 上書き材質の金属度
             const auto metallic = m_material.Metallic();
+            // 上書き材質の遮蔽強度
             const auto occlusionStrength =
                 m_material.OcclusionStrength();
+            // 上書き材質の発光色
             const auto& emissive = m_material.EmissiveColor();
             hashBytes(&baseColor, sizeof(baseColor));
             hashBytes(&roughness, sizeof(roughness));
@@ -3935,14 +4201,15 @@ namespace LamaPon
             hashPath(m_material.OcclusionTexture());
             hashPath(m_material.EmissiveTexture());
         }
-        // 同じpathでもホットリロードの入れ替え途中は
-        // 異なるEffectを1batchに混ぜません。
+        // 再読込中に異なる共有効果を同じバッチへ混ぜない。
+        // バッチの共有描画効果
         const auto* const batchEffect = m_graphics != nullptr
                 && m_graphics->ActiveRenderingApi()
                     == RenderingApi::DirectX11
                 && m_material.Shader().empty()
                 ? &m_graphics->Lit()
                 : m_skinnedEffect;
+        // 描画効果のアドレス識別値
         const auto effectIdentity = reinterpret_cast<
             std::uintptr_t>(batchEffect);
         hashBytes(&effectIdentity, sizeof(effectIdentity));
@@ -3981,10 +4248,10 @@ namespace LamaPon
         {
             return false;
         }
-        // 個別OnRender3Dは成功したbatchでskipされます。共有cacheが
-        // hot reloadでeffectを置換すると他componentの旧pointerも
-        // 無効になるため、dereferenceより先にbatch全体を更新します。
+        // 借用効果を参照する前にバッチ全体を同期する。
+        // 代表描画器の同期済みフラグ
         bool refreshedThis{};
+        // 対象のモデル描画器
         for (auto* const component : batch)
         {
             if (component == nullptr)
@@ -4002,7 +4269,9 @@ namespace LamaPon
         {
             return false;
         }
+        // 同期後の代表バッチ識別値
         const auto refreshedBatchKey = InstanceBatchKey();
+        // 同期後の描画能力とバッチ識別値を再確認する(component: 対象のモデル描画器)。
         if (std::ranges::any_of(
             batch,
             [refreshedBatchKey](
@@ -4023,6 +4292,7 @@ namespace LamaPon
 
         using Vertex = DirectX::
             VertexPositionNormalTangentColorTextureSkinning;
+        // 頂点とインスタンスの要素宣言
         std::array<
             D3D11_INPUT_ELEMENT_DESC,
             Vertex::InputElementCount + 5> elements{};
@@ -4061,7 +4331,9 @@ namespace LamaPon
                 1, 64,
                 D3D11_INPUT_PER_INSTANCE_DATA, 1 };
 
+        // まとめて描く骨格モデル
         auto& model = *m_model->skeletalModel;
+        // 使用する共有描画効果
         auto* const selectedEffect = m_material.Shader().empty()
             ? &m_graphics->Lit()
             : m_skinnedEffect;
@@ -4074,8 +4346,11 @@ namespace LamaPon
         {
             return false;
         }
+        // 借用するまとめ描画効果
         auto& effect = *selectedEffect;
+        // 描画パスの状態復帰を管理
         const MaterialPassScope passScope{ effect, m_context };
+        // まとめ描画パスの数
         const auto instancedPassCount = effect.PassCount(
             ShaderPassRole::Instanced);
         if (m_instancedInputLayouts.size()
@@ -4083,13 +4358,16 @@ namespace LamaPon
         {
             m_instancedInputLayouts.clear();
             m_instancedInputLayouts.reserve(instancedPassCount);
+            // まとめ描画パスの番号
             for (std::size_t passIndex = 0;
+                // まとめ描画パスの数
                 passIndex < instancedPassCount;
                 ++passIndex)
             {
                 effect.SelectPass(
                     ShaderPassRole::Instanced,
                     passIndex);
+                // 借用する頂点シェーダー列
                 auto* const byteCode =
                     effect.SelectedPassVertexShaderByteCode(
                         ShaderPassRole::Instanced);
@@ -4098,6 +4376,7 @@ namespace LamaPon
                     m_instancedInputLayouts.clear();
                     return false;
                 }
+                // 対象パスの頂点レイアウト
                 Microsoft::WRL::ComPtr<ID3D11InputLayout> layout;
                 if (FAILED(
                     CreateInputLayoutWithPositionAlias(
@@ -4116,7 +4395,9 @@ namespace LamaPon
             effect.SelectPass(ShaderPassRole::Instanced, 0);
         }
 
+        // 初期ローカル姿勢
         std::vector<SkeletalPoseTransform> localPose;
+        // 初期モデル空間姿勢
         std::vector<DirectX::XMFLOAT4X4> bindPose;
         SkeletalModel::SamplePose(
             model.nodes,
@@ -4125,9 +4406,11 @@ namespace LamaPon
             localPose,
             bindPose);
 
+        // 詳細度別のモデル描画器一覧
         std::array<
             std::vector<ModelRendererComponent*>,
             3> lodBatches;
+        // 対象のモデル描画器
         for (auto* component : batch)
         {
             lodBatches[std::min<std::size_t>(
@@ -4139,14 +4422,19 @@ namespace LamaPon
 
         struct InstanceData final
         {
+            // 部品のワールド変換行列
             DirectX::XMFLOAT4X4 world;
+            // 描画するRGBA色
             DirectX::XMFLOAT4 color;
         };
+        // スロット1の行列4行と色を80バイトに維持する。
         static_assert(sizeof(InstanceData) == 80);
         static_assert(sizeof(Vertex) >= 52);
 
+        // 借用する描画コンテキスト
         auto* const context = Detail::GraphicsDeviceD3D11Access::Context(
             *m_graphics);
+        // 頂点ごとのバイト数
         constexpr UINT vertexStride = sizeof(Vertex);
         effect.SetMatrices(
             DirectX::XMMatrixIdentity(),
@@ -4161,28 +4449,36 @@ namespace LamaPon
         effect.SetInstancingEnabled(true);
         effect.SetTessellationDrawEnabled(false);
 
+        // 部品を描画したかの結果
         bool drewAny{};
+        // まとめる詳細度の段階
         for (std::size_t lodLevel = 0;
             lodLevel < lodBatches.size();
             ++lodLevel)
         {
+            // 同じ詳細度のモデル描画器
             const auto& components = lodBatches[lodLevel];
             if (components.empty())
             {
                 continue;
             }
+            // 描画するモデル部品
             for (const auto& primitive : model.primitives)
             {
                 if (primitive.meshNode >= bindPose.size())
                 {
                     continue;
                 }
+                // 部品ごとのインスタンス列
                 std::vector<InstanceData> instances;
                 instances.reserve(components.size());
+                // 部品の初期モデル空間変換
                 const auto meshGlobal = DirectX::XMLoadFloat4x4(
                     &bindPose[primitive.meshNode]);
+                // 対象のモデル描画器
                 for (const auto* component : components)
                 {
+                    // インスタンスの変換と色
                     InstanceData data{};
                     DirectX::XMStoreFloat4x4(
                         &data.world,
@@ -4193,6 +4489,7 @@ namespace LamaPon
                         : primitive.baseColor;
                     instances.push_back(data);
                 }
+                // 保持するインスタンスバッファ
                 const auto instanceBuffer =
                     m_graphics->AcquireInstanceBufferHandle(
                         std::as_bytes(std::span{ instances }));
@@ -4202,9 +4499,12 @@ namespace LamaPon
                     return false;
                 }
 
+                // 詳細度に応じた索引バッファ
                 ID3D11Buffer* indexBuffer =
                     primitive.indexBuffer.Get();
+                // 詳細度に応じた索引数
                 std::uint32_t indexCount = primitive.indexCount;
+                // 選択候補の詳細度段階
                 for (std::size_t level = std::min<std::size_t>(
                         lodLevel,
                         primitive.lodIndexBuffers.size());
@@ -4222,6 +4522,7 @@ namespace LamaPon
                     }
                 }
 
+                // 代表材質または部品の材質
                 LitMaterial material;
                 if (m_materialOverrideEnabled)
                 {
@@ -4234,6 +4535,7 @@ namespace LamaPon
                     material.SetMetallic(primitive.metallic);
                 }
                 effect.SetMaterial(material);
+                // 部品のPBR画像と係数
                 PbrTextures pbr{};
                 if (!m_materialOverrideEnabled)
                 {
@@ -4252,6 +4554,7 @@ namespace LamaPon
                 }
                 if (m_materialOverrideEnabled)
                 {
+                    // 上書き画像の保持ビュー
                     const auto textureRequest = BuildLitTextureRequest();
                     if (!m_graphics->TrySetLitEffectTextures(
                             effect,
@@ -4270,10 +4573,13 @@ namespace LamaPon
                     effect.SetCustomTextures({});
                 }
 
+                // 部品の頂点バッファ配列
                 ID3D11Buffer* vertexBuffers[]{
                     primitive.vertexBuffer.Get()
                 };
+                // 頂点ごとのバイト間隔
                 const UINT strides[]{ vertexStride };
+                // 頂点列の先頭バイト位置
                 constexpr UINT offsets[]{ 0 };
                 context->IASetVertexBuffers(
                     0,
@@ -4292,7 +4598,9 @@ namespace LamaPon
                     0);
                 context->IASetPrimitiveTopology(
                     D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                // まとめ描画パスの番号
                 for (std::size_t passIndex = 0;
+                    // まとめ描画パスの数
                     passIndex < instancedPassCount;
                     ++passIndex)
                 {
@@ -4307,6 +4615,7 @@ namespace LamaPon
                         passIndex);
                     context->IASetInputLayout(
                         m_instancedInputLayouts[passIndex].Get());
+                    // 対象パスの宣言描画状態
                     const auto& renderState =
                         effect.SelectedPassRenderState(
                             ShaderPassRole::Instanced);
@@ -4347,6 +4656,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 対象のモデル描画器
         for (auto* component : batch)
         {
             if (component != nullptr)
@@ -4366,10 +4676,12 @@ namespace LamaPon
         {
             return false;
         }
+        // まとめて描く骨格モデル
         const auto& model = *m_model->skeletalModel;
-        // D3D11と同じく、アニメーションの無いモデルを初期姿勢で描き、
-        // 自動LODの段ごとにまとめます。
+        // 初期姿勢のモデルを詳細度の段階ごとにまとめる。
+        // 初期ローカル姿勢
         std::vector<SkeletalPoseTransform> localPose;
+        // 初期モデル空間姿勢
         std::vector<DirectX::XMFLOAT4X4> bindPose;
         SkeletalModel::SamplePose(
             model.nodes,
@@ -4377,7 +4689,9 @@ namespace LamaPon
             0.0f,
             localPose,
             bindPose);
+        // 詳細度別のモデル描画器一覧
         std::array<std::vector<ModelRendererComponent*>, 3> lodBatches;
+        // 対象のモデル描画器
         for (auto* const component : batch)
         {
             if (component != nullptr && component->CanBeInstanced())
@@ -4388,28 +4702,37 @@ namespace LamaPon
             }
         }
 
+        // 描画済みのモデル描画器一覧
         std::vector<ModelRendererComponent*> drawnComponents;
+        // まとめる詳細度の段階
         for (std::size_t lodLevel{}; lodLevel < lodBatches.size(); ++lodLevel)
         {
+            // 同じ詳細度のモデル描画器
             const auto& components = lodBatches[lodLevel];
             if (components.empty())
             {
                 continue;
             }
+            // 対象詳細度の描画済みフラグ
             bool drewLevel{};
+            // 描画するモデル部品
             for (const auto& primitive : model.primitives)
             {
                 if (primitive.meshNode >= bindPose.size())
                 {
                     continue;
                 }
+                // 部品の初期モデル空間変換
                 const auto meshGlobal = DirectX::XMLoadFloat4x4(
                     &bindPose[primitive.meshNode]);
-                // D3D11と同じく、instanceの色はprimitiveの色です。
+                // インスタンス色には部品の埋込色を使う。
+                // 部品ごとのインスタンス列
                 std::vector<PrimitiveInstanceData> instances;
                 instances.reserve(components.size());
+                // 対象のモデル描画器
                 for (const auto* const component : components)
                 {
+                    // インスタンスの変換と色
                     PrimitiveInstanceData instance;
                     DirectX::XMStoreFloat4x4(
                         &instance.world,
@@ -4418,12 +4741,16 @@ namespace LamaPon
                     instances.push_back(instance);
                 }
 
+                // CPU側の頂点数
                 const auto vertexCount = primitive.cpuVertexData.size()
                     / primitive.cpuVertexStride;
+                // 描画用に変換する頂点列
                 std::vector<PrimitiveRenderVertex> vertices;
                 vertices.reserve(vertexCount);
+                // 変換する頂点の番号
                 for (std::size_t index{}; index < vertexCount; ++index)
                 {
+                    // 変換元の取込頂点
                     ImportedModelVertex source{};
                     std::memcpy(
                         &source,
@@ -4435,8 +4762,10 @@ namespace LamaPon
                         source.normal,
                         source.textureCoordinate });
                 }
+                // 詳細度を適用した頂点索引
                 std::span<const std::uint32_t> indices =
                     primitive.cpuIndices;
+                // 選択候補の詳細度段階
                 for (std::size_t level = std::min<std::size_t>(
                         lodLevel,
                         primitive.cpuLodIndices.size());
@@ -4450,6 +4779,7 @@ namespace LamaPon
                     }
                 }
 
+                // 部品のまとめ描画要求
                 PrimitiveDrawRequest request;
                 request.shape = PrimitiveRenderShape::Procedural;
                 request.vertices = vertices;
@@ -4459,13 +4789,13 @@ namespace LamaPon
                     DirectX::XMMatrixIdentity());
                 DirectX::XMStoreFloat4x4(&request.view, view);
                 DirectX::XMStoreFloat4x4(&request.projection, projection);
-                // D3D11のまとめ描きと同じく、primitive自身の色・粗さ・
-                // 金属度・PBR mapで描きます。
+                // 部品の埋込材質を描画要求へ転写する。
                 request.baseColor = primitive.baseColor;
                 request.roughness = primitive.roughness;
                 request.metallic = primitive.metallic;
                 request.occlusionStrength = primitive.occlusionStrength;
                 request.emissiveFactor = primitive.emissiveFactor;
+                // 部品内蔵画像の保持ビュー
                 const auto& textures = primitive.embeddedTextures;
                 request.albedo = textures.albedo;
                 request.normalTexture = textures.normal;
@@ -4475,8 +4805,7 @@ namespace LamaPon
                 request.emissiveTexture = textures.emissive;
                 request.fallbackTexture =
                     m_graphics->WhiteTextureViewHandle();
-                // D3D11のまとめ描きはリフレクションプローブを適用しないため、
-                // SkyのIBLのまま描きます。
+                // まとめ描画には反射プローブを追加せずシーンの環境反射を使う。
                 CopyPrimitiveLighting(m_graphics->Lighting(), request);
                 if (!request.directionalShadow.texture
                     && m_graphics->Shadows().IsValid())
@@ -4514,7 +4843,8 @@ namespace LamaPon
         {
             return false;
         }
-        // まとめて描いたRendererだけ、このパスの個別描画を飛ばします。
+        // まとめ描画に成功した描画器だけ個別描画を省く。
+        // 対象のモデル描画器
         for (auto* const component : drawnComponents)
         {
             component->m_instancedThisPass = true;
@@ -4541,6 +4871,7 @@ namespace LamaPon
             m_commonLitResources.reset();
             return;
         }
+        // 作成中の共通照明描画資源
         auto resources =
             std::make_unique<CommonLitResources>();
         if (m_model && m_model->skeletalModel)
@@ -4565,10 +4896,12 @@ namespace LamaPon
             return;
         }
 
+        // 従来形式のモデル
         auto& model = *m_model->model;
+        // 選択したシェーダーの世代
         std::uint64_t generation{};
-        // マテリアルからEffectを取得する経路にも、RefreshShaderと同じ
-        // 非対応テセレーションの代替処理を適用します。
+        // 再構築時も非対応テセレーションを代替効果へ差し替える。
+        // 借用する共有描画効果
         auto& effect = *SubstituteUnsupportedTessellation(
             &m_graphics->MaterialShader(
                 m_material.Shader(),
@@ -4581,9 +4914,12 @@ namespace LamaPon
         m_effect = &effect;
         m_activeShaderPath = m_material.Shader();
         m_shaderGeneration = generation;
+        // 描画パスの状態復帰を管理
         const MaterialPassScope passScope{ effect, m_context };
+        // 借用するモデルメッシュ
         for (const auto& mesh : model.meshes)
         {
+            // 借用するメッシュ部品
             for (const auto& part : mesh->meshParts)
             {
                 if (dynamic_cast<DirectX::IEffectSkinning*>(
@@ -4606,9 +4942,11 @@ namespace LamaPon
                     return;
                 }
 
+                // 作成中の共通照明用部品
                 CommonLitResources::Part commonPart;
                 commonPart.mesh = mesh.get();
                 commonPart.part = part.get();
+                // 借用する描画コンテキスト
                 auto* const context =
                     Detail::GraphicsDeviceD3D11Access::Context(
                         *m_graphics);
@@ -4616,6 +4954,7 @@ namespace LamaPon
                 {
                     if (effect.IsManifestEffect())
                     {
+                        // 部品の頂点宣言でパスのレイアウトを作成する(byteCode: 頂点シェーダー列, layout: 出力レイアウト, label: 診断用のパス名)。
                         const auto createLayout =
                             [this, &part](
                                 ID3DBlob* const byteCode,
@@ -4631,6 +4970,7 @@ namespace LamaPon
                                         + " has no compatible vertex "
                                           "signature.");
                                 }
+                                // 頂点レイアウトの作成結果
                                 const HRESULT result =
                                     CreateInputLayoutWithPositionAlias(
                                         Detail::GraphicsDeviceD3D11Access::
@@ -4648,14 +4988,18 @@ namespace LamaPon
                                 }
                             };
 
+                        // 色描画パスの数
                         const auto colorPassCount =
                             effect.ColorPassCount();
                         commonPart.forwardInputLayouts.reserve(
                             colorPassCount);
+                        // 描画パスまたは画像の番号
                         for (std::size_t index = 0;
+                            // 色描画パスの数
                             index < colorPassCount;
                             ++index)
                         {
+                            // 対象パスの頂点レイアウト
                             Microsoft::WRL::ComPtr<
                                 ID3D11InputLayout> layout;
                             createLayout(
@@ -4668,17 +5012,22 @@ namespace LamaPon
                                 std::move(layout));
                         }
 
+                        // 輪郭描画の種別
                         const auto outlineRole =
                             ShaderPassRole::Outline;
+                        // 輪郭描画パスの数
                         const auto outlinePassCount =
                             effect.PassCount(outlineRole);
                         commonPart.outlineInputLayouts.reserve(
                             outlinePassCount);
+                        // 描画パスまたは画像の番号
                         for (std::size_t index = 0;
+                            // 輪郭描画パスの数
                             index < outlinePassCount;
                             ++index)
                         {
                             effect.SelectPass(outlineRole, index);
+                            // 対象パスの頂点レイアウト
                             Microsoft::WRL::ComPtr<
                                 ID3D11InputLayout> layout;
                             createLayout(
@@ -4698,6 +5047,7 @@ namespace LamaPon
                     }
                     else
                     {
+                        // 通常と輪郭で共有する頂点配置
                         Microsoft::WRL::ComPtr<ID3D11InputLayout>
                             inputLayout;
                         part->CreateInputLayout(
@@ -4709,35 +5059,33 @@ namespace LamaPon
                             inputLayout);
                         if (effect.HasOutline())
                         {
-                            // direct HLSLの輪郭VSは従来どおり通常VS
-                            // と同じ入力形式を使います。
+                            // 直接HLSLの輪郭には通常描画と同じ頂点レイアウトを使う。
                             commonPart.outlineInputLayouts.push_back(
                                 std::move(inputLayout));
                         }
                     }
 
-                    // CMO内の各マテリアルが持つテクスチャを保持する。
-                    // 明示的な上書き画像がない場合、カスタムShaderでも
-                    // 元モデルの複数マテリアルを失わないようにする。
+                    // 上書きなしの画像を補うため部品の効果から埋込画像を取得する。
+                    // 色と法線の画像解除用ビュー
                     ID3D11ShaderResourceView* emptyViews[2]{};
                     context->PSSetShaderResources(
                         0,
                         2,
                         emptyViews);
                     part->effect->Apply(context);
+                    // 参照数を加算して取得する画像
                     ID3D11ShaderResourceView*
                         embeddedViews[2]{};
                     context->PSGetShaderResources(
                         0,
                         2,
                         embeddedViews);
-                    // PSGetShaderResourcesが加算した参照を先に両方とも
-                    // RAIIへ移します。片方のimportが例外になっても、もう
-                    // 片方を漏らしません。Partにはnative pointerではなく
-                    // Backend世代付きのneutral handleだけを残します。
+                    // 取得した両ビューの参照を先に所有し、片方の取込失敗時にも解放する。
+                    // 取得した画像ビューの所有参照
                     std::array<Microsoft::WRL::ComPtr<
                         ID3D11ShaderResourceView>, 2>
                         ownedEmbeddedViews;
+                    // 描画パスまたは画像の番号
                     for (std::size_t index{};
                         index < ownedEmbeddedViews.size();
                         ++index)
@@ -4751,6 +5099,7 @@ namespace LamaPon
                     commonPart.embeddedNormalTexture =
                         m_graphics->ImportD3D11ShaderResourceView(
                             ownedEmbeddedViews[1].Get());
+                    // 保存された埋込色の位置
                     if (const auto embeddedColor =
                             m_model->embeddedDiffuseColors.find(
                                 part->effect.get());
@@ -4789,6 +5138,7 @@ namespace LamaPon
             && !m_material.Shader().empty()
             && !m_albedoTexture)
         {
+            // 埋込色画像を持つ部品数を数える(part: 共通照明用のモデル部品)。
             const auto embeddedCount =
                 std::ranges::count_if(
                     resources->parts,
@@ -4829,7 +5179,9 @@ namespace LamaPon
             return;
         }
 
+        // 従来形式のモデル
         auto& model = *m_model->model;
+        // 共通照明の描画資源
         auto& resources = *m_commonLitResources;
         if (!resources.boneTransforms.empty())
         {
@@ -4838,18 +5190,18 @@ namespace LamaPon
                 resources.boneTransforms.data());
         }
 
+        // 借用する共有描画効果
         auto& effect = m_effect != nullptr
             ? *m_effect
             : m_graphics->Lit();
         effect.SetInstancingEnabled(false);
         effect.SetTessellationDrawEnabled(false);
         effect.SelectColorPass(0);
-        // OnPreRender3D（遮蔽表示）からの早期returnも含め、
-        // 共有Effectの選択状態とHS/DS/GSを必ず戻します。
+        // 早期終了時にも共有効果の選択状態とHS・DS・GSを解除する。
+        // 描画パスの状態復帰を管理
         const MaterialPassScope passScope{ effect, m_context };
-        // シャドウパスは深度のみ書き込み、ライティングの
-        // セットアップを省略します（テクスチャはパーツ単位で
-        // 設定されます）。
+        // 深度描画では照明の設定を省く。
+        // 深度のみを描くフラグ
         const bool depthOnly =
             m_graphics->IsDepthOnlyPass();
         effect.SetDepthOnlyEnabled(depthOnly);
@@ -4862,37 +5214,37 @@ namespace LamaPon
             {
                 return;
             }
-            // 範囲に入っているリフレクションプローブがあれば、
-            // 環境反射をその結果へ差し替えます（2個あれば混ぜます）。
+            // 所有物の位置に応じて反射プローブを選ぶ。
+            // プローブ選択用のワールド変換
             const auto ownerWorldMatrix =
                 Owner().WorldMatrix();
+            // プローブ選択用のワールド位置
             DirectX::XMFLOAT3 ownerPosition{};
             DirectX::XMStoreFloat3(
                 &ownerPosition,
                 ownerWorldMatrix.r[3]);
+            // 位置で選択した環境反射
             const auto probe = Owner().GetScene()
                 .ReflectionProbeEnvironmentAt(ownerPosition);
-            // Probe ComponentがDraw完了までneutral handleを保持します。
-            // stale/foreign ProbeはSky IBLへ安全にフォールバックします。
+            // 無効なプローブなら直前に設定した環境反射を維持する。
             static_cast<void>(
                 m_graphics->TrySetLitEffectReflectionProbe(
                     effect,
                     probe));
         }
 
+        // 所有物のワールド変換
         const auto ownerWorld = Owner().WorldMatrix();
+        // 上書き色による半透明指定
         const bool forceAlpha =
             m_material.BaseColor().w < 0.999f;
         if (depthOnly && forceAlpha)
         {
-            // 半透明モデルは従来どおり影を落としません。
+            // 上書き色が半透明なら深度描画を省く。
             effect.SetDepthOnlyEnabled(false);
             return;
         }
-        // 深度プリパスは、メインパスとまったく同じ深度を書けるもの
-        // だけに限ります。宣言で半透明にしたShaderはメインパスで
-        // 深度を書かないので、プリパスに残すとメインパスの描画が
-        // 消えます（シャドウパスは従来どおり描きます）。
+        // 深度プリパスでは不透明かつ深度書込ありの先頭パスに限る。
         if (depthOnly
             && m_graphics->DepthPass()
                 == DepthPassKind::Prepass
@@ -4904,13 +5256,15 @@ namespace LamaPon
             effect.SetDepthOnlyEnabled(false);
             return;
         }
-        // アウトライン・遮蔽表示は通常パスのみ実行します。
+        // 輪郭と遮蔽表示は線表示と深度描画では実行しない。
+        // 輪郭描画を行うフラグ
         const bool drawOutline =
             !occludedOnly
             && !m_wireframe
             && !depthOnly
             && effect.HasOutline()
             && m_material.CustomParameter(3).x > 0.0f;
+        // 遮蔽描画を行うフラグ
         const bool drawOccluded =
             occludedOnly
             && !m_wireframe
@@ -4918,12 +5272,16 @@ namespace LamaPon
             && effect.HasOccludedPass()
             && m_material.CustomParameter(4).w > 0.0f;
 
+        // 上書き画像の保持ビュー
         const auto baseTextureRequest = BuildLitTextureRequest();
 
+        // 半透明部品を描くフラグ
         for (const bool alphaPass : { false, true })
         {
+            // 借用するモデルメッシュ
             for (const auto& mesh : model.meshes)
             {
+                // 対象の透明度区分に部品があるか調べる(part: 共通照明用のモデル部品)。
                 const bool hasPartsForPass =
                     std::ranges::any_of(
                         resources.parts,
@@ -4949,6 +5307,7 @@ namespace LamaPon
                     alphaPass,
                     m_wireframe);
 
+                // 部品のワールド変換
                 DirectX::XMMATRIX meshWorld = ownerWorld;
                 if (mesh->boneIndex
                     < resources.boneTransforms.size())
@@ -4963,6 +5322,7 @@ namespace LamaPon
                     view,
                     projection);
 
+                // 共通照明用のモデル部品
                 for (const auto& part : resources.parts)
                 {
                     if (part.mesh != mesh.get()
@@ -4972,9 +5332,8 @@ namespace LamaPon
                     {
                         continue;
                     }
-                    // 明示的な上書きが無いalbedo/normalだけ、モデル内蔵
-                    // textureで補います。requestはこのpartの全Drawが戻る
-                    // まで生存し、Backend固有resourceを強所有します。
+                    // 色・法線の未指定を内蔵で補い、部品の全描画が戻るまで要求を保持する。
+                    // 内蔵画像で補完した保持要求
                     auto partTextureRequest = baseTextureRequest;
                     if (!partTextureRequest.albedo)
                     {
@@ -4990,17 +5349,18 @@ namespace LamaPon
                             effect,
                             partTextureRequest))
                     {
-                        // 前のpartのnative bindingを再利用した描画はせず、
-                        // stale / 別Backend世代のrequestを安全に拒否します。
+                        // 無効な要求では前の部品の画像設定を再利用せず描画を省く。
                         continue;
                     }
                     if (m_preserveEmbeddedMaterialColor)
                     {
-                        // 上書き色をTintとして扱い、CMO/SDKMESH内の
-                        // パーツ固有DiffuseColorを失わないようにします。
+                        // 保持設定が有効なら埋込色を上書き色へ乗算する。
+                        // 埋込色を反映する部品材質
                         auto partMaterial = m_material;
+                        // 上書き材質のRGBA色
                         const auto& baseColor =
                             m_material.BaseColor();
+                        // 部品の埋込RGBA色
                         const auto& embeddedColor =
                             part.embeddedDiffuseColor;
                         partMaterial.SetBaseColor({
@@ -5017,9 +5377,12 @@ namespace LamaPon
                     }
                     if (drawOccluded)
                     {
+                        // 対象種別の描画パス数
                         const auto passCount = effect.PassCount(
                             ShaderPassRole::Occluded);
+                        // 対象の描画パス番号
                         for (std::size_t passIndex = 0;
+                            // 対象種別の描画パス数
                             passIndex < passCount;
                             ++passIndex)
                         {
@@ -5030,9 +5393,11 @@ namespace LamaPon
                             effect.SelectPass(
                                 ShaderPassRole::Occluded,
                                 passIndex);
+                            // 対象パスの宣言描画状態
                             const auto& renderState =
                                 effect.SelectedPassRenderState(
                                     ShaderPassRole::Occluded);
+                            // 効果適用後に遮蔽用の状態とシェーダーを設定する。
                             part.part->Draw(
                                 m_context,
                                 &effect,
@@ -5058,9 +5423,7 @@ namespace LamaPon
                                             m_states->
                                                 CullCounterClockwise());
                                     }
-                                    // Manifestのoccludedもprimary index 0
-                                    // のVSを再利用し、選択中PSだけを
-                                    // 差し替えます。
+                                    // 遮蔽描画は先頭の頂点シェーダーを使い、選択中のPSへ差し替える。
                                     effect.ApplyOccluded(m_context);
                                 });
                         }
@@ -5071,11 +5434,15 @@ namespace LamaPon
                     }
                     if (drawOutline)
                     {
+                        // 輪郭描画の種別
                         const auto outlineRole =
                             ShaderPassRole::Outline;
+                        // 対象種別の描画パス数
                         const auto passCount =
                             effect.PassCount(outlineRole);
+                        // 対象の描画パス番号
                         for (std::size_t passIndex = 0;
+                            // 対象種別の描画パス数
                             passIndex < passCount;
                             ++passIndex)
                         {
@@ -5087,9 +5454,11 @@ namespace LamaPon
                             effect.SelectPass(
                                 outlineRole,
                                 passIndex);
+                            // 対象パスの宣言描画状態
                             const auto& renderState =
                                 effect.SelectedPassRenderState(
                                     outlineRole);
+                            // 効果適用後に輪郭用の状態とシェーダーを設定する。
                             part.part->Draw(
                                 m_context,
                                 &effect,
@@ -5124,13 +5493,14 @@ namespace LamaPon
                         }
                     }
 
-                    // 影と深度プリパスはprimary index 0のみ。
-                    // 通常色はManifestのforward roleをJSON順で全件
-                    // 実行します。direct HLSLは1件なので従来どおり。
+                    // 深度描画は先頭パスのみ、通常の色描画は宣言順の全パスを実行する。
+                    // 実行する色描画パス数
                     const auto colorPassCount = depthOnly
                         ? std::size_t{ 1 }
                         : effect.ColorPassCount();
+                    // 対象の描画パス番号
                     for (std::size_t passIndex = 0;
+                        // 実行する色描画パス数
                         passIndex < colorPassCount;
                         ++passIndex)
                     {
@@ -5145,6 +5515,7 @@ namespace LamaPon
                             *m_states,
                             alphaPass,
                             m_wireframe);
+                        // 対象パスの宣言描画状態
                         const auto& renderState =
                             effect.ColorPassRenderState(passIndex);
                         if (renderState.declared)
@@ -5166,8 +5537,7 @@ namespace LamaPon
     bool ModelRendererComponent::DescribeDrawEvent(
         FrameDebugDrawDescription& description) const
     {
-        // インスタンス描画でまとめて描いた後の個別の呼び出しは何も
-        // 描かないため、イベントとして数えません。
+        // まとめ描画後の個別呼出しは描画イベントへ計上しない。
         if (m_instancedThisPass)
         {
             return false;

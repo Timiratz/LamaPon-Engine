@@ -17,6 +17,7 @@
 
 namespace
 {
+    // 失敗したHRESULTを例外として伝える(result: 操作結果, operation: 診断に表示する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -31,6 +32,7 @@ namespace
         }
     }
 
+    // スプライトのPSMainを取得し、失敗時は例外を送出する(assets: アセット管理, path: HLSLソースパス)。
     Microsoft::WRL::ComPtr<ID3DBlob> CompilePixelShader(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path)
@@ -41,7 +43,7 @@ namespace
                 "Sprite shader file was not found: "
                 + LamaPon::PathToUtf8(path));
         }
-        // コンパイルとディスクキャッシュはShaderCompilerが処理します。
+
         return LamaPon::CompileShaderCached(
             assets,
             path,
@@ -65,6 +67,7 @@ namespace LamaPon
                 "SpriteEffect requires a Direct3D device and context.");
         }
 
+        // PSMainのバイトコード
         const auto byteCode =
             CompilePixelShader(assets, shaderPath);
         ThrowIfFailed(
@@ -75,6 +78,7 @@ namespace LamaPon
                 m_pixelShader.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreatePixelShader(sprite)");
 
+        // 追加定数バッファーの作成設定
         D3D11_BUFFER_DESC description{};
         description.ByteWidth =
             static_cast<UINT>(sizeof(Constants));
@@ -88,6 +92,7 @@ namespace LamaPon
                 m_constantBuffer.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateBuffer(sprite constants)");
 
+        // 2D照明バッファーの作成設定
         D3D11_BUFFER_DESC lightDescription{};
         lightDescription.ByteWidth =
             static_cast<UINT>(sizeof(Sprite2DLighting));
@@ -130,6 +135,7 @@ namespace LamaPon
             &m_lighting,
             0,
             0);
+        // PSのb0・b1へ結合する定数
         ID3D11Buffer* buffers[]{
             m_constantBuffer.Get(),
             m_lightBuffer.Get()

@@ -9,14 +9,14 @@
 
 namespace LamaPon::Detail
 {
-    // Runtime内部の単体テスト専用構築口です。通常のゲームコードは
-    // OnlineServices.hだけを利用します。
+    // Runtime内の単体テスト専用で、通常のゲームコードはOnlineServices.hを使います。
     class OnlineServicesTestAccess final
     {
     public:
         using HttpSender =
             std::function<HttpResponse(const HttpRequest&)>;
 
+        // テスト用の通信・保存・URL起動処理でサービスを作る(configuration: 認証設定, sender: 必須のHTTP送信処理, refreshTokenStore: 資格情報保存の所有先, authorizationLauncher: URL起動処理の所有先)。
         [[nodiscard]] static LAMAPON_API
             std::unique_ptr<OnlineServices> Create(
                 OnlineServiceConfiguration configuration,
@@ -25,13 +25,11 @@ namespace LamaPon::Detail
                 std::unique_ptr<IAuthorizationLauncher>
                     authorizationLauncher = {});
 
-        // owner破棄時の「worker完了済み・Update未reap」を
-        // 待機なしで決定論的に検証するための内部テスト専用状態です。
+        // 結果を反映せず現在のworkerの完了状態を確認する(services: 検査するサービス)。
         [[nodiscard]] static LAMAPON_API bool CurrentTaskCompleted(
             const OnlineServices& services) noexcept;
 
-        // OS suspend/main-thread stallをsleepなしで再現し、完了結果の
-        // token TTLがreapまでにも減ることを検証します。
+        // 停止時間を再現するため完了時刻だけを過去へずらす(services: 操作するサービス, elapsedSeconds: 遡る秒数・0以上1年以内)。
         [[nodiscard]] static LAMAPON_API bool AgeCurrentTaskCompletion(
             OnlineServices& services,
             float elapsedSeconds) noexcept;

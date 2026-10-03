@@ -1281,7 +1281,7 @@ const std::string& LastError() const noexcept;
 
 切り替えは**次のフレームの先頭**で実行されます（更新中にオブジェクトを壊さないため）。
 大きなシーンは`Async`版を使うと、読み込み中も現在のシーンが動き続け、標準のローディング画面が出ます。
-引数なしの`Async`版はProject Settingsの「シーン遷移」で決めた既定の演出（`DefaultTransition()`）で切り替えます。
+引数なしの`Async`版は既定の遷移（`DefaultTransition()`、最初はすぐ切り替える遷移）で切り替えます。
 
 **サンプル**
 
@@ -1309,7 +1309,7 @@ void Update(float) override
 
 ---
 
-### シーン遷移の演出
+### シーン遷移
 
 **宣言**
 
@@ -1323,24 +1323,28 @@ void Update(float) override
 [[nodiscard]] bool PlayTransition(const SceneTransitionSettings& transition);
 void SetDefaultTransition(const SceneTransitionSettings& settings);
 bool IsTransitioning() const noexcept;
+SceneTransitionPhase TransitionPhase() const noexcept;
+float TransitionCoverage() const noexcept;
 bool IsInputBlocked() const noexcept;
 SceneTransitionSettings MakeSceneTransition(
-    SceneTransitionEffect effect,
-    float durationSeconds = 0.4f,
-    const DirectX::XMFLOAT4& color = { 0, 0, 0, 1 });
+    float durationSeconds,
+    float holdSeconds = 0.1f,
+    SceneTransitionEasing easing = SceneTransitionEasing::EaseInOutCubic);
 ```
 
 **概略**
 
-フェードやワイプなどで旧シーンを覆ってから新シーンへ切り替えます。
-`PlayTransition`はシーンを切り替えずに覆って開く演出（部屋の移動など）です。
+旧シーンを覆い終えてから新シーンへ切り替え、そのあと開きます。
+`PlayTransition`はシーンを切り替えずに覆って開く遷移（部屋の移動など）です。
+エンジンは覆う絵を描きません。`TransitionCoverage()`（0～1）を読んで、SpriteやScriptで自分の演出を描きます。
 
 **引数**
 
 | 引数 | 説明 |
 |---|---|
-| `transition` | 演出（`effect`）、時間、色、向きなど。`MakeSceneTransition`で作ると簡単です |
-| `effect` | `Fade`、`Wipe`、`Iris`、`Diamond`、`Blinds`、`Tiles`、`DiamondTiles`、`Dots`、`Shutter`、`Shader`、`None` |
+| `transition` | 覆う・保持・開く時間、イージング、読み込み画面・入力・BGMの扱い。`MakeSceneTransition`で作ると簡単です |
+| `durationSeconds` | 覆う時間と開く時間（秒） |
+| `holdSeconds` | 覆ったまま待つ最短時間（秒） |
 
 **戻り値**
 
@@ -1351,21 +1355,27 @@ SceneTransitionSettings MakeSceneTransition(
 読み込みは覆っている間に進み、新シーンの有効化は画面を覆い終えてから行います。
 各段階で`SceneTransition.Started`／`Covered`／`Finished`イベントが発行されます。
 遷移中は`IsInputBlocked()`がtrueになり、UI Buttonはクリックを受け付けません。
-詳しくは[SceneとPrefab](scenes.md#シーン遷移演出)を参照してください。
+時間がすべて0の遷移（`SceneTransitionSettings`の既定値）は、覆わずにすぐ切り替えます。
+自分でフェードを作る手順は[SceneとPrefab](scenes.md#シーン遷移)を参照してください。
+ワイプやアイリスなどの演出は、パッケージの**Scene Transition Showcase**で追加できます。
 
 **サンプル**
 
 ```cpp
+// 画面全体へ広げたSprite Rendererを、覆い具合に合わせて濃くします。
+void Update(float) override
+{
+    auto* sprite = GetComponent<LamaPon::SpriteRendererComponent>();
+    const float coverage = GetScene().Scenes().TransitionCoverage();
+    sprite->SetColor({ 0.0f, 0.0f, 0.0f, coverage });
+}
+
 void OnGoal()
 {
-    auto wipe = LamaPon::MakeSceneTransition(
-        LamaPon::SceneTransitionEffect::Wipe,
-        0.35f);
-    wipe.direction = LamaPon::SceneTransitionDirection::TopLeftToBottomRight;
-    wipe.accentColor = { 1.0f, 0.85f, 0.2f, 1.0f };
-
     auto& scenes = GetScene().Scenes();
-    if (!scenes.RequestLoadAsync("scenes/result.scene.json", wipe))
+    if (!scenes.RequestLoadAsync(
+            "scenes/result.scene.json",
+            LamaPon::MakeSceneTransition(0.35f)))
     {
         LamaPon::Logger::Instance().Error(scenes.LastError());
     }

@@ -9,7 +9,9 @@
 
 namespace LamaPon
 {
+    // 描画パッケージのABI版
     inline constexpr std::uint32_t GraphicsBackendPackageAbiVersion = 1;
+    // D3D12描画パッケージの名前
     inline constexpr char DirectX12BackendPackageName[] =
         "directx12-renderer";
 
@@ -26,20 +28,29 @@ namespace LamaPon
 
     struct GraphicsBackendPackageDescriptor final
     {
+        // パッケージの描画API
         RenderingApi api{ RenderingApi::DirectX11 };
+        // パッケージのABI版
         std::uint32_t abiVersion{};
+        // パッケージの公開版
         std::string version;
+        // パッケージの配置先
         std::filesystem::path packageDirectory;
+        // 読み込む描画DLLのパス
         std::filesystem::path runtimeLibrary;
     };
 
     struct GraphicsBackendPackageInspection final
     {
+        // 描画パッケージの検査結果
         GraphicsBackendPackageState state{
             GraphicsBackendPackageState::Missing };
+        // 検査したパッケージの情報
         GraphicsBackendPackageDescriptor descriptor;
+        // 検査結果の説明
         std::string message;
 
+        // 組み込みまたは検査済みの利用可能な状態か返す。
         [[nodiscard]] bool IsReady() const noexcept
         {
             return state == GraphicsBackendPackageState::BuiltIn
@@ -47,23 +58,23 @@ namespace LamaPon
         }
     };
 
-    // 起動前に、選択APIに対応する任意バックエンドパッケージを
-    // 検査します。DLLはここではロードせず、manifestと互換性だけを
-    // 判定するため、壊れたパッケージでもD3D11へ安全に戻せます。
+
+    // DLLをロードせずパッケージの宣言と配置を検査する(assetRoot: アセットの基点, api: 選択する描画API, currentEngineVersion: 現行エンジンの版)。
+    // D3D12以外は組み込みD3D11として扱い、ファイル存在確認の例外は外へ伝播し得る。
     [[nodiscard]] GraphicsBackendPackageInspection
         InspectGraphicsBackendPackage(
             const std::filesystem::path& assetRoot,
             RenderingApi api,
             std::string_view currentEngineVersion);
 
-    // GraphicsDevice初期化より前にプロジェクトのassetsを指定します。
-    // 未指定なら従来どおり組み込みBackendを使用します。
+
+    // 初期化前にパッケージ検索の基点を指定する(assetRoot: アセットの基点)。
     void SetGraphicsBackendPackageAssetRoot(
         std::filesystem::path assetRoot);
 
-    // manifestとABI entry pointを検証し、プロセス終了までDLLを保持します。
-    // パッケージが無い場合はMissingを返し、移行期間中の組み込みD3D12を
-    // 継続利用できます。存在するのに壊れている場合はReadyになりません。
+
+    // 宣言とDLLのABIを確認して描画DLLを保持する(api: 選択する描画API, currentEngineVersion: 現行エンジンの版)。
+    // 成功したDLLはプロセス終了まで保持し、別のDLLへの切替えは拒否する。
     [[nodiscard]] GraphicsBackendPackageInspection
         ActivateGraphicsBackendPackage(
             RenderingApi api,

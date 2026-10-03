@@ -13,6 +13,7 @@
 
 namespace
 {
+    // ステージ種別の診断用名称を返す(stage: ステージ種別)。
     [[nodiscard]] const char* StageName(
         const LamaPon::ShaderStage stage) noexcept
     {
@@ -34,6 +35,7 @@ namespace
         return "unknown";
     }
 
+    // 失敗結果を操作名付きの例外へ変換する(result: HRESULTの処理結果, operation: 診断用の操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -66,40 +68,51 @@ namespace LamaPon
             return false;
         }
 
-        // 完成するまで現在のProgramを変更しません。hot reload中に必須
-        // stageが失敗しても、呼び出し側が直前の正常なProgramを維持できます。
+        // 全ステージの処理が終わるまで旧プログラムを保持する。
+        // 新しく生成する頂点シェーダー
         Microsoft::WRL::ComPtr<ID3D11VertexShader>
             vertexShader;
+        // 新しく生成するピクセルシェーダー
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             pixelShader;
+        // 新しく生成するジオメトリシェーダー
         Microsoft::WRL::ComPtr<ID3D11GeometryShader>
             geometryShader;
+        // 新しく生成するハルシェーダー
         Microsoft::WRL::ComPtr<ID3D11HullShader>
             hullShader;
+        // 新しく生成するドメインシェーダー
         Microsoft::WRL::ComPtr<ID3D11DomainShader>
             domainShader;
+        // 新しく生成するcomputeシェーダー
         Microsoft::WRL::ComPtr<ID3D11ComputeShader>
             computeShader;
+        // 新しく生成する頂点シェーダーのバイト列
         Microsoft::WRL::ComPtr<ID3DBlob>
             vertexShaderByteCode;
 
+        // コンパイルするステージ記述
         for (const auto& stage : pass.stages)
         {
             try
             {
+                // コンパイル済みのバイトコード
                 const auto byteCode = CompileShaderCached(
                     assets,
                     hlslPath,
                     stage.entryPoint.c_str(),
                     stage.target.c_str(),
                     defines);
+                // 借用するシェーダーのバイト列
                 const auto* data = byteCode->GetBufferPointer();
+                // シェーダーのバイト数
                 const auto size = byteCode->GetBufferSize();
 
                 switch (stage.stage)
                 {
                 case ShaderStage::Vertex:
                 {
+                    // 作成中の頂点シェーダー
                     Microsoft::WRL::ComPtr<ID3D11VertexShader>
                         shader;
                     ThrowIfFailed(
@@ -115,6 +128,7 @@ namespace LamaPon
                 }
                 case ShaderStage::Pixel:
                 {
+                    // 作成中のピクセルシェーダー
                     Microsoft::WRL::ComPtr<ID3D11PixelShader>
                         shader;
                     ThrowIfFailed(
@@ -129,6 +143,7 @@ namespace LamaPon
                 }
                 case ShaderStage::Geometry:
                 {
+                    // 入力形式を調べるリフレクション
                     Microsoft::WRL::ComPtr<ID3D11ShaderReflection>
                         reflection;
                     ThrowIfFailed(
@@ -138,6 +153,7 @@ namespace LamaPon
                             IID_ID3D11ShaderReflection,
                             &reflection),
                         "D3DReflect(geometry shader)");
+                    // ジオメトリシェーダーの構成
                     D3D11_SHADER_DESC shaderDescription{};
                     ThrowIfFailed(
                         reflection->GetDesc(&shaderDescription),
@@ -151,6 +167,7 @@ namespace LamaPon
                             + "' must take triangle input; LamaPon material "
                             "renderers do not submit point or line input.");
                     }
+                    // 作成中のジオメトリシェーダー
                     Microsoft::WRL::ComPtr<ID3D11GeometryShader>
                         shader;
                     ThrowIfFailed(
@@ -165,6 +182,7 @@ namespace LamaPon
                 }
                 case ShaderStage::Hull:
                 {
+                    // 作成中のハルシェーダー
                     Microsoft::WRL::ComPtr<ID3D11HullShader>
                         shader;
                     ThrowIfFailed(
@@ -179,6 +197,7 @@ namespace LamaPon
                 }
                 case ShaderStage::Domain:
                 {
+                    // 作成中のドメインシェーダー
                     Microsoft::WRL::ComPtr<ID3D11DomainShader>
                         shader;
                     ThrowIfFailed(
@@ -193,6 +212,7 @@ namespace LamaPon
                 }
                 case ShaderStage::Compute:
                 {
+                    // 作成中のcomputeシェーダー
                     Microsoft::WRL::ComPtr<ID3D11ComputeShader>
                         shader;
                     ThrowIfFailed(
@@ -207,6 +227,7 @@ namespace LamaPon
                 }
                 }
             }
+            // ステージ生成で発生した例外
             catch (const std::exception& exception)
             {
                 if (stage.optional)

@@ -1,11 +1,3 @@
-// 文字テクスチャキャッシュ（AssetManager::LoadTextTexture）の
-// 上限が効いているかを確かめます。
-//
-// 文字テクスチャは文字列ごとに1枚作られるため、
-// スコアや残り時間のように中身が変わり続ける表示では、上限が無いと
-// 遊んでいる間ずっと増え続けます（GPUメモリの実質的なリーク）。
-// 上限を超えたら古いものから捨てること、ただしまだ表示に使われて
-// いるものは捨てないことの両方が要件です。
 #include "LamaPon/Assets/AssetManager.h"
 
 #include <d3d11.h>
@@ -22,10 +14,13 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
@@ -34,13 +29,18 @@ namespace
 
     struct Device final
     {
+        // WARP描画デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> device;
+        // WARP即時描画コンテキスト
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     };
 
+    // テキスト描画テスト用のWARP deviceを作ります。
     [[nodiscard]] Device CreateWarpDevice()
     {
+        // 作成したWARP deviceとcontext
         Device created{};
+        // D3D11 device作成結果
         const HRESULT result = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_WARP,
@@ -58,18 +58,22 @@ namespace
         return created;
     }
 
-    // 同じ文字列は作り直さず、キャッシュから返ること。
+    // 同じtextの再読込で同一assetを返すことを確認
     void TestCacheHitReturnsSameAsset()
     {
+        // テスト用WARP device
         const auto gpu = CreateWarpDevice();
+        // text textureを作成・保持する資産管理
         LamaPon::AssetManager assets(
             gpu.device.Get(),
             gpu.context.Get());
 
+        // 初回に作るtext texture
         const auto first = assets.LoadTextTexture(
             "スコア",
             "Yu Gothic UI",
             30.0f);
+        // 同じkeyでキャッシュから取得するtexture
         const auto second = assets.LoadTextTexture(
             "スコア",
             "Yu Gothic UI",
@@ -86,18 +90,22 @@ namespace
             "the same text must not add a second entry");
     }
 
-    // 色は描画時に適用するため、同じ文なら色が違ってもキャッシュを共有します。
+    // 色がcache keyに含まれずtextを共有することを確認
     void TestColorIsNotPartOfTheCacheKey()
     {
+        // テスト用WARP device
         const auto gpu = CreateWarpDevice();
+        // text textureを作成・保持する資産管理
         LamaPon::AssetManager assets(
             gpu.device.Get(),
             gpu.context.Get());
 
+        // 白色表示用に取得するtext texture
         const auto white = assets.LoadTextTexture(
             "ナイス！",
             "Yu Gothic UI",
             40.0f);
+        // 金色表示用に取得する同じtext texture
         const auto gold = assets.LoadTextTexture(
             "ナイス！",
             "Yu Gothic UI",
@@ -111,21 +119,25 @@ namespace
             "the same text must stay a single entry");
     }
 
-    // 中身が変わり続ける表示（スコア）でも、上限を超えて増えないこと。
+    // 未参照entryを退避してcache byte上限を守ることを確認
     void TestBudgetEvictsUnusedEntries()
     {
+        // テスト用WARP device
         const auto gpu = CreateWarpDevice();
+        // text textureを作成・保持する資産管理
         LamaPon::AssetManager assets(
             gpu.device.Get(),
             gpu.context.Get());
 
         // 数枚ぶんだけの小さな予算にして、確実に溢れさせます。
+        // 退避を発生させる小さいcache上限
         constexpr std::size_t budget = 64u * 1024u;
         assets.SetTextCacheBudgetBytes(budget);
         Require(
             assets.TextCacheBudgetBytes() == budget,
             "the budget must be readable back");
 
+        // value: 上限を超える異なるスコア文字列番号
         for (int value = 0; value < 400; ++value)
         {
             // 戻り値を保持しない＝「もう表示していない」状態です。
@@ -149,19 +161,21 @@ namespace
             "the text cache must not keep every string");
     }
 
-    // 表示中のものを捨てないこと。捨てても解放されないうえ、
-    // 次のフレームで作り直すことになるためです。
+    // 外部参照中のtextureをcacheから退避しないことを確認
     void TestReferencedEntriesSurvive()
     {
+        // テスト用WARP device
         const auto gpu = CreateWarpDevice();
+        // text textureを作成・保持する資産管理
         LamaPon::AssetManager assets(
             gpu.device.Get(),
             gpu.context.Get());
         assets.SetTextCacheBudgetBytes(64u * 1024u);
 
-        // 表示中に相当する参照を持ち続けます。
+        // live: 描画中に相当する保持参照
         std::vector<std::shared_ptr<const LamaPon::TextTextureAsset>>
             live;
+        // index: 参照保持するHUD texture番号
         for (int index = 0; index < 5; ++index)
         {
             live.push_back(
@@ -171,7 +185,7 @@ namespace
                     30.0f));
         }
 
-        // 大量の使い捨て文字列で予算を溢れさせます。
+        // value: cache上限を超えさせる使い捨て文字列番号
         for (int value = 0; value < 300; ++value)
         {
             static_cast<void>(
@@ -181,9 +195,11 @@ namespace
                     30.0f));
         }
 
-        // 参照し続けている5枚は、同じ実体のままキャッシュに残ります。
+        // 外部参照中の5件が同じassetのまま残ることを確認
+        // index: asset identityを再確認するHUD番号
         for (int index = 0; index < 5; ++index)
         {
+            // 既存HUD keyから再取得したtexture
             const auto again = assets.LoadTextTexture(
                 "HUD " + std::to_string(index),
                 "Yu Gothic UI",
@@ -196,11 +212,12 @@ namespace
         }
     }
 
-    // Clear()で合計バイト数も0へ戻ること（戻し忘れると、次のシーンで
-    // 「入っていないのに予算を使い切っている」状態になります）。
+    // Clear後にcache件数とbyte集計が0へ戻ることを確認
     void TestClearResetsAccounting()
     {
+        // テスト用WARP device
         const auto gpu = CreateWarpDevice();
+        // text textureを作成・保持する資産管理
         LamaPon::AssetManager assets(
             gpu.device.Get(),
             gpu.context.Get());
@@ -224,20 +241,24 @@ namespace
     }
 }
 
+// TextTexture cache hit・上限退避・clear処理を検証します。
 int main()
 {
+    // COM初期化とcache検証を実行
+    // テスト例外を失敗終了コードへ変換
     try
     {
+        // COM初期化を試みた結果
         const HRESULT comResult =
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
-
         TestCacheHitReturnsSameAsset();
         TestColorIsNotPartOfTheCacheKey();
         TestBudgetEvictsUnusedEntries();
         TestReferencedEntriesSurvive();
         TestClearResetsAccounting();
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& error)
     {
         std::cerr

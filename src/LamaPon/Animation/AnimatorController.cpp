@@ -17,6 +17,7 @@ namespace LamaPon
     AnimatorController AnimatorController::LoadFromFile(
         const std::filesystem::path& path)
     {
+        // 文書ファイルの入力ストリーム
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
@@ -24,6 +25,7 @@ namespace LamaPon
                 "Could not open Animator Controller: "
                 + PathToUtf8(path));
         }
+        // ファイルから読んだJSON全文
         const std::string json{
             std::istreambuf_iterator<char>{ input },
             std::istreambuf_iterator<char>{}
@@ -34,6 +36,7 @@ namespace LamaPon
     AnimatorController AnimatorController::FromJson(
         const std::string_view json)
     {
+        // 解析したコントローラー文書
         const auto document =
             nlohmann::json::parse(
                 json.begin(),
@@ -48,6 +51,7 @@ namespace LamaPon
                 "Unsupported LamaPon Animator Controller format.");
         }
 
+        // 状態定義のJSON項目
         const auto states =
             document.find("states");
         if (states == document.end()
@@ -59,13 +63,16 @@ namespace LamaPon
                 "Animator Controller requires between 1 and 256 states.");
         }
 
+        // 復元するコントローラー
         AnimatorController controller;
         controller.m_entryState =
             document.value(
                 "entry",
                 std::string{});
+        // 重複と参照を検査する変数名
         std::unordered_set<std::string>
             parameterNames;
+        // 浮動小数点パラメーター定義
         const auto parameters = document.value(
             "parameters",
             nlohmann::json::array());
@@ -75,8 +82,10 @@ namespace LamaPon
             throw std::runtime_error(
                 "Animator Controller supports at most 64 parameters.");
         }
+        // 復元するパラメーターのJSON値
         for (const auto& value : parameters)
         {
+            // 検証するパラメーター定義
             AnimatorFloatParameter parameter{
                 value.value("name", std::string{}),
                 value.value("default", 0.0f)
@@ -93,26 +102,35 @@ namespace LamaPon
             controller.m_floatParameters.push_back(
                 std::move(parameter));
         }
+        // 重複と参照を検査する状態名
         std::unordered_set<std::string>
             stateNames;
         controller.m_states.reserve(
             states->size());
+        // 復元する状態のJSON値
         for (const auto& value : *states)
         {
+            // 1DまたはXのブレンド変数名
             std::string blendParameter;
+            // Y方向のブレンド変数名
             std::string blendParameterY;
+            // 復元するブレンド方式
             AnimatorBlendTreeType blendTreeType{
                 AnimatorBlendTreeType::None
             };
+            // 復元するブレンド子の一覧
             std::vector<AnimatorBlendChild>
                 blendChildren;
+            // 復元する状態のイベント列
             std::vector<AnimatorEvent>
                 events;
+            // ブレンドツリーのJSON項目
             if (const auto blendTree =
                     value.find("blendTree");
                 blendTree != value.end()
                     && blendTree->is_object())
             {
+                // 文書に保存されたブレンド方式名
                 const auto type = blendTree->value(
                     "type",
                     std::string{ "1D" });
@@ -143,6 +161,7 @@ namespace LamaPon
                             "parameterY",
                             std::string{});
                 }
+                // ブレンド子のJSON配列
                 const auto children = blendTree->value(
                     "children",
                     nlohmann::json::array());
@@ -153,8 +172,10 @@ namespace LamaPon
                     throw std::runtime_error(
                         "Blend Tree requires between 2 and 16 children.");
                 }
+                // 復元するブレンド子のJSON値
                 for (const auto& childValue : children)
                 {
+                    // 検証するブレンド子
                     AnimatorBlendChild child{
                         PathFromUtf8(
                             childValue.value(
@@ -172,6 +193,7 @@ namespace LamaPon
                         0.0f,
                         0.0f
                     };
+                    // ブレンド子の2D位置のJSON項目
                     if (const auto position =
                             childValue.find(
                                 "position");
@@ -212,6 +234,7 @@ namespace LamaPon
                         &AnimatorBlendChild::threshold);
                 }
             }
+            // 状態のイベントのJSON配列
             const auto eventValues = value.value(
                 "events",
                 nlohmann::json::array());
@@ -221,9 +244,11 @@ namespace LamaPon
                 throw std::runtime_error(
                     "Animator State supports at most 128 events.");
             }
+            // 復元するイベントのJSON値
             for (const auto& eventValue :
                 eventValues)
             {
+                // 検証するイベント定義
                 AnimatorEvent event{
                     eventValue.value(
                         "name",
@@ -252,6 +277,7 @@ namespace LamaPon
                 events,
                 {},
                 &AnimatorEvent::normalizedTime);
+            // 検証するアニメーション状態
             AnimatorState state{
                 value.value("name", std::string{}),
                 PathFromUtf8(
@@ -306,6 +332,7 @@ namespace LamaPon
                 "Animator entry state does not exist.");
         }
 
+        // 復元する遷移のJSON配列
         const auto transitions =
             document.value(
                 "transitions",
@@ -318,8 +345,10 @@ namespace LamaPon
         }
         controller.m_transitions.reserve(
             transitions.size());
+        // 復元する遷移のJSON値
         for (const auto& value : transitions)
         {
+            // 検証する状態間の遷移
             AnimatorTransition transition{
                 value.value("from", std::string{}),
                 value.value("to", std::string{}),
@@ -355,18 +384,24 @@ namespace LamaPon
             const float x,
             const float y)
     {
+        // 子ごとの混合重みの出力列
         std::vector<float> weights(
             children.size(),
             0.0f);
+        // 正規化前の混合重みの合計
         float total{};
+        // 重みを計算する子の番号
         for (std::size_t index = 0;
             index < children.size();
             ++index)
         {
+            // 入力から子のX位置への差
             const float dx =
                 x - children[index].positionX;
+            // 入力から子のY位置への差
             const float dy =
                 y - children[index].positionY;
+            // 入力と子の位置の距離の二乗
             const float distanceSquared =
                 dx * dx + dy * dy;
             if (distanceSquared <= 0.000001f)
@@ -383,6 +418,7 @@ namespace LamaPon
         }
         if (total > 0.0f)
         {
+            // 合計で正規化する子の重み
             for (auto& weight : weights)
             {
                 weight /= total;
@@ -394,6 +430,7 @@ namespace LamaPon
     void AnimatorController::ResolveAssetReferences(
         const AssetDatabase& database)
     {
+        // GUID参照を解決する状態
         for (auto& state : m_states)
         {
             if (!state.clipGuid.empty())
@@ -403,6 +440,7 @@ namespace LamaPon
                         state.clipGuid,
                         state.clipPath);
             }
+            // GUID参照を解決する子
             for (auto& child : state.blendChildren)
             {
                 if (!child.clipGuid.empty())
@@ -419,6 +457,7 @@ namespace LamaPon
     const AnimatorState* AnimatorController::FindState(
         const std::string_view name) const noexcept
     {
+        // 名前を照合する状態
         for (const auto& state : m_states)
         {
             if (state.name == name)
@@ -436,6 +475,7 @@ namespace LamaPon
             const std::unordered_set<std::string>&
                 activeTriggers) const noexcept
     {
+        // 条件を照合する登録順の遷移
         for (const auto& transition :
             m_transitions)
         {

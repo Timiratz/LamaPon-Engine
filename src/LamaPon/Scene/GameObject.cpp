@@ -11,6 +11,7 @@
 
 namespace
 {
+    // 変換の各成分が完全一致するか返します(left: 比較元, right: 比較先)。
     bool SameTransform(
         const LamaPon::Transform& left,
         const LamaPon::Transform& right) noexcept
@@ -34,6 +35,7 @@ namespace
 
 namespace
 {
+    // 現在の深度パスに対応するデバッグ描画区分を返します(graphics: 描画機器)。
     [[nodiscard]] LamaPon::FrameDebugPass CurrentFrameDebugPass(
         const LamaPon::GraphicsDevice& graphics) noexcept
     {
@@ -68,6 +70,7 @@ namespace LamaPon
                 m_scene
                     ->PhysicsInterpolationAlpha());
         }
+        // 親基準のローカル行列
         const auto local = m_transform.LocalMatrix();
         return m_parent != nullptr
             ? local * m_parent->WorldMatrix()
@@ -85,8 +88,10 @@ namespace LamaPon
         }
 
         using namespace DirectX;
+        // 制限した物理補間率
         const float amount =
             std::clamp(alpha, 0.0f, 1.0f);
+        // 成分を同じ補間率で線形補間します(from: 始点の成分, to: 終点の成分)。
         const auto lerp = [amount](
             const float from,
             const float to) noexcept
@@ -94,6 +99,7 @@ namespace LamaPon
             return from
                 + (to - from) * amount;
         };
+        // 補間後のローカル位置
         const XMFLOAT3 position{
             lerp(
                 m_previousPhysicsTransform.position.x,
@@ -105,6 +111,7 @@ namespace LamaPon
                 m_previousPhysicsTransform.position.z,
                 m_currentPhysicsTransform.position.z)
         };
+        // 補間後のローカル拡縮
         const XMFLOAT3 scale{
             lerp(
                 m_previousPhysicsTransform.scale.x,
@@ -116,8 +123,7 @@ namespace LamaPon
                 m_previousPhysicsTransform.scale.z,
                 m_currentPhysicsTransform.scale.z)
         };
-        // 回転はクォータニオンが正本になったので、変換せずに
-        // そのままSlerpできます。
+        // 補間後のクォータニオン
         const auto rotation =
             XMQuaternionSlerp(
                 m_previousPhysicsTransform
@@ -140,6 +146,7 @@ namespace LamaPon
         GameObject::InterpolatedWorldMatrix(
             const float alpha) const noexcept
     {
+        // 親基準のローカル行列
         const auto local =
             InterpolatedLocalMatrix(alpha);
         return m_parent != nullptr
@@ -222,10 +229,13 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 親基準へ変換する移動量
         XMVECTOR localDisplacement = XMLoadFloat3(&displacement);
         if (m_parent != nullptr)
         {
+            // 親行列の行列式
             XMVECTOR determinant{};
+            // 親のワールド行列の逆行列
             const XMMATRIX inverseParent = XMMatrixInverse(
                 &determinant,
                 m_parent->WorldMatrix());
@@ -234,6 +244,7 @@ namespace LamaPon
                 inverseParent);
         }
 
+        // 親基準の移動成分
         XMFLOAT3 local{};
         XMStoreFloat3(&local, localDisplacement);
         m_transform.position.x += local.x;
@@ -245,10 +256,10 @@ namespace LamaPon
         const DirectX::XMFLOAT3& radians) noexcept
     {
         using namespace DirectX;
-        // この引数はEuler角の差分ではなく、ワールド軸まわりの
-        // 回転ベクトル（長さが角度、向きが軸）として扱います。
+        // ワールド軸の回転ベクトル
         const XMVECTOR worldRotationVector =
             XMLoadFloat3(&radians);
+        // 加える回転角のラジアン値
         const float angle =
             XMVectorGetX(
                 XMVector3Length(worldRotationVector));
@@ -258,13 +269,17 @@ namespace LamaPon
             return;
         }
 
+        // 追加するワールド回転
         const XMVECTOR worldDelta =
             XMQuaternionRotationAxis(
                 XMVector3Normalize(worldRotationVector),
                 angle);
 
+        // 分解したワールド拡縮
         XMVECTOR worldScale{};
+        // 分解したワールド回転
         XMVECTOR worldRotation{};
+        // 分解したワールド位置
         XMVECTOR worldTranslation{};
         if (!XMMatrixDecompose(
                 &worldScale,
@@ -275,14 +290,18 @@ namespace LamaPon
             return;
         }
 
+        // 親基準へ変換する回転行列
         XMMATRIX newWorldRotation =
             XMMatrixRotationQuaternion(worldRotation)
             * XMMatrixRotationQuaternion(worldDelta);
 
         if (m_parent != nullptr)
         {
+            // 分解した親のワールド拡縮
             XMVECTOR parentScale{};
+            // 分解した親のワールド回転
             XMVECTOR parentRotation{};
+            // 分解した親のワールド位置
             XMVECTOR parentTranslation{};
             if (!XMMatrixDecompose(
                     &parentScale,
@@ -304,6 +323,7 @@ namespace LamaPon
 
     bool GameObject::IsAlwaysVisible() const noexcept
     {
+        // 有効性を調べるカリング設定
         const auto* culling =
             GetComponent<RenderCullingComponent>();
         return culling != nullptr
@@ -313,6 +333,7 @@ namespace LamaPon
 
     float GameObject::CullingMargin() const noexcept
     {
+        // 有効性を調べるカリング設定
         const auto* culling =
             GetComponent<RenderCullingComponent>();
         return culling != nullptr && culling->IsEnabled()
@@ -329,6 +350,8 @@ namespace LamaPon
         {
             return false;
         }
+        // 移動対象の格納位置
+        // 移動対象に一致するか調べます(candidate: 所有するコンポーネント)。
         const auto movedPosition = std::ranges::find_if(
             m_components,
             [&moved](
@@ -340,11 +363,14 @@ namespace LamaPon
         {
             return false;
         }
-        // 対象を外すと添字が変わるため、その後で挿入位置を探します。
+        // 取り外す前の格納添字
         const auto movedIndex = static_cast<std::size_t>(
             movedPosition - m_components.begin());
+        // 取り外したコンポーネント
         auto detached = std::move(*movedPosition);
         m_components.erase(movedPosition);
+        // 基準コンポーネントの格納位置
+        // 基準に一致するか調べます(candidate: 所有するコンポーネント)。
         const auto referencePosition = std::ranges::find_if(
             m_components,
             [&reference](
@@ -354,8 +380,7 @@ namespace LamaPon
             });
         if (referencePosition == m_components.end())
         {
-            // 基準が別のGameObjectのものだった場合。抜いた分は
-            // 元の位置へ戻します（並びを変えません）。
+            // 基準が所属外なら取り外した対象を元の位置へ戻します。
             m_components.insert(
                 m_components.begin()
                     + static_cast<std::ptrdiff_t>(
@@ -378,6 +403,7 @@ namespace LamaPon
             throw std::invalid_argument("A GameObject cannot be parented to itself.");
         }
 
+        // 循環を調べる祖先
         for (auto* ancestor = parent; ancestor != nullptr; ancestor = ancestor->m_parent)
         {
             if (ancestor == this)
@@ -403,8 +429,7 @@ namespace LamaPon
             m_parent->m_children.push_back(this);
         }
 
-        // 祖先チェーンが変わると、このサブツリーの実効アクティブ
-        // 状態も変わり得ます。
+        // 祖先チェーンが変わると、このサブツリーの実効アクティブ状態も変わり得ます。
         PropagateActiveState();
     }
 
@@ -416,13 +441,16 @@ namespace LamaPon
             return nullptr;
         }
 
-        // "腕/手/武器"のようなパスをセグメントごとにたどります。
+        // 現在の区間で探す子の一覧
         const std::vector<GameObject*>* children =
             &m_children;
+        // 検索区間の開始位置
         std::size_t start = 0;
         for (;;)
         {
+            // 次の区間を分ける位置
             const auto separator = path.find('/', start);
+            // 今回探す子の名前
             const auto name =
                 separator == std::string_view::npos
                     ? path.substr(start)
@@ -432,7 +460,9 @@ namespace LamaPon
                 return nullptr;
             }
 
+            // 名前が一致した子
             GameObject* found = nullptr;
+            // 走査する子オブジェクト
             for (auto* child : *children)
             {
                 if (child->Name() == name)
@@ -466,6 +496,7 @@ namespace LamaPon
 
     bool GameObject::IsActiveInHierarchy() const noexcept
     {
+        // 有効状態を調べる自身か祖先
         for (const auto* current = this;
             current != nullptr;
             current = current->m_parent)
@@ -480,10 +511,12 @@ namespace LamaPon
 
     void GameObject::PropagateActiveState()
     {
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->RefreshActiveState();
         }
+        // 走査する子オブジェクト
         for (auto* child : m_children)
         {
             child->PropagateActiveState();
@@ -492,7 +525,9 @@ namespace LamaPon
 
     bool GameObject::RemoveComponent(Component& component) noexcept
     {
+        // 削除前のコンポーネント数
         const auto originalSize = m_components.size();
+        // 削除対象に一致するか調べます(candidate: 所有するコンポーネント)。
         std::erase_if(
             m_components,
             [&component](const std::unique_ptr<Component>& candidate)
@@ -509,6 +544,7 @@ namespace LamaPon
         const float penetration,
         const bool isTrigger)
     {
+        // コンポーネントへ通知する接触
         const CollisionEvent event{
             other,
             normal,
@@ -516,6 +552,7 @@ namespace LamaPon
             penetration,
             isTrigger
         };
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             if (component->m_enabled)
@@ -539,6 +576,7 @@ namespace LamaPon
         const float penetration,
         const bool isTrigger)
     {
+        // コンポーネントへ通知する接触
         const CollisionEvent event{
             other,
             normal,
@@ -546,6 +584,7 @@ namespace LamaPon
             penetration,
             isTrigger
         };
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             if (component->m_enabled)
@@ -566,6 +605,7 @@ namespace LamaPon
         GameObject& other,
         const bool isTrigger)
     {
+        // コンポーネントへ通知する接触
         const CollisionEvent event{
             other,
             DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f },
@@ -573,6 +613,7 @@ namespace LamaPon
             0.0f,
             isTrigger
         };
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             if (component->m_enabled)
@@ -596,13 +637,13 @@ namespace LamaPon
             return;
         }
 
-        // Script::Start内でAddComponentを呼ぶとm_componentsが再確保される
-        // 可能性があり、範囲forのイテレーターが無効になります。ユーザー
-        // コードを呼び出す走査は添字で行い、再確保後に要素を取得し直します。
+        // 初期化中の追加も走査対象へ含めるため添字で走査します。
+        // 更新するコンポーネント添字
         for (std::size_t index = 0;
             index < m_components.size();
             ++index)
         {
+            // 処理するコンポーネント
             const auto& component = m_components[index];
             component->InitializeIfNeeded(graphics);
 
@@ -622,10 +663,12 @@ namespace LamaPon
             return;
         }
 
+        // 更新するコンポーネント添字
         for (std::size_t index = 0;
             index < m_components.size();
             ++index)
         {
+            // 処理するコンポーネント
             const auto& component = m_components[index];
             component->InitializeIfNeeded(graphics);
             if (component->m_enabled)
@@ -644,10 +687,12 @@ namespace LamaPon
             return;
         }
 
+        // 更新するコンポーネント添字
         for (std::size_t index = 0;
             index < m_components.size();
             ++index)
         {
+            // 処理するコンポーネント
             const auto& component = m_components[index];
             component->InitializeIfNeeded(graphics);
             if (component->m_enabled)
@@ -668,6 +713,7 @@ namespace LamaPon
             return;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);
@@ -688,11 +734,13 @@ namespace LamaPon
         const Component& component,
         const FrameDebugEventKind kind)
     {
+        // 描画イベントの収集先
         auto& frameDebugger = graphics.FrameDebug();
         if (!frameDebugger.IsEnabled())
         {
             return true;
         }
+        // 登録する描画の説明
         FrameDebugDrawDescription description;
         try
         {
@@ -703,8 +751,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // 説明の作成に失敗しても描画は通常どおり行い、項目だけ
-            // 空のイベントとして数えます。
+            // 説明の作成に失敗しても描画は通常どおり行い、項目だけ空のイベントとして数えます。
             description = {};
         }
         return frameDebugger.SubmitDrawEvent(
@@ -724,6 +771,7 @@ namespace LamaPon
             return false;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);
@@ -744,6 +792,7 @@ namespace LamaPon
             return false;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);
@@ -766,6 +815,7 @@ namespace LamaPon
             return;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);
@@ -790,6 +840,7 @@ namespace LamaPon
             return;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);
@@ -807,7 +858,9 @@ namespace LamaPon
 
     int GameObject::Render2DSortOrder() const noexcept
     {
+        // 有効な描画順序と0の最大値
         int sortOrder{};
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             if (component->m_enabled)
@@ -830,6 +883,7 @@ namespace LamaPon
             return;
         }
 
+        // 処理するコンポーネント
         for (const auto& component : m_components)
         {
             component->InitializeIfNeeded(graphics);

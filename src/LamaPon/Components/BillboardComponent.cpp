@@ -9,11 +9,12 @@
 
 namespace
 {
-    // 長さが取れないベクトルは向きとして使えません。
+    // 方向を正規化し短すぎればfalseを返します(value: 有限の入力方向, normalized: 成功時の単位方向出力)。
     [[nodiscard]] bool TryNormalize(
         DirectX::FXMVECTOR value,
         DirectX::XMVECTOR& normalized) noexcept
     {
+        // 入力方向の長さの二乗
         const float lengthSquared =
             DirectX::XMVectorGetX(
                 DirectX::XMVector3LengthSq(value));
@@ -25,22 +26,21 @@ namespace
         return true;
     }
 
-    // 直交していない2本から、3本目を作って正規直交系へ整えます。
-    // firstは必ず保たれ、referenceは向きの基準にだけ使います。
-    // referenceがfirstと平行だと外積が0になるので、そのときは
-    // 別の軸へ逃がします。
+    // 平行に近い基準方向を別軸へ置き換えます(first: 保つ単位軸, reference: 基準の単位方向)。
     [[nodiscard]] DirectX::XMVECTOR PickReference(
         DirectX::FXMVECTOR first,
         DirectX::FXMVECTOR reference) noexcept
     {
         using namespace DirectX;
+        // 両単位方向の内積絶対値
         const float alignment = std::abs(
             XMVectorGetX(XMVector3Dot(first, reference)));
         if (alignment < 0.999f)
         {
             return reference;
         }
-        // 平行なので、firstと平行になりにくい軸を選び直します。
+
+        // 方向のY成分の絶対値
         const float towardUp = std::abs(
             XMVectorGetY(first));
         return towardUp < 0.9f
@@ -82,11 +82,11 @@ namespace LamaPon
 
         if (m_mode == BillboardMode::LookAtPosition)
         {
-            // 座標を向くモードはカメラを使いません。基準の上方向は
-            // ワールドの上のままにします。
+
             return true;
         }
 
+        // 有効性を確認する主カメラ
         auto* camera = Owner().GetScene().MainCamera();
         if (camera == nullptr
             || !camera->IsEnabled()
@@ -94,9 +94,11 @@ namespace LamaPon
         {
             return false;
         }
+        // カメラのワールド変換
         const auto cameraWorld =
             camera->Owner().WorldMatrix();
         XMStoreFloat3(&frame.position, cameraWorld.r[3]);
+        // 正規化するカメラの軸
         XMVECTOR axis{};
         if (TryNormalize(cameraWorld.r[2], axis))
         {
@@ -116,29 +118,31 @@ namespace LamaPon
 
         using namespace DirectX;
 
+        // 向きを決めるカメラ情報
         CameraFrame cameraFrame{};
         if (!ResolveCamera(cameraFrame))
         {
             return;
         }
 
-        // 向ける方向を決めます。
+
+        // 対象へ向けたい方向
         XMVECTOR desired{};
         if (UsesViewDirection())
         {
-            // 画面と平行にする系。カメラが見ている向きの逆へ面を
-            // 向けます（カメラへ正面を見せるため）。板の位置に
-            // よらず同じ向きになるので、画面の端でも歪みません。
+            // カメラのワールド+Z軸の反対を向けます。
             desired = XMVectorNegate(
                 XMLoadFloat3(&cameraFrame.forward));
         }
         else
         {
-            // 位置を向く系。自分から向く先へのベクトルです。
+
+            // 向く対象のワールド位置
             const auto& targetPosition =
                 m_mode == BillboardMode::LookAtPosition
                     ? m_targetPosition
                     : cameraFrame.position;
+            // 自身のワールド位置
             XMFLOAT3 selfPosition{};
             XMStoreFloat3(
                 &selfPosition,
@@ -154,23 +158,26 @@ namespace LamaPon
             desired = XMVectorSetY(desired, 0.0f);
         }
 
+        // 対象へ向ける単位方向
         XMVECTOR facing{};
         if (!TryNormalize(desired, facing))
         {
-            // 真上／真下から見られている、あるいは向く先と重なって
-            // いる状態です。前の向きを保ちます。
+
             return;
         }
 
-        // 基準の上方向。上下を起こすモードはワールドの上を使います
-        // （カメラが傾いていても立ったままにするため）。
+
+        // 姿勢の上方向の基準
         const XMVECTOR reference = IsUpright()
             ? XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)
             : XMLoadFloat3(&cameraFrame.up);
 
-        // 指定した軸をfacingへ向ける正規直交系を作ります。
+
+        // 姿勢のワールド+X単位軸
         XMVECTOR right{};
+        // 姿勢のワールド+Y単位軸
         XMVECTOR up{};
+        // 姿勢のワールド+Z単位軸
         XMVECTOR forward{};
         if (m_facingAxis == BillboardFacingAxis::Up)
         {
@@ -179,10 +186,7 @@ namespace LamaPon
                 XMVector3Cross(
                     PickReference(up, reference),
                     up));
-            // 3本目は必ず right × up で作ります。up × right にすると
-            // 行列式が-1（左手系）になり、XMQuaternionRotationMatrixが
-            // 回転として解釈できず、向きが壊れます。DirectXの規約は
-            // X × Y = Z です。
+            // X×Y=Zの向きを保ち、クォータニオンが扱える回転基底を作ります。
             forward = XMVector3Cross(right, up);
         }
         else
@@ -195,21 +199,25 @@ namespace LamaPon
             up = XMVector3Cross(forward, right);
         }
 
-        // 行ベクトル規約なので、行0=右, 行1=上, 行2=前 です。
+        // 行0・1・2にワールドのX・Y・Z軸を入れます。
+        // 姿勢の正規直交基底行列
         XMMATRIX basis = XMMatrixIdentity();
         basis.r[0] = right;
         basis.r[1] = up;
         basis.r[2] = forward;
+        // 適用する回転クォータニオン
         XMVECTOR rotation =
             XMQuaternionRotationMatrix(basis);
 
-        // Transformが持つのはローカル回転なので、親の回転を打ち消し
-        // ます。これをしないと、親を回した瞬間に子のビルボードが
-        // 一緒に回ってカメラから外れます。
+        // 保存するローカル回転から親の回転を打ち消します。
+        // 回転を打ち消す親物体
         if (const auto* parent = Owner().Parent())
         {
+            // 分解した親の拡大倍率
             XMVECTOR parentScale{};
+            // 分解した親の回転
             XMVECTOR parentRotation{};
+            // 分解した親の平行移動
             XMVECTOR parentTranslation{};
             if (XMMatrixDecompose(
                     &parentScale,

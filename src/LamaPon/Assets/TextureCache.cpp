@@ -12,29 +12,34 @@
 
 namespace
 {
-    // エンコード方式を変えた場合に更新するキャッシュ形式の版です。
+    // 変換方式を変えたら更新する版
     constexpr std::uint32_t FormatVersion = 1;
 
+    // TTEX形式の識別子
     constexpr char Magic[4] = { 'T', 'T', 'E', 'X' };
 
-    // 読み込み時に破損を検出するためのミップ数上限です。
+    // 検証するミップ数の上限
     constexpr std::uint32_t MaximumLevels = 16;
 
-    // ファイルI/Oより再生成の方が軽い小さな結果は保存しません。
+    // 保存する結果の最小バイト数
     constexpr std::size_t MinimumStoredBytes = 64 * 1024;
 
+    // 保存先差し替えの排他制御
     std::mutex g_directoryMutex;
+    // 任意に差し替える保存先
     std::filesystem::path g_directoryOverride;
 
-    // 生成物をプロジェクトへ混在させないよう、%LOCALAPPDATA%へ
-    // 保存します。
+    // LocalAppDataまたはOS一時領域から保存先を得る。
     [[nodiscard]] std::filesystem::path DefaultDirectory()
     {
+        // LocalAppData環境変数の取得領域
         std::wstring localAppData(32768, L'\0');
+        // 環境変数の取得文字数
         const DWORD length = GetEnvironmentVariableW(
             L"LOCALAPPDATA",
             localAppData.data(),
             static_cast<DWORD>(localAppData.size()));
+        // OSのキャッシュ保存基点
         std::filesystem::path root;
         if (length > 0 && length < localAppData.size())
         {
@@ -43,6 +48,7 @@ namespace
         }
         else
         {
+            // OS保存先・保存操作の結果
             std::error_code error;
             root = std::filesystem::temp_directory_path(error);
             if (error)
@@ -53,31 +59,33 @@ namespace
         return root / L"LamaPon" / L"texture-cache";
     }
 
+    // キーを16桁の.ttexファイル名へ変換する(key: 内容由来のキー)。
     [[nodiscard]] std::filesystem::path EntryPath(
         const std::uint64_t key)
     {
+        // 現在設定された保存先
         const auto directory =
             LamaPon::TextureCache::CacheDirectory();
         if (directory.empty())
         {
             return {};
         }
+        // キー由来の16桁ファイル名
         wchar_t name[32]{};
         swprintf_s(name, L"%016llx.ttex", key);
         return directory / name;
     }
 
-    // 書き込み途中で落ちても壊れたファイルが残らないよう、別名で
-    // 書いてから置き換えます（shader-cacheと同じやり方）。壊れた
-    // キャッシュは読み込み時の検査で弾けますが、そもそも作らない
-    // のが確実です。
+    // 別名で書き終えてから移動し、失敗時は候補を削除する(destination: 正式な保存先, bytes: 完成したキャッシュ内容)。
     void WriteFileAtomically(
         const std::filesystem::path& destination,
         const std::vector<std::uint8_t>& bytes)
     {
+        // 書き込み完了前の別名パス
         auto temporary = destination;
         temporary += L".tmp";
         {
+            // 別名キャッシュの出力先
             std::ofstream output(
                 temporary,
                 std::ios::binary | std::ios::trunc);
@@ -91,11 +99,13 @@ namespace
             if (!output)
             {
                 output.close();
+                // 失敗候補の削除結果
                 std::error_code ignored;
                 std::filesystem::remove(temporary, ignored);
                 return;
             }
         }
+        // OS保存先・保存操作の結果
         std::error_code error;
         std::filesystem::rename(temporary, destination, error);
         if (error)
@@ -104,6 +114,7 @@ namespace
         }
     }
 
+    // 32ビット値をリトルエンディアンで追加する(output: 出力バイト列, value: 追加する値)。
     void AppendUint32(
         std::vector<std::uint8_t>& output,
         const std::uint32_t value)
@@ -114,16 +125,20 @@ namespace
         output.push_back(static_cast<std::uint8_t>(value >> 24));
     }
 
-    // 読み取りカーソル。範囲外を読もうとしたらfailに倒して、以降の
-    // 読み取りを全部無効にします（1箇所でも壊れていたら全体を
-    // 捨てるため）。
+    // 最初の範囲不足以降は、全ての読み取りを失敗として扱う。
     struct Reader final
     {
+        // 借用する読取バイト列
         const std::uint8_t* data{};
+        // 読取バイト列の容量
+        // 保存ファイルのバイト数
         std::size_t size{};
+        // 次に読むバイト位置
         std::size_t offset{};
+        // 読み取り継続不能の状態
         bool failed{};
 
+        // 32ビット値を読み、不足時は失敗状態にして0を返す。
         [[nodiscard]] std::uint32_t ReadUint32() noexcept
         {
             if (failed || offset + 4 > size)
@@ -131,6 +146,7 @@ namespace
                 failed = true;
                 return 0;
             }
+            // 読み出した32ビット整数
             const std::uint32_t value =
                 static_cast<std::uint32_t>(data[offset])
                 | static_cast<std::uint32_t>(data[offset + 1]) << 8
@@ -140,6 +156,7 @@ namespace
             return value;
         }
 
+        // 指定範囲をコピーし、不足時は失敗状態にする(destination: コピー先, count: コピーするバイト数)。
         [[nodiscard]] bool ReadBytes(
             void* destination,
             const std::size_t count) noexcept
@@ -155,8 +172,7 @@ namespace
         }
     };
 
-    // このキャッシュが作りうるフォーマットだけを受け付けます。
-    // それ以外の値が読めたらファイルが壊れているか、別物です。
+    // このキャッシュが生成できる画素形式か調べる(format: DXGI形式の数値)。
     [[nodiscard]] bool IsKnownFormat(
         const std::uint32_t format) noexcept
     {
@@ -166,9 +182,7 @@ namespace
             || format == DXGI_FORMAT_BC5_UNORM;
     }
 
-    // レベルの寸法から期待されるバイト数。これと合わない
-    // ファイルは捨てます（サイズ検査が通れば、中身が多少
-    // 化けていても絵が乱れるだけでクラッシュはしません）。
+    // 形式と寸法から必要容量を求め、不正な行幅は0にする(format: DXGI形式の数値, width: ミップの幅, height: ミップの高さ, rowPitch: 一行のバイト幅)。
     [[nodiscard]] std::size_t ExpectedByteCount(
         const std::uint32_t format,
         const std::uint32_t width,
@@ -183,9 +197,11 @@ namespace
             }
             return static_cast<std::size_t>(rowPitch) * height;
         }
+        // 横方向の4×4圧縮ブロック数
         const std::uint32_t blocksX = (width + 3) / 4;
+        // 縦方向の4×4圧縮ブロック数
         const std::uint32_t blocksY = (height + 3) / 4;
-        // BC1は8バイト/ブロック、BC3とBC5は16バイト/ブロック。
+        // BC1は8、BC3・BC5は16バイト
         const std::uint32_t blockBytes =
             (format == DXGI_FORMAT_BC3_UNORM
                 || format == DXGI_FORMAT_BC5_UNORM)
@@ -204,6 +220,7 @@ namespace LamaPon::TextureCache
     std::filesystem::path CacheDirectory()
     {
         {
+            // 保存先設定の排他ロック
             const std::lock_guard<std::mutex> lock(
                 g_directoryMutex);
             if (!g_directoryOverride.empty())
@@ -217,6 +234,7 @@ namespace LamaPon::TextureCache
     void SetCacheDirectoryOverride(
         std::filesystem::path directory)
     {
+        // 保存先設定の排他ロック
         const std::lock_guard<std::mutex> lock(g_directoryMutex);
         g_directoryOverride = std::move(directory);
     }
@@ -226,10 +244,10 @@ namespace LamaPon::TextureCache
         const bool compress,
         const TextureLoader::TextureUsage usage) noexcept
     {
-        // FNV-1a 64。暗号強度は要りません（自分のディスクの
-        // キャッシュを自分で引くだけなので、衝突攻撃の相手が
-        // いません）。速さと単純さで選んでいます。
+
+        // 内容と変換条件の64ビットキー
         std::uint64_t hash = 14695981039346656037ull;
+        // キーへ混ぜる元画像のバイト
         for (const std::uint8_t byte : sourceBytes)
         {
             hash ^= byte;
@@ -237,8 +255,7 @@ namespace LamaPon::TextureCache
         }
         hash ^= compress ? 0x9e3779b97f4a7c15ull : 0x2545f4914f6cdd1dull;
         hash *= 1099511628211ull;
-        // 同じ画像でも用途が違えばフォーマットが変わるので、
-        // 鍵に混ぜないと法線用のBC5を色として引いてしまいます。
+        // 色用と法線用で異なる圧縮形式を取り違えないよう、用途をキーに含める。
         hash ^= static_cast<std::uint64_t>(usage);
         hash *= 1099511628211ull;
         hash ^= FormatVersion;
@@ -248,24 +265,28 @@ namespace LamaPon::TextureCache
 
     std::optional<CachedTexture> TryLoad(const std::uint64_t key)
     {
+        // キーに対応するキャッシュパス
         const auto path = EntryPath(key);
         if (path.empty())
         {
             return std::nullopt;
         }
+        // 既存キャッシュのバイナリー入力
         std::ifstream input(path, std::ios::binary);
         if (!input)
         {
             return std::nullopt;
         }
-        // 1バイトごとの仮想関数呼び出しを避けるため、一括で読み込みます。
+
         input.seekg(0, std::ios::end);
+        // 保存ファイルのバイト数
         const std::streamoff size = input.tellg();
         if (size <= 0)
         {
             return std::nullopt;
         }
         input.seekg(0, std::ios::beg);
+        // 既存キャッシュの全バイト列
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(size));
         input.read(
@@ -277,7 +298,9 @@ namespace LamaPon::TextureCache
         }
         input.close();
 
+        // 破損を追跡する読取位置
         Reader reader{ bytes.data(), bytes.size() };
+        // 読み込んだ形式識別子
         char magic[4]{};
         if (!reader.ReadBytes(magic, sizeof(magic))
             || std::memcmp(magic, Magic, sizeof(Magic)) != 0)
@@ -289,7 +312,9 @@ namespace LamaPon::TextureCache
             return std::nullopt;
         }
 
+        // 検証済みの転送用画像
         CachedTexture result;
+        // 保存されたDXGI画素形式
         const std::uint32_t format = reader.ReadUint32();
         if (!IsKnownFormat(format))
         {
@@ -303,6 +328,7 @@ namespace LamaPon::TextureCache
             return std::nullopt;
         }
 
+        // 保存されたミップ数
         const std::uint32_t levelCount = reader.ReadUint32();
         if (reader.failed
             || levelCount == 0
@@ -311,13 +337,17 @@ namespace LamaPon::TextureCache
             return std::nullopt;
         }
         result.data.levels.resize(levelCount);
+        // 一つ前のミップの画素数
         std::uint64_t previousArea = 0;
+        // 読み込むミップ番号
         for (std::uint32_t index = 0; index < levelCount; ++index)
         {
+            // 処理中のミップ情報
             auto& level = result.data.levels[index];
             level.width = reader.ReadUint32();
             level.height = reader.ReadUint32();
             level.rowPitch = reader.ReadUint32();
+            // 保存されたミップの容量
             const std::uint32_t byteCount = reader.ReadUint32();
             if (reader.failed
                 || level.width == 0
@@ -325,13 +355,12 @@ namespace LamaPon::TextureCache
             {
                 return std::nullopt;
             }
-            // ミップは必ず縮んでいくはず。並びが崩れていたら
-            // ファイルが壊れています。幅ではなく面積で見るのは、
-            // 1xNのような細長いテクスチャでは幅が1のまま並ぶためです
-            // （幅の単調減少を要求すると正当なキャッシュを弾きます）。
+
+            // 寸法を掛けたミップの画素数
             const std::uint64_t area =
                 static_cast<std::uint64_t>(level.width)
                 * level.height;
+            // 1×Nの幅が変わらない段も許容するため、ミップの縮小を面積で検証する。
             if (index > 0 && area >= previousArea)
             {
                 return std::nullopt;
@@ -352,7 +381,7 @@ namespace LamaPon::TextureCache
                 return std::nullopt;
             }
         }
-        // 末尾にゴミが付いているファイルも信用しません。
+        // 全ミップを読んだ後に未解釈の余剰データが残る結果も拒否する。
         if (reader.offset != reader.size)
         {
             return std::nullopt;
@@ -372,18 +401,18 @@ namespace LamaPon::TextureCache
             {
                 return;
             }
-            // 小さい結果は、キャッシュを読むより生成するほうが速いため保存しません。
-            // 呼び出し側のTryLoadはopen失敗を処理するため、サイズを取得できる
-            // ここで保存対象か判定します。
+            // 再生成の方が軽い小さな結果は保存しない。
             if (value.data.TotalBytes() < MinimumStoredBytes)
             {
                 return;
             }
+            // キーに対応するキャッシュパス
             const auto path = EntryPath(key);
             if (path.empty())
             {
                 return;
             }
+            // OS保存先・保存操作の結果
             std::error_code error;
             std::filesystem::create_directories(
                 path.parent_path(),
@@ -393,6 +422,7 @@ namespace LamaPon::TextureCache
                 return;
             }
 
+            // 保存する完成キャッシュ内容
             std::vector<std::uint8_t> bytes;
             bytes.reserve(64 + value.data.TotalBytes());
             bytes.insert(bytes.end(), Magic, Magic + sizeof(Magic));
@@ -408,6 +438,7 @@ namespace LamaPon::TextureCache
                 bytes,
                 static_cast<std::uint32_t>(
                     value.data.levels.size()));
+            // 処理中のミップ情報
             for (const auto& level : value.data.levels)
             {
                 AppendUint32(bytes, level.width);
@@ -426,8 +457,7 @@ namespace LamaPon::TextureCache
         }
         catch (...)
         {
-            // 高速化のための書き込みが失敗しても、呼ぶ側の
-            // 読み込み自体は成功しているので何もしません。
+            // 保存失敗で、既に準備できた画像の読み込みを失敗させない。
         }
     }
 }

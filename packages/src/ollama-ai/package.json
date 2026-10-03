@@ -1,0 +1,10 @@
+{
+  "name": "ollama-ai",
+  "displayName": "Ollama AI (Local LLM)",
+  "description": "このPCで動くOllamaのローカルモデルと、ゲームの中で会話するScriptと設定アセットです。Ollama Cloud・APIキー・サインインは使いません。Windows専用です。",
+  "author": "LamaPon Community",
+  "version": "0.1.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Immediate",
+  "target": "Project"
+}

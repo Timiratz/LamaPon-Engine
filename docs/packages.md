@@ -44,9 +44,11 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 
 | パッケージ | 内容 |
 |---|---|
+| **Scene Transition Showcase**（`scene-transition-showcase`） | ワイプ、アイリス、タイル、シェーダーの模様など16種類の編集可能な遷移プリセット（データアセット）。エンジンは覆う絵を描かないため、覆いはパッケージのSpriteとシェーダーが描きます。[使い方](../packages/src/scene-transition-showcase/README.md) |
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
 | **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
 | **DirectX 12 Renderer**（`directx12-renderer`） | DirectX 12 Experimental描画バックエンド。導入後、Project Settingsの「グラフィック」で`DirectX 12 Experimental`を選び、エディターまたはゲームを再起動すると有効になります |
+| **Ollama AI (Local LLM)**（`ollama-ai`） | このPCで動く[Ollama](https://ollama.com/)のローカルモデルと、ゲームの中で会話するScriptと設定アセット。接続先はこのPCに固定で、Ollama Cloud・APIキー・サインインは使いません。Windows専用です。[使い方](../packages/src/ollama-ai/README.md) |
 
 エンジンのReleaseビルドは、任意導入用の`directx12-renderer`を
 `packages/directx12-renderer/`へステージングします。このパッケージはABI検証済みの
@@ -209,6 +211,19 @@ DLLと同じ名前は同梱できません。複数のパッケージが同じ�
   **公式パッケージ一覧とは別管理**なので、自分のペースで公開・更新できます。
 
 導入したパッケージのうち公式一覧に無いもの（自作・受け取り物）は、パッケージタブの「このプロジェクトのパッケージ（公式一覧外）」にまとめて表示され、そこから削除もできます。
+
+## Easingを直接使う
+
+`easing-tween`導入後は`Easing.h`をincludeして、自分のScriptから補間量を取得できます。
+`elapsed`と`duration`は秒単位、`start`と`goal`は同じ座標系の位置です。
+
+```cpp
+// イージング適用後の進行率
+const float k = LamaPonEasing::Ease(
+    LamaPonEasing::Type::OutCubic,
+    elapsed / duration);
+position = start + (goal - start) * k;
+```
 
 ## よくあるつまずき
 

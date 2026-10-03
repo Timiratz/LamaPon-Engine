@@ -33,8 +33,11 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // ローカル箱のX半幅
         const float halfWidth = std::abs(m_size.x) * 0.5f;
+        // ローカル箱のY半幅
         const float halfHeight = std::abs(m_size.y) * 0.5f;
+        // ローカル箱の4隅
         const std::array corners{
             XMFLOAT3{ m_offset.x - halfWidth, m_offset.y - halfHeight, 0.0f },
             XMFLOAT3{ m_offset.x + halfWidth, m_offset.y - halfHeight, 0.0f },
@@ -42,14 +45,18 @@ namespace LamaPon
             XMFLOAT3{ m_offset.x + halfWidth, m_offset.y + halfHeight, 0.0f }
         };
 
+        // 変換後のXY軸平行境界
         Bounds2D bounds{
             { std::numeric_limits<float>::max(), std::numeric_limits<float>::max() },
             { std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() }
         };
 
+        // 所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // 変換するローカル隅位置
         for (const auto& corner : corners)
         {
+            // ワールド変換した隅位置
             XMFLOAT3 transformed{};
             XMStoreFloat3(
                 &transformed,
@@ -66,9 +73,9 @@ namespace LamaPon
     bool BoxCollider2DComponent::CanCollideWith(
         const BoxCollider2DComponent& other) const noexcept
     {
+
         return (m_collisionMask & (1u << other.m_layer)) != 0
             && (other.m_collisionMask & (1u << m_layer)) != 0
-            // プロジェクト設定の衝突マトリクス（既定は全部当たる）。
             && LayersCanCollide(m_layer, other.m_layer);
     }
 
@@ -77,6 +84,7 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // 形状のデバッグRGBA色
         const DirectX::XMVECTOR color = m_isTrigger
             ? DirectX::XMVectorSet(1.0f, 0.75f, 0.1f, 1.0f)
             : DirectX::XMVectorSet(0.1f, 1.0f, 0.35f, 1.0f);

@@ -16,29 +16,26 @@ namespace LamaPon
 
 namespace LamaPon::Cli
 {
-    // エディターの「プロファイル分析」「メモリプロファイラー」と同じ解析を
-    // 保存済みの記録へ行い、結果をJSONで返します。
-    //
-    //   profile analyze <capture.json> [--first N] [--last M] [--top K]
-    //   profile compare <a.json> <b.json> [--top K]
-    //   memory summary <snapshot.json> [--top K]
-    //   memory compare <a.json> <b.json> [--top K]
-    //
-    // argumentsはサブコマンド以降（wmainのargv[2]以降）です。引数の誤りは
-    // std::invalid_argument、記録を読めない場合はstd::runtime_errorを送出します。
+    // 記録を解析しJSON結果を返します(command: 種別, arguments: argv[2以降)
+    // CLIの書式はprofile analyze/compareとmemory summary/compareです。
+    // 不正引数はinvalid_argument、読込失敗はruntime_errorになります。
     [[nodiscard]] nlohmann::json RunAnalysisCommand(
         std::wstring_view command,
         std::span<const std::wstring_view> arguments);
 
+    // profile解析結果をJSON化します(analysis: 解析結果, topCount: 上位件数)
     [[nodiscard]] nlohmann::json ProfileAnalysisJson(
         const ProfileAnalysis& analysis,
         std::size_t topCount);
+    // profile比較結果をJSON化します(comparison: 比較結果, topCount: 上位件数)
     [[nodiscard]] nlohmann::json ProfileComparisonJson(
         const ProfileComparison& comparison,
         std::size_t topCount);
+    // memory snapshotをJSON化します(snapshot: 記録, topCount: 上位件数)
     [[nodiscard]] nlohmann::json MemorySummaryJson(
         const MemorySnapshot& snapshot,
         std::size_t topCount);
+    // memory比較結果をJSON化します(comparison: 比較結果, topCount: 上位件数)
     [[nodiscard]] nlohmann::json MemoryComparisonJson(
         const MemorySnapshotComparison& comparison,
         std::size_t topCount);

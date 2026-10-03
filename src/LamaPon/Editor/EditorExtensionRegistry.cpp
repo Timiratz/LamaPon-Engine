@@ -8,6 +8,7 @@
 
 namespace
 {
+    // 出力先があれば登録失敗の理由を移す(destination: 失敗理由の出力先・省略可, message: 失敗理由の所有先)。
     void SetRegistrationError(
         std::string* const destination,
         std::string message)
@@ -37,6 +38,7 @@ namespace LamaPon
                 "Extension id and display name must not be empty.");
             return false;
         }
+        // 同じ拡張IDの重複登録を拒否する(extension: 登録済みの拡張)。
         if (std::ranges::any_of(
                 m_extensions,
                 [&](const RegisteredEditorExtension& extension)
@@ -51,7 +53,9 @@ namespace LamaPon
             return false;
         }
 
+        // 同じ登録要求内のパネルID集合
         std::unordered_set<std::string> pendingPanelIds;
+        // 検証・追加・操作するパネル
         for (const auto& panel : definition.panels)
         {
             if (panel.id.empty()
@@ -73,10 +77,14 @@ namespace LamaPon
             }
         }
 
+        // 今回の追加パネルの開始位置
         const auto panelStart = m_panels.size();
+        // 検証・追加・操作するパネル
         for (auto& panel : definition.panels)
         {
+            // 復元状態を反映する初回表示状態
             bool open = panel.defaultOpen;
+            // 復元待ちのパネル表示状態
             if (const auto saved =
                     m_pendingPanelVisibility.find(panel.id);
                 saved != m_pendingPanelVisibility.end())
@@ -104,8 +112,10 @@ namespace LamaPon
             definition.menuInline
         });
 
+        // 追加パネルの表示状態を退避して登録を戻す
         const auto rollbackRegistration = [&]
         {
+            // 検証・追加・操作するパネル
             for (auto panel = m_panels.begin()
                     + static_cast<std::ptrdiff_t>(panelStart);
                 panel != m_panels.end();
@@ -127,6 +137,7 @@ namespace LamaPon
                 definition.onAttach();
             }
         }
+        // 拡張の初期化処理が通知した失敗
         catch (const std::exception& exception)
         {
             rollbackRegistration();
@@ -152,6 +163,7 @@ namespace LamaPon
     bool EditorExtensionRegistry::Unregister(
         const std::string_view extensionId) noexcept
     {
+        // 指定IDの登録を探す(candidate: 登録済みの拡張)。
         const auto extension = std::ranges::find_if(
             m_extensions,
             [&](const RegisteredEditorExtension& candidate)
@@ -172,6 +184,7 @@ namespace LamaPon
             {
             }
         }
+        // 検証・追加・操作するパネル
         for (const auto& panel : m_panels)
         {
             if (panel.extensionId == extensionId)
@@ -179,6 +192,7 @@ namespace LamaPon
                 m_pendingPanelVisibility[panel.id] = panel.open;
             }
         }
+        // 指定拡張の全パネルを取り除く(panel: 登録済みのパネル)。
         std::erase_if(
             m_panels,
             [&](const RegisteredEditorPanel& panel)
@@ -191,6 +205,7 @@ namespace LamaPon
 
     void EditorExtensionRegistry::Shutdown() noexcept
     {
+        // 検査・解除・更新する拡張
         for (auto extension = m_extensions.rbegin();
             extension != m_extensions.rend();
             ++extension)
@@ -214,6 +229,7 @@ namespace LamaPon
 
     void EditorExtensionRegistry::Update()
     {
+        // 検査・解除・更新する拡張
         for (const auto& extension : m_extensions)
         {
             if (extension.onUpdate)
@@ -225,6 +241,7 @@ namespace LamaPon
 
     void EditorExtensionRegistry::DrawPanels()
     {
+        // 検証・追加・操作するパネル
         for (auto& panel : m_panels)
         {
             if (panel.open)
@@ -237,6 +254,7 @@ namespace LamaPon
     void EditorExtensionRegistry::ResetPanelVisibility() noexcept
     {
         m_pendingPanelVisibility.clear();
+        // 検証・追加・操作するパネル
         for (auto& panel : m_panels)
         {
             panel.open = panel.defaultOpen;
@@ -246,6 +264,7 @@ namespace LamaPon
     RegisteredEditorPanel* EditorExtensionRegistry::FindPanel(
         const std::string_view panelId) noexcept
     {
+        // 指定IDのパネルを探す(candidate: 登録済みのパネル)。
         const auto panel = std::ranges::find_if(
             m_panels,
             [&](const RegisteredEditorPanel& candidate)
@@ -258,6 +277,7 @@ namespace LamaPon
     const RegisteredEditorPanel* EditorExtensionRegistry::FindPanel(
         const std::string_view panelId) const noexcept
     {
+        // 指定IDのパネルを探す(candidate: 登録済みのパネル)。
         const auto panel = std::ranges::find_if(
             m_panels,
             [&](const RegisteredEditorPanel& candidate)
@@ -271,6 +291,7 @@ namespace LamaPon
         const std::string_view panelId,
         const bool open) noexcept
     {
+        // 検証・追加・操作するパネル
         auto* const panel = FindPanel(panelId);
         if (panel == nullptr)
         {
@@ -284,6 +305,7 @@ namespace LamaPon
         const std::string_view panelId,
         const bool open)
     {
+        // 検証・追加・操作するパネル
         if (auto* const panel = FindPanel(panelId))
         {
             panel->open = open;
@@ -298,6 +320,7 @@ namespace LamaPon
     bool EditorExtensionRegistry::IsPanelOpen(
         const std::string_view panelId) const noexcept
     {
+        // 検証・追加・操作するパネル
         const auto* const panel = FindPanel(panelId);
         return panel != nullptr && panel->open;
     }

@@ -24,14 +24,20 @@ namespace
 {
     using VersionComponents = std::vector<std::uint32_t>;
 
+    // OS本来のアーキテクチャがARM64か判定します。
     [[nodiscard]] bool IsHostArm64() noexcept;
 
+    // ドット区切りの数字を版数成分へ分け、不正なら空を返します(text: 解析する版数表記)。
     [[nodiscard]] VersionComponents ParseVersionComponents(
         const std::wstring& text)
     {
+        // 版数成分または最新ツールパス
         VersionComponents result;
+        // 取得または解析中の値
         std::uint32_t value{};
+        // 版数成分に数字があるか
         bool hasDigits = false;
+        // 解析または変換する文字
         for (const wchar_t character : text)
         {
             if (std::iswdigit(character) != 0)
@@ -59,6 +65,7 @@ namespace
         return result;
     }
 
+    // VsDevCmdの既定配置からVSエディションの基準パスを返します(devCommand: VS環境バッチのパス)。
     [[nodiscard]] std::filesystem::path VisualStudioEditionRoot(
         const std::filesystem::path& devCommand)
     {
@@ -68,18 +75,24 @@ namespace
             .parent_path();
     }
 
+    // 版数成分の比較で最新のMSVCツールセットを選びます(devCommand: VS環境バッチのパス)。
     [[nodiscard]] std::filesystem::path FindLatestMsvcToolsetRoot(
         const std::filesystem::path& devCommand)
     {
+        // MSVCツールセットの親パス
         const auto toolsets = VisualStudioEditionRoot(devCommand)
             / "VC" / "Tools" / "MSVC";
+        // 版数成分または最新ツールパス
         std::filesystem::path result;
+        // 現在の最新ツールセット版数
         VersionComponents resultVersion;
+        // ツール列挙の失敗状態
         std::error_code scanError;
         if (!std::filesystem::is_directory(toolsets, scanError))
         {
             return {};
         }
+        // 走査中のツールセット
         for (const auto& entry : std::filesystem::directory_iterator(
                 toolsets,
                 std::filesystem::directory_options::skip_permission_denied,
@@ -90,6 +103,7 @@ namespace
                 scanError.clear();
                 continue;
             }
+            // ツール版数かVS年度フォルダー
             const auto version = ParseVersionComponents(
                 entry.path().filename().wstring());
             if (!version.empty()
@@ -106,6 +120,7 @@ namespace
         return result;
     }
 
+    // OSのホスト種別に合う最新ツールセットのx64用clを探します(devCommand: VS環境バッチのパス)。
     [[nodiscard]] std::filesystem::path FindMsvcCompiler(
         const std::filesystem::path& devCommand)
     {
@@ -113,39 +128,47 @@ namespace
         {
             return {};
         }
+        // 最新MSVCツールセットのパス
         const auto toolsetRoot = FindLatestMsvcToolsetRoot(devCommand);
+        // コンパイラーのホスト種別
         const auto hostDirectory = IsHostArm64()
             ? L"Hostarm64"
             : L"Hostx64";
+        // x64ターゲットのフォルダー名
         const auto targetDirectory = IsHostArm64()
             ? L"amd64"
             : L"x64";
+        // 選択したcl実行ファイルのパス
         const auto compiler = toolsetRoot
             / L"bin"
             / hostDirectory
             / targetDirectory
             / L"cl.exe";
+        // ファイル操作の失敗状態
         std::error_code error;
         return std::filesystem::is_regular_file(compiler, error)
             ? compiler
             : std::filesystem::path{};
     }
 
-    // VsDevCmd.bat（MSVCの環境変数を整えるバッチ）を探します。
-    // 複数入っている場合は、インストール先の文字列順ではなく
-    // 実際のMSVCツールセットの版数が新しいものを優先します。
+
+    // MSVCツールセットの版数が新しいVS環境バッチを選びます。
     [[nodiscard]] std::filesystem::path
         FindVisualStudioDevCommand()
     {
+        // VSのインストール基準パス
         const std::filesystem::path visualStudioRoot{
             L"C:\\Program Files\\Microsoft Visual Studio"
         };
+        // VS環境バッチの候補一覧
         std::vector<std::filesystem::path> candidates;
+        // ツール列挙の失敗状態
         std::error_code scanError;
         if (std::filesystem::is_directory(
             visualStudioRoot,
             scanError))
         {
+            // ツール版数かVS年度フォルダー
             for (const auto& version :
                 std::filesystem::directory_iterator(
                     visualStudioRoot,
@@ -158,6 +181,7 @@ namespace
                     scanError.clear();
                     continue;
                 }
+                // VSエディションのフォルダー
                 for (const auto& edition :
                     std::filesystem::directory_iterator(
                         version.path(),
@@ -167,6 +191,7 @@ namespace
                 {
                     if (edition.is_directory(scanError))
                     {
+                        // VS環境バッチの候補パス
                         const auto candidate =
                             edition.path()
                             / "Common7"
@@ -184,16 +209,21 @@ namespace
                 scanError.clear();
             }
         }
+        // ツールセット版数の降順で候補を整列します(left: 左のVS環境バッチ, right: 右のVS環境バッチ)。
         std::ranges::sort(
             candidates,
             [](const auto& left, const auto& right)
             {
+                // 左候補のツールセット版数表記
                 const auto leftVersion = FindLatestMsvcToolsetRoot(left)
                     .filename().wstring();
+                // 右候補のツールセット版数表記
                 const auto rightVersion = FindLatestMsvcToolsetRoot(right)
                     .filename().wstring();
+                // 左候補の版数成分
                 const auto leftComponents = ParseVersionComponents(
                     leftVersion);
+                // 右候補の版数成分
                 const auto rightComponents = ParseVersionComponents(
                     rightVersion);
                 if (leftComponents != rightComponents)
@@ -207,24 +237,24 @@ namespace
             : candidates.front();
     }
 
-    // VS同梱のninja.exeを探します。
-    //
-    // NMake Makefilesはヘッダ依存の追跡が不完全で、更新後も古いobjを
-    // リンクする場合があるため、利用可能ならNinjaを使います。
-    //
-    // 見つからなければ空を返し、従来どおりNMakeへ戻ります。
+
+    // 選択したVSに同梱されたNinjaを探し、無ければ空を返します。
     [[nodiscard]] std::filesystem::path FindNinja()
     {
+        // 選択したVS環境バッチのパス
         const auto devCommand = FindVisualStudioDevCommand();
         if (devCommand.empty())
         {
             return {};
         }
+        // 選択したVSエディションのパス
         const auto editionRoot = VisualStudioEditionRoot(devCommand);
+        // VS同梱Ninjaの実行ファイル
         const auto ninja =
             editionRoot
             / "Common7" / "IDE" / "CommonExtensions"
             / "Microsoft" / "CMake" / "Ninja" / "ninja.exe";
+        // ファイル操作の失敗状態
         std::error_code error;
         if (std::filesystem::is_regular_file(ninja, error))
         {
@@ -233,32 +263,37 @@ namespace
         return {};
     }
 
-    // 既存のビルドディレクトリが別のジェネレーター、ソースツリー、
-    // コンパイラーで作られていたら捨てます。CMakeはこれらの変更を
-    // 同じキャッシュへ適用できないため、残したままだと再構成に失敗します。
+
+    // ジェネレーター・ソース・clの不一致時に既存ビルドを削除します(buildDirectory: 比較と削除の対象, generator: 今回のジェネレーター名, sourceDirectory: 今回のCMakeソースパス, compiler: 今回のclパス・空なら不比較)。
     void DiscardStaleBuildDirectory(
         const std::filesystem::path& buildDirectory,
         const std::wstring& generator,
         const std::filesystem::path& sourceDirectory,
         const std::filesystem::path& compiler) noexcept
     {
+        // ファイル操作の失敗状態
         std::error_code error;
+        // 既存のCMakeキャッシュパス
         const auto cache = buildDirectory / L"CMakeCache.txt";
         if (!std::filesystem::is_regular_file(cache, error))
         {
             return;
         }
+        // 既存CMakeキャッシュの入力
         std::ifstream input(cache);
         if (!input)
         {
             return;
         }
+        // 今回要求するジェネレーター行
         const std::string expected =
             "CMAKE_GENERATOR:INTERNAL="
             + LamaPon::PathToUtf8(generator);
+        // 区切りと大小文字を揃えてパスを比較します(value: 正規化するパス文字列)。
         const auto normalizeCachePath = [](std::string value)
         {
             std::ranges::replace(value, '\\', '/');
+            // パスを小文字へ揃えます(character: 変換する文字)。
             std::ranges::transform(
                 value,
                 value.begin(),
@@ -270,11 +305,15 @@ namespace
                 });
             return value;
         };
+        // 正規化した今回のclパス
         const auto expectedCompiler = normalizeCachePath(
             LamaPon::PathToUtf8(compiler));
+        // 正規化した今回のソースパス
         const auto expectedSource = normalizeCachePath(
             LamaPon::PathToUtf8(sourceDirectory));
+        // 既存の構成が不一致か
         bool discard = false;
+        // キャッシュまたはmanifestの行
         std::string line;
         while (std::getline(input, line))
         {
@@ -289,7 +328,9 @@ namespace
             }
             if (line.starts_with("CMAKE_HOME_DIRECTORY:"))
             {
+                // キャッシュの値の区切り位置
                 const auto separator = line.find('=');
+                // 既存キャッシュのソースパス
                 const auto actualSource = separator == std::string::npos
                     ? std::string{}
                     : normalizeCachePath(
@@ -304,7 +345,9 @@ namespace
             if (!compiler.empty()
                 && line.starts_with("CMAKE_CXX_COMPILER:"))
             {
+                // キャッシュの値の区切り位置
                 const auto separator = line.find('=');
+                // 既存キャッシュのclパス
                 const auto actualCompiler = separator == std::string::npos
                     ? std::string{}
                     : normalizeCachePath(
@@ -326,14 +369,13 @@ namespace
         }
     }
 
-    // OSの実アーキテクチャがARM64かどうか。
-    //
-    // GetNativeSystemInfoはエミュレーション中のx64プロセスから呼ぶと
-    // AMD64を返してしまう（見た目のアーキテクチャしか分からない）ので、
-    // IsWow64Process2で本当のマシンを訊きます。
+
+    // エミュレーション中もOS本来の種別でARM64か判定します。
     [[nodiscard]] bool IsHostArm64() noexcept
     {
+        // プロセスのアーキテクチャ
         USHORT processMachine{};
+        // OS本来のアーキテクチャ
         USHORT nativeMachine{};
         if (IsWow64Process2(
                 GetCurrentProcess(),
@@ -346,9 +388,11 @@ namespace
         return false;
     }
 
+    // 環境変数の文字列をパスとして読み、取得できなければ空を返します(name: 読み取る環境変数名)。
     [[nodiscard]] std::filesystem::path EnvironmentPath(
         const wchar_t* name)
     {
+        // 環境変数読込に必要な文字数
         const DWORD required = GetEnvironmentVariableW(
             name,
             nullptr,
@@ -357,7 +401,9 @@ namespace
         {
             return {};
         }
+        // 環境変数の読込バッファ
         std::wstring value(required, L'\0');
+        // 環境変数から取得した文字数
         const DWORD written = GetEnvironmentVariableW(
             name,
             value.data(),
@@ -370,9 +416,11 @@ namespace
         return value;
     }
 
+    // 拡張UNCも含めて判定し、ローカルの拡張長・デバイスパスを除外します(path: 調べるパス)。
     [[nodiscard]] bool IsUncPath(
         const std::filesystem::path& path) noexcept
     {
+        // 取得または解析中の値
         auto value = path.native();
         std::ranges::replace(value, L'/', L'\\');
         if (value.starts_with(L"\\\\?\\UNC\\")
@@ -380,8 +428,7 @@ namespace
         {
             return true;
         }
-        // 拡張長のローカルパス（\\?\C:\...）とデバイスパス（\\.\...）は、
-        // 先頭に区切り文字が2つあってもネットワークパスではありません。
+        // 拡張長のローカルパス（\\?\C:\...）とデバイスパス（\\.\...）は、先頭に区切り文字が2つあってもネットワークパスではありません。
         if (value.starts_with(L"\\\\?\\")
             || value.starts_with(L"\\\\.\\"))
         {
@@ -390,16 +437,19 @@ namespace
         return value.starts_with(L"\\\\");
     }
 
+    // UNCまたはリモートドライブか調べ、判定失敗時はfalseを返します(projectRoot: 調べるプロジェクトのパス)。
     [[nodiscard]] bool UsesNetworkDrive(
         const std::filesystem::path& projectRoot) noexcept
     {
         try
         {
+            // プロジェクトの絶対パス
             const auto absolute = std::filesystem::absolute(projectRoot);
             if (IsUncPath(absolute))
             {
                 return true;
             }
+            // プロジェクトのドライブ基準
             const auto root = absolute.root_path();
             return !root.empty()
                 && GetDriveTypeW(root.c_str()) == DRIVE_REMOTE;
@@ -410,39 +460,46 @@ namespace
         }
     }
 
+    // 正規化したパスを小文字化してキャッシュ識別用にハッシュ化します(projectRoot: 識別するプロジェクトのパス)。
     [[nodiscard]] std::wstring ProjectCacheKey(
         const std::filesystem::path& projectRoot)
     {
+        // 弱く正規化した絶対パス
         auto normalized = std::filesystem::weakly_canonical(
             std::filesystem::absolute(projectRoot)).native();
+        // パスかソース内容の64bitハッシュ
         std::uint64_t hash = 14695981039346656037ull;
+        // 解析または変換する文字
         for (const wchar_t character : normalized)
         {
+            // 小文字化したパス文字の数値
             const auto folded = static_cast<std::uint64_t>(
                 std::towlower(character));
             hash ^= folded;
             hash *= 1099511628211ull;
         }
+        // キャッシュ識別子の16進出力
         std::wostringstream stream;
         stream << std::hex << std::setw(16) << std::setfill(L'0')
             << hash;
         return stream.str();
     }
 
-    // 実行中のLamaPonRuntime.dll自身のビルド時刻。GameModuleHostは
-    // 「DLLがこれより古ければ読み込まない」安全弁を持つため、
-    // 自動ビルドの判定も同じ基準を見る必要があります。
-    // DLLをロードしていないプロセス（テスト等）では、実行ファイルの
-    // 隣にあるDLLのファイル時刻で代用します。
+
+    // 稼働中のRuntimeか実行ファイル隣のRuntimeの更新時刻を取得します(writeTime: 取得した時刻の出力先)。
     [[nodiscard]] bool TryGetRuntimeWriteTime(
         std::filesystem::file_time_type& writeTime) noexcept
     {
+        // 稼働中または隣接するRuntime
         std::filesystem::path runtimePath;
+        // 既存Runtimeの借用ハンドル
         if (const HMODULE runtime =
                 GetModuleHandleW(L"LamaPonRuntime.dll");
             runtime != nullptr)
         {
+            // Runtimeのファイル名バッファ
             std::wstring path(MAX_PATH, L'\0');
+            // 取得したDLLパスの文字数
             const DWORD length = GetModuleFileNameW(
                 runtime,
                 path.data(),
@@ -458,7 +515,9 @@ namespace
             runtimePath = LamaPon::ExecutableDirectory()
                 / L"LamaPonRuntime.dll";
         }
+        // ファイル操作の失敗状態
         std::error_code error;
+        // Runtimeの更新時刻
         const auto time =
             std::filesystem::last_write_time(runtimePath, error);
         if (error)
@@ -469,16 +528,18 @@ namespace
         return true;
     }
 
+    // 環境変数指定を優先し、次にユーザー領域、最後にシステムの一時領域を選びます。
     [[nodiscard]] std::filesystem::path LocalBuildCacheRoot()
     {
-        // テストや管理環境では保存先を明示できます。未指定なら、
-        // エンジンを更新しても残るユーザー単位のキャッシュです。
+
+        // 環境変数で指定したキャッシュ先
         if (const auto overrideRoot = EnvironmentPath(
                 L"LAMAPON_GAME_MODULE_CACHE_ROOT");
             !overrideRoot.empty())
         {
             return overrideRoot;
         }
+        // ユーザーのローカルデータ保存先
         if (const auto localAppData = EnvironmentPath(L"LOCALAPPDATA");
             !localAppData.empty())
         {
@@ -494,21 +555,28 @@ namespace
 
 namespace LamaPon
 {
+    // ソースとDLL・Runtimeの更新時刻から再ビルドの要否を調べます(projectRoot: プロジェクトの基準パス, requestedOutputModule: 判定対象DLL・空なら既定)。
     GameModuleBuildState InspectGameModuleBuildState(
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& requestedOutputModule) noexcept
     {
+        // ソースとDLLのビルド判定状態
         GameModuleBuildState state;
         try
         {
+            // 対象ソースを走査するassets
             const auto assetRoot = projectRoot / L"assets";
+            // 最も新しいソースの更新時刻
             std::filesystem::file_time_type latestSource{};
+            // ファイル操作の失敗状態
             std::error_code error;
             if (std::filesystem::is_directory(assetRoot, error))
             {
+                // 権限エラーを飛ばす走査設定
                 const auto options =
                     std::filesystem::directory_options::
                         skip_permission_denied;
+                // ソース走査の位置
                 for (std::filesystem::recursive_directory_iterator
                         iterator{ assetRoot, options, error };
                     iterator
@@ -525,7 +593,9 @@ namespace LamaPon
                         error.clear();
                         continue;
                     }
+                    // 比較用に小文字化する拡張子
                     auto extension = iterator->path().extension().wstring();
+                    // 拡張子を小文字へ揃えます(character: 変換する文字)。
                     std::ranges::transform(
                         extension,
                         extension.begin(),
@@ -541,6 +611,7 @@ namespace LamaPon
                         continue;
                     }
                     state.hasSources = true;
+                    // 走査したソースの更新時刻
                     const auto writeTime =
                         iterator->last_write_time(error);
                     if (!error)
@@ -553,6 +624,7 @@ namespace LamaPon
                 }
             }
 
+            // 判定対象のDLLパス
             const auto output = requestedOutputModule.empty()
                 ? projectRoot
                     / L".lamapon"
@@ -562,6 +634,7 @@ namespace LamaPon
             state.outputExists =
                 std::filesystem::is_regular_file(output, error);
             error.clear();
+            // 出力DLLの更新時刻
             std::filesystem::file_time_type outputTime{};
             if (state.outputExists)
             {
@@ -574,10 +647,8 @@ namespace LamaPon
                     error.clear();
                 }
             }
-            // エンジンを建て直した直後はDLLがRuntimeより古くなり、
-            // GameModuleHostが読み込みを拒否する（ユーザーには
-            // 「再生しても何も始まらない」に見える）。ソースが
-            // 変わっていなくても、この状態は再ビルドが必要。
+
+            // Runtimeの更新時刻
             std::filesystem::file_time_type runtimeTime{};
             state.staleAgainstRuntime = state.outputExists
                 && TryGetRuntimeWriteTime(runtimeTime)
@@ -589,12 +660,12 @@ namespace LamaPon
         }
         catch (...)
         {
-            // 自動判定に失敗してもEditor起動を妨げません。手動ビルドは
-            // 従来どおり利用できます。
+            // 判定失敗時も起動を続け、取得できた状態を返します。
         }
         return state;
     }
 
+    // ネットワーク保存先か明示された保存先指定を判定します。
     bool ShouldUseLocalGameModuleBuildCache(
         const std::filesystem::path& projectRoot) noexcept
     {
@@ -603,6 +674,7 @@ namespace LamaPon
                 L"LAMAPON_GAME_MODULE_CACHE_ROOT").empty();
     }
 
+    // 依存設定を出力し、構成・ビルド・配置・ログ転送のコマンドを組み立てます。
     GameModuleBuildCommand MakeGameModuleBuildCommand(
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& engineRoot,
@@ -618,6 +690,7 @@ namespace LamaPon
                 "Game Module configuration must be Debug, Release,"
                 " RelWithDebInfo, or MinSizeRel.");
         }
+        // Game ModuleのCMakeソースパス
         const auto moduleSourceDirectory =
             engineRoot / L"tools" / L"ProjectGameModule";
         if (!std::filesystem::is_regular_file(
@@ -634,31 +707,34 @@ namespace LamaPon
                 "LamaPonRuntime.libがEditorと同じフォルダーにありません");
         }
 
+        // プロジェクト内の管理パス
         const auto lamaponDirectory =
             projectRoot / L".lamapon";
         std::filesystem::create_directories(
             lamaponDirectory);
 
-        // パッケージが持ち込むネイティブ依存をCMakeへ渡します。
-        // 壊れたnative指定は、リンカーの読みにくいエラーになる前に
-        // ここで止めます。SDK本体が未配置のパッケージは警告して
-        // native設定を外し、SDKなしのアダプターとしてビルドします。
+        // native宣言の不正は拒否し、SDK未配置の依存は警告してマクロごと除外します。
+        // native宣言の走査結果
         const auto packageScan =
             ScanPackageNativeDependencies(
                 projectRoot / L"assets");
         if (!packageScan.errors.empty())
         {
+            // 宣言失敗をまとめた通知文
             std::string message =
                 "パッケージのnative設定を読めません:";
+            // 個別のnative宣言の失敗理由
             for (const auto& failure : packageScan.errors)
             {
                 message += "\n  - " + failure;
             }
             throw std::runtime_error(message);
         }
+        // ファイルが揃った依存と不足説明
         const auto nativeSelection =
             SelectAvailablePackageNativeDependencies(
                 packageScan.packages);
+        // 除外したnative依存の理由
         for (const auto& missing : nativeSelection.missing)
         {
             Logger::Instance().Warning(missing);
@@ -667,6 +743,7 @@ namespace LamaPon
             lamaponDirectory / L"package-native.cmake",
             nativeSelection.available);
 
+        // 構築するビルドコマンドとパス
         GameModuleBuildCommand command;
         command.logPath =
             lamaponDirectory
@@ -683,10 +760,12 @@ namespace LamaPon
                 / Utf8ToWide(configuration)
                 / L"game-module"
             : lamaponDirectory / L"build" / L"game-module";
+        // ビルド中のDLL出力先
         const auto workingOutputDirectory =
             command.usesLocalBuildCache
                 ? command.buildDirectory.parent_path() / L"bin"
                 : command.outputModule.parent_path();
+        // ビルド中のログ出力先
         const auto workingLogPath = command.usesLocalBuildCache
             ? command.buildDirectory.parent_path()
                 / L"game-module-build.log"
@@ -694,6 +773,7 @@ namespace LamaPon
         std::filesystem::create_directories(
             command.buildDirectory.parent_path());
 
+        // 引用符で囲ったログパス
         const auto quotedLogPath =
             L"\""
             + workingLogPath.wstring()
@@ -701,15 +781,13 @@ namespace LamaPon
         command.parameters = command.usesLocalBuildCache
             ? L"/d /v:on /c \"("
             : L"/d /c";
+        // 選択したVS環境バッチのパス
         const auto devCommand = FindVisualStudioDevCommand();
+        // 選択したcl実行ファイルのパス
         const auto compiler = FindMsvcCompiler(devCommand);
         if (!devCommand.empty())
         {
-            // Game ModuleはLamaPonRuntime.dll（x64）とリンクするので
-            // ターゲットは常にx64です。ホストがARM64（Windows on ARM）
-            // のときはARM64ホストのクロスコンパイラを使います。
-            // x64ホスト版をエミュレーションで回すより速く、環境に
-            // よってはx64ホスト版が入っていないこともあるためです。
+            // ターゲットは常にx64とし、ARM64ホストではクロスコンパイラーを使います。
             command.parameters +=
                 IsHostArm64()
                     ? L" call \""
@@ -721,17 +799,12 @@ namespace LamaPon
                         + L"\" -arch=x64 -host_arch=x64"
                           L" > nul 2>&1 &&";
         }
-        // CMakeはMSVCの /showIncludes 接頭辞を検出してNinjaへ渡します。
-        // 日本語Windowsの既定コードページのままだと、その接頭辞が
-        // rules.ninja内で文字化けしてdepsが0件になり、ヘッダ変更後に
-        // 古いobjを再利用して構造体レイアウトが混在します。configureと
-        // buildの両方をUTF-8コンソールで動かし、検出文字列とcl出力の
-        // エンコーディングを一致させます。
+        // ヘッダー依存の検出文字列とcl出力を一致させるため、構成とビルドの両方をUTF-8にします。
         command.parameters += L" chcp 65001 > nul &&";
-        // NMakeはヘッダ依存の追跡が不完全で、エンジンのヘッダを
-        // 更新しても古いobjをリンクします。Ninjaがあればそちらを
-        // 使います（エンジン本体のビルドも同じ理由でNinja）。
+
+        // VS同梱Ninjaの実行ファイル
         const auto ninja = FindNinja();
+        // 使用するCMakeジェネレーター
         const std::wstring generator = ninja.empty()
             ? L"NMake Makefiles"
             : L"Ninja";
@@ -760,8 +833,7 @@ namespace LamaPon
             + std::to_wstring(GameModuleApiVersion);
         if (!compiler.empty())
         {
-            // CMakeCache.txtに残る古いcl.exeを使わないよう、検出した
-            // ツールセットを毎回明示します。
+            // CMakeCache.txtに残る古いcl.exeを使わないよう、検出したツールセットを毎回明示します。
             command.parameters +=
                 L" -DCMAKE_CXX_COMPILER:FILEPATH=\""
                 + compiler.wstring()
@@ -769,8 +841,7 @@ namespace LamaPon
         }
         if (!ninja.empty())
         {
-            // VSのDev PromptでもninjaはPATHに無いことがあるので
-            // 絶対パスで渡します。
+            // VSのDev PromptでもninjaはPATHに無いことがあるので絶対パスで渡します。
             command.parameters +=
                 L" -DCMAKE_MAKE_PROGRAM:FILEPATH=\""
                 + ninja.wstring()
@@ -793,10 +864,7 @@ namespace LamaPon
             + L" 2>&1";
         if (command.usesLocalBuildCache)
         {
-            // )までの終了コードを保存し、成功・失敗どちらでもログを
-            // projectへ1回だけコピーします。途中ログをWebDAVへ流し
-            // 続けないためです。DLLの配置はCMakeのPOST_BUILDなので、
-            // リンク失敗時に前回の正常DLLを壊しません。
+            // 終了コードを保ち、DLLはビルド成功時だけ、ログは成否に関わらず一度だけプロジェクトへ戻します。
             command.parameters +=
                 L") & set \"lamapon_build_exit=!errorlevel!\""
                 L" & if !lamapon_build_exit! equ 0 ("
@@ -821,38 +889,44 @@ namespace LamaPon
         return command;
     }
 
+    // 内容ハッシュが変わったソースの時刻を更新し、今回のハッシュを保存します。
     int RefreshStaleGameModuleSources(
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& buildDirectory) noexcept
     {
-        // 内容が前回ビルドから変わったのに更新時刻が動いていない
-        // ソースを検出し、時刻を現在へ進めます（宣言側のコメント参照）。
-        // マニフェストは「FNV-1aハッシュ<タブ>相対パス」のテキスト。
-        // JSONにしないのは、この関数を失敗させないため（依存最小）。
+        // manifestは十進の内容ハッシュとUTF-8相対パスをタブで区切ります。
         try
         {
+            // 対象ソースを走査するassets
             const auto assetRoot = projectRoot / L"assets";
+            // ファイル操作の失敗状態
             std::error_code error;
             if (!std::filesystem::is_directory(assetRoot, error) || error)
             {
                 return 0;
             }
 
+            // ソース内容のハッシュを取得します(file: 読込対象のパス, outHash: ハッシュの出力先)。
             const auto hashFile = [](const std::filesystem::path& file,
                                      std::uint64_t& outHash)
             {
+                // 内容ハッシュ用のソース入力
                 std::ifstream input(file, std::ios::binary);
                 if (!input)
                 {
                     return false;
                 }
-                // FNV-1a 64bit。速く・依存なく・十分に衝突しにくい
+
+                // パスかソース内容の64bitハッシュ
                 std::uint64_t hash = 1469598103934665603ull;
+                // 内容ハッシュ用の読込バッファ
                 char buffer[4096];
                 while (input.read(buffer, sizeof(buffer))
                     || input.gcount() > 0)
                 {
+                    // 読み取ったソースのバイト数
                     const auto count = input.gcount();
+                    // ハッシュへ加えるバイトの添字
                     for (std::streamsize i = 0; i < count; ++i)
                     {
                         hash ^= static_cast<unsigned char>(buffer[i]);
@@ -867,14 +941,16 @@ namespace LamaPon
                 return true;
             };
 
-            // 前回のマニフェストを読む（キーはUTF-8の相対パス。
-            // wstreamのロケール変換は非ASCIIファイル名を壊すので
-            // ナローで読み書きする）
+
+            // ソース内容ハッシュの保存パス
             const auto manifestPath =
                 buildDirectory / L"lamapon-source-hashes.txt";
+            // 前回の相対パス別ハッシュ
             std::map<std::string, std::uint64_t> previous;
             {
+                // 前回の内容ハッシュmanifest入力
                 std::ifstream input(manifestPath, std::ios::binary);
+                // キャッシュまたはmanifestの行
                 std::string line;
                 while (std::getline(input, line))
                 {
@@ -882,12 +958,15 @@ namespace LamaPon
                     {
                         line.pop_back();
                     }
+                    // ハッシュと相対パスの区切り
                     const auto tab = line.find('\t');
                     if (tab == std::string::npos)
                     {
                         continue;
                     }
+                    // 取得または解析中の値
                     std::uint64_t value = 0;
+                    // 解析または変換する文字
                     for (const char character :
                         line.substr(0, tab))
                     {
@@ -907,10 +986,14 @@ namespace LamaPon
                 }
             }
 
+            // 更新時刻を変更したファイル数
             int touched = 0;
+            // 今回の相対パスとハッシュ一覧
             std::vector<std::pair<std::string, std::uint64_t>> current;
+            // 権限エラーを飛ばす走査設定
             const auto options = std::filesystem::directory_options::
                 skip_permission_denied;
+            // ソース走査の位置
             for (std::filesystem::recursive_directory_iterator
                     iterator{ assetRoot, options, error };
                 iterator
@@ -927,8 +1010,10 @@ namespace LamaPon
                     error.clear();
                     continue;
                 }
+                // 比較用に小文字化する拡張子
                 auto extension =
                     iterator->path().extension().wstring();
+                // 拡張子を小文字へ揃えます(character: 変換する文字)。
                 std::ranges::transform(
                     extension,
                     extension.begin(),
@@ -943,11 +1028,13 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // パスかソース内容の64bitハッシュ
                 std::uint64_t hash = 0;
                 if (!hashFile(iterator->path(), hash))
                 {
                     continue;
                 }
+                // assetsからの相対ソースパス
                 auto relative = std::filesystem::relative(
                     iterator->path(), assetRoot, error);
                 if (error)
@@ -955,19 +1042,19 @@ namespace LamaPon
                     error.clear();
                     continue;
                 }
+                // ソースのUTF-8相対パス
                 const auto key = PathToUtf8(relative);
                 current.emplace_back(key, hash);
 
+                // 前回のソースハッシュ検索結果
                 const auto found = previous.find(key);
                 if (found == previous.end()
                     || found->second == hash)
                 {
                     continue;
                 }
-                // 内容が変わっている。mtimeが動いていない可能性が
-                // あるので、現在時刻へ進めてNMakeに確実に拾わせる
-                // （変わったファイルはどのみち再コンパイル対象なので
-                //  常に進めて害はない）
+                // 更新時刻が動かないファイルも依存追跡に拾わせるため、内容変更時は更新時刻を進めます。
+                // ファイルまたは読込DLLのハンドル
                 const HANDLE handle = CreateFileW(
                     iterator->path().c_str(),
                     FILE_WRITE_ATTRIBUTES,
@@ -981,6 +1068,7 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // 設定する現在の更新時刻
                 FILETIME now{};
                 GetSystemTimeAsFileTime(&now);
                 if (SetFileTime(handle, nullptr, nullptr, &now))
@@ -990,16 +1078,18 @@ namespace LamaPon
                 CloseHandle(handle);
             }
 
-            // 現在のハッシュを記録します。ビルドに失敗した場合も、
-            // 更新した時刻と判定結果を次回の依存確認に使用します。
+            // ビルド成否に関わらず、更新時刻の判定に使った現在のハッシュを記録します。
+            // manifest保存先作成の失敗状態
             std::error_code createError;
             std::filesystem::create_directories(
                 buildDirectory, createError);
+            // 現在の内容ハッシュmanifest出力
             std::ofstream output(
                 manifestPath,
                 std::ios::binary | std::ios::trunc);
             if (output)
             {
+                // 相対パスと内容ハッシュの保存対象
                 for (const auto& [key, hash] : current)
                 {
                     output << std::to_string(hash) << '\t'
@@ -1013,16 +1103,18 @@ namespace LamaPon
             return 0;
         }
     }
+    // descriptorからAPI版数を読み、ロードしたDLLを解放します。
     std::optional<std::uint32_t> ReadGameModuleApiVersion(
         const std::filesystem::path& modulePath) noexcept
     {
+        // ファイル操作の失敗状態
         std::error_code error;
         if (!std::filesystem::is_regular_file(modulePath, error))
         {
             return std::nullopt;
         }
-        // 隣のLamaPonRuntime.dllを拾えるよう、DLLのあるフォルダを
-        // 検索パスへ加えて読みます。
+        // 隣のLamaPonRuntime.dllを拾えるよう、DLLのあるフォルダを検索パスへ加えて読みます。
+        // ファイルまたは読込DLLのハンドル
         const HMODULE handle = LoadLibraryExW(
             modulePath.c_str(),
             nullptr,
@@ -1031,17 +1123,18 @@ namespace LamaPon
         {
             return std::nullopt;
         }
-        // 呼ぶのはdescriptorを返すエクスポートだけです。
-        // ここはGameModuleHostが版数を弾くときに通るのと
-        // 同じ経路なので、版数違いでも安全に読めます。
+        // ゲーム起動用の関数を呼ばず、descriptorの共通先頭にある版数を読みます。
+        // DLLのdescriptor取得関数
         const auto getDescriptor =
             reinterpret_cast<GetGameModuleDescriptorFunction>(
                 GetProcAddress(
                     handle,
                     "LamaPonGetGameModule"));
+        // 読み取れたAPI版数
         std::optional<std::uint32_t> apiVersion;
         if (getDescriptor != nullptr)
         {
+            // DLL内のdescriptorへの借用参照
             if (const auto* descriptor = getDescriptor();
                 descriptor != nullptr)
             {

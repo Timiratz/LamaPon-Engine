@@ -11,7 +11,7 @@
 
 namespace LamaPon
 {
-    // 描画イベントをどの経路から出したかです。
+    // 描画イベントを発行した経路。
     enum class FrameDebugEventKind : std::uint8_t
     {
         // 通常の3D描画（GameObject::Render3D）。
@@ -24,7 +24,7 @@ namespace LamaPon
         InstancedBatch
     };
 
-    // 描画先の用途です。GraphicsDeviceのDepthPassKindと対応します。
+    // GraphicsDeviceのDepthPassKindに対応する描画先の用途。
     enum class FrameDebugPass : std::uint8_t
     {
         Color,
@@ -32,61 +32,69 @@ namespace LamaPon
         DepthPrepass
     };
 
-    // Componentが自分の描画内容を説明するための入れ物です。
-    // 分からない項目は空や0のままで構いません。
+    // 描画内容の説明で、不明な項目は空または0とする。
     struct FrameDebugDrawDescription final
     {
-        // 描く形状です（モデルのパス、プリミティブ名、画像など）。
+        // 形状名または画像・モデルのパス
         std::string geometry;
-        // マテリアル・シェーダー・テクスチャなどの見た目の指定です。
+        // 材質・シェーダー・画像の指定
         std::string material;
-        // 合成方式、深度、カリング、ワイヤーフレームなどの状態の要約です。
+        // 合成・深度・カリングの要約
         std::string state;
+        // 描画する頂点数
         std::uint64_t vertexCount{};
+        // 描画する三角形数
         std::uint64_t triangleCount{};
+        // 描画するインスタンス数
         std::uint32_t instanceCount{ 1 };
     };
 
     struct FrameDebugEvent final
     {
+        // フレーム内の0始まりの番号
         std::uint32_t index{};
+        // イベントを発行した経路
         FrameDebugEventKind kind{ FrameDebugEventKind::Draw3D };
+        // 描画先の用途
         FrameDebugPass pass{ FrameDebugPass::Color };
-        // 開いていたGPU区間を"/"で連結した経路です（例: 3D描画）。
+        // 開いたGPU区間を結ぶ経路
         std::string sectionPath;
+        // 描画物体の識別子
         std::uint64_t objectId{};
+        // 描画物体の名前
         std::string objectName;
+        // 描画コンポーネントの型名
         std::string componentType;
+        // 描画内容の説明
         FrameDebugDrawDescription description;
-        // 表示上限より後ろにあり、このフレームでは描かなかったイベントです。
+        // 上限以降で描画を省く有無
         bool skipped{};
     };
 
-    // フレームを構成する描画イベントを記録し、指定したイベントより後ろの
-    // 描画を飛ばすことで「そこまで描いた途中の絵」を作ります（Unityの
-    // Frame Debuggerに相当）。GPU区間の通知を受けてイベントをパスごとに
-    // 分類します。フレームの区切りはGraphicsDevice::EndFrame（Present）です。
-    //
-    // 無効の間は何も記録せず、SubmitDrawEventは常にtrueを返します。
+    // GPU区間に沿って描画イベントを記録し、上限以降の描画を省いて途中の画像を表示する。
+    // 無効時は記録せず、フレームの確定はGraphicsDeviceのPresent時に行う。
     class FrameDebugger final : public GpuSectionListener
     {
     public:
+        // 記録の有効状態を切り替え、処理中の記録を消去する(enabled: 有効にするフラグ)。
+        // 無効化で確定済み記録も消すが、上限と完了フレーム数は保持する。
         void SetEnabled(bool enabled) noexcept;
+        // 記録の有効状態を返す。
         [[nodiscard]] bool IsEnabled() const noexcept
         {
             return m_enabled;
         }
-        // limit番目（0始まり、この番号を含む）より後ろの描画を飛ばします。
-        // nulloptで全て描きます。無効の間は適用しません。
+        // 有効時に描画する最終番号を設定する(limit: 最終描画番号、空なら無制限)。
         void SetEventLimit(std::optional<std::uint32_t> limit) noexcept;
+        // 設定済みの描画イベント上限を返す。
         [[nodiscard]] std::optional<std::uint32_t>
             EventLimit() const noexcept
         {
             return m_limit;
         }
 
-        // 描画イベントを登録します。falseを返したときは、呼び出し側は
-        // その描画を飛ばしてください。記録に失敗した場合も描画は止めません。
+        // イベントを登録して描画すべきか返す(kind: 発行経路, pass: 描画先の用途, objectId: 物体の識別子, objectName: 物体名, componentType: コンポーネント名, description: 描画内容の説明)。
+        // falseなら呼出側で描画を省き、記録失敗でも番号の消費と上限判定は維持する。
         [[nodiscard]] bool SubmitDrawEvent(
             FrameDebugEventKind kind,
             FrameDebugPass pass,
@@ -95,35 +103,44 @@ namespace LamaPon
             std::string_view componentType,
             FrameDebugDrawDescription description) noexcept;
 
-        // 現在のフレームのイベントを確定し、次のフレームの記録を始めます。
+        // 有効時の記録を確定して次フレーム用に初期化する。
         void EndFrame() noexcept;
-        // 直前に確定したフレームのイベントです。
+        // 直近に確定したイベント一覧を借用する。
         [[nodiscard]] const std::vector<FrameDebugEvent>&
             LastFrameEvents() const noexcept
         {
             return m_lastFrame;
         }
-        // 確定したフレームの数です。表示側が更新を検出するために使います。
+        // 有効中に確定したフレームの累積数を返す。
         [[nodiscard]] std::uint64_t CompletedFrames() const noexcept
         {
             return m_completedFrames;
         }
 
+        // 有効時にGPU区間名を積み、記録失敗なら欠落数を増やす(name: 開始する区間名)。
         void OnGpuSectionBegin(std::string_view name) noexcept override;
+        // 欠落した開始を考慮してGPU区間の入れ子を閉じる。
         void OnGpuSectionEnd() noexcept override;
 
     private:
+        // 開いているGPU区間をスラッシュで連結した経路を返す。
         [[nodiscard]] std::string CurrentSectionPath() const;
 
+        // 開いているGPU区間名の一覧
         std::vector<std::string> m_sections;
+        // 処理中のフレームのイベント
         std::vector<FrameDebugEvent> m_currentFrame;
+        // 確定した直前フレームのイベント
         std::vector<FrameDebugEvent> m_lastFrame;
+        // 描画する最終イベント番号
         std::optional<std::uint32_t> m_limit;
+        // 確定済みの累積フレーム数
         std::uint64_t m_completedFrames{};
-        // 記録に失敗したイベントも番号を消費し、上限との対応を保ちます。
+        // 次のイベント番号、欠落も消費
         std::uint32_t m_nextIndex{};
-        // 記録に失敗して入れ子が崩れたときに、対応するEndを捨てる数です。
+        // 記録失敗で省いた区間開始の数
         std::size_t m_droppedSections{};
+        // 描画イベント記録の有効有無
         bool m_enabled{};
     };
 }

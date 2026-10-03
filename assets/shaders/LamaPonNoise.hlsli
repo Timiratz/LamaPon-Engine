@@ -1,25 +1,9 @@
-// ノイズ関数の共通実装（HLSL側）。
-//
-// 乱数との違い: 乱数は隣の座標でも値が飛びますが、ノイズは
-// 「近い座標なら近い値」という連続性があります。地形・雲・炎・
-// 水面・草の分布のように「自然なムラ」が欲しいときに使います。
-//
-// ★このファイルの実装は src/LamaPon/Core/Noise.h（C++）と
-//   完全に同じ値を返します。C++で地形メッシュを作り、シェーダーで
-//   同じノイズを使って色や草を乗せる、という組み合わせが成立します。
-//   片方を直したら必ず両方直してください（テストが一致を検査します）。
-//
-// 使い方（カスタムShaderの中で）:
-//   #include "LamaPonNoise.hlsli"
-//   float h = LamaPonFractalNoise2D(uv * 8.0, 5, 2.0, 0.5);
+// C++と同じ値を返す、シェーダー用ノイズ関数です。
+// 実装変更時はsrc/LamaPon/Core/Noise.hも更新し、CPU/GPUの一致を維持します。
 
 #ifndef LAMAPON_NOISE_INCLUDED
 #define LAMAPON_NOISE_INCLUDED
-
-// 整数格子の点から擬似乱数（0〜1）を作ります。sin を使う定番の
-// 手法は環境によって精度差が出るため、整数演算のハッシュを使います。
-// 【重要】uint演算で桁あふれ（ラップ）を前提にしているので、
-// C++側も uint32_t で同じ計算をしています。
+// 整数格子のハッシュを求めます(value: 格子点から作った整数値)。
 uint LamaPonNoiseHash(uint value)
 {
     value ^= value >> 16u;
@@ -30,28 +14,33 @@ uint LamaPonNoiseHash(uint value)
     return value;
 }
 
+// ハッシュの上位24ビットを0以上1未満へ変換します(hashed: ハッシュ値)。
 float LamaPonNoiseToFloat(uint hashed)
 {
-    // 上位24ビットを0〜1へ（float の仮数24ビットに収める）。
     return (float)(hashed >> 8u) / 16777216.0f;
 }
 
+// 1次元格子点のノイズ値を返します(x: 整数格子のX座標)。
 float LamaPonNoiseGrid1(int x)
 {
     return LamaPonNoiseToFloat(
         LamaPonNoiseHash((uint)x * 0x9e3779b9u));
 }
 
+// 2次元格子点のノイズ値を返します(x: 整数格子のX座標, y: 整数格子のY座標)。
 float LamaPonNoiseGrid2(int x, int y)
 {
+    // 格子点の整数ハッシュ値
     const uint hashed = LamaPonNoiseHash(
         (uint)x * 0x9e3779b9u
         + (uint)y * 0x85ebca6bu);
     return LamaPonNoiseToFloat(hashed);
 }
 
+// 3次元格子点のノイズ値を返します(x: 整数格子のX座標, y: 整数格子のY座標, z: 整数格子のZ座標)。
 float LamaPonNoiseGrid3(int x, int y, int z)
 {
+    // 格子点の整数ハッシュ値
     const uint hashed = LamaPonNoiseHash(
         (uint)x * 0x9e3779b9u
         + (uint)y * 0x85ebca6bu
@@ -59,19 +48,20 @@ float LamaPonNoiseGrid3(int x, int y, int z)
     return LamaPonNoiseToFloat(hashed);
 }
 
-// 補間の重み。5次のスムーズステップで、境目の傾きの不連続を
-// 消します（3次だと格子の線がうっすら見えます）。
+// 5次補間の重みを返します(t: 格子内の位置、0～1)。
 float LamaPonNoiseFade(float t)
 {
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-// Value Noise（格子点の値を補間）
-
+// 1次元Valueノイズを返します(x: サンプル座標)。
 float LamaPonValueNoise1D(float x)
 {
+    // X方向の格子原点
     const float floorX = floor(x);
+    // 格子点のX座標
     const int ix = (int)floorX;
+    // X方向の補間重み
     const float t = LamaPonNoiseFade(x - floorX);
     return lerp(
         LamaPonNoiseGrid1(ix),
@@ -79,18 +69,27 @@ float LamaPonValueNoise1D(float x)
         t);
 }
 
+// 2次元Valueノイズを返します(position: サンプル座標)。
 float LamaPonValueNoise2D(float2 position)
 {
+    // サンプル座標の格子原点
     const float2 floored = floor(position);
+    // 格子点のX座標
     const int ix = (int)floored.x;
+    // 格子点のY座標
     const int iy = (int)floored.y;
+    // 格子原点からの変位
     const float2 f = position - floored;
+    // X方向の補間重み
     const float tx = LamaPonNoiseFade(f.x);
+    // Y方向の補間重み
     const float ty = LamaPonNoiseFade(f.y);
+    // Y方向の下側での補間値
     const float bottom = lerp(
         LamaPonNoiseGrid2(ix, iy),
         LamaPonNoiseGrid2(ix + 1, iy),
         tx);
+    // Y方向の上側での補間値
     const float top = lerp(
         LamaPonNoiseGrid2(ix, iy + 1),
         LamaPonNoiseGrid2(ix + 1, iy + 1),
@@ -98,29 +97,42 @@ float LamaPonValueNoise2D(float2 position)
     return lerp(bottom, top, ty);
 }
 
+// 3次元Valueノイズを返します(position: サンプル座標)。
 float LamaPonValueNoise3D(float3 position)
 {
+    // サンプル座標の格子原点
     const float3 floored = floor(position);
+    // 格子点のX座標
     const int ix = (int)floored.x;
+    // 格子点のY座標
     const int iy = (int)floored.y;
+    // 格子点のZ座標
     const int iz = (int)floored.z;
+    // 格子原点からの変位
     const float3 f = position - floored;
+    // X方向の補間重み
     const float tx = LamaPonNoiseFade(f.x);
+    // Y方向の補間重み
     const float ty = LamaPonNoiseFade(f.y);
+    // Z方向の補間重み
     const float tz = LamaPonNoiseFade(f.z);
 
+    // 手前かつ下側の補間値
     const float z0Bottom = lerp(
         LamaPonNoiseGrid3(ix, iy, iz),
         LamaPonNoiseGrid3(ix + 1, iy, iz),
         tx);
+    // 手前かつ上側の補間値
     const float z0Top = lerp(
         LamaPonNoiseGrid3(ix, iy + 1, iz),
         LamaPonNoiseGrid3(ix + 1, iy + 1, iz),
         tx);
+    // 奥かつ下側の補間値
     const float z1Bottom = lerp(
         LamaPonNoiseGrid3(ix, iy, iz + 1),
         LamaPonNoiseGrid3(ix + 1, iy, iz + 1),
         tx);
+    // 奥かつ上側の補間値
     const float z1Top = lerp(
         LamaPonNoiseGrid3(ix, iy + 1, iz + 1),
         LamaPonNoiseGrid3(ix + 1, iy + 1, iz + 1),
@@ -131,49 +143,67 @@ float LamaPonValueNoise3D(float3 position)
         tz);
 }
 
-// Perlin Noise（格子点の傾きを補間）
-// 戻り値は0〜1へ収めています（元の定義は-1〜1）。
-
+// LamaPonNoiseGradient2(x: 整数格子X, y: 整数格子Y): 格子点用の8方向単位勾配を返します。
 float2 LamaPonNoiseGradient2(int x, int y)
 {
-    // 8方向から選びます（正規化済みの固定方向。乱数の偏りが
-    // 格子の縞として出るのを避けます）。
+    // hashed: 格子座標から選んだ勾配index。
     const uint hashed = LamaPonNoiseHash(
         (uint)x * 0x9e3779b9u
         + (uint)y * 0x85ebca6bu) & 7u;
+    // diagonal: 正規化した対角勾配の軸成分。
     const float diagonal = 0.70710678f;
+    // index 0は右向きです。
     if (hashed == 0u) { return float2(1.0f, 0.0f); }
+    // index 1は左向きです。
     if (hashed == 1u) { return float2(-1.0f, 0.0f); }
+    // index 2は上向きです。
     if (hashed == 2u) { return float2(0.0f, 1.0f); }
+    // index 3は下向きです。
     if (hashed == 3u) { return float2(0.0f, -1.0f); }
+    // index 4は右上向きです。
     if (hashed == 4u) { return float2(diagonal, diagonal); }
+    // index 5は左上向きです。
     if (hashed == 5u) { return float2(-diagonal, diagonal); }
+    // index 6は右下向きです。
     if (hashed == 6u) { return float2(diagonal, -diagonal); }
+    // 残るindex 7は左下向きです。
     return float2(-diagonal, -diagonal);
 }
 
+// 0～1の2次元Perlinノイズを返します(position: サンプル座標)。
 float LamaPonPerlinNoise2D(float2 position)
 {
+    // サンプル座標の格子原点
     const float2 floored = floor(position);
+    // 格子点のX座標
     const int ix = (int)floored.x;
+    // 格子点のY座標
     const int iy = (int)floored.y;
+    // 格子原点からの変位
     const float2 f = position - floored;
 
+    // 左下の勾配と変位の内積
     const float bottomLeft = dot(
         LamaPonNoiseGradient2(ix, iy),
         f - float2(0.0f, 0.0f));
+    // 右下の勾配と変位の内積
     const float bottomRight = dot(
         LamaPonNoiseGradient2(ix + 1, iy),
         f - float2(1.0f, 0.0f));
+    // 左上の勾配と変位の内積
     const float topLeft = dot(
         LamaPonNoiseGradient2(ix, iy + 1),
         f - float2(0.0f, 1.0f));
+    // 右上の勾配と変位の内積
     const float topRight = dot(
         LamaPonNoiseGradient2(ix + 1, iy + 1),
         f - float2(1.0f, 1.0f));
 
+    // X方向の補間重み
     const float tx = LamaPonNoiseFade(f.x);
+    // Y方向の補間重み
     const float ty = LamaPonNoiseFade(f.y);
+    // 勾配の内積を補間した値
     const float value = lerp(
         lerp(bottomLeft, bottomRight, tx),
         lerp(topLeft, topRight, tx),
@@ -182,22 +212,22 @@ float LamaPonPerlinNoise2D(float2 position)
     return saturate(value * 0.7071f + 0.5f);
 }
 
-// Fractal Noise（fBm。周波数を重ねて細部を作る）
-// octaves: 重ねる回数（多いほど細かい。5前後が定番）
-// lacunarity: 1回ごとに周波数を何倍にするか（2.0が定番）
-// gain: 1回ごとに振幅を何倍にするか（0.5が定番）
-
+// Valueノイズを重ねて振幅和で正規化します(position: サンプル座標, octaves: 合成回数、最大8, lacunarity: 周波数倍率, gain: 振幅倍率)。
 float LamaPonFractalNoise2D(
     float2 position,
     int octaves,
     float lacunarity,
     float gain)
 {
+    // 振幅を掛けたノイズ値の和
     float total = 0.0f;
+    // 現在の合成層の振幅
     float amplitude = 1.0f;
+    // 合成した振幅の和
     float normalization = 0.0f;
+    // 合成層のサンプル座標
     float2 sample = position;
-    // ループ回数を定数上限で抑えます（シェーダーで展開できるように）。
+    // 現在の合成層の番号
     [loop]
     for (int octave = 0; octave < 8; ++octave)
     {
@@ -215,16 +245,22 @@ float LamaPonFractalNoise2D(
         : 0.0f;
 }
 
+// Perlinノイズを重ねて振幅和で正規化します(position: サンプル座標, octaves: 合成回数、最大8, lacunarity: 周波数倍率, gain: 振幅倍率)。
 float LamaPonFractalPerlin2D(
     float2 position,
     int octaves,
     float lacunarity,
     float gain)
 {
+    // 振幅を掛けたノイズ値の和
     float total = 0.0f;
+    // 現在の合成層の振幅
     float amplitude = 1.0f;
+    // 合成した振幅の和
     float normalization = 0.0f;
+    // 合成層のサンプル座標
     float2 sample = position;
+    // 現在の合成層の番号
     [loop]
     for (int octave = 0; octave < 8; ++octave)
     {
@@ -242,26 +278,32 @@ float LamaPonFractalPerlin2D(
         : 0.0f;
 }
 
-// Worley Noise（セル状の模様）
-// 一番近い「種」までの距離を返します（0で種の位置、1で遠い）。
-
+// 最近傍の種までの距離を0～1に収めて返します(position: サンプル座標)。
 float LamaPonWorleyNoise2D(float2 position)
 {
+    // サンプル座標の格子原点
     const float2 floored = floor(position);
+    // 格子原点からの変位
     const float2 f = position - floored;
+    // 種までの最小二乗距離
     float nearest = 1.0e9f;
+    // 隣接セルのY方向の差
     [unroll]
     for (int offsetY = -1; offsetY <= 1; ++offsetY)
     {
+        // 隣接セルのX方向の差
         [unroll]
         for (int offsetX = -1; offsetX <= 1; ++offsetX)
         {
+            // 隣接セルのX座標
             const int cellX = (int)floored.x + offsetX;
+            // 隣接セルのY座標
             const int cellY = (int)floored.y + offsetY;
-            // セルの中の種の位置（x・y別々のハッシュ）。
+            // セル内の種の座標
             const float2 seed = float2(
                 LamaPonNoiseGrid2(cellX, cellY),
                 LamaPonNoiseGrid2(cellY, cellX));
+            // 種までの変位
             const float2 delta =
                 float2(offsetX, offsetY) + seed - f;
             nearest = min(nearest, dot(delta, delta));
@@ -270,26 +312,27 @@ float LamaPonWorleyNoise2D(float2 position)
     return saturate(sqrt(nearest));
 }
 
-// Curl Noise（パーティクルに使う渦状の流れ）
-// 発散のない（湧き出しも吸い込みもない）流れになるので、
-// 煙や水の渦に向いています。
-
+// Perlinノイズの勾配を回転した渦の流れを返します(position: サンプル座標, epsilon: 中心差分の座標間隔、最小0.0001)。
 float2 LamaPonCurlNoise2D(float2 position, float epsilon)
 {
+    // 最小値を保証した差分間隔
     const float e = max(epsilon, 0.0001f);
-    // ポテンシャル場の勾配を90度回すと、発散が0のベクトル場になります。
-    // 元にはPerlinノイズを使います。Valueノイズの微分は縦横方向へ偏り、
-    // 格子に沿った縞が現れるためです。Perlinノイズは格子点の勾配を
-    // 補間するので、微分が等方的になり自然な渦を作れます。
+    // 格子軸への偏りを避けるため、差分の基底にはPerlinノイズを使います。
+    // 右側のPerlinノイズ値
     const float right =
         LamaPonPerlinNoise2D(position + float2(e, 0.0f));
+    // 左側のPerlinノイズ値
     const float left =
         LamaPonPerlinNoise2D(position - float2(e, 0.0f));
+    // 上側のPerlinノイズ値
     const float up =
         LamaPonPerlinNoise2D(position + float2(0.0f, e));
+    // 下側のPerlinノイズ値
     const float down =
         LamaPonPerlinNoise2D(position - float2(0.0f, e));
+    // X方向の中心差分微分
     const float dx = (right - left) / (2.0f * e);
+    // Y方向の中心差分微分
     const float dy = (up - down) / (2.0f * e);
     return float2(dy, -dx);
 }

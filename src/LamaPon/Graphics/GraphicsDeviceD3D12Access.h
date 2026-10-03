@@ -1,7 +1,5 @@
 #pragma once
 
-// EditorのD3D12 rendererだけが使うSDK非公開bridgeです。公開
-// GraphicsDevice APIへnative Device、Queue、CommandListを出しません。
 #include "LamaPon/Graphics/GraphicsDevice.h"
 
 namespace LamaPon
@@ -14,6 +12,7 @@ namespace LamaPon::Detail
     class GraphicsDeviceD3D12Access final
     {
     public:
+        // 現在のD3D12バックエンドを借用し、他APIまたは状態不在ならヌルを返す(graphics: 描画デバイス)。
         [[nodiscard]] static D3D12Backend* Backend(
             GraphicsDevice& graphics) noexcept;
     };

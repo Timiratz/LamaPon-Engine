@@ -39,7 +39,9 @@ namespace LamaPon
             const noexcept
     {
         using namespace DirectX;
+        // 所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // 円中心のワールドXYZ位置
         XMFLOAT3 center{};
         XMStoreFloat3(
             &center,
@@ -50,12 +52,14 @@ namespace LamaPon
                     0.0f,
                     1.0f),
                 world));
-        // 非一様スケールは大きい方の軸で近似します。
+
+        // X軸のワールド拡大倍率
         const float scaleX = XMVectorGetX(
             XMVector3Length(
                 XMVector3TransformNormal(
                     XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f),
                     world)));
+        // Y軸のワールド拡大倍率
         const float scaleY = XMVectorGetX(
             XMVector3Length(
                 XMVector3TransformNormal(
@@ -71,6 +75,7 @@ namespace LamaPon
         CircleCollider2DComponent::WorldBounds()
             const noexcept
     {
+        // ワールドXYの円形状
         const auto circle = WorldCircle();
         return {
             {
@@ -89,19 +94,26 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // ワールドXYの円形状
         const auto circle = WorldCircle();
+        // 円の輪郭の分割数
         constexpr int SegmentCount = 24;
+        // 円の輪郭の線分端点列
         std::array<
             DirectX::XMFLOAT3,
             SegmentCount * 2> lines{};
+        // 輪郭の線分番号
         for (int segment = 0;
+            // 円の輪郭の分割数
             segment < SegmentCount;
             ++segment)
         {
+            // 線分始点の角度ラジアン
             const float angleA =
                 DirectX::XM_2PI
                 * static_cast<float>(segment)
                 / static_cast<float>(SegmentCount);
+            // 線分終点の角度ラジアン
             const float angleB =
                 DirectX::XM_2PI
                 * static_cast<float>(segment + 1)
@@ -119,6 +131,7 @@ namespace LamaPon
                     + std::sin(angleB) * circle.radius,
                 0.0f };
         }
+        // 形状のデバッグRGBA色
         const DirectX::XMVECTOR color = m_isTrigger
             ? DirectX::XMVectorSet(
                 1.0f, 0.75f, 0.1f, 1.0f)

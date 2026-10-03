@@ -48,6 +48,7 @@ namespace LamaPon
     DirectX::XMFLOAT2
         Light2DComponent::WorldPosition() const noexcept
     {
+        // 光源のワールド位置
         DirectX::XMFLOAT3 translation{};
         DirectX::XMStoreFloat3(
             &translation,
@@ -60,19 +61,26 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // 光の影響円のワールド中心
         const auto center = WorldPosition();
+        // 影響円の分割数
         constexpr int SegmentCount = 24;
+        // 影響円の線分端点列
         std::array<
             DirectX::XMFLOAT3,
             SegmentCount * 2> lines{};
+        // 影響円の線分番号
         for (int segment = 0;
+            // 影響円の分割数
             segment < SegmentCount;
             ++segment)
         {
+            // 線分始点の角度ラジアン
             const float angleA =
                 DirectX::XM_2PI
                 * static_cast<float>(segment)
                 / static_cast<float>(SegmentCount);
+            // 線分終点の角度ラジアン
             const float angleB =
                 DirectX::XM_2PI
                 * static_cast<float>(segment + 1)
@@ -86,6 +94,7 @@ namespace LamaPon
                 center.y + std::sin(angleB) * m_radius,
                 0.0f };
         }
+        // デバッグ線のRGBA色
         const DirectX::XMVECTOR color = DirectX::XMVectorSet(
             m_color.x, m_color.y, m_color.z, 1.0f);
         graphics.Debug().DrawLines(lines, color, view, projection);

@@ -1,233 +1,284 @@
+// CPU側の定数配置を保ち、追加項目を省く独自Shaderでは使用範囲まで同じ順序で宣言する。
+// CPUと配置を揃える物体定数
 cbuffer ObjectBuffer : register(b0)
 {
+    // 行優先のWorld変換行列
     row_major float4x4 World;
+    // 行優先のビュー透視合成行列
     row_major float4x4 ViewProjection;
+    // 行優先の法線変換用逆転置
     row_major float4x4 WorldInverseTranspose;
+    // 通常・スキンの材質RGBA
     float4 MaterialColor;
+    // World視点XYZ・W予約
     float4 CameraPosition;
+    // World視線XYZ・W予約
     float4 CameraForward;
+    // 粗さ・法線強度有無・金属度
     float4 MaterialParameters;
+    // 互換配置の追加材質設定
     float4 CustomParameters[8];
-    // PBRマップの有効フラグと遮蔽の強さ。
-    // x=粗さマップ, y=金属度マップ, z=遮蔽マップ, w=遮蔽の強さ。
-    // ObjectBufferの末尾なので、この行を持たない既存の自作Shaderも
-    // そのまま動きます。
+    // 粗さ・金属・遮蔽有無と強度
     float4 MaterialTextureParameters;
-    // 発光。rgb=発光色（強度を掛け込んだ値）、w=発光マップの有無。
-    // 末尾に配置し、この項目を持たない自作Shaderとの互換性を保ちます。
+    // 発光RGB・W画像使用フラグ
     float4 EmissiveParameters;
-    // 経過時間。x=秒（1時間で巻き戻る）、y=前フレームからの秒数、
-    // z=フレーム数、w=予約。エンジンが毎描画入れるので、揺れや流れは
-    // スクリプト無しで書けます（LamaPonWater.hlslが使っています）。
+    // 1時間周期秒・差分秒・フレーム数
     float4 TimeParameters;
 };
 
+// t0の表面色画像
 Texture2D AlbedoTexture : register(t0);
+// RGで採取する法線画像
 Texture2D NormalTexture : register(t1);
+// 4層の平行光Cascade影
 Texture2DArray ShadowTexture : register(t2);
+// 主プローブの鏡面天空画像
 TextureCube EnvironmentMap : register(t3);
+// 4枠のスポット影画像
 Texture2DArray SpotShadowTexture : register(t4);
+// 選択点光源のCube深度画像
 TextureCube PointShadowTexture : register(t5);
-// 事前フィルタ済みの拡散用放射照度キューブ（IBL）。
+// 主プローブの拡散天空画像
 TextureCube IrradianceMap : register(t6);
-// PBRマップ。t7〜t10はカスタムShader用の枠なので、エンジンの追加分は
-// t11以降へ置いています（既存の自作Shaderを壊さないため）。
-// 読むチャンネルはglTFのmetallicRoughness規約に合わせてG=粗さ、
-// B=金属度です。FBXのように粗さ・金属度が別画像でも、グレースケール
-// ならR=G=Bなので同じ読み方で一致します。
+// Gで採取する粗さ画像
+// t7～t10は独自Shader用に保ち、PBR画像はG粗さ・B金属度・R遮蔽で読む。
 Texture2D RoughnessTexture : register(t11);
+// Bで採取する金属度画像
 Texture2D MetallicTexture : register(t12);
-// 遮蔽（AO）マップ。Rチャンネルを使い、環境光／IBLにだけ掛けます。
+// Rで採取する遮蔽画像
 Texture2D OcclusionTexture : register(t13);
-// 発光（emissive）マップ。ライティングとは独立に加算されるので、
-// 暗い場所でも光ります。強く光らせるとBloomが自動で滲ませます。
+// RGBで採取する発光画像
 Texture2D EmissiveTexture : register(t14);
-// 画面空間の遮蔽（SSAO）。深度プリパスの後、ライティングより前に
-// 用意されたものが入ります。画面全体で1枚なので、UVはピクセル座標
-// （SV_Position）から作ります。半解像度ですが線形補間で読みます。
+// 間接光用の画面遮蔽画像
 Texture2D ScreenAmbientOcclusionTexture : register(t15);
 
-// クラスタライトカリング（Forward+）
-// LamaPonLightCulling.hlslのCompute Shaderが作った、クラスタごとの
-// ライト番号表です。有効なとき、ポイント／スポットはこの表の分だけ
-// 計算します（定数バッファの16灯上限に縛られません）。
+// Compute側と配置を揃え、Y種別は0point・1spot、Z影参照はpoint番号+1・spot枠+1・0影なしとする。
 struct ClusterLight
 {
+    // World位置XYZ・W到達距離
     float4 PositionRange;
+    // 光RGB・W強度
     float4 ColorIntensity;
+    // 光進行方向XYZ・W内角cos
     float4 DirectionInnerCosine;
-    // x=外側cos, y=種別(0=点,1=スポット), z=影参照, w=予約。
+    // X外角cos・Y種別・Z影参照
     float4 ExtraParameters;
 };
+// Computeと共有する光源一覧
 StructuredBuffer<ClusterLight> ClusterLights : register(t16);
+// Clusterごとの光源番号列
 StructuredBuffer<uint> ClusterLightIndexList : register(t17);
+// Clusterごとの光源件数
 StructuredBuffer<uint> ClusterLightCounts : register(t18);
-// 2個目のリフレクションプローブ（境界で映り込みが飛ぶのを防ぐため、
-// 隣のプローブと混ぜるときだけ入ります）。t7〜t10は自作Shaderの
-// カスタムテクスチャ枠なので、クラスタの後ろへ置いています。
+// 副プローブの鏡面天空画像
 TextureCube SecondaryEnvironmentMap : register(t19);
+// 副プローブの拡散天空画像
 TextureCube SecondaryIrradianceMap : register(t20);
-// SSR（画面空間反射）。t21は前フレームのHDRカラー、t22は深度
-// プリパスの深度です。今描いている絵はまだ完成していないので読めず、
-// 1フレーム前の絵を再投影して使います。
+// 前フレームのHDR画像
 Texture2D ScreenReflectionColorTexture : register(t21);
+// 最短距離のHi-Z画像
 Texture2D ScreenReflectionDepthTexture : register(t22);
 
-// ベイクした間接光（照度ボリューム）。L1球面調和の係数を
-// RGBチャンネル別に詰めたTexture3Dです。texelは
-// (x係数, y係数, z係数, 定数項) で、dot(float4(法線,1), texel) が
-// その場所・その向きの環境光になります。
+// 間接光RのL1係数画像
 Texture3D BakedGiRedTexture : register(t23);
+// 間接光GのL1係数画像
 Texture3D BakedGiGreenTexture : register(t24);
+// 間接光BのL1係数画像
 Texture3D BakedGiBlueTexture : register(t25);
+// 材質画像の採取設定
 SamplerState MaterialSampler : register(s0);
+// 互換配置の影比較採取設定
 SamplerComparisonState ShadowSampler : register(s1);
 
+// GGX分布に使う円周率
 static const float LamaPonPi = 3.14159265f;
 
 struct DirectionalLight
 {
+    // 光進行方向XYZ・W強度
     float4 DirectionIntensity;
+    // 光RGB・W太陽角半径rad
     float4 Color;
 };
 
 struct PointLight
 {
+    // World位置XYZ・W到達距離
     float4 PositionRange;
+    // 光RGB・W強度
     float4 ColorIntensity;
 };
 
 struct SpotLight
 {
+    // World位置XYZ・W到達距離
     float4 PositionRange;
+    // 光進行方向XYZ・W内角cos
     float4 DirectionInnerCosine;
+    // 光RGB・W強度
     float4 ColorIntensity;
+    // X外角cos・Y影枠+1
     float4 OuterCosinePadding;
 };
 
+// CPUと配置を揃える光源定数
 cbuffer LightingBuffer : register(b1)
 {
+    // 間接光の基本RGB
     float4 Ambient;
+    // 平行・点・スポット・Cascade数
     uint4 LightCounts;
+    // 最大4本の平行光
     DirectionalLight DirectionalLights[4];
+    // 通常経路の最大16本の点光
     PointLight PointLights[16];
+    // 通常経路の最大8本のスポット
     SpotLight SpotLights[8];
+    // 4CascadeのWorld影変換
     row_major float4x4 ShadowViewProjections[4];
+    // 4Cascadeの終端距離
     float4 ShadowCascadeSplits;
+    // 対象+1・深度法線補正・強度
     float4 ShadowParameters;
+    // 霧のRGB
     float4 FogColor;
+    // 開始・終了距離・密度・有効
     float4 FogParameters;
+    // IBL強度・有効・最終Mip
     float4 EnvironmentParameters;
+    // 4枠のWorldスポット影変換
     row_major float4x4 SpotShadowViewProjections[4];
+    // 深度・法線補正・強度・有効
     float4 SpotShadowParameters[4];
+    // 対象+1・深度補正・強度
     float4 PointShadowParameters;
-    // PCF用テクセルサイズ（x=カスケード, y=スポット, z=ポイント）。
+    // Cascade・spot・point画素幅
     float4 ShadowTexelSizes;
-    // 画面空間AO。x=1/画面幅, y=1/画面高さ, z=有効, w=予約。
-    // 末尾に配置し、この項目を持たない自作Shaderとの互換性を保ちます。
+    // 逆画面幅高さ・Z有効
     float4 ScreenAmbientOcclusionParameters;
-    // クラスタライトカリング。x=横分割, y=縦分割, z=奥行き分割,
-    // w=有効。こちらも末尾追加なので既存Shaderに影響しません。
+    // 分割XYZ・W有効
     float4 ClusteredParameters;
-    // x=near, y=far, z=log(far/near), w=クラスタあたり上限。
+    // near・far・対数比・灯数上限
     float4 ClusteredDepthParameters;
-    // x=1/画面幅, y=1/画面高さ, z=ライト総数, w=予約。
+    // 逆画面幅高さ・Z総灯数
     float4 ClusteredScreenParameters;
-    // リフレクションプローブのボックス射影。
-    // xyz=箱の中心（ワールド）, w=予約。
+    // 主プローブのWorld箱中心
     float4 ReflectionBoxCenter;
-    // xyz=箱の半径（各軸）, w=有効。
+    // 主プローブ箱半径XYZ・W有効
     float4 ReflectionBoxParameters;
-    // 2個目のプローブのボックス射影（同じ意味）。
+    // 副プローブのWorld箱中心
     float4 ReflectionSecondaryBoxCenter;
+    // 副プローブ箱半径XYZ・W有効
     float4 ReflectionSecondaryBoxParameters;
-    // x=2個目を混ぜる比率(0-1。0なら混ぜない),
-    // y=2個目の最終ミップ番号, z/w=予約。
+    // 副混合比・副最終Mip
     float4 ReflectionBlendParameters;
-    // SSR。x=強さ, y=有効, z=最大距離, w=サンプル数。
+    // SSR強度・有効・距離・反復数
     float4 ScreenReflectionParameters;
-    // x=1/画面幅, y=1/画面高さ, z=projection._33, w=projection._43。
-    // zとwは深度をビュー空間のZへ戻すのに使います（SSAOと同じ）。
+    // 逆画面幅高さ・投影係数ZW
     float4 ScreenReflectionScreen;
-    // x=物の厚み, y=粗さの上限, z/w=予約。
+    // 厚み・粗さ上限・最終Mip
     float4 ScreenReflectionQuality;
-    // 前フレームのビュー射影。当たった点を前フレームの画面座標へ
-    // 戻すために使います（カメラが動いても位置がずれないように）。
+    // 前フレームのビュー透視合成
     row_major float4x4 ScreenReflectionPreviousViewProjection;
-    // ベイクした間接光。xyz=ボリュームの最小コーナー, w=有効。
+    // 格子のWorld最小XYZ・W有効
     float4 BakedGiVolumeMinimum;
-    // xyz=1/大きさ, w=強さ。
+    // 逆格子寸法XYZ・W強度
     float4 BakedGiInverseSize;
-    // xyz=各軸のプローブ数, w=予約。
+    // 各軸の間接光プローブ数
     float4 BakedGiResolution;
 };
 
-// GPUスキニング用のボーン行列（glTF/FBXモデル）。
-// LitEffectをskinned=trueで作ったときだけ使われます。
+// 最大72骨のスキン定数
 cbuffer BoneBuffer : register(b2)
 {
+    // 最大72骨の変形行列
     float4x3 BoneTransforms[72];
 };
 
 struct VertexInput
 {
+    // ローカル頂点位置
     float3 Position : SV_Position;
+    // ローカル頂点法線
     float3 Normal : NORMAL;
+    // 画像UV
     float2 TexCoord : TEXCOORD0;
 };
 
-// スキニングモデルの頂点。glTF/FBXインポーターが作る
-// VertexPositionNormalTangentColorTextureSkinningと一致します。
-// タンジェントは受け取りますが、ApplyNormalMapが画面空間微分から
-// 接空間を作るため、法線マッピングには使いません。
+// インポーターの頂点配置を保ち、法線画像の接空間はTangent入力を使わず画面微分で作る。
 struct SkinnedVertexInput
 {
+    // 骨変形前の頂点位置
     float3 Position : SV_Position;
+    // 骨変形前の頂点法線
     float3 Normal : NORMAL;
+    // 互換入力の頂点接線
     float4 Tangent : TANGENT;
+    // 互換入力の頂点色
     float4 Color : COLOR;
+    // 画像UV
     float2 TexCoord : TEXCOORD0;
+    // 影響する4骨の番号
     uint4 BlendIndices : BLENDINDICES0;
+    // 4骨の影響比
     float4 BlendWeights : BLENDWEIGHT0;
 };
 
-// スキニング時のピクセルシェーダー入力。DirectXTKの
-// per-pixel lighting頂点シェーダーの出力並びと一致させます
-// （PSSkinnedMainの説明も参照）。
+// DirectXTKのper-pixel lighting出力に合わせ、TEXCOORD0をUV・1をWorld位置・2を法線に保つ。
 struct SkinnedPixelInput
 {
+    // 補間する画像UV
     float2 TexCoord : TEXCOORD0;
+    // 補間するWorld同次位置
     float4 WorldPosition : TEXCOORD1;
+    // 補間するWorld法線
     float3 WorldNormal : TEXCOORD2;
+    // 材質色と重複する互換頂点色
     float4 Diffuse : COLOR0;
+    // 透視投影後の画面位置
     float4 Position : SV_Position;
 };
 
-// インスタンス描画用：スロット1からワールド行列と色を受け取ります。
 struct InstancedVertexInput
 {
+    // ローカル頂点位置
     float3 Position : SV_Position;
+    // ローカル頂点法線
     float3 Normal : NORMAL;
+    // 画像UV
     float2 TexCoord : TEXCOORD0;
+    // Instance World行列の第0行
     float4 InstanceWorld0 : INSTANCE_TRANSFORM0;
+    // Instance World行列の第1行
     float4 InstanceWorld1 : INSTANCE_TRANSFORM1;
+    // Instance World行列の第2行
     float4 InstanceWorld2 : INSTANCE_TRANSFORM2;
+    // Instance World行列の第3行
     float4 InstanceWorld3 : INSTANCE_TRANSFORM3;
+    // 互換入力のInstance色
     float4 InstanceColor : INSTANCE_COLOR0;
 };
 
 struct PixelInput
 {
+    // 透視投影後の画面位置
     float4 Position : SV_Position;
+    // 補間するWorld位置
     float3 WorldPosition : TEXCOORD0;
+    // 補間するWorld法線
     float3 WorldNormal : TEXCOORD1;
+    // 補間する画像UV
     float2 TexCoord : TEXCOORD2;
+    // 通常材質色またはInstance色
     float4 Tint : COLOR0;
 };
 
+// 通常頂点をWorld変換して材質色を渡す(input: 通常頂点)。
 PixelInput VSMain(VertexInput input)
 {
+    // World変換後のPixel入力
     PixelInput output;
+    // World空間の同次位置
     const float4 worldPosition = mul(float4(input.Position, 1.0f), World);
     output.Position = mul(worldPosition, ViewProjection);
     output.WorldPosition = worldPosition.xyz;
@@ -238,20 +289,23 @@ PixelInput VSMain(VertexInput input)
     return output;
 }
 
+// Instanceの行列と色で頂点を変換する(input: Instance付き頂点)。
 PixelInput VSInstancedMain(InstancedVertexInput input)
 {
+    // World変換後のPixel入力
     PixelInput output;
+    // Instanceから組むWorld行列
     const float4x4 world = float4x4(
         input.InstanceWorld0,
         input.InstanceWorld1,
         input.InstanceWorld2,
         input.InstanceWorld3);
+    // World空間の同次位置
     const float4 worldPosition =
         mul(float4(input.Position, 1.0f), world);
     output.Position = mul(worldPosition, ViewProjection);
     output.WorldPosition = worldPosition.xyz;
-    // 逆転置の代わりに正規化で近似します（非一様スケールでは
-    // 法線に誤差が出ます）。
+    // Instance法線はWorld行列で近似し、非一様倍率では逆転置と一致しない。
     output.WorldNormal = normalize(
         mul(float4(input.Normal, 0.0f), world).xyz);
     output.TexCoord = input.TexCoord;
@@ -259,18 +313,21 @@ PixelInput VSInstancedMain(InstancedVertexInput input)
     return output;
 }
 
-// ボーン4本の線形ブレンドスキニング。位置と法線をモデル空間で
-// 変形してから、通常どおりWorldでワールド空間へ移します。
+// 最大4骨を加重合成してローカル位置と法線を変形する(input: スキン頂点, position: 出力ローカル位置, normal: 出力ローカル法線)。
 void SkinVertex(
     SkinnedVertexInput input,
     out float3 position,
     out float3 normal)
 {
+    // 4骨の加重合成行列
     float4x3 skinning = 0.0f;
+    // 走査する光源または骨の番号
     [unroll]
     for (uint index = 0u; index < 4u; ++index)
     {
+        // 0～71へ制限した骨番号
         const uint bone = min(input.BlendIndices[index], 71u);
+        // 現在の骨の影響比
         const float weight = input.BlendWeights[index];
         skinning += BoneTransforms[bone] * weight;
     }
@@ -278,13 +335,18 @@ void SkinVertex(
     normal = normalize(mul(input.Normal, (float3x3)skinning));
 }
 
+// 骨変形後の頂点をWorld変換して材質色を渡す(input: スキン頂点)。
 PixelInput VSSkinnedMain(SkinnedVertexInput input)
 {
+    // 骨変形後のローカル位置
     float3 skinnedPosition;
+    // 骨変形後のローカル法線
     float3 skinnedNormal;
     SkinVertex(input, skinnedPosition, skinnedNormal);
 
+    // World変換後のPixel入力
     PixelInput output;
+    // World空間の同次位置
     const float4 worldPosition =
         mul(float4(skinnedPosition, 1.0f), World);
     output.Position = mul(worldPosition, ViewProjection);
@@ -296,6 +358,7 @@ PixelInput VSSkinnedMain(SkinnedVertexInput input)
     return output;
 }
 
+// RG法線画像と画面微分の接空間でWorld法線を作る(input: World位置と画像UV, geometricNormal: World単位幾何法線)。
 float3 ApplyNormalMap(PixelInput input, float3 geometricNormal)
 {
     if (MaterialParameters.z < 0.5f)
@@ -303,10 +366,8 @@ float3 ApplyNormalMap(PixelInput input, float3 geometricNormal)
         return geometricNormal;
     }
 
-    // Zはサンプルせずxyから復元します。法線マップはBC5（RGの2
-    // チャンネルのみ、Bは0が返る）で読み込まれることがあるためで、
-    // 非圧縮のRGBでも単位ベクトルなら同じ値になります。強さを
-    // 掛けた後に復元するので、傾けても長さが1に保たれます。
+    // 強度補正した接空間法線
+    // BC5のRG画像に対応するため、強度を掛けたXYから正のZを復元する。
     float3 mappedNormal;
     mappedNormal.xy =
         NormalTexture.Sample(MaterialSampler, input.TexCoord).xy
@@ -316,20 +377,29 @@ float3 ApplyNormalMap(PixelInput input, float3 geometricNormal)
     mappedNormal.z = sqrt(
         saturate(1.0f - dot(mappedNormal.xy, mappedNormal.xy)));
 
+    // World位置の画面X微分
     const float3 positionDerivativeX = ddx(input.WorldPosition);
+    // World位置の画面Y微分
     const float3 positionDerivativeY = ddy(input.WorldPosition);
+    // 画像UVの画面X微分
     const float2 uvDerivativeX = ddx(input.TexCoord);
+    // 画像UVの画面Y微分
     const float2 uvDerivativeY = ddy(input.TexCoord);
+    // 画面Y微分と法線の外積
     const float3 perpendicularY =
         cross(positionDerivativeY, geometricNormal);
+    // 法線と画面X微分の外積
     const float3 perpendicularX =
         cross(geometricNormal, positionDerivativeX);
+    // 面に沿う接方向
     const float3 tangent =
         perpendicularY * uvDerivativeX.x
         + perpendicularX * uvDerivativeY.x;
+    // 面に沿う従接方向
     const float3 bitangent =
         perpendicularY * uvDerivativeX.y
         + perpendicularX * uvDerivativeY.y;
+    // 接空間の共通正規化倍率
     const float scale = rsqrt(max(
         max(dot(tangent, tangent), dot(bitangent, bitangent)),
         0.000001f));
@@ -339,17 +409,7 @@ float3 ApplyNormalMap(PixelInput input, float3 geometricNormal)
         + geometricNormal * mappedNormal.z);
 }
 
-// 太陽（や電球）の「見かけの大きさ」を反射に反映するための代表点。
-//
-// 光源を点として扱うと、つるつるの物体のハイライトは数学的な点に
-// なり、1画素より小さくなって消えたように見えます。実際の太陽は
-// 空に0.53度の円盤として見えていて、水面や金属のハイライトはその
-// 円盤の像です。
-//
-// 円盤を積分する代わりに、反射の向きが円盤から外れているときだけ
-// 円盤の縁の一番近い点へ寄せます（代表点法）。円盤の中を見ている
-// 間は反射ベクトルがそのまま使われるので、ハイライトは「点」では
-// なく「円盤の見た目の大きさ」に広がります。
+// 反射方向を光源円盤内の代表方向へ寄せる(toLight: 光源への単位方向, normal: World単位法線, viewDirection: 視点への単位方向, angularRadius: 光源角半径rad)。
 float3 SourceRepresentativeDirection(
     float3 toLight,
     float3 normal,
@@ -360,15 +420,19 @@ float3 SourceRepresentativeDirection(
     {
         return toLight;
     }
+    // 視線を法線で反射した方向
     const float3 reflected = reflect(-viewDirection, normal);
+    // 光源中心と反射方向の内積
     const float alignment = dot(toLight, reflected);
+    // 光源角半径の余弦
     const float diskCosine = cos(angularRadius);
     if (alignment >= diskCosine)
     {
-        // 反射の向きが円盤の中を向いている＝そのまま鏡で見える。
         return reflected;
     }
+    // 光源方向に直交する反射成分
     const float3 sideways = reflected - alignment * toLight;
+    // 直交する反射成分の長さ
     const float sidewaysLength = length(sideways);
     if (sidewaysLength <= 1.0e-5f)
     {
@@ -379,9 +443,7 @@ float3 SourceRepresentativeDirection(
         + (sideways / sidewaysLength) * sin(angularRadius));
 }
 
-// 代表点へ寄せたぶん、ハイライトの峰が広い範囲で最大値のままに
-// なって明るくなりすぎます。円盤の広がりを粗さへ足した値との比で
-// 割って戻します（Karisのsphere light正規化と同じ考え方）。
+// 光源円盤で広がる鏡面反射の量を補正する(roughness: 表面の粗さ, angularRadius: 光源角半径rad)。
 float SourceSpecularEnergy(
     float roughness,
     float angularRadius)
@@ -390,19 +452,17 @@ float SourceSpecularEnergy(
     {
         return 1.0f;
     }
+    // 二乗粗さのGGX幅
     const float alpha = max(roughness * roughness, 1.0e-4f);
+    // 光源角半径で広げたGGX幅
     const float widened =
         saturate(alpha + sin(angularRadius) * 0.5f);
+    // 元の幅と補正後の幅の比
     const float ratio = alpha / max(widened, 1.0e-4f);
     return ratio * ratio;
 }
 
-// Cook-Torrance GGXによる直接光の寄与。
-// radianceはライト色×強度×減衰×影を掛けた値。
-//
-// specularToLightは鏡面反射だけに使う向きです（光源の見かけの
-// 大きさを反映した代表点）。拡散反射と陰りの判定は、代表点では
-// なく本当の光の向き（toLight）で行います。
+// 拡散は光源中心・鏡面は代表方向でGGX直接光を求める(normal: World単位法線, toLight: 光源への単位方向, viewDirection: 視点への単位方向, albedo: 表面RGB, roughness: 表面の粗さ, metallic: 金属度, radiance: 強度・減衰・影込みRGB, specularToLight: 鏡面用の代表方向, specularEnergy: 鏡面反射量の補正比)。
 float3 EvaluateLightPbrSized(
     float3 normal,
     float3 toLight,
@@ -414,58 +474,71 @@ float3 EvaluateLightPbrSized(
     float3 radiance,
     float specularEnergy)
 {
+    // 法線と光源中心方向の内積
     const float normalDotLight =
         saturate(dot(normal, toLight));
     if (normalDotLight <= 0.0f)
     {
         return 0.0f.xxx;
     }
+    // 代表光と視線の中間方向
     const float3 halfVector =
         normalize(specularToLight + viewDirection);
+    // 下限付きの法線と視線内積
     const float normalDotView = max(
         dot(normal, viewDirection),
         0.0001f);
+    // 法線と中間方向の内積
     const float normalDotHalf =
         saturate(dot(normal, halfVector));
+    // 視線と中間方向の内積
     const float viewDotHalf =
         saturate(dot(viewDirection, halfVector));
 
+    // 二乗粗さのGGX幅
     const float alpha = roughness * roughness;
+    // GGX幅の二乗
     const float alphaSquared = alpha * alpha;
 
-    // 法線分布（GGX）
+    // GGX分母の中間項
     const float denominator =
         normalDotHalf * normalDotHalf
             * (alphaSquared - 1.0f)
         + 1.0f;
-    // 0除算を防ぎながら鋭いハイライトを保つため、粗さの下限0.04で
-    // 生じる分母より十分に小さい値を使用します。
+    // GGXの法線分布密度
+    // 分母の下限を1e-12に保ち、低い粗さの鋭い反射を潰さない。
     const float distribution =
         alphaSquared
         / max(LamaPonPi * denominator * denominator,
             1.0e-12f);
 
-    // 幾何減衰（Smith-Schlick近似）
+    // Smith減衰の粗さ係数
     const float k = alpha * 0.5f + 0.0001f;
+    // 視線側の幾何減衰
     const float geometryView =
         normalDotView / (normalDotView * (1.0f - k) + k);
+    // 光源側の幾何減衰
     const float geometryLight =
         normalDotLight
         / (normalDotLight * (1.0f - k) + k);
+    // 視線と光源の幾何減衰
     const float geometry = geometryView * geometryLight;
 
-    // フレネル（Schlick）
+    // 金属度による正面反射RGB
     const float3 f0 = lerp(0.04f.xxx, albedo, metallic);
+    // Schlickの角度反射RGB
     const float3 fresnel =
         f0
         + (1.0f.xxx - f0)
             * pow(1.0f - viewDotHalf, 5.0f);
 
+    // 鏡面反射のRGB寄与
     const float3 specular =
         distribution * geometry * fresnel
         * specularEnergy
         / max(4.0f * normalDotView * normalDotLight,
             0.0001f);
+    // 拡散反射のRGB寄与
     const float3 diffuse =
         (1.0f.xxx - fresnel)
         * (1.0f - metallic)
@@ -476,8 +549,7 @@ float3 EvaluateLightPbrSized(
         * normalDotLight;
 }
 
-// 見かけの大きさを持たない光源（ポイント／スポット）用の入口。
-// 従来どおり、光の向きをそのまま鏡面にも使います。
+// 点光源のGGX直接光を求める(normal: World単位法線, toLight: 光源への単位方向, viewDirection: 視点への単位方向, albedo: 表面RGB, roughness: 表面の粗さ, metallic: 金属度, radiance: 強度・減衰・影込みRGB)。
 float3 EvaluateLightPbr(
     float3 normal,
     float3 toLight,
@@ -499,44 +571,35 @@ float3 EvaluateLightPbr(
         1.0f);
 }
 
-// キューブマップ環境光（IBL）。無効時は従来のフラット環境光。
-// リフレクションプローブのボックス射影。
-//
-// キューブマップは「無限遠の景色」として作られているので、反射
-// ベクトルをそのまま当てると、部屋の壁が無限に遠くにあるように
-// 映ります（動いても壁の映り込みが動かない）。プローブを箱と
-// みなして反射レイと箱の交点を求め、その点への方向でサンプル
-// すると、壁・床・天井が正しい距離で映ります。
-//
-// boxParameters.w が0のときは補正しません（箱の指定なし）。
+// 反射レイと箱の交点をプローブ中心からの方向へ変換する(reflection: World反射方向, worldPosition: 表面のWorld位置, boxCenter: 箱のWorld中心, boxExtents: 箱の各軸の半径)。
 float3 ApplyBoxProjection(
     float3 reflection,
     float3 worldPosition,
     float3 boxCenter,
     float3 boxExtents)
 {
-    // レイと軸平行の箱（AABB）の交差。成分ごとに「箱の面へ届く
-    // までの距離」を求め、一番手前の面を採用します。
+    // 箱の正側面までのレイ係数
     const float3 firstPlane =
         (boxCenter + boxExtents - worldPosition)
         / reflection;
+    // 箱の負側面までのレイ係数
     const float3 secondPlane =
         (boxCenter - boxExtents - worldPosition)
         / reflection;
+    // 各軸の遠い側面のレイ係数
     const float3 furthest =
         max(firstPlane, secondPlane);
+    // 箱の最初の出口レイ係数
     const float distance = min(
         min(furthest.x, furthest.y),
         furthest.z);
-    // 交点への方向。プローブ中心から見た向きにするのが要点で、
-    // これでキューブマップの向きと一致します。
+    // World空間の箱との交点
     const float3 intersection =
         worldPosition + reflection * distance;
     return intersection - boxCenter;
 }
 
-// プローブ1個ぶんのスペキュラ。反射ベクトルはプローブごとに
-// 自分の箱で補正します（混ぜる2個が別の部屋にいても正しい）。
+// 箱補正した反射方向と粗さで環境画像を採取する(probeMap: プローブの天空画像, normal: World単位法線, viewDirection: 視点への単位方向, worldPosition: 表面のWorld位置, roughness: 表面の粗さ, maximumMip: 画像の最終Mip番号, boxCenter: 箱のWorld中心XYZ, boxParameters: 箱半径XYZ・W有効)。
 float3 SampleProbeSpecular(
     TextureCube probeMap,
     float3 normal,
@@ -547,6 +610,7 @@ float3 SampleProbeSpecular(
     float4 boxCenter,
     float4 boxParameters)
 {
+    // 箱補正前後の反射方向
     float3 reflection = reflect(-viewDirection, normal);
     if (boxParameters.w >= 0.5f)
     {
@@ -562,10 +626,7 @@ float3 SampleProbeSpecular(
         roughness * maximumMip).rgb;
 }
 
-// 場所ごとに変化する環境光（Ambient）。
-//
-// ボリューム内ではベイクした間接光を返し、範囲外や無効時は通常の
-// 環境光を返します。範囲の縁では滑らかに混ぜ、境界線を隠します。
+// L1間接光を格子中心で採取し縁の5%で環境光へ混ぜる(worldPosition: 表面のWorld位置, normal: World単位法線)。
 float3 EvaluateBakedAmbient(
     float3 worldPosition,
     float3 normal)
@@ -574,20 +635,22 @@ float3 EvaluateBakedAmbient(
     {
         return Ambient.rgb;
     }
+    // 格子内の正規化World位置
     const float3 volumeUvw =
         (worldPosition - BakedGiVolumeMinimum.xyz)
         * BakedGiInverseSize.xyz;
 
-    // プローブは格子の角にあるので、テクスチャ座標へは
-    // 「テクセル中心」へ寄せて変換します（寄せないと端の
-    // プローブが半セルぶん内側にあるように見えます）。
+    // 各軸の間接光プローブ数
     const float3 resolution = BakedGiResolution.xyz;
+    // 格子角を画素中心へ移したUV
+    // プローブは格子の角に配置されるため、採取UVをテクセル中心へ補正する。
     const float3 texelUvw =
         (volumeUvw * (resolution - 1.0f) + 0.5f)
         / resolution;
 
-    // L1球面調和の評価。texel = (x, y, z, 定数項)。
+    // 法線XYZ・定数1のL1基底
     const float4 basis = float4(normal, 1.0f);
+    // ベイク間接光のRGB
     float3 gi;
     gi.r = dot(
         basis,
@@ -601,68 +664,36 @@ float3 EvaluateBakedAmbient(
         basis,
         BakedGiBlueTexture.SampleLevel(
             MaterialSampler, texelUvw, 0.0f));
-    // L1の再構成は強い明暗差で負へ振れることがあります。
     gi = max(gi, 0.0f.xxx) * BakedGiInverseSize.w;
 
-    // 縁のフェード。ボリュームの5%の帯で従来のAmbientへ戻します。
+    // 5%幅で測る各軸の縁距離
     const float3 edge =
         (0.5f - abs(volumeUvw - 0.5f)) / 0.05f;
+    // 現在の骨の影響比
     const float weight = saturate(
         min(min(edge.x, edge.y), edge.z));
     return lerp(Ambient.rgb, gi, weight);
 }
 
-// t22はHi-Z深度ピラミッドです。深度→距離の変換はピラミッドを
-// 作るとき（PSReflectionDepthLinearize）に済んでいるので、ここは
-// 読むだけです。ミップNは「そのミップの区画で最も手前の距離」
-// （2x2の最小値）を持っています。
-//
-// 点（Load）で読みます。バイリニアで読むと、輪郭をまたいだ
-// ところで「手前と奥の中間」という存在しない距離が出て、そこに
-// 偽の当たりが生まれます。
+// Hi-Zの最細Mipを点読みして表面距離を返す(uv: 画面UV)。
 float ScreenReflectionSceneDistance(float2 uv)
 {
+    // 元の深度画像の幅と高さ
     const float2 screenSize =
         1.0f / max(ScreenReflectionScreen.xy, 1e-6f);
+    // 深度画像の最終画素XY
     const int2 lastPixel = max(int2(screenSize) - 1, int2(0, 0));
+    // 深度を読む画素XY
     const int2 pixel = clamp(
         int2(saturate(uv) * screenSize),
         int2(0, 0),
         lastPixel);
+    // t22は最短視点距離のHi-Zで、輪郭を跨ぐ偽の距離を避けて点読みする。
     return ScreenReflectionDepthTexture.Load(
         int3(pixel, 0)).r;
 }
 
-// SSR（画面空間反射）。
-//
-// 反射レイを画面空間のHi-Zトラバーサルで進めます。深度ピラミッド
-// （t22。各ミップが「その区画で最も手前の距離」＝2x2の最小値）を
-// 使い、
-//   ・「区画の最も手前より、レイの区間全体が手前」なら、その区画に
-//     当たりは存在しない → 区画の出口まで一気に進み、1段粗い
-//     ミップへ上がる（何も無い空間を大股で飛ぶ）
-//   ・またぐかもしれないなら、進まずに1段細かいミップへ下りる
-//   ・最細ミップ（＝1画素）でまたいだら、その区間を二分で詰める
-// これで歩数は「画面の距離ぶん」ではなく「およそlog2(距離)」で済み、
-// 同じ反復上限で画面の端から端まで到達します（1画素ずつのDDAは
-// 上限128歩＝128画素で頭打ちでした）。
-//
-// 画面空間で進めること自体の利点は従来と同じです。ワールド等間隔
-// だと近くで画素を飛び越し、遠くで同じ画素を何度も読みます。判定は
-// 「点」ではなく「区間」で行うので、歩を飛び越して奥へ抜けることが
-// 原理的に起きません。
-//
-// 返り値のaは信頼度です。画面の外へ出た／当たらなかった／粗すぎる
-// ときは0になり、呼ぶ側は環境反射（プローブやSky）へ戻します。
-// 画面に写っていないものは映せないので、0へ滑らかに落とすことが
-// 品質の要点になります（急に切れると縁が目立ちます）。
-//
-// 信頼度を落とす4条件は、画面空間に情報がない領域を
-// 環境反射へ渡すための固定値です。
-//   (1)画面の縁に近い（今のフレームと前フレームの両方で見ます）
-//   (2)レイが最大距離の近くまで進んだ
-//   (3)反射がカメラへ向かっている
-//   (4)粗さが上限に近い
+// Hi-Zを区間探索し前フレーム色と信頼度を返す(worldPosition: 表面のWorld位置, reflection: World単位反射方向, viewDirection: 視点への単位方向, roughness: 表面の粗さ)。
 float4 EvaluateScreenSpaceReflection(
     float3 worldPosition,
     float3 reflection,
@@ -673,7 +704,7 @@ float4 EvaluateScreenSpaceReflection(
     {
         return 0.0f;
     }
-    // ざらざらした面の反射はぼやけていて、1本のレイでは表せません。
+    // SSRを止める粗さの上限
     const float roughnessCutoff = max(
         ScreenReflectionQuality.y,
         0.0001f);
@@ -682,32 +713,34 @@ float4 EvaluateScreenSpaceReflection(
         return 0.0f;
     }
 
+    // 反射レイのWorld最大距離
     const float maximumDistance = max(
         ScreenReflectionParameters.z,
         0.01f);
+    // SSR面の許容厚み
     const float thickness = max(
         ScreenReflectionQuality.x,
         0.001f);
-    // 設定の「サンプル数」は、Hi-Zでは反復の上限として働きます。
-    // 1反復は「区画を1つ飛ぶ／ミップを1段動く」で、何も無い空間は
-    // 大股で越えるため、既定の24でも画面の端から端まで届きます。
+    // 4～128のHi-Z反復上限
+    // Hi-Zのサンプル数は区画移動とMip変更の合計反復上限を表す。
     const int maximumSteps = clamp(
         (int)ScreenReflectionParameters.w,
         4,
         128);
 
-    // レイの両端をクリップ空間へ。透視射影ではwがそのまま
-    // カメラからの距離になります（右手系なのでw = -z_view）。
+    // 反射レイのWorld始点
     const float3 rayStart = worldPosition;
+    // Near補正前後のWorld終点
     float3 rayEnd = worldPosition + reflection * maximumDistance;
+    // レイ始点の透視同次位置
     float4 clipStart = mul(
         float4(rayStart, 1.0f),
         ViewProjection);
+    // レイ終点の透視同次位置
     float4 clipEnd = mul(float4(rayEnd, 1.0f), ViewProjection);
 
-    // カメラより手前へ回った側は射影が破綻するので、世界空間で
-    // 詰めます。画面座標にしてから直そうとしても、符号が反転した
-    // 座標からは戻せません。
+    // Near補正する正のW下限
+    // RH透視のWを視点距離として使い、Nearを跨ぐ終点は射影前にWorldで切る。
     const float nearW = 0.05f;
     if (clipStart.w <= nearW)
     {
@@ -715,6 +748,7 @@ float4 EvaluateScreenSpaceReflection(
     }
     if (clipEnd.w <= nearW)
     {
+        // Near境界への補間比
         const float clipRatio =
             (nearW - clipStart.w)
             / (clipEnd.w - clipStart.w);
@@ -722,29 +756,34 @@ float4 EvaluateScreenSpaceReflection(
         clipEnd = mul(float4(rayEnd, 1.0f), ViewProjection);
     }
 
+    // レイ始点の画面UV
     const float2 startUv = float2(
         clipStart.x / clipStart.w * 0.5f + 0.5f,
         0.5f - clipStart.y / clipStart.w * 0.5f);
+    // レイ終点の画面UV
     const float2 endUv = float2(
         clipEnd.x / clipEnd.w * 0.5f + 0.5f,
         0.5f - clipEnd.y / clipEnd.w * 0.5f);
+    // 画面UVの始終差分
     const float2 deltaUv = endUv - startUv;
 
-    // 画面外には参照できる情報がないため、レイを画面端で打ち切ります。
+    // 画面端までのレイ補間上限
     float limitAlpha = 1.0f;
+    // 比較する画面XY軸番号
     [unroll]
     for (int axis = 0; axis < 2; ++axis)
     {
+        // 選択した画面軸の差分
         const float direction = axis == 0
             ? deltaUv.x
             : deltaUv.y;
+        // 選択した画面軸の始点
         const float origin = axis == 0
             ? startUv.x
             : startUv.y;
         if (abs(direction) > 1e-6f)
         {
-            // 進む向き側の辺までの比率。反対側の辺は負になるので、
-            // 大きいほうを採ります。
+            // 区画外へ出るレイ補間比
             const float exitAlpha = max(
                 (0.0f - origin) / direction,
                 (1.0f - origin) / direction);
@@ -756,33 +795,36 @@ float4 EvaluateScreenSpaceReflection(
     }
     limitAlpha = clamp(limitAlpha, 0.0f, 1.0f);
 
+    // 元の深度画像の幅と高さ
     const float2 screenSize =
         1.0f / max(ScreenReflectionScreen.xy, 1e-6f);
-    // 自己ヒットよけに、出発点を半画素ずらします。
+    // 画面内レイの画素差分
     const float2 pixelDelta =
         deltaUv * limitAlpha * screenSize;
+    // 画面内レイの最大軸画素長
     const float pixelLength = max(
         max(abs(pixelDelta.x), abs(pixelDelta.y)),
         1.0f);
 
-    // 1/wは画面空間で線形なので、行列を掛け直さずに補間で距離が出ます。
-    // これで歩ごとのmulが消え、詰めるところも補間だけで済みます。
+    // レイ始点の透視W逆数
     const float inverseStartW = 1.0f / clipStart.w;
+    // レイ終点の透視W逆数
     const float inverseEndW = 1.0f / clipEnd.w;
 
-    // Hi-Zピラミッドの最終ミップ番号（cbuffer経由。0ならミップ無し
-    // ＝実質1画素ずつのDDAに落ちます）。
+    // Hi-Zの最終Mip番号
     const int maximumLevel = max(
         (int)ScreenReflectionQuality.z,
         0);
 
+    // 自己交差を避ける探索補間比
     float alpha = 0.5f * limitAlpha / pixelLength;
-    // 前進の最小量。区画の辺の上に立ったとき、浮動小数の丸めで
-    // 同じ区画を永遠に再訪しないための保険です（値は最細ミップの
-    // 1画素よりずっと小さいので、取りこぼしにはなりません）。
+    // 区画境界を越える最小補間幅
+    // 区画境界の丸めで同じ区画を再訪しないよう、補間比を微小に進める。
     const float alphaBias = limitAlpha * 1e-5f;
+    // 探索中のHi-Z Mip番号
     int level = 0;
 
+    // Hi-Z反復の回数
     [loop]
     for (int step = 0; step < maximumSteps; ++step)
     {
@@ -790,18 +832,23 @@ float4 EvaluateScreenSpaceReflection(
         {
             break;
         }
+        // 探索点の画面UV
         const float2 uv = startUv + deltaUv * alpha;
-        // このミップでの「今いる区画」と、その出口までのα。
+        // 現在Mipの幅と高さ
         const float2 levelSize = max(
             floor(screenSize / exp2((float)level)),
             1.0f);
+        // 現在Mipの区画XY番号
         const float2 cell = floor(
             clamp(uv, 0.0f, 1.0f) * levelSize);
+        // 進行方向側の区画端0か1
         const float2 towardEdge = float2(
             deltaUv.x >= 0.0f ? 1.0f : 0.0f,
             deltaUv.y >= 0.0f ? 1.0f : 0.0f);
+        // 進行方向側の区画端UV
         const float2 boundaryUv =
             (cell + towardEdge) / levelSize;
+        // 各画面軸の区画出口補間比
         float2 boundaryAlpha = float2(1e9f, 1e9f);
         if (abs(deltaUv.x) > 1e-8f)
         {
@@ -813,31 +860,36 @@ float4 EvaluateScreenSpaceReflection(
             boundaryAlpha.y =
                 (boundaryUv.y - startUv.y) / deltaUv.y;
         }
+        // 区画外へ出るレイ補間比
         const float exitAlpha = max(
             min(boundaryAlpha.x, boundaryAlpha.y),
             alpha + alphaBias);
+        // 画面内に制限した出口補間比
         const float clampedExitAlpha = min(
             exitAlpha,
             limitAlpha);
 
-        // この区画を通るあいだの、レイの距離の範囲。
+        // 区画入口のレイ視点距離
         const float entryDistance = 1.0f / max(
             lerp(inverseStartW, inverseEndW, alpha),
             1e-6f);
+        // 区画出口のレイ視点距離
         const float exitDistance = 1.0f / max(
             lerp(
                 inverseStartW,
                 inverseEndW,
                 clampedExitAlpha),
             1e-6f);
+        // 区画内レイの最短視点距離
         const float rayNear = min(
             entryDistance,
             exitDistance);
+        // 区画内レイの最長視点距離
         const float rayFar = max(
             entryDistance,
             exitDistance);
 
-        // この区画で最も手前の面。
+        // 区画内面の最短視点距離
         const float sceneDistance =
             ScreenReflectionDepthTexture.Load(int3(
                 int2(min(cell, levelSize - 1.0f)),
@@ -845,11 +897,8 @@ float4 EvaluateScreenSpaceReflection(
 
         if (rayFar <= sceneDistance)
         {
-            // 区間全体が最も手前の面よりさらに手前 → この区画に
-            // 当たりは無い。出口まで飛びます。
             alpha = exitAlpha;
-            // 面から2%以上離れた場合だけ粗いミップへ移り、面の近くで
-            // ミップを往復して反復回数を消費することを防ぎます。
+            // 面から2%以上離れた区間だけ粗いMipへ移り、面付近のMip往復を抑える。
             if (rayFar * 1.02f <= sceneDistance)
             {
                 level = min(level + 1, maximumLevel);
@@ -858,37 +907,37 @@ float4 EvaluateScreenSpaceReflection(
         }
         if (level > 0)
         {
-            // またぐかもしれない。進まずに1段細かく見る。
             level = level - 1;
             continue;
         }
 
-        // 最細ミップ（1画素）。またいだ区間だけを精査します。
         if (rayFar > sceneDistance
             && rayNear < sceneDistance + thickness)
         {
-            // 当たった区間を二分して詰めます。刻みのままだと当たり位置が
-            // 歩の単位に量子化されて反射に縞が出ます。ここは補間だけ
-            // なので、4回でも行列を掛けません。
+            // 精査区間の入口補間比
             float nearAlpha = alpha;
+            // 精査区間の出口補間比
             float farAlpha = clampedExitAlpha;
+            // 二分精査の反復番号
             [unroll]
             for (int refine = 0; refine < 4; ++refine)
             {
+                // 精査区間の中点補間比
                 const float middleAlpha =
                     (nearAlpha + farAlpha) * 0.5f;
+                // 精査中点のレイ視点距離
                 const float middleDistance = 1.0f / max(
                     lerp(
                         inverseStartW,
                         inverseEndW,
                         middleAlpha),
                     1e-6f);
+                // 精査中点の面の視点距離
                 const float middleScene =
                     ScreenReflectionSceneDistance(
                         startUv + deltaUv * middleAlpha);
                 if (middleDistance > middleScene)
                 {
-                    // まだ面の裏。手前側を詰めます。
                     farAlpha = middleAlpha;
                 }
                 else
@@ -896,24 +945,26 @@ float4 EvaluateScreenSpaceReflection(
                     nearAlpha = middleAlpha;
                 }
             }
+            // 交差点のレイ画面補間比
             const float hitAlpha =
                 (nearAlpha + farAlpha) * 0.5f;
+            // 交差点の現在画面UV
             const float2 hitUv = startUv + deltaUv * hitAlpha;
 
-            // 画面空間の比率αを、ワールド空間の比率へ直します。
-            // 透視補間の関係 t = α*w0 / lerp(w1, w0, α) です。距離
-            // フェードと当たり位置の復元に要ります。
+            // 透視補正したWorld補間比
+            // 画面の補間比を透視WでWorld比へ戻し、交差位置と距離減衰に使う。
             const float worldRatio =
                 hitAlpha * clipStart.w
                 / max(
                     lerp(clipEnd.w, clipStart.w, hitAlpha),
                     1e-6f);
+            // 交差点のWorld位置
             const float3 hitPosition = lerp(
                 rayStart,
                 rayEnd,
                 saturate(worldRatio));
 
-            // 当たり。前フレームの画面座標へ戻して色を読みます。
+            // 交差点の前フレーム透視位置
             const float4 previousClip = mul(
                 float4(hitPosition, 1.0f),
                 ScreenReflectionPreviousViewProjection);
@@ -921,6 +972,7 @@ float4 EvaluateScreenSpaceReflection(
             {
                 return 0.0f;
             }
+            // 交差点の前フレーム画面UV
             const float2 previousUv = float2(
                 previousClip.x / previousClip.w * 0.5f + 0.5f,
                 0.5f - previousClip.y / previousClip.w * 0.5f);
@@ -931,53 +983,40 @@ float4 EvaluateScreenSpaceReflection(
                 return 0.0f;
             }
 
-            // (1)画面の縁へ近いほど弱めます。縁で急に消えると、
-            // 反射が四角く切り取られて見えるためです。
-            //
-            // 現在と前のフレームの両方の位置で確認します。前
-            // フレームだけだと、カメラが大きく動いたときに「今は画面の
-            // 端ぎりぎりだが前フレームでは中央だった」当たりが全強度で
-            // 返り、次のフレームで画面の外に出て消えます。
+            // 現在画面端へのUV距離
             const float2 currentEdge = min(hitUv, 1.0f - hitUv);
+            // 前画面端へのUV距離
             const float2 previousEdge =
                 min(previousUv, 1.0f - previousUv);
+            // 現在と前画面端の最短距離
             const float edgeDistance = min(
                 min(currentEdge.x, currentEdge.y),
                 min(previousEdge.x, previousEdge.y));
+            // 画面端のSSR信頼度
             const float edgeFade = saturate(
                 edgeDistance / 0.08f);
 
-            // (2)レイが進んだ距離で弱めます。最大距離のところで急に
-            // 途切れると、カメラが少し動くだけで反射が現れたり消えたり
-            // します（12mで切っているとき、11.9mで当たれば全強度、
-            // 12.1mになった瞬間に0）。最後の1/4で滑らかに落とします。
-            //
-            // 全区間を通して線形に落とすやり方は採りません。すぐ隣の
-            // ものの映り込みまで薄くなり、いちばん見せたい足元の反射が
-            // 弱くなります。
+            // 交差点までのWorld移動距離
             const float travelled = saturate(worldRatio)
                 * length(rayEnd - rayStart);
+            // 最大レイ距離に対する移動比
             const float travelledFraction = saturate(
                 travelled / maximumDistance);
+            // 終端25%のSSR信頼度
             const float distanceFade = saturate(
                 (1.0f - travelledFraction) / 0.25f);
 
-            // (3)反射がカメラへ向かっているほど弱めます。
-            //
-            // 画面空間には「物の裏側」の情報がありません。反射が
-            // カメラの方へ戻ってくる向きのとき、当たった先で読める色は
-            // その物の手前の面で、本来映るべき裏の面ではありません。
-            // ここは原理的に正しくできないので、素直に環境反射へ
-            // 譲ります。viewDirectionは面からカメラへ向かう向きなので、
-            // 内積が1に近いほどまっすぐカメラへ戻っています。
+            // 反射方向と視線方向の内積
             const float towardCamera = saturate(
                 dot(reflection, viewDirection));
+            // 視点へ戻るSSRの信頼度
             const float directionFade = saturate(
                 (1.0f - towardCamera) / 0.5f);
 
-            // (4)粗さが上限に近いほど弱めます。
+            // 粗さによるSSR信頼度
             const float roughnessFade = saturate(
                 1.0f - roughness / roughnessCutoff);
+            // 前フレーム反射の採取RGB
             const float3 color =
                 ScreenReflectionColorTexture.SampleLevel(
                     MaterialSampler,
@@ -993,14 +1032,12 @@ float4 EvaluateScreenSpaceReflection(
                         ScreenReflectionParameters.x));
         }
 
-        // 面の裏を（厚みの外で）通り過ぎた。次の区画へ進みます。
-        // 面の裏側では粗いミップでも区間を省略できないため、現在の
-        // ミップを維持します。
         alpha = exitAlpha;
     }
     return 0.0f;
 }
 
+// 間接光と2プローブを合成し信頼度でSSRを重ねる(normal: World単位法線, viewDirection: 視点への単位方向, worldPosition: 表面のWorld位置, albedo: 表面RGB, roughness: 表面の粗さ, metallic: 金属度)。
 float3 EvaluateEnvironment(
     float3 normal,
     float3 viewDirection,
@@ -1009,14 +1046,8 @@ float3 EvaluateEnvironment(
     float roughness,
     float metallic)
 {
-    // SSR（画面空間反射）。画面に写っているものが当たれば、その色を
-    // 環境反射の上へ被せます。信頼度が0のところ（画面の外、当たら
-    // なかった、粗すぎる）はそのまま環境反射が残るので、映せない
-    // 部分が黒く抜けることはありません。
-    //
-    // 反射ベクトルはボックス射影より前のものを使います。ボックス
-    // 射影はキューブマップを引くための補正なので、実際の空間を
-    // 進むレイに掛けると当たる場所がずれます。
+    // SSR採取RGB・A信頼度
+    // SSRは箱射影前の反射方向で探索し、プローブ混合後に信頼度で重ねる。
     const float4 screenReflection =
         EvaluateScreenSpaceReflection(
             worldPosition,
@@ -1026,16 +1057,14 @@ float3 EvaluateEnvironment(
 
     if (EnvironmentParameters.y < 0.5f)
     {
+        // IBLなしの間接光RGB
         float3 flatAmbient =
             EvaluateBakedAmbient(worldPosition, normal)
             * albedo
             * (1.0f - metallic * 0.5f);
-        // キューブマップの環境反射が無いシーンでも、SSRが当たった
-        // 分は映します。split-sumのBRDFは下の経路にしか無いので、
-        // ここはF0相当（誘電体0.04、金属はアルベド）の重みで
-        // 足すだけにしています。
         if (screenReflection.a > 0.0f)
         {
+            // 金属度による正面反射RGB
             const float3 fresnelZero =
                 lerp(0.04f.xxx, albedo, metallic);
             flatAmbient +=
@@ -1046,15 +1075,18 @@ float3 EvaluateEnvironment(
         return flatAmbient;
     }
 
-    // zに事前フィルタ済みスペキュラの最終ミップ番号が入ります。
-    // 0のときは事前フィルタなし（ソース直接）の近似経路です。
+    // 事前畳み込み済みの最終Mip
     const float prefilteredMaximumMip =
         EnvironmentParameters.z;
+    // 主プローブの最終Mip番号
     float maximumMip = prefilteredMaximumMip;
     if (maximumMip <= 0.0f)
     {
+        // 主プローブ画像の幅
         uint width;
+        // 主プローブ画像の高さ
         uint height;
+        // 主プローブ画像のMip件数
         uint mipCount;
         EnvironmentMap.GetDimensions(
             0,
@@ -1064,8 +1096,7 @@ float3 EvaluateEnvironment(
         maximumMip = max((float)mipCount - 1.0f, 0.0f);
     }
 
-    // 拡散：事前フィルタ済みならコサイン畳み込みの放射照度
-    // マップ、なければ最粗ミップで近似します。
+    // 主副混合後の拡散天空RGB
     float3 irradiance =
         prefilteredMaximumMip > 0.0f
             ? IrradianceMap.SampleLevel(
@@ -1077,7 +1108,7 @@ float3 EvaluateEnvironment(
                 normal,
                 maximumMip).rgb;
 
-    // スペキュラ：粗さに応じたミップの事前畳み込み結果。
+    // 主副とSSR混合後の鏡面RGB
     float3 prefiltered = SampleProbeSpecular(
         EnvironmentMap,
         normal,
@@ -1088,12 +1119,11 @@ float3 EvaluateEnvironment(
         ReflectionBoxCenter,
         ReflectionBoxParameters);
 
-    // リフレクションプローブが2個あるときは重みで混ぜます。
-    // 比率が0のフレームではこの中へ入らないので、プローブ1個の
-    // ときの結果は1ビットも変わりません。
+    // 副プローブの混合比
     const float blendWeight = ReflectionBlendParameters.x;
     if (blendWeight > 0.0f)
     {
+        // 副プローブの最終Mip番号
         const float secondaryMaximumMip =
             ReflectionBlendParameters.y;
         irradiance = lerp(
@@ -1117,7 +1147,6 @@ float3 EvaluateEnvironment(
             blendWeight);
     }
 
-    // SSRは最後に被せます（プローブのブレンドの上）。
     if (screenReflection.a > 0.0f)
     {
         prefiltered = lerp(
@@ -1126,27 +1155,35 @@ float3 EvaluateEnvironment(
             screenReflection.a);
     }
 
+    // 下限付きの法線と視線内積
     const float normalDotView = max(
         dot(normal, viewDirection),
         0.0001f);
+    // 金属度による正面反射RGB
     const float3 f0 = lerp(0.04f.xxx, albedo, metallic);
 
-    // split-sumのBRDF項はKarisの解析近似で評価します
-    // （LUT不要のEnvBRDFApprox）。
+    // BRDF近似の粗さ係数4値
+    // LUTを使わずKarisの解析近似でsplit-sumのBRDF項を求める。
     const float4 c0 = float4(
         -1.0f, -0.0275f, -0.572f, 0.022f);
+    // BRDF近似の定数係数4値
     const float4 c1 = float4(
         1.0f, 0.0425f, 1.04f, -0.04f);
+    // 粗さで混ぜたBRDF係数4値
     const float4 r = roughness * c0 + c1;
+    // 視線角込みのBRDF近似項
     const float a004 =
         min(r.x * r.x, exp2(-9.28f * normalDotView))
             * r.x
         + r.y;
+    // 反射色倍率と加算のBRDF項
     const float2 brdf =
         float2(-1.04f, 1.04f) * a004 + r.zw;
 
+    // 拡散反射のRGB寄与
     const float3 diffuse =
         irradiance * albedo * (1.0f - metallic);
+    // 鏡面反射のRGB寄与
     const float3 specular =
         prefiltered * (f0 * brdf.x + brdf.y);
     return (diffuse + specular)
@@ -1155,20 +1192,25 @@ float3 EvaluateEnvironment(
             * albedo;
 }
 
+// 指定Cascadeの3×3 PCFで光の可視率を返す(worldPosition: 表面のWorld位置, normal: World単位法線, cascadeIndex: 0～3のCascade番号)。
 float SampleDirectionalShadowCascade(
     float3 worldPosition,
     float3 normal,
     uint cascadeIndex)
 {
+    // 法線補正後のWorld位置
     const float3 biasedPosition =
         worldPosition
         + normal * ShadowParameters.z;
+    // 影投影の同次位置
     const float4 lightPosition = mul(
         float4(biasedPosition, 1.0f),
         ShadowViewProjections[cascadeIndex]);
+    // 影透視除算後のXYZ
     const float3 projected =
         lightPosition.xyz
         / max(abs(lightPosition.w), 0.00001f);
+    // 影画像の採取UV
     const float2 shadowUv =
         projected.xy * float2(0.5f, -0.5f)
         + 0.5f;
@@ -1182,12 +1224,15 @@ float SampleDirectionalShadowCascade(
         return 1.0f;
     }
 
-    // 3x3 PCFで影の輪郭を柔らかくします。
+    // 影による光の可視率
     float visibility = 0.0f;
+    // Cascade影の1画素幅
     const float cascadeTexel = ShadowTexelSizes.x;
+    // PCFの縦採取オフセット
     [unroll]
     for (int tapY = -1; tapY <= 1; ++tapY)
     {
+        // PCFの横採取オフセット
         [unroll]
         for (int tapX = -1; tapX <= 1; ++tapX)
         {
@@ -1205,6 +1250,7 @@ float SampleDirectionalShadowCascade(
     return visibility / 9.0f;
 }
 
+// 対象平行光の影を距離で選びCascade末尾10%で混ぜる(worldPosition: 表面のWorld位置, normal: World単位法線, lightIndex: 平行光の番号)。
 float EvaluateDirectionalShadow(
     float3 worldPosition,
     float3 normal,
@@ -1217,10 +1263,13 @@ float EvaluateDirectionalShadow(
         return 1.0f;
     }
 
+    // カメラ前方向の表面距離
     const float cameraDistance = dot(
         worldPosition - CameraPosition.xyz,
         CameraForward.xyz);
+    // 距離で選んだCascade番号
     uint cascadeIndex = 0u;
+    // 走査する光源または骨の番号
     [unroll]
     for (uint index = 0u; index < 4u; ++index)
     {
@@ -1240,26 +1289,32 @@ float EvaluateDirectionalShadow(
         return 1.0f;
     }
 
+    // 影による光の可視率
     float visibility = SampleDirectionalShadowCascade(
         worldPosition,
         normal,
         cascadeIndex);
     if (cascadeIndex + 1u < LightCounts.w)
     {
+        // 1つ前のCascade終端距離
         const float previousSplit = cascadeIndex == 0u
             ? 0.0f
             : ShadowCascadeSplits[cascadeIndex - 1u];
+        // 現在Cascadeの距離幅
         const float cascadeRange =
             ShadowCascadeSplits[cascadeIndex]
             - previousSplit;
+        // Cascade末尾10%の開始距離
         const float blendStart =
             ShadowCascadeSplits[cascadeIndex]
             - cascadeRange * 0.1f;
+        // 次Cascadeへ混ぜる比率
         const float blend = saturate(
             (cameraDistance - blendStart)
             / max(cascadeRange * 0.1f, 0.0001f));
         if (blend > 0.0f)
         {
+            // 次Cascadeの光の可視率
             const float nextVisibility =
                 SampleDirectionalShadowCascade(
                     worldPosition,
@@ -1278,20 +1333,23 @@ float EvaluateDirectionalShadow(
         saturate(ShadowParameters.w));
 }
 
-// スポットライトの影。slotはSpotShadowViewProjectionsの添字。
+// 指定スポット影枠を3×3 PCFで採取する(worldPosition: 表面のWorld位置, normal: World単位法線, slot: 0～3のスポット影枠)。
 float EvaluateSpotShadow(
     float3 worldPosition,
     float3 normal,
     uint slot)
 {
+    // スポット影の補正と強度設定
     const float4 parameters =
         SpotShadowParameters[slot];
     if (parameters.w < 0.5f)
     {
         return 1.0f;
     }
+    // 法線補正後のWorld位置
     const float3 biasedPosition =
         worldPosition + normal * parameters.y;
+    // 影投影の同次位置
     const float4 lightPosition = mul(
         float4(biasedPosition, 1.0f),
         SpotShadowViewProjections[slot]);
@@ -1299,8 +1357,10 @@ float EvaluateSpotShadow(
     {
         return 1.0f;
     }
+    // 影透視除算後のXYZ
     const float3 projected =
         lightPosition.xyz / lightPosition.w;
+    // 影画像の採取UV
     const float2 shadowUv =
         projected.xy * float2(0.5f, -0.5f)
         + 0.5f;
@@ -1313,12 +1373,15 @@ float EvaluateSpotShadow(
     {
         return 1.0f;
     }
-    // 3x3 PCFで影の輪郭を柔らかくします。
+    // 影による光の可視率
     float visibility = 0.0f;
+    // スポット影の1画素幅
     const float spotTexel = ShadowTexelSizes.y;
+    // PCFの縦採取オフセット
     [unroll]
     for (int tapY = -1; tapY <= 1; ++tapY)
     {
+        // PCFの横採取オフセット
         [unroll]
         for (int tapX = -1; tapX <= 1; ++tapX)
         {
@@ -1337,7 +1400,7 @@ float EvaluateSpotShadow(
     return lerp(1.0f, visibility, saturate(parameters.z));
 }
 
-// ポイントライトの影（キューブ深度）。
+// 対象点光源のCube影を接平面の5点で採取する(worldPosition: 表面のWorld位置, lightIndex: 点光源の番号, lightPosition: 光源のWorld位置, range: 光の到達距離)。
 float EvaluatePointShadow(
     float3 worldPosition,
     uint lightIndex,
@@ -1350,34 +1413,45 @@ float EvaluatePointShadow(
     {
         return 1.0f;
     }
+    // 点光源から表面への差分
     const float3 fromLight =
         worldPosition - lightPosition;
+    // 点光源差分の各軸絶対値
     const float3 absoluteVector = abs(fromLight);
+    // Cube面への最大軸距離
     const float majorAxis = max(
         absoluteVector.x,
         max(absoluteVector.y, absoluteVector.z));
+    // 影・ClusterのNear距離
     const float nearPlane = 0.1f;
+    // Cube影のFar距離
     const float farPlane = max(range, nearPlane + 0.01f);
-    // 90度透視射影（RH）の深度をシェーダー側で再構成します。
+    // RH透視投影のCube影深度
     const float depth =
         farPlane / (farPlane - nearPlane)
         - farPlane * nearPlane
             / ((farPlane - nearPlane)
                 * max(majorAxis, nearPlane));
-    // 方向ベクトルを接平面内でずらした5タップPCF。
+    // 選択した画面軸の差分
     const float3 direction = normalize(fromLight);
+    // 平行を避けるCube影の補助軸
     const float3 axis =
         abs(direction.y) > 0.9f
             ? float3(1.0f, 0.0f, 0.0f)
             : float3(0.0f, 1.0f, 0.0f);
+    // 面に沿う接方向
     const float3 tangent =
         normalize(cross(axis, direction));
+    // 面に沿う従接方向
     const float3 bitangent =
         cross(direction, tangent);
+    // Cube影の2画素ずらし幅
     const float pointTexel =
         ShadowTexelSizes.z * 2.0f;
+    // 深度補正後の影比較値
     const float compareDepth =
         depth - PointShadowParameters.y;
+    // 影による光の可視率
     float visibility =
         PointShadowTexture.SampleCmpLevelZero(
             ShadowSampler,
@@ -1418,17 +1492,21 @@ float EvaluatePointShadow(
         saturate(PointShadowParameters.z));
 }
 
+// 材質へ間接光・直接光・発光を加え最後に霧を混ぜる(input: World位置・法線・UV・色)。
 float4 PSMain(PixelInput input) : SV_Target
 {
+    // 法線画像補正後のWorld法線
     const float3 normal = ApplyNormalMap(
         input,
         normalize(input.WorldNormal));
+    // 表面から視点への単位方向
     const float3 viewDirection = normalize(
         CameraPosition.xyz - input.WorldPosition);
+    // 画像と材質色を掛けたRGBA
     const float4 albedo =
         AlbedoTexture.Sample(MaterialSampler, input.TexCoord)
         * input.Tint;
-    // マップがある場合は係数へ掛けます（glTF仕様と同じ扱い）。
+    // 画像倍率込みの粗さ係数
     float roughnessValue = MaterialParameters.x;
     if (MaterialTextureParameters.x >= 0.5f)
     {
@@ -1436,6 +1514,7 @@ float4 PSMain(PixelInput input) : SV_Target
             MaterialSampler,
             input.TexCoord).g;
     }
+    // 画像倍率込みの金属度係数
     float metallicValue = MaterialParameters.w;
     if (MaterialTextureParameters.y >= 0.5f)
     {
@@ -1443,17 +1522,20 @@ float4 PSMain(PixelInput input) : SV_Target
             MaterialSampler,
             input.TexCoord).b;
     }
+    // 0.04～1へ制限した粗さ
     const float roughness = clamp(
         roughnessValue,
         0.04f,
         1.0f);
+    // 0～1へ制限した金属度
     const float metallic = saturate(metallicValue);
 
-    // 遮蔽（AO）は間接光だけを暗くします。直接光に掛けると
-    // 影の中がさらに暗くなって汚れて見えるためです。
+    // 間接光の遮蔽倍率
+    // 材質AOとSSAOは間接光だけに掛け、直接光・発光へ適用しない。
     float occlusion = 1.0f;
     if (MaterialTextureParameters.z >= 0.5f)
     {
+        // 遮蔽画像のR値
         const float sampled = OcclusionTexture.Sample(
             MaterialSampler,
             input.TexCoord).r;
@@ -1463,11 +1545,9 @@ float4 PSMain(PixelInput input) : SV_Target
             saturate(MaterialTextureParameters.w));
     }
 
-    // SSAOも同じ扱いで間接光だけへ掛けます。深度プリパスで
-    // ライティングより前に用意されているので、完成した色へ掛けて
-    // いた従来のやり方と違って直接光や影の中を暗くしません。
     if (ScreenAmbientOcclusionParameters.z >= 0.5f)
     {
+        // SSAOを採取する画面UV
         const float2 screenUV =
             input.Position.xy
             * ScreenAmbientOcclusionParameters.xy;
@@ -1476,6 +1556,7 @@ float4 PSMain(PixelInput input) : SV_Target
             screenUV).r;
     }
 
+    // 間接・直接光と発光のRGB
     float3 lighting = EvaluateEnvironment(
         normal,
         viewDirection,
@@ -1484,18 +1565,21 @@ float4 PSMain(PixelInput input) : SV_Target
         roughness,
         metallic) * occlusion;
 
+    // 走査する光源または骨の番号
     [loop]
     for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
     {
+        // 現在計算する光源情報
         const DirectionalLight light = DirectionalLights[index];
+        // 現在光源の影による可視率
         const float shadow = EvaluateDirectionalShadow(
             input.WorldPosition,
             normal,
             index);
-        // Color.wに太陽の角半径（ラジアン）を格納し、
-        // cbufferのレイアウトを維持します。
+        // 表面から光源への単位方向
         const float3 toLight =
             normalize(-light.DirectionIntensity.xyz);
+        // 平行光源の角半径rad
         const float angularRadius = light.Color.w;
         lighting += EvaluateLightPbrSized(
             normal,
@@ -1515,78 +1599,93 @@ float4 PSMain(PixelInput input) : SV_Target
             SourceSpecularEnergy(roughness, angularRadius));
     }
 
+    // Cluster番号はCompute側と同じ画面XYと対数深度で求める。
     if (ClusteredParameters.w >= 0.5f)
     {
-        // クラスタ経路（Forward+）。自分のピクセルが入っている
-        // クラスタの番号表だけを見てポイント／スポットを計算します。
-        // 表はLamaPonLightCulling.hlslが作っています。
+        // Clusterの画面横分割数
         const uint gridX = (uint)ClusteredParameters.x;
+        // Clusterの画面縦分割数
         const uint gridY = (uint)ClusteredParameters.y;
+        // Clusterの深度分割数
         const uint gridZ = (uint)ClusteredParameters.z;
+        // 画面内に制限したUV
         const float2 screenRatio = saturate(
             input.Position.xy
             * ClusteredScreenParameters.xy);
+        // 画面横のCluster番号
         const uint clusterX = min(
             (uint)(screenRatio.x * gridX),
             gridX - 1u);
+        // 画面縦のCluster番号
         const uint clusterY = min(
             (uint)(screenRatio.y * gridY),
             gridY - 1u);
-        // カメラからの奥行き（前方向への射影距離）から、指数分割の
-        // スライス番号を求めます。カリング側と同じ式です。
+        // 影・ClusterのNear距離
         const float nearPlane =
             ClusteredDepthParameters.x;
+        // Near以上の前方向距離
         const float viewDepth = max(
             dot(
                 CameraForward.xyz,
                 input.WorldPosition
                     - CameraPosition.xyz),
             nearPlane);
+        // 対数深度のCluster番号
         const uint clusterZ = min(
             (uint)(log(viewDepth / nearPlane)
                 / ClusteredDepthParameters.z
                 * gridZ),
             gridZ - 1u);
+        // 3軸から平坦化した番号
         const uint cluster =
             clusterZ * gridX * gridY
             + clusterY * gridX
             + clusterX;
+        // 1Clusterの灯数上限
         const uint maximumPerCluster =
             (uint)ClusteredDepthParameters.w;
+        // Cluster光源列の先頭位置
         const uint clusterOffset =
             cluster * maximumPerCluster;
+        // 上限内のCluster光源件数
         const uint clusterLightCount =
             min(ClusterLightCounts[cluster],
                 maximumPerCluster);
 
+        // Cluster光源列の走査番号
         [loop]
         for (uint slot = 0;
             slot < clusterLightCount;
             ++slot)
         {
+            // 現在計算する光源情報
             const ClusterLight light = ClusterLights[
                 ClusterLightIndexList[
                     clusterOffset + slot]];
+            // 表面から光源への差分
             const float3 delta =
                 light.PositionRange.xyz
                 - input.WorldPosition;
+            // 表面と光源のWorld距離
             const float distance = length(delta);
+            // 下限付きの光到達距離
             const float range = max(
                 light.PositionRange.w,
                 0.001f);
+            // 到達距離による二乗減衰
             const float distanceAttenuation =
                 pow(saturate(1.0f - distance / range),
                     2.0f);
+            // 表面から光源への単位方向
             const float3 toLight =
                 delta / max(distance, 0.0001f);
 
+            // 距離・コーンの光減衰
             float attenuation = distanceAttenuation;
+            // 現在光源の影による可視率
             float shadow = 1.0f;
             if (light.ExtraParameters.y < 0.5f)
             {
-                // ポイントライト。影の参照はライト番号+1です
-                // （EvaluatePointShadowが対象かどうかを自分で
-                // 照合します）。
                 if (light.ExtraParameters.z >= 1.0f)
                 {
                     shadow = EvaluatePointShadow(
@@ -1599,12 +1698,12 @@ float4 PSMain(PixelInput input) : SV_Target
             }
             else
             {
-                // スポットライト。コーン減衰は従来経路と同じく
-                // 2乗で締めます。
+                // 光進行方向と表面方向の内積
                 const float cone = dot(
                     normalize(
                         light.DirectionInnerCosine.xyz),
                     -toLight);
+                // コーン内外角による光減衰
                 const float coneAttenuation = smoothstep(
                     light.ExtraParameters.x,
                     light.DirectionInnerCosine.w,
@@ -1636,16 +1735,23 @@ float4 PSMain(PixelInput input) : SV_Target
     }
     else
     {
+    // 走査する光源または骨の番号
     [loop]
     for (uint index = 0; index < min(LightCounts.y, 16u); ++index)
     {
+        // 現在計算する光源情報
         const PointLight light = PointLights[index];
+        // 表面から光源への差分
         const float3 delta =
             light.PositionRange.xyz - input.WorldPosition;
+        // 表面と光源のWorld距離
         const float distance = length(delta);
+        // 下限付きの光到達距離
         const float range = max(light.PositionRange.w, 0.001f);
+        // 距離・コーンの光減衰
         const float attenuation =
             pow(saturate(1.0f - distance / range), 2.0f);
+        // 現在光源の影による可視率
         const float shadow = EvaluatePointShadow(
             input.WorldPosition,
             index,
@@ -1664,26 +1770,35 @@ float4 PSMain(PixelInput input) : SV_Target
                 * shadow);
     }
 
+    // 走査する光源または骨の番号
     [loop]
     for (uint index = 0; index < min(LightCounts.z, 8u); ++index)
     {
+        // 現在計算する光源情報
         const SpotLight light = SpotLights[index];
+        // スポット光源から表面への差分
         const float3 lightToPixel =
             input.WorldPosition - light.PositionRange.xyz;
+        // 表面と光源のWorld距離
         const float distance = length(lightToPixel);
+        // 下限付きの光到達距離
         const float range = max(light.PositionRange.w, 0.001f);
+        // スポット光源からの単位方向
         const float3 rayDirection =
             lightToPixel / max(distance, 0.0001f);
+        // 光進行方向と表面方向の内積
         const float cone = dot(
             normalize(light.DirectionInnerCosine.xyz),
             rayDirection);
+        // コーン内外角による光減衰
         const float coneAttenuation = smoothstep(
             light.OuterCosinePadding.x,
             light.DirectionInnerCosine.w,
             cone);
+        // 到達距離による二乗減衰
         const float distanceAttenuation =
             pow(saturate(1.0f - distance / range), 2.0f);
-        // OuterCosinePadding.y = 影スロット+1（0なら影なし）
+        // 現在光源の影による可視率
         float shadow = 1.0f;
         if (light.OuterCosinePadding.y >= 1.0f)
         {
@@ -1706,10 +1821,9 @@ float4 PSMain(PixelInput input) : SV_Target
                 * coneAttenuation
                 * shadow);
     }
-    } // 従来経路（クラスタ無効時）の終わり
+    }
 
-    // 発光はライティングとは無関係に足します（影の中でも光る）。
-    // Fogは発光後に掛けるので、遠くのネオンは霧に沈みます。
+    // 画像倍率込みの発光RGB
     float3 emissive = EmissiveParameters.rgb;
     if (EmissiveParameters.w >= 0.5f)
     {
@@ -1717,19 +1831,24 @@ float4 PSMain(PixelInput input) : SV_Target
             MaterialSampler,
             input.TexCoord).rgb;
     }
+    // 発光は影と独立に足し、霧は発光を含む色へ最後に適用する。
     lighting += emissive;
 
+    // 負成分を0へ制限した照明RGB
     const float3 litColor = max(lighting, 0.0f);
     if (FogParameters.w < 0.5f)
     {
         return float4(litColor, albedo.a);
     }
+    // 表面とカメラのWorld距離
     const float distanceToCamera =
         length(input.WorldPosition - CameraPosition.xyz);
+    // 開始終了距離による霧比
     const float rangeFog = smoothstep(
         FogParameters.x,
         max(FogParameters.y, FogParameters.x + 0.001f),
         distanceToCamera);
+    // 密度による指数霧比
     const float exponentialFog =
         1.0f
         - exp(
@@ -1737,6 +1856,7 @@ float4 PSMain(PixelInput input) : SV_Target
             * max(
                 distanceToCamera - FogParameters.x,
                 0.0f));
+    // 距離霧と指数霧の最大比
     const float fogAmount =
         saturate(max(rangeFog, exponentialFog));
     return float4(
@@ -1744,21 +1864,16 @@ float4 PSMain(PixelInput input) : SV_Target
         albedo.a);
 }
 
-// スキニング用のピクセルシェーダー。
-// スキニングモデルの頂点変形はDirectXTKのSkinnedEffectが行い、
-// エンジンはピクセルシェーダーだけを差し替えます。そのため入力は
-// VSSkinnedMainの出力ではなく、DirectXTK側のper-pixel lighting
-// 出力（TexCoordがTEXCOORD0、WorldPositionがTEXCOORD1…）に
-// 合わせる必要があります。並びを詰め替えてPSMainへ渡します。
+// DirectXTKのスキン入力を共通構造へ変換して照明を計算する(input: スキンPixel入力)。
 float4 PSSkinnedMain(SkinnedPixelInput input) : SV_Target
 {
+    // 共通構造へ変換したPixel入力
     PixelInput pixel;
     pixel.Position = input.Position;
     pixel.WorldPosition = input.WorldPosition.xyz;
     pixel.WorldNormal = input.WorldNormal;
     pixel.TexCoord = input.TexCoord;
-    // DirectXTK側のDiffuseにも同じ色が乗っているため、二重に
-    // 掛からないようMaterialColorを使います。
+    // DirectXTKのDiffuseと材質色を二重乗算しないようMaterialColorを使う。
     pixel.Tint = MaterialColor;
     return PSMain(pixel);
 }

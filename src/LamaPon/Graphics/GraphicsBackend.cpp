@@ -19,10 +19,7 @@ namespace LamaPon
         const RenderingApi requestedApi,
         const GraphicsStartupProfile profile) noexcept
     {
-        // Startup profiles were introduced while DirectX 12 only exposed a
-        // bootstrap renderer.  Keep accepting them for source compatibility,
-        // but the completed experimental renderer no longer needs an opt-in
-        // path beyond selecting DirectX12Experimental itself.
+        // 旧モジュールとの互換のためprofileを受け付け、選択には使いません。
         static_cast<void>(profile);
         switch (requestedApi)
         {

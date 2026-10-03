@@ -11,16 +11,19 @@
 
 namespace
 {
+    // Require(condition: 条件, message: 失敗理由)は不成立時に例外を送出する。
     void Require(
         const bool condition,
         const char* message)
     {
+        // 条件違反を検出する
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // NearlyEqual(left: 左値, right: 右値)は許容誤差内か判定する。
     [[nodiscard]] bool NearlyEqual(
         const float left,
         const float right)
@@ -28,6 +31,7 @@ namespace
         return std::fabs(left - right) < 0.0001f;
     }
 
+    // DataAssetテストで使うスキーマ
     constexpr char SampleSchema[] = R"({
         "fields": [
             {
@@ -76,12 +80,15 @@ namespace
     })";
 }
 
+// DataAssetの読込・保存とスキーマ既定値を検証する
 int main()
 {
+    // テスト失敗を終了コードに変換する
     try
     {
         // 値の読み出し。
         {
+            // 読込対象のDataAsset JSON
             constexpr char json[] = R"({
                 "format": "LamaPonDataAsset",
                 "version": 1,
@@ -101,6 +108,7 @@ int main()
                     ]
                 }
             })";
+            // JSONから生成したDataAsset
             const auto asset = LamaPon::DataAsset::FromJson(
                 json,
                 "goblin.asset.json");
@@ -124,6 +132,7 @@ int main()
                 asset.GetBool("alive"),
                 "Boolean values must be readable.");
 
+            // 読み込んだ色値
             const auto color = asset.GetColor("tintColor");
             Require(
                 NearlyEqual(color.x, 0.25f)
@@ -132,6 +141,7 @@ int main()
                     && NearlyEqual(color.w, 1.0f),
                 "Colors must be read component-wise.");
 
+            // 読み込んだ座標値
             const auto position =
                 asset.GetVector3("spawnPoint");
             Require(
@@ -166,6 +176,7 @@ int main()
 
         // 既定値と、壊れた入力での安全側の動作。
         {
+            // 不正JSONから生成した空DataAsset
             const auto broken =
                 LamaPon::DataAsset::FromJson("{ oops");
             Require(
@@ -191,6 +202,7 @@ int main()
 
         // 保存して読み直しても値が変わらないこと。
         {
+            // 保存・再読込用DataAsset JSON
             constexpr char json[] = R"({
                 "type": "Game.Round",
                 "values": {
@@ -199,8 +211,10 @@ int main()
                     "waves": [ { "count": 4 } ]
                 }
             })";
+            // シリアライズ前のDataAsset
             const auto original =
                 LamaPon::DataAsset::FromJson(json);
+            // シリアライズ後に復元したDataAsset
             const auto restored =
                 LamaPon::DataAsset::FromJson(
                     original.SerializeToJson());
@@ -223,6 +237,7 @@ int main()
 
         // 新規作成時のドキュメント（スキーマの既定値で埋まること）。
         {
+            // スキーマ既定値を含む新規DataAsset JSON
             const auto document =
                 LamaPon::EditorDetail::MakeDataAssetDocument(
                     "Game.EnemyData",
@@ -232,6 +247,7 @@ int main()
                     && document.at("type") == "Game.EnemyData",
                 "A new data asset must carry its format and type.");
 
+            // JSONから生成した新規DataAsset
             const auto created =
                 LamaPon::DataAsset::FromJson(document.dump());
             Require(
@@ -241,6 +257,7 @@ int main()
                         created.GetFloat("moveSpeed"),
                         2.5f),
                 "Schema defaults must be written into new assets.");
+            // 既定値のない色属性
             const auto tint = created.GetColor("tintColor");
             Require(
                 NearlyEqual(tint.x, 0.0f)
@@ -259,9 +276,12 @@ int main()
 
         // listへ足す要素の初期値。
         {
+            // テスト用スキーマJSON
             const auto schema =
                 nlohmann::json::parse(SampleSchema);
+            // 波リストのスキーマ定義
             const auto& waves = schema.at("fields").at(6);
+            // 新しい波要素の既定値
             const auto element =
                 LamaPon::EditorDetail::SchemaDefaultValue(
                     waves.at("item"));
@@ -272,12 +292,40 @@ int main()
                 "New list elements must use the item defaults.");
         }
 
+        // 選択肢の表示名は保存値と独立し、未知の既定値も失いません。
+        {
+            // 不正・重複選択肢を含むフィールド定義
+            const auto field = nlohmann::json::parse(R"({
+                "type":"string","options":[null,1,{},{"value":2},
+                    {"value":"fade","displayName":"フェード"},
+                    "wipe",{"value":"fade","displayName":"重複"}]
+            })");
+            // 有効な文字列選択肢
+            const auto options = LamaPon::EditorDetail::SchemaStringOptions(field);
+            Require(options.size() == 2 && options[0].value == "fade"
+                && options[0].displayName == "フェード" && options[1].value == "wipe",
+                "String options must skip malformed and duplicate entries.");
+            Require(LamaPon::EditorDetail::SchemaDefaultValue(field) == "fade",
+                "An option field without a default must use its first valid option.");
+            // 未知の既定値を含むフィールド定義
+            auto explicitDefault = field;
+            explicitDefault["default"] = "futureEffect";
+            Require(LamaPon::EditorDetail::SchemaDefaultValue(explicitDefault)
+                == "futureEffect", "Unknown saved defaults must survive.");
+            Require(LamaPon::EditorDetail::SchemaStringOptions(
+                nlohmann::json{{"options", "broken"}}).empty(),
+                "Malformed option containers must remain plain string fields.");
+        }
+
         std::cout << "Data asset tests passed.\n";
+        // テスト成功を返す
         return 0;
     }
+    // 例外内容を出力して失敗終了する
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';
+        // テスト失敗を返す
         return 1;
     }
 }

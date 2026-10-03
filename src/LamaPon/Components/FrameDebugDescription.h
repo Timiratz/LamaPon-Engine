@@ -1,7 +1,5 @@
 #pragma once
 
-// 描画Componentがフレームデバッガー向けの説明文を組み立てるための
-// Runtime内部の補助です。Game Module SDKの公開APIではありません。
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/FrameDebugger.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
@@ -13,6 +11,7 @@
 
 namespace LamaPon::Detail
 {
+    // 空なら空文字、指定時は汎用区切りのUTF-8パスを返します(path: 表示するパス)。
     [[nodiscard]] inline std::string FrameDebugPathLabel(
         const std::filesystem::path& path)
     {
@@ -21,15 +20,16 @@ namespace LamaPon::Detail
             : PathToUtf8(std::filesystem::path{ path.generic_wstring() });
     }
 
-    // 1.000000のような末尾の0を出さずに数値を表示します。
+    // 有効数字4桁で数値を文字列化します(value: 表示する数値)。
     [[nodiscard]] inline std::string FrameDebugNumber(const double value)
     {
+        // 数値の表示文字バッファー
         char text[32]{};
         std::snprintf(text, sizeof(text), "%.4g", value);
         return text;
     }
 
-    // 要約の項目を「, 」区切りで足します。
+    // 空でない項目をカンマ区切りで追加します(text: 追加先の要約, item: 追加する項目)。
     inline void AppendFrameDebugItem(
         std::string& text,
         const std::string_view item)
@@ -45,6 +45,7 @@ namespace LamaPon::Detail
         text += item;
     }
 
+    // カリング方式の表示名を返します(mode: カリング方式)。
     [[nodiscard]] inline std::string_view FrameDebugCullLabel(
         const ShaderCullMode mode) noexcept
     {
@@ -60,13 +61,13 @@ namespace LamaPon::Detail
         return "裏面カリング";
     }
 
-    // マテリアルアセット、Shader、ベース色テクスチャの順に、
-    // 指定されているものだけを並べます。
+    // 材質・シェーダー・画像の表示名を組み立てます(materialAsset: 材質パス, shader: シェーダーパスで空は標準Lit, albedo: 基本色画像パス)。
     [[nodiscard]] inline std::string FrameDebugMaterialLabel(
         const std::filesystem::path& materialAsset,
         const std::filesystem::path& shader,
         const std::filesystem::path& albedo)
     {
+        // 材質とシェーダーの表示要約
         std::string label;
         if (!materialAsset.empty())
         {
@@ -88,7 +89,7 @@ namespace LamaPon::Detail
         return label;
     }
 
-    // 画像1枚で描く2D/UI描画の説明です。
+    // 画像描画の説明を設定してtrueを返します(description: 出力先, geometry: 形状の説明, texture: 画像パス, sortOrder: 描画順序)。
     [[nodiscard]] inline bool DescribeTexturedDraw(
         FrameDebugDrawDescription& description,
         std::string geometry,

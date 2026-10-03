@@ -9,14 +9,19 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(const bool condition, const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // leftとrightの差がepsilon以内か返します。
+    // NearlyEqual(left: 左値, right: 右値, epsilon: 許容誤差)
     bool NearlyEqual(
         const float left,
         const float right,
@@ -26,14 +31,19 @@ namespace
     }
 }
 
+// Input action・pointer・control nameの状態遷移を検証します。
 int main()
 {
+    // COM初期化結果
     const HRESULT comResult =
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // COMを解放する必要があるか
     const bool uninitialize = SUCCEEDED(comResult);
 
+    // 入力actionとpointer状態を検査
     try
     {
+        // action mapを持つテスト用InputSystem
         LamaPon::InputSystem input;
         input.SetActions(
             {
@@ -53,6 +63,7 @@ int main()
                 }
             });
 
+        // KeyboardA押下時のaction値
         LamaPon::InputSnapshot snapshot;
         snapshot.Set(
             LamaPon::InputControl::KeyboardA,
@@ -70,6 +81,7 @@ int main()
             !input.WasPressed("Move") && input.IsDown("Move"),
             "Held action state is incorrect.");
 
+        // KeyboardDとgamepadを合成するsnapshot
         LamaPon::InputSnapshot combined;
         combined.Set(
             LamaPon::InputControl::KeyboardD,
@@ -123,6 +135,7 @@ int main()
                 && !input.Pointer().down,
             "Pointer release transition was not detected.");
         // 右クリックはボタン別状態（buttons配列）で検証します。
+        // 右ボタン押下を検証するpointer状態
         LamaPon::InputPointerState rightPress{};
         rightPress.position = { 322.0f, 182.0f };
         rightPress.valid = true;
@@ -138,6 +151,7 @@ int main()
                     LamaPon::PointerButton::Right)
                     .down,
             "Right pointer press transition was not detected.");
+        // 右ボタン解放を検証するpointer状態
         LamaPon::InputPointerState rightRelease{};
         rightRelease.position = { 322.0f, 182.0f };
         rightRelease.valid = true;
@@ -168,6 +182,7 @@ int main()
                     }
                 }
             });
+        // MouseLeftを押すFire action snapshot
         LamaPon::InputSnapshot fire;
         fire.Set(
             LamaPon::InputControl::MouseLeft,
@@ -177,6 +192,7 @@ int main()
             input.WasPressed("Fire")
                 && input.IsDown("Fire"),
             "Mouse button binding was not applied.");
+        // 下向きwheelでZoomするsnapshot
         LamaPon::InputSnapshot zoom;
         zoom.Set(
             LamaPon::InputControl::MouseWheelDown,
@@ -186,6 +202,7 @@ int main()
             NearlyEqual(input.Value("Zoom"), -1.0f),
             "Mouse wheel binding was not applied.");
 
+        // wheelと右ボタンを含むpointer override
         LamaPon::InputPointerState pointerOverride;
         pointerOverride.position = { 10.0f, 20.0f };
         pointerOverride.valid = true;
@@ -239,6 +256,7 @@ int main()
             && LamaPon::IsGamePadControl(
                 LamaPon::InputControl::GamePadRightTrigger));
 
+        // control: API名とenum値の往復を確認する全入力control
         for (const auto control :
             LamaPon::AllInputControls())
         {
@@ -249,7 +267,9 @@ int main()
                 "Input control name did not round-trip.");
         }
 
+        // control名重複が拒否されたか
         bool duplicateRejected = false;
+        // 重複action名の登録を拒否
         try
         {
             input.SetActions(
@@ -268,6 +288,7 @@ int main()
                     }
                 });
         }
+        // duplicate action例外を拒否結果に変換
         catch (const std::invalid_argument&)
         {
             duplicateRejected = true;
@@ -276,6 +297,7 @@ int main()
             duplicateRejected,
             "Duplicate action names were accepted.");
 
+        // COM初期化成功時だけ対応する終了処理を行う
         if (uninitialize)
         {
             CoUninitialize();
@@ -283,8 +305,10 @@ int main()
         std::cout << "Input system tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
+        // COM初期化成功時だけ例外経路でもCOMを解放
         if (uninitialize)
         {
             CoUninitialize();

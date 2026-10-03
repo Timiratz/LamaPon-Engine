@@ -1,31 +1,16 @@
-// 深度バッファから「距離」「ビュー空間の位置」「法線」を求める共有実装。
-//
-// エンジン内部（SSAO）と自作のScreenEffectの両方がここを使います。
-// 同じ式を2箇所へ書くと、片方だけ変更したときに描画結果が食い違う
-// ため、式はここで一元管理します。
-//
-// 使う側が用意する2つのfloat4:
-//
-//   depthParameters   x = 射影の_33
-//                     y = 射影の_43
-//                     z = 深度が使えるなら1（0なら深度を読まないこと）
-//   depthUnprojection x = 1 / 射影の_11
-//                     y = 1 / 射影の_22
-//
-// 射影は右手系なので_33も_43も負です（例: near 0.1 / far 1000 で
-// _33 = -1.0001、_43 = -0.10001）。左手系のつもりで符号を変えると、
-// 下の遠平面判定が全画素で成立し、画面全体が同じ距離になります。
+// SSAOとScreenEffectで共有し、右手系射影の_33・_43は負値のまま渡す。
 
+// depthParameters.zが0なら呼出側で深度を読まず、depthUnprojection.xyには射影_11・_22の逆数を渡す。
 #ifndef LAMAPON_SCREEN_DEPTH_INCLUDED
 #define LAMAPON_SCREEN_DEPTH_INCLUDED
 
-// 深度（0〜1）からカメラまでの距離（メートル）。
-// 何も描かれていない遠平面では分母が0へ近づくので、十分遠い値を
-// 返します。
+
+// 深度から正の奥行きを求め、遠平面では1e6を返す(deviceDepth: 0～1のデバイス深度, depthParameters: X射影_33・Y射影_43)。
 float LamaPonSceneDistance(
     float deviceDepth,
     float4 depthParameters)
 {
+    // 深度と射影_33の和
     const float denominator = deviceDepth + depthParameters.x;
     if (denominator > -1e-6f)
     {
@@ -34,17 +19,18 @@ float LamaPonSceneDistance(
     return depthParameters.y / denominator;
 }
 
-// UVと深度からビュー空間の位置。zは上の距離そのものです
-// （x=右、y=上、z=奥。距離を正で持つので、この3本はSSAOと同じ
-// 左手系の並びになります）。
+
+// 右X・上Y・奥Zの正の奥行き座標を復元する(uv: 左上原点の画像UV, deviceDepth: デバイス深度, depthParameters: X射影_33・Y射影_43, depthUnprojection: XY射影対角の逆数)。
 float3 LamaPonViewPositionFromDepth(
     float2 uv,
     float deviceDepth,
     float4 depthParameters,
     float4 depthUnprojection)
 {
+    // 正のビュー奥行き
     const float viewZ =
         LamaPonSceneDistance(deviceDepth, depthParameters);
+    // 右X・上Yの正規化画面座標
     const float2 ndc = float2(
         uv.x * 2.0f - 1.0f,
         1.0f - uv.y * 2.0f);
@@ -54,13 +40,8 @@ float3 LamaPonViewPositionFromDepth(
         viewZ);
 }
 
-// 上下左右のビュー空間位置から法線を組み立てます。
-//
-// 単純にcross(ddx, ddy)で面法線を取ると、輪郭のところで手前と奥を
-// またいだ差分になって法線が寝てしまいます。左右・上下それぞれで
-// 「奥行きの段差が小さい方」を選ぶと、輪郭では必ず同じ面の側が
-// 選ばれます。隣が空（距離1e6）の場合も段差が巨大になるので、
-// 自動的に反対側が選ばれます。
+
+// 段差の小さい隣接点で法線を求め、退化時は-Zを返す(origin: 中心位置, left: 左隣位置, right: 右隣位置, up: 上隣位置, down: 下隣位置)。
 float3 LamaPonNormalFromNeighbours(
     float3 origin,
     float3 left,
@@ -68,31 +49,32 @@ float3 LamaPonNormalFromNeighbours(
     float3 up,
     float3 down)
 {
-    // どちら向きに引いても+x／+y方向のベクトルになるよう符号を
-    // 揃えます。
+
+    // 段差の小さい側の右向き差分
     const float3 horizontal =
         abs(left.z - origin.z) < abs(right.z - origin.z)
             ? (origin - left)
             : (right - origin);
+    // 段差の小さい側の上向き差分
     const float3 vertical =
         abs(up.z - origin.z) < abs(down.z - origin.z)
             ? (up - origin)
             : (origin - down);
 
+    // 近傍から求めた非正規化法線
     const float3 normal = cross(vertical, horizontal);
+    // 法線の長さの二乗
     const float lengthSquared = dot(normal, normal);
     if (lengthSquared < 1e-12f)
     {
-        // 退化した場合（1px幅の物体など）は真正面を向かせます。
+
         return float3(0.0f, 0.0f, -1.0f);
     }
     return normal * rsqrt(lengthSquared);
 }
 
-// ScreenEffect用のまとめ。深度テクスチャと画素座標を渡すだけで
-// ビュー空間の法線が返ります。カメラを向いている面は-zです。
-//
-// inverseScreenSizeは1画素ぶんのUV（ScreenParameters.ScreenSize.zw）。
+
+// 深度と4近傍からビュー空間の法線を復元する(depthTexture: 利用可能な深度画像, pixel: 画面画素位置, inverseScreenSize: 画像幅・高さの逆数, depthParameters: X射影_33・Y射影_43, depthUnprojection: XY射影対角の逆数)。
 float3 LamaPonReconstructViewNormal(
     Texture2D depthTexture,
     int2 pixel,
@@ -100,35 +82,43 @@ float3 LamaPonReconstructViewNormal(
     float4 depthParameters,
     float4 depthUnprojection)
 {
+    // 中心画素の画像UV
     const float2 uv =
         (float2(pixel) + 0.5f) * inverseScreenSize;
+    // 左右1画素のUV差
     const float2 offsetX = float2(inverseScreenSize.x, 0.0f);
+    // 上下1画素のUV差
     const float2 offsetY = float2(0.0f, inverseScreenSize.y);
 
+    // 深度から復元した中心位置
     const float3 origin = LamaPonViewPositionFromDepth(
         uv,
         depthTexture.Load(int3(pixel, 0)).r,
         depthParameters,
         depthUnprojection);
+    // 深度から復元した左隣位置
     const float3 left = LamaPonViewPositionFromDepth(
         uv - offsetX,
         depthTexture.Load(
             int3(pixel + int2(-1, 0), 0)).r,
         depthParameters,
         depthUnprojection);
+    // 深度から復元した右隣位置
     const float3 right = LamaPonViewPositionFromDepth(
         uv + offsetX,
         depthTexture.Load(
             int3(pixel + int2(1, 0), 0)).r,
         depthParameters,
         depthUnprojection);
-    // 画面のyは下向きなので、引いた側が画面の上（ビュー空間の+y）。
+
+    // 深度から復元した上隣位置
     const float3 up = LamaPonViewPositionFromDepth(
         uv - offsetY,
         depthTexture.Load(
             int3(pixel + int2(0, -1), 0)).r,
         depthParameters,
         depthUnprojection);
+    // 深度から復元した下隣位置
     const float3 down = LamaPonViewPositionFromDepth(
         uv + offsetY,
         depthTexture.Load(

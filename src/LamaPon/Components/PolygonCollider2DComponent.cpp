@@ -73,16 +73,21 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // 変換したワールドXY頂点列
         Polygon2D result;
         result.vertices.reserve(m_vertices.size());
+        // 変換するローカル頂点
         for (const auto& vertex : m_vertices)
         {
+            // 中心位置を足したローカル点
             const XMFLOAT3 local{
                 vertex.x + m_offset.x,
                 vertex.y + m_offset.y,
                 0.0f
             };
+            // 変換したワールドXYZ頂点
             XMFLOAT3 worldVertex{};
             XMStoreFloat3(
                 &worldVertex,
@@ -94,12 +99,15 @@ namespace LamaPon
 
     Bounds2D PolygonCollider2DComponent::WorldBounds() const noexcept
     {
+        // ワールドXYの軸平行境界
         Bounds2D bounds{
             { std::numeric_limits<float>::max(), std::numeric_limits<float>::max() },
             { std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() }
         };
 
+        // ワールドXYの凸頂点列
         const auto polygon = WorldPolygon();
+        // 境界を計算する頂点
         for (const auto& vertex : polygon.vertices)
         {
             bounds.minimum.x = std::min(bounds.minimum.x, vertex.x);
@@ -119,23 +127,29 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // ワールドXYの凸頂点列
         const auto polygon = WorldPolygon();
         if (polygon.vertices.size() < 2)
         {
             return;
         }
 
+        // 多角形輪郭の線分端点列
         std::vector<DirectX::XMFLOAT3> lines;
         lines.reserve(polygon.vertices.size() * 2);
+        // 輪郭線の始点番号
         for (std::size_t index{}; index < polygon.vertices.size(); ++index)
         {
+            // 輪郭線のワールドXY始点
             const auto& a = polygon.vertices[index];
+            // 輪郭線のワールドXY終点
             const auto& b =
                 polygon.vertices[(index + 1) % polygon.vertices.size()];
             lines.push_back({ a.x, a.y, 0.0f });
             lines.push_back({ b.x, b.y, 0.0f });
         }
 
+        // 形状のデバッグRGBA色
         const DirectX::XMVECTOR color = m_isTrigger
             ? DirectX::XMVectorSet(1.0f, 0.75f, 0.1f, 1.0f)
             : DirectX::XMVectorSet(0.1f, 1.0f, 0.35f, 1.0f);

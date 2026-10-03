@@ -11,9 +11,7 @@ configure_file(
     @ONLY
 )
 
-# 表示用のブランチ名とコミットは構成時に一度生成し、さらにビルドの
-# たびにLamaPonBuildInfoターゲットで取り直します（内容が同じなら
-# 書き換えません）。
+# BranchとCommitの表示を構成時・build時に更新します。
 include(cmake/LamaPonGitInfo.cmake)
 lamapon_write_build_info(
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -36,42 +34,49 @@ add_custom_target(LamaPonBuildInfo
     VERBATIM
 )
 
+# Windows以外の構成を拒否します。
 if(NOT WIN32)
     message(FATAL_ERROR "LamaPon currently targets Windows and DirectX 11.")
 endif()
 
 enable_language(RC)
 
+# CMAKE_CXX_STANDARD: Engineが使うC++ standard.
 set(CMAKE_CXX_STANDARD 20)
+# CMAKE_CXX_STANDARD_REQUIRED: standard未対応compilerを拒否します。
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# CMAKE_CXX_EXTENSIONS: compiler固有extensionを無効にします。
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# LamaPonRuntimeは失敗をC++例外で通知します。MSVCの既定フラグを
-# 外部ビルドが上書きしても例外処理が強制終了へ変わらないよう、
-# エンジン側の必須条件として明示します。
+# MSVCでもEngineの例外処理を有効にします。
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
 endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+# LAMAPON_PACKAGE_SYMBOLS: Release PDBをpackageへ含めるか。
 option(
     LAMAPON_PACKAGE_SYMBOLS
     "Generate and package full PDB files for Release binaries"
     ON
 )
 
+# lamapon_enable_release_symbols(target: build target): Release symbol設定を付けます。
 function(lamapon_enable_release_symbols target)
+    # MSVCでPDB同梱が有効な場合だけ設定します。
     if(MSVC AND LAMAPON_PACKAGE_SYMBOLS)
         target_compile_options(
             ${target}
             PRIVATE
                 $<$<CONFIG:Release>:/Zi>
         )
+        # LAMAPON_SYMBOL_TARGET_TYPE: PDB link settingを選ぶtarget type.
         get_target_property(LAMAPON_SYMBOL_TARGET_TYPE
             ${target}
             TYPE
         )
+        # objectを出力するtargetだけlink symbolを設定します。
         if(NOT LAMAPON_SYMBOL_TARGET_TYPE STREQUAL "STATIC_LIBRARY"
            AND NOT LAMAPON_SYMBOL_TARGET_TYPE STREQUAL "OBJECT_LIBRARY"
            AND NOT LAMAPON_SYMBOL_TARGET_TYPE STREQUAL "INTERFACE_LIBRARY")
@@ -109,6 +114,7 @@ target_compile_options(Ufbx PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/wd4996>
 )
 
+# DearImGuiのrecording hookをHubからも使えるよう共通linkします。
 add_library(DearImGui STATIC
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
@@ -117,8 +123,6 @@ add_library(DearImGui STATIC
     third_party/imgui/backends/imgui_impl_dx11.cpp
     third_party/imgui/backends/imgui_impl_dx12.cpp
     third_party/imgui/backends/imgui_impl_win32.cpp
-    # UIを記録するテストエンジンフックはimgui.objから参照されます。
-    # LamaPonHubでもリンクできるよう、実装はこのターゲットに置きます。
     src/LamaPon/Editor/UiRecorder.cpp
     src/LamaPon/Editor/UiRecorder.h
 )
@@ -129,10 +133,9 @@ target_include_directories(DearImGui PUBLIC
 target_include_directories(DearImGui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+# Widget登録でImGuiTestEngineHook_*を呼び、recordingは実行時flagで制御します。
 target_compile_definitions(DearImGui PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    # ウィジェット登録時にImGuiTestEngineHook_*を呼びます。記録の有無は
-    # 実行時フラグで制御します（UiRecorder.cppを参照）。
     IMGUI_ENABLE_TEST_ENGINE
 )
 target_compile_options(DearImGui PRIVATE
@@ -155,6 +158,7 @@ target_compile_options(ImGuizmo PRIVATE
 
 include(cmake/LamaPonNetworking.cmake)
 
+# LAMAPON_NETWORK_SOURCES: Network test間で共有するsource一覧.
 set(LAMAPON_NETWORK_SOURCES
     src/LamaPon/Online/NetworkSession.cpp
     src/LamaPon/Online/LanNetworkTransport.cpp
@@ -165,6 +169,7 @@ set(LAMAPON_NETWORK_SOURCES
     src/LamaPon/Online/EpicNetworkTransport.cpp
 )
 
+# LAMAPON_RUNTIME_SOURCES: Runtime targetのsource一覧.
 set(LAMAPON_RUNTIME_SOURCES
     ${LAMAPON_NETWORK_SOURCES}
     src/LamaPon/Online/NetworkSession.h
@@ -545,10 +550,15 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/LamaPon.h
 )
 
+# LAMAPON_EDITOR_SOURCES: Editor targetのsource一覧.
 set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/NetworkProjectSettingsPanel.cpp
     src/LamaPon/Editor/NetworkConnectionPanel.cpp
     src/LamaPon/Editor/NetworkConnectionPanel.h
+    src/LamaPon/Editor/OnlineDiagnosticsPanel.cpp
+    src/LamaPon/Editor/OnlineDiagnosticsPanel.h
+    src/LamaPon/Editor/ServiceDiagnosticsPanel.cpp
+    src/LamaPon/Editor/ServiceDiagnosticsPanel.h
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
@@ -576,8 +586,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerAnalysis.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
     src/LamaPon/Editor/UIComponentInspectors.cpp
-    src/LamaPon/Editor/SceneTransitionEditor.cpp
-    src/LamaPon/Editor/SceneTransitionEditor.h
+    src/LamaPon/Editor/SceneLoadingScreenEditor.cpp
+    src/LamaPon/Editor/SceneLoadingScreenEditor.h
     src/LamaPon/Editor/DataAssetSchema.cpp
     src/LamaPon/Editor/DataAssetSchema.h
     src/LamaPon/Editor/EditorLayerProject.cpp
@@ -625,18 +635,14 @@ add_library(LamaPonRuntime SHARED
     ${LAMAPON_RUNTIME_SOURCES}
 )
 add_library(LamaPon::Runtime ALIAS LamaPonRuntime)
-# 生成物はsrc外にあるため、source_group(TREE src)の対象から外して
-# 個別に追加します。
+# Build生成sourceをRuntime targetへ追加します。
 target_sources(LamaPonRuntime PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated/LamaPon/Core/BuildInfoData.cpp"
 )
 add_dependencies(LamaPonRuntime LamaPonBuildInfo)
 add_library(LamaPon ALIAS LamaPonRuntime)
 
-# MSVCはC++ memberのaccess指定をdecorated nameに含めます。
-# 旧public D3D11 facadeをprivate化しても直前APIのGame Moduleが
-# LoadLibrary後のAPI不一致案内へ到達できるよう、対応環境の
-# MSVC x64でのみ旧public名をprivate shimへaliasします。
+# 古いGame Module向けにMSVC x64だけ旧D3D11 export名を維持します。
 if(MSVC
    AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
     target_sources(LamaPonRuntime PRIVATE
@@ -703,8 +709,7 @@ target_link_libraries(LamaPonRuntime
 lamapon_enable_release_symbols(LamaPonRuntime)
 lamapon_configure_network_backend(LamaPonRuntime)
 
-# 任意配布するD3D12 Backendの安定ABIプロバイダー。現段階では
-# capability/ABIの検証を担い、描画実装はLamaPonRuntimeへ委譲します。
+# 任意のD3D12 providerはcapability/ABIを検証し、描画をRuntimeへ委譲します。
 add_library(LamaPonGraphicsD3D12 SHARED
     src/LamaPon/Graphics/D3D12BackendProvider.cpp
 )
@@ -775,11 +780,13 @@ target_link_libraries(LamaPonEditor
 )
 lamapon_enable_release_symbols(LamaPonEditor)
 
+# LAMAPON_WINDOWS_RESOURCES: Editor・Game共通のWindows resource一覧.
 set(LAMAPON_WINDOWS_RESOURCES
     src/LamaPon/Resources/LamaPon.rc
     src/LamaPon/Resources/WindowsResource.h
 )
 
+# LAMAPON_HUB_WINDOWS_RESOURCES: Hub用Windows resource一覧.
 set(LAMAPON_HUB_WINDOWS_RESOURCES
     src/LamaPon/Resources/LamaPonHub.rc
     src/LamaPon/Resources/WindowsResource.h
@@ -790,6 +797,7 @@ add_executable(LamaPonEditorApp WIN32
     ${LAMAPON_WINDOWS_RESOURCES}
 )
 
+# LAMAPON_EDITOR_ENGINE_ROOT: Editor toolsが参照するEngine source root.
 set(
     LAMAPON_EDITOR_ENGINE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -869,6 +877,7 @@ add_executable(LamaPonGame WIN32
 
 target_link_libraries(LamaPonGame PRIVATE LamaPonRuntime)
 
+# Game Moduleへ組み込むscript source一覧
 file(GLOB_RECURSE LAMAPON_GAME_SCRIPT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.cpp"
 )
@@ -883,8 +892,7 @@ add_library(LamaPonGameModule SHARED
     ${LAMAPON_GAME_SCRIPT_SOURCES}
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
-# ABIが同じでもRuntimeの実装更新後にはモジュールを再リンクし、
-# GameModuleHostのビルド時刻による互換性確認と足並みを揃えます。
+# Runtime更新後にGame Moduleを再linkし、互換性確認と同期します。
 set_property(TARGET LamaPonGameModule APPEND PROPERTY LINK_DEPENDS
     "$<TARGET_FILE:LamaPonRuntime>")
 target_include_directories(LamaPonGameModule PRIVATE
@@ -902,6 +910,7 @@ target_compile_options(LamaPonGameModule
         $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Gy>
         $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/GL>
 )
+# MSVCではRelease link時最適化を有効にします。
 if(MSVC)
     target_link_options(LamaPonGameModule PRIVATE
         $<$<CONFIG:Release>:/OPT:REF>
@@ -948,8 +957,7 @@ target_compile_options(LamaPonGame
 )
 lamapon_enable_release_symbols(LamaPonGame)
 
-# エディターを開かずにプロジェクトを操作するCLI。
-# stdoutへJSONを返すため、WIN32を付けずコンソールアプリとして構成します。
+# JSONをstdoutへ返すためconsole applicationとして構成します。
 add_executable(LamaPonCli
     tools/LamaPonCli/Main.cpp
     tools/LamaPonCli/AnalysisCommands.cpp
@@ -960,15 +968,12 @@ add_executable(LamaPonCli
     tools/LamaPonCli/ProjectPaths.cpp
     tools/LamaPonCli/RuntimeTiming.h
 )
+# CLIは共通UI処理とPNG出力のためHubCore・Editor・WICを使います。
 target_link_libraries(LamaPonCli
     PRIVATE
         LamaPonRuntime
-        # newはHubと同じ方法でプロジェクトを作成し、exportは
-        # エディターと同じ方法でパッケージを作成します。
         LamaPonHubCore
         LamaPonEditor
-        # PNG書き出し（WIC）。LamaPonRuntimeはPRIVATEでしか
-        # 持っていないので、ここでも明示します。
         windowscodecs
         ole32
 )
@@ -978,8 +983,7 @@ target_compile_options(LamaPonCli
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
-# buildサブコマンドがエディターと同じ方法でエンジンルートと
-# ビルド構成を解決するため（Sandbox/Main.cppと同じ定義）。
+# CLIのbuildもEditorと同じEngine root・configurationを使います。
 target_compile_definitions(LamaPonCli PRIVATE
     LAMAPON_DEFAULT_PROJECT_ROOT="${LAMAPON_EDITOR_ENGINE_ROOT}"
     LAMAPON_BUILD_CONFIGURATION="$<CONFIG>"
@@ -992,6 +996,7 @@ add_dependencies(
     LamaPonGameModule
 )
 
+# LAMAPON_GAME_EXPORT_DIR: packaged Game output directory.
 set(
     LAMAPON_GAME_EXPORT_DIR
     "${CMAKE_BINARY_DIR}/export/LamaPonGame"
@@ -1035,6 +1040,7 @@ set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT L
 
 include(CTest)
 
+# test targetを構成する場合だけtest群を定義します。
 if(BUILD_TESTING)
     add_executable(LamaPonNetworkSceneTests tests/NetworkSceneTests.cpp)
     target_link_libraries(LamaPonNetworkSceneTests PRIVATE LamaPonRuntime)
@@ -1078,6 +1084,7 @@ if(BUILD_TESTING)
     set_tests_properties(OnlineP2PDirect PROPERTIES LABELS "online;p2p;network" TIMEOUT 60)
 
     find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+    # MSVC/Ninjaの依存出力を検査します。
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_GENERATOR MATCHES "^Ninja")
         add_test(NAME MsvcHeaderDependencies
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/MsvcDependencyTests.py"
@@ -1091,8 +1098,7 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
     add_test(NAME EditorWebExport
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
-    # 配布パッケージ一覧とZipの検証です。Discord SDKのように同梱できない
-    # ものが紛れ込んでいないかもここで止めます。
+    # 配布一覧とZip内容を検査します。
     add_test(NAME PackageIndex
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
     add_executable(LamaPonGameExportDialogTests tests/GameExportDialogTests.cpp)
@@ -1163,6 +1169,7 @@ if(BUILD_TESTING)
     set_tests_properties(EditorGuiRendererWarp PROPERTIES
         LABELS "editor;graphics"
         TIMEOUT 60)
+    # test_name: runtime isolation test targetを順に登録します。
     foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection GraphicsResource BuildInfo)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
@@ -1175,7 +1182,7 @@ if(BUILD_TESTING)
     set_tests_properties(GraphicsBackendSelectionIsolation PROPERTIES
         LABELS "graphics"
         TIMEOUT 60)
-    # 同じSprite passをD3D11とD3D12のWARPで描き、画素とdebug layerを比べます。
+    # D3D11・D3D12 WARPのSprite結果を比較します。
     add_executable(LamaPonD3D12SpriteRenderingTests
         tests/D3D12SpriteRenderingTests.cpp)
     target_link_libraries(LamaPonD3D12SpriteRenderingTests PRIVATE LamaPonRuntime)
@@ -1187,10 +1194,9 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_test(NAME D3D12SpriteRenderingWarp
         COMMAND LamaPonD3D12SpriteRenderingTests)
+    # 共有Windows runnerのDebug実行時間に余裕を持たせます。
     set_tests_properties(D3D12SpriteRenderingWarp PROPERTIES
         LABELS "graphics"
-        # WARPのDebug実行はGitHub Actionsの共有Windowsランナーで
-        # 120秒を超え得るため、実測済みのRelease時間にも余裕を持たせます。
         TIMEOUT 180)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
@@ -1261,8 +1267,7 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "scene;scene-manager"
     )
 
-    # 遷移演出の純粋ロジックはDirect3Dを使わないため、Runtime DLLを
-    # 介さずに単体で検査します。
+    # Direct3Dを使わないScene遷移処理を単体検査します。
     add_executable(LamaPonSceneTransitionTests
         tests/SceneTransitionTests.cpp
         src/LamaPon/Scene/SceneTransition.cpp
@@ -1276,9 +1281,9 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
     )
-    add_test(NAME SceneTransitionEffects COMMAND LamaPonSceneTransitionTests)
+    add_test(NAME SceneTransitionTimeline COMMAND LamaPonSceneTransitionTests)
     set_tests_properties(
-        SceneTransitionEffects
+        SceneTransitionTimeline
         PROPERTIES LABELS "scene;scene-transition"
     )
 
@@ -1335,8 +1340,7 @@ if(BUILD_TESTING)
         tests/ProjectMigrationTests.cpp
     )
     target_link_libraries(LamaPonProjectMigrationTests PRIVATE LamaPonRuntime)
-    # 組み込みアセットのincludeの取りこぼしを、エンジン側の実物を
-    # 読んで検査するため。
+    # Engineの実assetをmigration testへ渡します。
     target_compile_definitions(LamaPonProjectMigrationTests PRIVATE
         LAMAPON_ENGINE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
         LAMAPON_ENGINE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -1482,9 +1486,7 @@ if(BUILD_TESTING)
     add_test(
         NAME ShaderCache
         COMMAND LamaPonShaderCacheTests)
-    # このテストはキャッシュへ「ちょうど1件増えた」ことを確かめます。
-    # 並列に走る描画系テストも%LOCALAPPDATA%のキャッシュへ書くため、
-    # このテストだけ専用の置き場を使います。
+    # 並列graphics testとcacheを共有しないよう隔離します。
     set_tests_properties(
         ShaderCache
         PROPERTIES
@@ -1551,8 +1553,7 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "diagnostics"
     )
 
-    # 解析ツール（プロファイル分析・メモリスナップショット・フレーム
-    # デバッガー）の記録と比較の規則を、描画APIなしで検証します。
+    # test_name: graphics APIを使わないdiagnostic test target.
     foreach(test_name IN ITEMS ProfileAnalysis MemorySnapshot FrameDebugger)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
@@ -1564,7 +1565,7 @@ if(BUILD_TESTING)
         add_test(NAME ${test_name} COMMAND LamaPon${test_name}Tests)
         set_tests_properties(${test_name} PROPERTIES LABELS "diagnostics")
     endforeach()
-    # CLIのprofile / memoryサブコマンドが同じ解析結果をJSONで返すこと。
+    # CLIが解析結果をJSONで返すことを検査します。
     add_executable(LamaPonCliAnalysisCommandTests
         tests/CliAnalysisCommandTests.cpp
         tools/LamaPonCli/AnalysisCommands.cpp
@@ -1761,9 +1762,7 @@ if(BUILD_TESTING)
     add_executable(LamaPonPackageNativeDependencyTests
         tests/PackageNativeDependencyTests.cpp
     )
-    # PackageNativeDependenciesはEditor側のソースです
-    # （LamaPonRuntime.dllからは公開していません）。
-    # LamaPonPackageManagerTestsと同じく静的ライブラリへリンクします。
+    # Editor側のpackage dependency実装をlinkします。
     target_link_libraries(
         LamaPonPackageNativeDependencyTests
         PRIVATE
@@ -1797,8 +1796,7 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
     )
-    # Discordクライアントを必要としません。Fake backendだけで
-    # 動かすため、CIの必須テストに含められます。
+    # Fake backendで動作しDiscord clientを必要としません。
     add_test(
         NAME DiscordRichPresence
         COMMAND LamaPonDiscordPresenceTests
@@ -2213,11 +2211,11 @@ if(BUILD_TESTING)
         COMMAND LamaPonRuntimeTimingTests
     )
 
+    # native package設定を読むbuilderを検査します。
     add_executable(LamaPonGameModuleBuilderTests
         tests/GameModuleBuilderTests.cpp
         src/LamaPon/Editor/GameModuleBuilder.cpp
         src/LamaPon/Editor/GameModuleBuilder.h
-        # ビルドコマンドの組み立てがパッケージのnative設定を読むため。
         src/LamaPon/Editor/PackageNativeDependencies.cpp
         src/LamaPon/Editor/PackageNativeDependencies.h
         tools/LamaPonCli/BuildDiagnostics.h
@@ -2279,10 +2277,13 @@ if(BUILD_TESTING)
     add_executable(LamaPonProjectGameModuleLoadTests
         tests/ProjectGameModuleLoadTests.cpp
     )
+    # Package testのHTTP server用socketをlinkします。
     target_link_libraries(
         LamaPonProjectGameModuleLoadTests
         PRIVATE
             LamaPonRuntime
+            ole32
+            ws2_32
     )
     target_compile_options(LamaPonProjectGameModuleLoadTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
@@ -2313,37 +2314,32 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Editor" FILES
     ${LAMAPON_EDITOR_SOURCES}
 )
 
-# VC++ランタイムDLLを配布ZIPのルートへ同梱し、再頒布可能パッケージを
-# インストールしていないPCでもHub／Editor／エクスポートしたゲームが
-# そのまま起動できるようにします。
+# 実使用中toolsetのVC++ runtimeを配布ZIPへ同梱します。
 if(MSVC)
-    # 同梱するVC++ランタイムDLLは、ビルドに使用したコンパイラと
-    # 同じ版である必要があります。同じフォルダーのDLLが優先されるため、
-    # 古いCRTが残ると起動時にアクセス違反が発生します。
-    #
-    # InstallRequiredSystemLibrariesの自動検出は、Visual Studioが
-    # 複数入っているPCで別の版を拾ったり、新しいtoolsetの
-    # ディレクトリ名（Microsoft.VC145.CRT）を当てられずに
-    # DLLを検出できないことがあります。誤った配布物を作らないよう、
-    # vcvarsが指すVCToolsRedistDirから実在するディレクトリを
-    # 直接探し、見つからなければ構成時に止めます。
+    # toolset不一致を避け、検出できない場合は構成を止めます。
+    # LAMAPON_CRT_DLLS: ZIPへ同梱するCRT DLL一覧.
     set(LAMAPON_CRT_DLLS "")
+    # vcvarsが指定したredist rootを使います。
     if(DEFINED ENV{VCToolsRedistDir})
+        # LAMAPON_REDIST_ROOT: vcvarsが指定したredist root.
         file(TO_CMAKE_PATH "$ENV{VCToolsRedistDir}" LAMAPON_REDIST_ROOT)
+        # LAMAPON_CRT_DIRS: x64 CRT directory一覧.
         file(GLOB LAMAPON_CRT_DIRS
             "${LAMAPON_REDIST_ROOT}/x64/Microsoft.VC*.CRT")
+        # dir: 現在走査中のCRT directory.
         foreach(dir IN LISTS LAMAPON_CRT_DIRS)
+            # dlls: 現directoryにあるruntime DLL群.
             file(GLOB dlls "${dir}/*.dll")
             list(APPEND LAMAPON_CRT_DLLS ${dlls})
         endforeach()
     endif()
+    # DLLが見つかった場合は配布物へ加えます。
     if(LAMAPON_CRT_DLLS)
         message(STATUS
             "Bundling VC++ runtime from: ${LAMAPON_REDIST_ROOT}")
         install(FILES ${LAMAPON_CRT_DLLS} DESTINATION ".")
+    # 誤ったruntimeを配布しないよう構成を拒否します。
     else()
-        # 自動検出では異なる版を選ぶおそれがあるため、ここで構成を停止し、
-        # vcvarsの設定が必要であることを表示します。
         message(FATAL_ERROR
             "VC++ runtime DLLs were not found. "
             "Configure from a Visual Studio developer prompt "
@@ -2351,10 +2347,7 @@ if(MSVC)
     endif()
 endif()
 
-# 配布ZIPにはゲーム制作へ必要なものだけを含めます。
-# サンプルゲーム（LamaPonGameModule.dll・サンプルシーン等）と
-# PDB（別のsymbols zipで配布）は含めません。
-# LamaPonGame.exeはエクスポートの雛形として必要です。
+# 配布ZIPにはruntimeとexport雛形を含め、sample module・scene・PDBは除外します。
 install(
     TARGETS
         LamaPonRuntime
@@ -2374,9 +2367,7 @@ install(
     FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/build-info.json"
     DESTINATION "."
 )
-# assetsはエンジンが実行時に参照する組み込みアセットだけを
-# 同梱します（shadersとEngineロゴはHub::CreateProjectが新規プロジェクト
-# へコピー、icons/filetypesはエディターのAsset Browser種別アイコン）。
+# shaderとlogoは新規projectへ、filetype iconはEditor表示へ使います。
 install(
     DIRECTORY assets/shaders
     DESTINATION assets
@@ -2395,9 +2386,7 @@ install(
     DESTINATION tools
 )
 install(FILES cmake/LamaPonMsvcDependencies.cmake DESTINATION cmake)
-# Native Game Moduleが使う公開ヘッダーを同梱します。アーカイブ作成と
-# 暗号処理の内部ヘッダーはゲーム側で不要なため対象外です。
-# ソース公開を前提とし、この除外をセキュリティ上の保護とは扱いません。
+# Game Module向けpublic headerだけを同梱しますが、公開sourceのためsecurity境界ではありません。
 install(
     DIRECTORY src/LamaPon
     DESTINATION src
@@ -2455,6 +2444,7 @@ install(
     DESTINATION third_party
     FILES_MATCHING PATTERN "*.hpp"
 )
+# EOS SDK指定時だけruntime DLLを配布します。
 if(LAMAPON_EOS_SDK_ROOT)
     install(FILES "${LAMAPON_EOS_RUNTIME}" DESTINATION ".")
 endif()
@@ -2477,7 +2467,7 @@ install(
         THIRD_PARTY_NOTICES.md
     DESTINATION "."
 )
-# READMEが案内する使い方ドキュメント（テキストのみ、約100KB）。
+# READMEが案内する使い方docsも配布します。
 install(
     DIRECTORY docs
     DESTINATION "."
@@ -2485,13 +2475,19 @@ install(
 
 include(cmake/LamaPonDistribution.cmake)
 
+# CPACK_PACKAGE_NAME: 配布packageの表示名.
 set(CPACK_PACKAGE_NAME "LamaPon")
+# CPACK_PACKAGE_VENDOR: 配布元の表示名.
 set(CPACK_PACKAGE_VENDOR "LamaPon contributors")
+# CPACK_PACKAGE_VERSION: 配布packageのversion.
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+# CPACK_PACKAGE_FILE_NAME: 配布archive名.
 set(
     CPACK_PACKAGE_FILE_NAME
     "LamaPon-${PROJECT_VERSION}-windows-x64"
 )
+# CPACK_GENERATOR: 配布archive形式.
 set(CPACK_GENERATOR "ZIP")
+# CPACK_INCLUDE_TOPLEVEL_DIRECTORY: ZIPへtop-level directoryを含めない設定.
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 include(CPack)

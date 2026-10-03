@@ -13,10 +13,10 @@ namespace LamaPon
 {
     namespace
     {
-        // レンダーテクスチャはHDRの色（RGBA16F）と深度（D24S8）を
-        // 1組で持つため、1ピクセルあたり12バイトとして見積もります。
+        // 色8＋深度4の画素当たりバイト
         constexpr std::uint64_t RenderTextureBytesPerPixel = 8 + 4;
 
+        // 分類の収集失敗を警告へ記録する(category: 資源の分類名, exception: 収集失敗の診断)。
         void Warn(const char* category, const std::exception& exception)
         {
             Logger::Instance().Warning(
@@ -27,8 +27,10 @@ namespace LamaPon
 
     MemorySnapshot CaptureMemorySnapshot(GraphicsDevice& graphics)
     {
+        // 取得したメモリー情報の集合
         MemorySnapshot snapshot;
         graphics.RefreshMemoryStatistics(true);
+        // 更新済みのメモリー総量
         const auto& statistics = graphics.MemoryStats();
         snapshot.process.processWorkingSetBytes =
             statistics.processWorkingSetBytes;
@@ -49,6 +51,7 @@ namespace LamaPon
         {
             graphics.Assets().AppendMemoryEntries(snapshot.entries);
         }
+        // 警告へ記録する分類の収集失敗
         catch (const std::exception& exception)
         {
             Warn("アセット", exception);
@@ -57,19 +60,23 @@ namespace LamaPon
         {
             graphics.Audio().AppendMemoryEntries(snapshot.entries);
         }
+        // 警告へ記録する分類の収集失敗
         catch (const std::exception& exception)
         {
             Warn("オーディオ", exception);
         }
         try
         {
+            // 集計する描画テクスチャ名
             for (const auto& name : graphics.RenderTextureNames())
             {
+                // 集計する描画先の参照
                 const auto* target = graphics.FindRenderTexture(name);
                 if (target == nullptr)
                 {
                     continue;
                 }
+                // 色と深度の推定メモリー項目
                 MemorySnapshotEntry entry;
                 entry.category = MemoryCategory::RenderTexture;
                 entry.name = name;
@@ -84,6 +91,7 @@ namespace LamaPon
                 snapshot.entries.push_back(std::move(entry));
             }
         }
+        // 警告へ記録する分類の収集失敗
         catch (const std::exception& exception)
         {
             Warn("レンダーテクスチャ", exception);

@@ -8,17 +8,22 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(const bool condition, const char* const message)
     {
+        // 失敗理由を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // クラウド確認操作の対象競合とrevisionを検証します。
     void TestPersistenceConfirmationFences()
     {
         using LamaPon::Detail::PersistenceConfirmationKind;
+        // オンライン確認状態を検査するパネル状態
         LamaPon::Detail::PersistencePanelState state(
             L"C:/test/guest/PlayerPrefs.json",
             L"C:/test/guest/Saves");
@@ -71,25 +76,33 @@ namespace
     }
 }
 
+// Editor拡張の登録・表示状態・解放契約を検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     int result{};
+    // レジストリの拡張ライフサイクルを検査
     try
     {
         TestPersistenceConfirmationFences();
 
+        // テスト対象の拡張レジストリ
         LamaPon::EditorExtensionRegistry registry;
+        // 拡張attach callback呼び出し数
         int attachCount{};
+        // 拡張update callback呼び出し数
         int updateCount{};
+        // Panel draw callback呼び出し数
         int drawCount{};
+        // 拡張shutdown callback呼び出し数
         int shutdownCount{};
 
-        // 拡張DLLなどが設定読み込みより後に現れても、保存済みの
-        // 表示状態が登録時に適用されることを確認します。
+        // 後から登録したpanelにも保存済み表示状態を適用
         registry.RestorePanelVisibility(
             "example.inspector",
             true);
 
+        // 登録・描画・解放を確認する拡張定義
         LamaPon::EditorExtensionDefinition extension;
         extension.id = "example.tools";
         extension.displayName = "Example Tools";
@@ -98,6 +111,7 @@ int main()
             "Example Inspector",
             false,
             true,
+            // open: 登録時に復元されたパネル表示状態
             [&](bool& open)
             {
                 Require(open, "Closed panels must not be drawn.");
@@ -108,6 +122,7 @@ int main()
         extension.onUpdate = [&] { ++updateCount; };
         extension.onShutdown = [&] { ++shutdownCount; };
 
+        // 拡張登録失敗時の説明
         std::string error;
         Require(
             registry.Register(std::move(extension), &error),
@@ -139,6 +154,7 @@ int main()
         Require(!registry.IsPanelOpen("example.inspector"),
             "Layout reset must restore each registered default.");
 
+        // 重複panel idを含む拒否対象の拡張
         LamaPon::EditorExtensionDefinition duplicatePanel;
         duplicatePanel.id = "example.duplicate";
         duplicatePanel.displayName = "Duplicate";
@@ -156,8 +172,7 @@ int main()
                 && registry.Panels().size() == 1,
             "A rejected extension must not leave partial records.");
 
-        // 「ウィンドウ」メニューのサブメニュー名は登録後も保持され、
-        // 指定しないパネルは従来どおりグループ無しになります。
+        // window menu groupを持つ拡張と持たないpanelを比較
         LamaPon::EditorExtensionDefinition analysis;
         analysis.id = "example.analysis";
         analysis.displayName = "Example Analysis";
@@ -171,7 +186,9 @@ int main()
         });
         Require(registry.Register(std::move(analysis), &error),
             "A grouped panel must register.");
+        // menu groupを持つ登録panel
         const auto* grouped = registry.FindPanel("example.profiler");
+        // group指定なしの登録panel
         const auto* ungrouped = registry.FindPanel("example.inspector");
         Require(grouped != nullptr
                 && grouped->windowMenuGroup == "解析"
@@ -192,6 +209,7 @@ int main()
 
         std::cout << "Editor extension registry tests passed.\n";
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

@@ -2,16 +2,35 @@
 
 ## Unreleased
 
-### シーン遷移演出
+### レンダーテクスチャ
 
-- Scene切り替えへ遷移演出を追加。Fade、Wipe（8方向・境界のぼかし）、Iris（円）、Diamond（ひし形）、Blinds、Tiles、DiamondTiles、Dots、Shutter、Shaderから選べ、覆う・保持・開くの時間、イージング、覆いの色、先端や縁に入る差し色、開くときに通り抜けるか巻き戻すかを設定できる。旧Sceneを覆い終えてから新Sceneを有効化し、非同期読み込みは覆っている間に並行して進める。遷移はtimeScaleに影響されない実時間で進み、読み込みの失敗・キャンセル時は今の覆い具合から開き直して元のSceneへ戻る。
-- ピクセルシェーダーで画素ごとに覆う順番を決めるShader演出と、組み込みの`shaders/LamaPonSceneTransition.hlsl`（ルール画像、ディゾルブ、時計、渦巻き、波紋、六角形、ハート）を追加。独自の`.hlsl`へ差し替えられ、シェーダーを使えない場合はFadeで代わりに覆ってログへ一度だけ理由を残す。Irisの滑らかな縁のため組み込みテクスチャ`builtin/iris`を追加した。
-- `SceneManager`へ遷移付きの`RequestLoad`／`RequestLoadAsync`／`RequestReload`／`RequestReloadAsync`、既定の遷移（`SetDefaultTransition`）、Sceneを切り替えない`PlayTransition`、`IsTransitioning`／`TransitionPhase`／`TransitionCoverage`／`IsInputBlocked`を追加。各段階で`SceneTransition.Started`／`Covered`／`Finished`イベントを発行する。既定の遷移はNoneで、従来のプロジェクトとC++の動作は変わらない。
-- 遷移中はUI Buttonのクリックを受け付けず、二重に遷移を要求しない。UI Buttonへボタン専用の遷移演出を追加し、Inspectorから設定・プレビューできるようにした。
+- 描画先テクスチャを持つCameraが、書き出したゲームと`LamaPonCli`（`runtime`／`render`）で描かれない問題を修正。これまではエディターの再生中しか描かれず、Sprite RendererやUI Imageへ貼ったレンダーテクスチャが白く表示されていた。ゲーム実行時の1フレームの描画順を`Scene::RenderGameFrame`へまとめ、実行ファイルとCLIが同じ経路を通る。
+
+### ローカルLLM（Ollama）との会話
+
+- Ollama AI (Local LLM) 0.1.0をパッケージ一覧へ追加。このPCで動くOllamaのローカルモデルへ、入力欄やイベントから文を送り、返答をテキスト表示とイベントで受け取る。モデル・返答の長さ・ポートはデータアセットのInspectorで設定する。通信は別スレッドで行い、失敗時は代わりの返答を表示して、未起動・モデル未取得・タイムアウト・クラウドモデルの拒否を区別して通知する。
+- 接続先は`127.0.0.1`に固定し、Ollama Cloud・APIキー・サインインは使わない。クラウドのモデルは、名前（`cloud`のタグや接尾辞）と、一覧・詳細・応答の`remote_host`／`remote_model`の両方で拒否する。Windows専用で、Web書き出しには対応しない。
+- Scriptが有効になった時点でモデルを先に読み込み、最初の返答がモデルの読み込みを待たずに届くようにする。読み込みの間に送った文は、読み込みが終わってから送る。モデルをメモリに残す時間は設定アセットの`keepAliveMinutes`（既定は10分）で決める。
+- 返答待ちの間の送信を黙って無視せず、`Ollama.Error`の`Busy`として通知する。`Ollama.Reset`イベントで、覚えている会話を忘れて新しい会話を始められる。
+
+### Sceneごとの通信設定
+
+- 通信プロファイルの読み取りに公開SDKのAPIだけを使用し、配布で除外される内部ヘッダーへの依存をなくす。Project用パッケージの参照ヘッダーを配布SDKと照合する検証を追加。
+- Network Session Workflowを追加。通信条件をデータアセットのInspectorで編集し、Sceneの通信セッション管理Scriptから参照する。イベントでホスト・参加・退出を操作し、無効化・破棄時に担当する接続を閉じる。重複配置・同期対象への配置・接続中の後付けは拒否する。
+- Project Settingsのオンライン項目をP2PゲームID・通信バージョン・EOSの共通設定へ整理。アカウント連携・クラウドセーブ・Discord設定は独立した「サービス連携」項目へ移動。既存P2P条件は折りたたみ欄に残し、保存形式・通信API・書き出しの互換性を維持する。保存操作で再生中のアセット設定を上書きしない。
+- 接続操作・検索・接続情報コピーを「ウィンドウ > オンライン診断」へ移動。Discord Rich Presenceのテスト表示は独立した「ウィンドウ > サービス連携の診断」へ移動。接続の診断には実行中の通信条件、Discordの診断には保存済みの共通設定を使う。
+
+### シーン遷移
+
+- Scene切り替えへ「旧Sceneを覆い終えてから新Sceneを有効化し、開く」遷移の仕組みを追加。覆う・保持・開くの時間とイージングを指定でき、非同期読み込みは覆っている間に並行して進める。遷移はtimeScaleに影響されない実時間で進み、読み込みの失敗・キャンセル時は今の覆い具合から開き直して元のSceneへ戻る。
+- エンジンは画面を覆う絵を描かない。`TransitionCoverage()`（0～1）を読み、SpriteやScriptで自分の演出を描く（手順は[SceneとPrefab](docs/scenes.md#シーン遷移)）。Project SettingsとUI Buttonには演出の設定欄を置かず、新規プロジェクトへ演出やシェーダーを追加しない。開発中の版でProject SettingsやUI Buttonへ保存した演出の設定は、読み込み時に無視して次の保存で消す。
+- `SceneManager`へ遷移付きの`RequestLoad`／`RequestLoadAsync`／`RequestReload`／`RequestReloadAsync`、既定の遷移（`SetDefaultTransition`）、Sceneを切り替えない`PlayTransition`、`IsTransitioning`／`TransitionPhase`／`TransitionCoverage`／`IsInputBlocked`を追加。各段階で`SceneTransition.Started`／`Covered`／`Finished`イベントを発行する。既定の遷移は時間がすべて0（すぐ切り替え）で、従来のプロジェクトとC++の動作は変わらない。
+- 遷移中はUI Buttonのクリックを受け付けず、二重に遷移を要求しない（`blockInput`）。
 - 遷移に合わせてMusicバスの音量を下げて戻す`fadeMusic`を追加。プレイヤーが設定したバス音量とは別の倍率（`AudioSystem::SetBusFade`）として掛け合わせる。
-- 標準の読み込み画面へヒント文、背景画像、回転インジケーター、進捗バーの平滑化、遷移と組み合わせたときのフェード表示を追加。覆い終えても読み込みが続く場合だけ表示するため、速い読み込みではちらつかない。追加項目は既定では従来の見た目のまま。
-- Project Settingsへ「シーン遷移」カテゴリーを追加し、既定の遷移演出と読み込み画面を保存・プレビューできるようにした。設定は書き出したゲームのLamaPonGame.jsonと再生モードにも反映する。新規作成したプロジェクトの既定は短いFade。
-- 公開構造体（`SceneManager`、`UIButtonComponent`、`AudioSystem`、`ProjectSettings`）の項目追加に伴いGame Module APIを79へ更新。
+- 標準の読み込み画面へヒント文、背景画像、回転インジケーター、進捗バーの平滑化、遷移と組み合わせたときのフェード表示を追加。覆い終えても読み込みが続く場合だけ表示するため、速い読み込みではちらつかない。追加項目は既定では従来の見た目のまま。Project Settingsの「ゲーム」→「読み込み画面」で編集でき、書き出したゲームのLamaPonGame.jsonと再生モードにも反映する。
+- Scene Transition Showcase 0.3.0をパッケージ一覧へ追加。ワイプ、アイリス、ひし形、ブラインド、タイル、ドット、シャッター、シェーダーの模様（ルール画像、ディゾルブ、時計、渦巻き、波紋、六角形、ハート）など16種類のプリセット（データアセット）をInspectorで編集・共有し、Sceneの「シーン遷移コントローラー」Scriptから、ボタンのイベントや再生開始時に実行できる。覆いはパッケージが画面全体のSpriteと自前のシェーダーで描き、シーンを切り替えても残る。開発中の版（0.2.0）を導入済みのプロジェクトは、パッケージマネージャーで0.3.0へ更新する。
+- Scriptとデータアセットのstringスキーマへ選択肢（options）を追加。保存値と日本語の表示名を分けたドロップダウンを使える。
+- 公開構造体（`SceneManager`、`SceneTransitionSettings`、`UIButtonComponent`、`AudioSystem`、`ProjectSettings`、`GraphicsDevice`）の変更に伴いGame Module APIを80へ更新。
 
 ### ドキュメントと表記
 

@@ -13,6 +13,7 @@
 
 namespace
 {
+    // 描画用にRGBへアルファを掛ける(color: アルファ乗算前のRGBA)。
     DirectX::XMFLOAT4 Premultiply(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -24,11 +25,13 @@ namespace
         };
     }
 
+    // UI矩形またはワールドXYと代替サイズから表示範囲を求める(owner: 所有オブジェクト, graphics: 描画機器かnullptr, fallbackSize: 代替の幅と高さ)。
     LamaPon::UIRect ResolveWidgetRect(
         const LamaPon::GameObject& owner,
         const LamaPon::GraphicsDevice* graphics,
         const DirectX::XMFLOAT2& fallbackSize) noexcept
     {
+        // UI矩形の配置情報
         if (const auto* transform =
             owner.GetComponent<
                 LamaPon::UIRectTransformComponent>();
@@ -39,6 +42,7 @@ namespace
                 static_cast<float>(
                     graphics->UIHeight()));
         }
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
@@ -139,8 +143,10 @@ namespace LamaPon
             return;
         }
 
+        // ポインターの状態
         const auto& pointer =
             m_graphics->Input().Pointer();
+        // トグルの表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
@@ -172,18 +178,22 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // トグルの表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
             m_fallbackSize);
+        // トグルの表示幅と高さ
         const auto size = rect.Size();
         if (size.x <= 0.0f || size.y <= 0.0f)
         {
             return;
         }
 
-        // 左端にチェックボックス（高さに合わせた正方形）を描きます。
+
+        // 表示高さに合わせた枠の一辺
         const float boxSize = size.y;
+        // 状態に応じた枠背景のRGBA
         auto boxColor = m_boxColor;
         if (!m_interactable)
         {
@@ -195,8 +205,10 @@ namespace LamaPon
             boxColor.y *= 1.25f;
             boxColor.z *= 1.25f;
         }
+        // アルファ乗算済み枠背景色
         const auto premultipliedBox =
             Premultiply(boxColor);
+        // チェック枠の描画指定
         SpriteDrawRequest boxRequest;
         boxRequest.position = rect.minimum;
         boxRequest.tint = premultipliedBox;
@@ -205,14 +217,18 @@ namespace LamaPon
 
         if (m_isOn)
         {
+            // オン表示の枠内余白
             const float inset = boxSize * 0.25f;
+            // 状態に応じたオン表示色
             auto checkColor = m_checkColor;
             if (!m_interactable)
             {
                 checkColor.w *= 0.5f;
             }
+            // アルファ乗算済みオン表示色
             const auto premultipliedCheck =
                 Premultiply(checkColor);
+            // オン表示の描画指定
             SpriteDrawRequest checkRequest;
             checkRequest.position = {
                     rect.minimum.x + inset,
@@ -226,25 +242,30 @@ namespace LamaPon
 
         if (m_textTexture)
         {
+            // 文字画像のGPU資源の借用
             const auto textResources =
                 m_textTexture->resources.Acquire();
+            // 文字画像の描画ビュー
             const auto textTextureView = textResources
                 ? textResources->shaderResourceView
                 : GraphicsViewHandle{};
+            // ラベル表示の左端X座標
             const float labelLeft =
                 rect.minimum.x + boxSize
                 + boxSize * 0.25f;
+            // ラベルの表示幅
             const float labelWidth =
                 rect.maximum.x - labelLeft;
             if (textTextureView
                 && labelWidth > 0.0f)
             {
+                // ラベル画像の描画指定
                 SpriteDrawRequest textRequest;
                 textRequest.texture = textTextureView;
                 textRequest.position = {
                     labelLeft,
                     rect.minimum.y };
-                // 白で焼いた文字へ色を掛けます。
+
                 XMStoreFloat4(
                     &textRequest.tint,
                     PremultipliedTextColor(m_textColor));

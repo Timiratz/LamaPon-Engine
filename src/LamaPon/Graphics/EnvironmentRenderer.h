@@ -24,28 +24,32 @@ namespace LamaPon
 
     class EnvironmentRenderer final
     {
+        // 生ビューは対応する描画の完了まで保持し、ポスト処理の入力と出力には別の画像を渡す。
     public:
+        // 所有するシェーダー・定数・プローブ資源を解放する。
         ~EnvironmentRenderer();
 
+        // 描画器のコピーを禁止する。
         EnvironmentRenderer(const EnvironmentRenderer&) = delete;
+        // 描画器のコピー代入を禁止する。
         EnvironmentRenderer& operator=(
             const EnvironmentRenderer&) = delete;
 
-        // 空に描く太陽。朝昼夜モード（SkySettings::sunDriven）の
-        // ときにSceneが渡します。
+        // 空に描く太陽の方向・色・角半径。
         struct SkySun final
         {
-            // 太陽へ向かう向き（Directional Lightの進行方向の逆）。
+            // 太陽へ向かうワールド方向
             DirectX::XMFLOAT3 directionToSun{ 0.0f, 1.0f, 0.0f };
-            // 色×強さ。
+            // 強度を含む太陽のRGB色
             DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
-            // 角半径（ラジアン）。本物の太陽は0.53度＝0.00465。
+            // 太陽円盤の角半径のラジアン
             float angularRadius{ 0.004625f };
         };
 
     private:
-        // API 59以前のraw Sky入口はbinary互換shimとして残し、
-        // 新しいcallerはGraphicsDeviceのneutral facadeを通します。
+
+        // 旧Game Moduleを読み込んでAPI不一致を案内するため、互換シンボルを保持する。
+        // 設定中の描画先へ空を描く(view: ビュー行列, projection: 射影行列, settings: 空の設定, cubemap: 空なら色の勾配, sun: 空なら太陽円盤なし)。
         void DrawSky(
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection,
@@ -54,12 +58,14 @@ namespace LamaPon
             const SkySun* sun = nullptr);
 
     public:
+        // ブルームを合成し、無効時は強度ゼロで描く(source: 入力SRV, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: ブルーム設定)。
         void ApplyBloom(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
             std::uint32_t width,
             std::uint32_t height,
             const BloomSettings& settings);
+        // 深度と法線差の輪郭を合成する(source: 入力SRV, depth: シーン深度, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: 輪郭設定, projection: 画像の射影行列)。
         void ApplyScreenOutline(
             ID3D11ShaderResourceView* source,
             ID3D11ShaderResourceView* depth,
@@ -68,10 +74,7 @@ namespace LamaPon
             std::uint32_t height,
             const ScreenOutlineSettings& settings,
             const DirectX::XMFLOAT4X4& projection);
-        // 筋を1/4解像度で作ります。ストライドを4倍ずつ広げながら
-        // ping-pongで3回書き戻すので、レンダーターゲットとSRVを
-        // 2組受け取ります。仕上がった側のSRVは
-        // LastLensFlareStreakResource()で取れます。
+        // 光条を3パスで作り、結果をLastLensFlareStreakResourceで返す(source: 元の画像, firstTarget: 作業先1, firstResource: 作業先1のSRV, secondTarget: 作業先2, secondResource: 作業先2のSRV, width: 1/4画像幅, height: 1/4画像高, settings: 光条設定)。
         void BuildLensFlareStreaks(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* firstTarget,
@@ -81,14 +84,14 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height,
             const ScreenSpaceLensFlareSettings& settings);
+        // 直前の光条結果を借用し、処理を省いた場合は空を返す。
         [[nodiscard]] ID3D11ShaderResourceView*
             LastLensFlareStreakResource() const noexcept
         {
             return m_lastStreakResource;
         }
 
-        // streakはBuildLensFlareStreaksが作った筋です。nullptrなら
-        // 筋なしで合成します。
+        // レンズフレアと光条を合成する(source: 入力SRV, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: レンズフレア設定, streak: 空なら光条なし)。
         void ApplyScreenSpaceLensFlare(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -96,23 +99,20 @@ namespace LamaPon
             std::uint32_t height,
             const ScreenSpaceLensFlareSettings& settings,
             ID3D11ShaderResourceView* streak = nullptr);
+        // HDRの色を補正し、トーン無効時はコピーする(source: 入力SRV, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: トーンと色の設定)。
         void ApplyToneMapping(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
             std::uint32_t width,
             std::uint32_t height,
             const ColorGradingSettings& settings);
+        // 画素の輪郭を平滑化する(source: 入力SRV, destination: 別画像のRTV, width: 出力幅, height: 出力高)。
         void ApplyFXAA(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
             std::uint32_t width,
             std::uint32_t height);
-        // SSAO。3パスに分かれています。
-        // (1)深度から遮蔽を求める（半解像度のRチャンネルへ）
-        // (2)深度を見るブラーでザラつきを消す（半解像度）
-        // (3)フル解像度のカラーへ掛ける
-        // 分けているのはブラーを挟むためです。falseを返したときは
-        // 何も描いていないので、呼び出し側は合成を進めないでください。
+        // 深度から遮蔽を描き、描画しなければ偽を返す(depth: シーン深度, destination: 半解像度のRTV, width: 遮蔽画像幅, height: 遮蔽画像高, settings: AO設定, projection: 透視射影行列, sampleCount: 4～32に補正する採取数)。
         [[nodiscard]] bool RenderAmbientOcclusion(
             ID3D11ShaderResourceView* depth,
             ID3D11RenderTargetView* destination,
@@ -121,53 +121,55 @@ namespace LamaPon
             const AmbientOcclusionSettings& settings,
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t sampleCount);
+        // 直前のAO定数を使って遮蔽をぼかす(occlusion: 遮蔽SRV, depth: シーン深度, destination: 別の半解像度RTV, width: 出力幅, height: 出力高)。
         void BlurAmbientOcclusion(
             ID3D11ShaderResourceView* occlusion,
             ID3D11ShaderResourceView* depth,
             ID3D11RenderTargetView* destination,
             std::uint32_t width,
             std::uint32_t height);
-        // ボリュメトリックライト（光の筋）。カメラからのレイに沿って
-        // カスケードシャドウを引き、光が届いている区間を積みます。
-        // 影付きの平行光源が要るので、揃っていなければ何もしません。
-        // 戻り値がtrueなら描画先を入れ替えています。
+        // カスケード影から光の筋を求めるための入力。
         struct VolumetricInputs final
         {
+            // 保持するシーン深度ビュー
             GraphicsViewHandle depth;
+            // 保持するカスケード影ビュー
             GraphicsViewHandle cascadeShadow;
+            // 現在の逆ビュー射影行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
+            // ワールド座標でのカメラ位置
             DirectX::XMFLOAT3 cameraPosition{};
-            // 光源から出る向き。
+            // 光源から出るワールド方向
             DirectX::XMFLOAT3 lightDirection{};
+            // 平行光のRGB色
             DirectX::XMFLOAT3 lightColor{ 1.0f, 1.0f, 1.0f };
+            // 4段の影のビュー射影行列
             std::array<DirectX::XMFLOAT4X4, 4>
                 cascadeViewProjections{};
+            // 有効な影カスケードの数
             std::uint32_t cascadeCount{};
+            // 影判定に加えるバイアス
             float shadowBias{ 0.002f };
+            // 影画像の一辺の画素数
             float shadowResolution{ 2048.0f };
         };
-        // TAA（時間的アンチエイリアス）の解決に必要な入力。
+        // 履歴は描画ビューごとに保持し、再投影行列にはジッターを含めない。
         struct TemporalInputs final
         {
-            // RenderTargetが所有する前フレームの解決済みカラーと深度です。
-            // native SRVはD3D11描画島の中で、同じBackend世代・期待形状を
-            // 検証した後にだけ解決します。
+            // 保持する解決済み色履歴
             GraphicsViewHandle history;
+            // 保持する現在のシーン深度
             GraphicsViewHandle depth;
-            // 今のフレームの逆ビュー射影。ずらしを含まないもの
-            // を渡してください。ずらし込みで復元すると履歴を読む
-            // 位置が毎フレーム動き、輪郭がちらつきます。
+            // 現在のジッターなし逆行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
-            // 今のフレームのビュー射影（ずらし無し）。次フレームの
-            // 参照用にRenderTargetが控えます。
+            // 履歴へ保存する現在の行列
             DirectX::XMFLOAT4X4 viewProjection{};
-            // 以下はRenderTargetが自分の状態から埋めます。ビューごとに
-            // 履歴が別なので、行列もビューごとに持つ必要があります
-            // （エディターはシーンビューとゲームビューを同じフレームで
-            // 描くため、共有すると互いに踏み合って再投影が壊れます）。
+            // このビューの前フレーム行列
             DirectX::XMFLOAT4X4 previousViewProjection{};
+            // 前フレームの履歴が有効か
             bool previousValid{};
         };
+        // 履歴と深度を検証してTAAを解決し、描画したときだけ真を返す(source: 現在色, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: TAA設定, inputs: ビューごとの履歴と行列)。
         bool ApplyTemporalAntiAliasing(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -176,6 +178,7 @@ namespace LamaPon
             const TemporalAntiAliasingSettings& settings,
             const TemporalInputs& inputs);
 
+        // 深度と影を検証して光の筋を合成し、描画したときだけ真を返す(source: 現在色, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: 散乱設定, inputs: 深度・平行光・影)。
         bool ApplyVolumetricLight(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -184,33 +187,29 @@ namespace LamaPon
             const VolumetricLightSettings& settings,
             const VolumetricInputs& inputs);
 
-        // 被写界深度（DoF）に必要な、呼び出し側しか知らない情報。
+        // 被写界深度用の深度参照と半解像度の作業画像。
         struct DepthOfFieldInputs final
         {
-            // メインパスが書いた深度。ポスト処理の時点では描画先から
-            // 外れているのでそのまま読めます（深度プリパスは不要）。
+            // 借用するメイン描画の深度
             ID3D11ShaderResourceView* depth{};
-            // この絵を描いたときの射影行列。深度をカメラからの距離へ
-            // 戻すのに使います。正投影では復元できないため、その
-            // ときは何もしません。
+            // 画像を描いた透視射影行列
             DirectX::XMFLOAT4X4 projection{};
-            // 半解像度の作業用2枚。(1)の書き出し先→(2)の読み元、
-            // (2)の書き出し先→(3)の読み元、という受け渡しに使います。
+            // 色とぼけ量を準備する描画先
             ID3D11RenderTargetView* prepareTarget{};
+            // 準備した色とぼけ量のSRV
             ID3D11ShaderResourceView* prepareResource{};
+            // 半解像度のぼかし描画先
             ID3D11RenderTargetView* blurTarget{};
+            // ぼかした半解像度のSRV
             ID3D11ShaderResourceView* blurResource{};
+            // 作業画像の幅
             std::uint32_t halfWidth{};
+            // 作業画像の高さ
             std::uint32_t halfHeight{};
-            // ぼけのサンプル数（品質設定から）。
+            // ぼかしのサンプル数
             std::uint32_t sampleCount{ 22 };
         };
-        // 被写界深度（DoF）。3パスに分かれています。
-        // (1)半解像度へ色とCoC（ぼけの大きさ）を書き出す
-        // (2)半解像度で円形にぼかす
-        // (3)フル解像度でCoCの大きさに応じて元の絵と混ぜる
-        // 戻り値がtrueのときだけdestinationへ描いています。falseなら
-        // 呼び出し側は入れ替えを行わないでください。
+        // 準備・ぼかし・合成を行い、描画したときだけ真を返す(source: 現在色, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: 被写界深度設定, inputs: 深度・透視射影・作業画像)。
         [[nodiscard]] bool ApplyDepthOfField(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -219,24 +218,21 @@ namespace LamaPon
             const DepthOfFieldSettings& settings,
             const DepthOfFieldInputs& inputs);
 
-        // モーションブラーに必要な、呼び出し側しか知らない情報。
+        // ビューごとの前フレーム行列と、ジッターなしの現フレーム逆行列を渡す。
         struct MotionBlurInputs final
         {
+            // 借用する現在のシーン深度
             ID3D11ShaderResourceView* depth{};
-            // 今のフレームの逆ビュー射影。TAAと同じくずらしを
-            // 含まないものを渡してください（含めると毎フレーム
-            // 半画素ぶんの偽の速度が出ます）。
+            // 現在のジッターなし逆行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
-            // 前フレームのビュー射影（ずらし無し）。ビューごとに
-            // 別なのでRenderTargetが控えます。
+            // このビューの前フレーム行列
             DirectX::XMFLOAT4X4 previousViewProjection{};
+            // 前フレーム行列が有効か
             bool previousValid{};
-            // ブレの線に沿って何回サンプルするか（品質設定から）。
+            // ブレの方向に沿った採取数
             std::uint32_t sampleCount{ 8 };
         };
-        // モーションブラー。深度と前フレームの行列が要ります。前
-        // フレームの行列がまだ無い最初のフレームは何もしません。
-        // 戻り値がtrueのときだけdestinationへ描いています。
+        // 前フレームへ再投影してブレを合成し、描画したときだけ真を返す(source: 現在色, destination: 別画像のRTV, width: 出力幅, height: 出力高, settings: ブレの設定, inputs: 深度とビューごとの行列)。
         [[nodiscard]] bool ApplyMotionBlur(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -245,13 +241,7 @@ namespace LamaPon
             const MotionBlurSettings& settings,
             const MotionBlurInputs& inputs);
 
-        // 自動露出の明るさ測定。輝度の対数を1/4解像度へ書き、続けて
-        // ミップ連鎖を生成します。いちばん小さいミップ（1x1）が
-        // 画面全体の対数平均になるので、呼び出し側はそれをCPUへ
-        // 読み出して露出を決めます。
-        //
-        // resourceは連鎖の生成に必要です（RTVはミップ0だけを指す
-        // ので、GenerateMipsへは全ミップを見るSRVを渡します）。
+        // 対数輝度を描いて1画素まで平均するミップを生成する(source: 入力SRV, destination: 測定段0のRTV, resource: 測定画像の全ミップSRV, width: 1/4画像幅, height: 1/4画像高)。
         void RenderLuminance(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -259,68 +249,68 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height);
 
+        // 描画先とビューポートを設定して画像をコピーする(source: 入力SRV, destination: 別画像のRTV, destinationWidth: 出力幅, destinationHeight: 出力高)。
         void Copy(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
             std::uint32_t destinationWidth,
             std::uint32_t destinationHeight);
-        // 呼び出し側が設定済みの描画先とviewportを変えずにコピーします。
+        // 描画先とビューポートを維持して画像をコピーする(source: 描画先と異なる入力SRV)。
         void CopyToBoundRenderTarget(
             ID3D11ShaderResourceView* source);
-        // IBLの事前フィルタ結果（split-sum近似）。
+
+        // 鏡面環境の一辺の画素数
         static constexpr std::uint32_t PrefilteredSpecularSize = 128;
+        // 鏡面環境のミップ段数
         static constexpr std::uint32_t PrefilteredSpecularMipLevels = 8;
+        // 拡散環境の一辺の画素数
         static constexpr std::uint32_t PrefilteredIrradianceSize = 16;
+        // 拡散環境のミップ段数
         static constexpr std::uint32_t PrefilteredIrradianceMipLevels = 1;
 
         struct PrefilteredEnvironment final
         {
-            // ミップごとに粗さを上げてGGX畳み込みした
-            // スペキュラキューブマップ。
+            // 借用する粗さ別の鏡面キューブ
             ID3D11ShaderResourceView* specular{};
-            // コサイン畳み込みした拡散用の放射照度キューブ。
+            // 借用する拡散照明キューブ
             ID3D11ShaderResourceView* irradiance{};
-            // specularの最終ミップ番号（粗さ→ミップ変換用）。
+            // 鏡面キューブの最終ミップ番号
             float specularMaximumMip{};
         };
 
-        // 呼び出し側が所有する事前フィルタ結果。リフレクション
-        // プローブのように「プローブごとに1組」を持ちたい場合に
-        // 使います（上のキャッシュはスカイ用の1組だけ）。
+        // 呼び出し側が保持するプローブ用の鏡面・拡散画像。
         struct OwnedPrefilteredEnvironment final
         {
+            // 保持する粗さ別の鏡面キューブ
             Microsoft::WRL::ComPtr<
                 ID3D11ShaderResourceView> specular;
+            // 保持する拡散照明キューブ
             Microsoft::WRL::ComPtr<
                 ID3D11ShaderResourceView> irradiance;
+            // 鏡面キューブの最終ミップ番号
             float specularMaximumMip{};
 
+            // 鏡面と拡散の両方の画像を保持しているか返す。
             [[nodiscard]] bool IsValid() const noexcept
             {
                 return specular != nullptr
                     && irradiance != nullptr;
             }
         };
-        // リフレクションプローブとGIが共有するキューブ面ベイクです。
-        // callbackは0..5の各面について同期的に1回ずつ呼ばれ、その間は
-        // HDRの面描画だけを行ってください。同じrendererへのBake再入は
-        // logic_errorになります。描画先の作成・clear・左右反転コピー・
-        // 畳み込み・readbackはこのD3D11描画島の内部で完結します。
+
+        // プローブ各面の一辺の画素数
         static constexpr std::uint32_t ProbeBakeFaceSize =
             EnvironmentProbeBakeFaceSize;
         using ProbeFaceRenderer = EnvironmentProbeFaceRenderer;
 
     private:
-        // SceneからD3D11描画島を隠すGraphicsDevice facadeが呼びます。
-        // 旧public symbolは.defでこのprivate実装へaliasします。
+        // ベイクの再入は禁止し、呼び出し側が元の描画先を例外時も復元する。
+        // 6面を同期描画しRGB各4個のSH係数を返す(renderFace: HDR描画だけを行う各面のコールバック)。
         [[nodiscard]] std::optional<std::array<float, 12>>
             BakeIrradianceProbe(
                 const ProbeFaceRenderer& renderFace);
 
-        // SSRのHi-Z用の深度ピラミッドを作ります（ミップ0で深度→
-        // ビュー距離、以降は2x2の最小値）。RenderTargetが持っている
-        // ピラミッドへ書き込みます。描画先とビューポートは退避して
-        // 戻すので、フレームの途中で呼べます。
+        // 深度を距離へ変換して最小値ピラミッドを作り、主描画先とビューポートを戻す(target: 同じ機器の描画先, projectionZ: 射影33, projectionW: 射影43)。
         void BuildReflectionDepthPyramid(
             RenderTarget& target,
             float projectionZ,
@@ -329,196 +319,201 @@ namespace LamaPon
     private:
         friend class GraphicsDevice;
 
-        // 公開constructorから生成するとneutral viewの解決先を安全に
-        // 関連付けられないため、GraphicsDeviceだけが構築します。
+        // 環境描画のシェーダーと資源を生成する(device: 寿命まで借用する機器, context: 寿命まで借用する描画先, assets: 読み込み元, shaderPath: 環境HLSLのパス)。
         EnvironmentRenderer(
             ID3D11Device* device,
             ID3D11DeviceContext* context,
             AssetManager& assets,
             const std::filesystem::path& shaderPath);
 
-        // EnvironmentRendererはまだD3D11 islandですが、既存constructorの
-        // ABIを変えずにneutral inputの解決先だけを受け取ります。
+        // 中立ビューの解決先を借用する(backend: 描画器の寿命まで有効なD3D11機器)。
         void AttachD3D11Backend(D3D11Backend* backend) noexcept
         {
             m_backend = backend;
         }
 
-        // 旧raw公開APIのbinary symbolはAPI 56以前のGame Moduleが
-        // API不一致案内へ到達できるようprivate shimとして残します。
-        // sourceとcacheKeyが同じ間だけ生成済み結果を再利用します。
+
+        // 元の参照と鍵の両方が一致する場合だけ再利用し、次の生成や描画器の破棄で借用結果が無効になる。
+        // スカイ用の鏡面・拡散画像を生成して借用する(source: 元のキューブSRV, cacheKey: 0ならディスク保存なし)。
         [[nodiscard]] PrefilteredEnvironment
             GetPrefilteredEnvironment(
                 ID3D11ShaderResourceView* source,
                 std::uint64_t cacheKey = 0);
 
-        // API 57以前のraw Reflection Probe入口はbinary互換shimとして
-        // privateに残し、新しいSceneはGraphicsDevice facadeを通ります。
+
+        // 未生成なら、6面のベイクで再利用するHDR・深度・作業画像を生成する。
         void PrepareProbeBake();
+        // ベイクの再入は禁止し、呼び出し側が元の描画先を例外時も復元する。
+        // 6面を同期描画し所有する鏡面・拡散画像を返す(renderFace: HDR描画だけを行う各面のコールバック, cacheKey: 未指定ならディスク保存なし)。
         [[nodiscard]] OwnedPrefilteredEnvironment
             BakeReflectionProbe(
                 const ProbeFaceRenderer& renderFace,
                 std::optional<std::uint64_t> cacheKey =
                     std::nullopt);
 
-        // includeSpecular=falseでスペキュラの畳み込みを飛ばします
-        // （照度しか使わないGIベイク用）。
+        // 描画状態を復元してキューブを畳み込み、元画像がなければ空を返す(source: 元のキューブSRV, includeSpecular: 鏡面画像も生成するか)。
         [[nodiscard]] OwnedPrefilteredEnvironment
             CreatePrefilteredEnvironment(
                 ID3D11ShaderResourceView* source,
                 bool includeSpecular = true);
+        // 6面を消去・同期描画して左右反転し、最後に描画先を解除する(renderFace: 0～5の各面を1回描くコールバック)。
         void RenderProbeCube(
             const ProbeFaceRenderer& renderFace);
+        // RGBA16Fキューブを同期読み戻ししてSH係数を出力する(irradiance: 拡散照明キューブ, coefficients: RGB各xyz・定数の12要素)。
         [[nodiscard]] bool ProjectIrradianceToSh(
             ID3D11ShaderResourceView* irradiance,
             std::array<float, 12>& coefficients);
-        // 左右反転コピー（理由はLamaPonEnvironment.hlslの
-        // PSCopyMirrorXを参照）。
+        // 右手系の面をD3Dのキューブ規約へ合わせて左右反転する(source: 入力SRV, destination: 別画像のRTV, destinationWidth: 出力幅, destinationHeight: 出力高)。
         void CopyMirroredX(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
             std::uint32_t destinationWidth,
             std::uint32_t destinationHeight);
+        // 結果を全て生成後に一括更新し、失敗時は旧キャッシュを維持する(source: 元のキューブSRV, cacheKey: 0ならディスク保存なし)。
         void BuildPrefilteredEnvironment(
             ID3D11ShaderResourceView* source,
             std::uint64_t cacheKey);
+        // 深度を距離へ変換するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_reflectionLinearizePixelShader;
+        // 最小深度を縮小するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_reflectionDownsamplePixelShader;
         struct SkyConstants final
         {
+            // 空の方向を復元する逆行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
+            // ワールド座標でのカメラ位置
             DirectX::XMFLOAT4 cameraPosition{};
+            // 空の上側のRGB色と強度
             DirectX::XMFLOAT4 topColor{};
+            // 空の地平線のRGB色と予約
             DirectX::XMFLOAT4 horizonColor{};
+            // 空の下側のRGB色と予約
             DirectX::XMFLOAT4 groundColor{};
-            // x=キューブマップ使用, y/z/w=予約
+            // キューブ使用の有無と予約
             DirectX::XMFLOAT4 options{};
-            // xyz=太陽へ向かう向き, w=角半径（ラジアン）。
+            // 太陽方向のxyzと角半径
             DirectX::XMFLOAT4 sunDirection{};
-            // rgb=太陽の色×強さ, w=0より大きければ空に描く。
+            // 太陽のRGB色と円盤の有効値
             DirectX::XMFLOAT4 sunDiskColor{};
         };
 
         struct BloomConstants final
         {
+            // 画像の逆幅と逆高さ
             DirectX::XMFLOAT2 texelSize{};
+            // 抽出する明るさのしきい値
             float threshold{};
+            // ブルームの強度
             float intensity{};
+            // ぼかしの半径
             float radius{};
+            // 定数バッファの配置用予約
             DirectX::XMFLOAT3 padding{};
         };
 
         struct ScreenOutlineConstants final
         {
-            // rgb=線の色, w=強さ
+            // 輪郭のRGB色と強度
             DirectX::XMFLOAT4 color{};
-            // x=太さ（画素）, y=深度しきい値,
-            // z=法線しきい値, w=予約
+            // 画素幅・深度差・法線差・予約
             DirectX::XMFLOAT4 parameters{};
-            // x=projection._33, y=projection._43,
-            // z=1/projection._11, w=1/projection._22
+            // 射影33・43と11・22の逆数
             DirectX::XMFLOAT4 projection{};
-            // xy=1/画面サイズ, zw=画面サイズ
+            // 画像の逆幅・逆高さ・幅・高さ
             DirectX::XMFLOAT4 texel{};
         };
 
         struct LensFlareConstants final
         {
-            // xy=1/画面サイズ, z=しきい値, w=全体の強さ
+            // 逆幅・逆高さ・しきい値・強度
             DirectX::XMFLOAT4 primary{};
-            // x=ゴースト, y=ハロー, z=色分散, w=筋の強さ
+            // ゴースト・ハロー・色分散・光条
             DirectX::XMFLOAT4 secondary{};
-            // x=筋の長さ, y/z/w=予約
+            // 光条の長さと予約
             DirectX::XMFLOAT4 tertiary{};
-            // x=タップ間隔, y=方向の本数, z=1本目の角度,
-            // w=1なら最初の回。
+            // タップ間隔・方向数・角度・初回
             DirectX::XMFLOAT4 streakPass{};
         };
 
         struct ColorGradingConstants final
         {
+            // 露出・コントラスト・彩度・色温度
             DirectX::XMFLOAT4 primary{};
+            // 色調・周辺減光・有効・自動露出
             DirectX::XMFLOAT4 secondary{};
         };
 
         struct AmbientOcclusionConstants final
         {
-            // x=1/幅, y=1/高さ, z=半径, w=強さ
+            // 逆幅・逆高さ・半径・遮蔽強度
             DirectX::XMFLOAT4 parameters{};
-            // x=projection._33, y=projection._43,
-            // z=1/projection._11, w=1/projection._22
+            // 射影33・43と11・22の逆数
             DirectX::XMFLOAT4 projection{};
-            // x=サンプル数, y/z/w=予約
+            // 遮蔽のサンプル数と予約
             DirectX::XMFLOAT4 quality{};
         };
 
-        // 並びはLamaPonEnvironment.hlslのVolumetricBufferと
-        // 一致させてください。
-        // 並びはLamaPonEnvironment.hlslのTemporalBufferと
-        // 一致させてください。
+        // LamaPonEnvironment.hlslの対応する定数バッファと、各構造体のフィールド配置を揃える。
         struct TemporalConstants final
         {
+            // 現在のジッターなし逆行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
+            // このビューの前フレーム行列
             DirectX::XMFLOAT4X4 previousViewProjection{};
-            // x=履歴を残す比率, y=近傍クランプの緩さ,
-            // z=1/幅, w=1/高さ
+            // 履歴比率・許容値・逆幅・逆高さ
             DirectX::XMFLOAT4 parameters{};
         };
 
-        // 並びはLamaPonEnvironment.hlslのDepthOfFieldBufferと
-        // 一致させてください。
+
         struct DepthOfFieldConstants final
         {
-            // x=ピントの合う距離, y=ピントの合う幅, z=ぼけの強さ,
-            // w=ぼけ半径の上限（フル解像度の画素）
+            // 焦点距離・合焦幅・強度・半径
             DirectX::XMFLOAT4 parameters{};
-            // x=projection._33, y=projection._43, z/w=予約
+            // 射影33・射影43と予約
             DirectX::XMFLOAT4 projection{};
-            // x=1/幅, y=1/高さ（そのパスの解像度）, z=サンプル数,
-            // w=予約
+            // 逆幅・逆高さ・サンプル数・予約
             DirectX::XMFLOAT4 texel{};
         };
 
-        // 並びはLamaPonEnvironment.hlslのMotionBlurBufferと
-        // 一致させてください。
+
         struct MotionBlurConstants final
         {
+            // 現在のジッターなし逆行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
+            // このビューの前フレーム行列
             DirectX::XMFLOAT4X4 previousViewProjection{};
-            // x=ブレの強さ, y=伸ばす最大の長さ（画素）,
-            // z=サンプル数, w=予約
+            // ブレ強度・最大画素長・採取数
             DirectX::XMFLOAT4 parameters{};
-            // x=1/幅, y=1/高さ, z/w=予約
+            // 画像の逆幅・逆高さと予約
             DirectX::XMFLOAT4 texel{};
         };
 
-        // 並びはLamaPonEnvironment.hlslのLuminanceBufferと
-        // 一致させてください。
+
         struct LuminanceConstants final
         {
-            // x=1/幅, y=1/高さ（測定先の解像度）, z/w=予約
+            // 測定画像の逆幅・逆高さと予約
             DirectX::XMFLOAT4 texel{};
         };
 
         struct VolumetricConstants final
         {
+            // 現在の逆ビュー射影行列
             DirectX::XMFLOAT4X4 inverseViewProjection{};
-            // xyz=カメラ位置, w=最大距離
+            // カメラ位置のxyzと最大距離
             DirectX::XMFLOAT4 cameraPosition{};
-            // xyz=光の向き, w=サンプル数
+            // 光の方向のxyzと採取数
             DirectX::XMFLOAT4 lightDirection{};
-            // rgb=光の色×強度, w=前方散乱
+            // 強度を含むRGB色と前方散乱
             DirectX::XMFLOAT4 lightColor{};
+            // 影カスケードの変換行列
             std::array<DirectX::XMFLOAT4X4, 4> cascades{};
-            // x=カスケード数, y=バイアス, z=1/解像度, w=予約
+            // 影段数・バイアス・逆解像度
             DirectX::XMFLOAT4 shadowParameters{};
         };
 
-        // DoFの3パスに共通する描画。t0=元画像、t2=深度、
-        // t6=半解像度の作業用（不要なものはnullptr）。終了時に
-        // それらを外すので、直後に同じテクスチャを描画先にできます。
+        // 被写界深度の1パスを描き、読み取り参照を解除する(pixelShader: パスのPS, source: t0の入力, depth: t2の深度, work: t6の作業画像, destination: 出力RTV, width: 出力幅, height: 出力高)。
         void DrawDepthOfFieldPass(
             ID3D11PixelShader* pixelShader,
             ID3D11ShaderResourceView* source,
@@ -528,7 +523,7 @@ namespace LamaPon
             float width,
             float height);
 
-        // SSAOの3パスに共通する描画。
+        // AOの1パスを描き、読み取り参照を解除する(pixelShader: パスのPS, source: t0の入力, depth: t2の深度, destination: 出力RTV, width: 出力幅, height: 出力高)。
         void DrawAmbientOcclusionPass(
             ID3D11PixelShader* pixelShader,
             ID3D11ShaderResourceView* source,
@@ -539,89 +534,137 @@ namespace LamaPon
 
         struct PrefilterConstants final
         {
-            // x=キューブ面, y=粗さ, z=ソース解像度, w=予約
+            // キューブ面・粗さ・元解像度・予約
             DirectX::XMFLOAT4 parameters{};
         };
 
+        // 描画器の寿命まで借用する機器
         ID3D11Device* m_device{};
+        // 寿命まで借用する描画先
         ID3D11DeviceContext* m_context{};
+        // 中立ビューを解決する機器
         D3D11Backend* m_backend{};
         struct ProbeBakeResources;
+        // 再利用するプローブ描画資源
         std::unique_ptr<ProbeBakeResources> m_probeBakeResources;
+        // プローブのベイクを実行中か
         bool m_probeBakeActive{};
-        // 事前フィルタのキャッシュ（sourceまたはcacheKeyで識別）。
+
+        // キャッシュが保持する元の画像
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilterSource;
+        // 環境畳み込みのキャッシュ鍵
         std::uint64_t m_prefilterCacheKey{};
+        // 保持する鏡面環境キューブ
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilteredSpecular;
+        // 保持する拡散環境キューブ
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilteredIrradiance;
+        // 鏡面環境の最終ミップ番号
         float m_prefilteredMaximumMip{};
+        // 鏡面環境を畳み込むPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_prefilterPixelShader;
+        // 拡散環境を畳み込むPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_irradiancePixelShader;
+        // 環境畳み込み用の定数バッファ
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_prefilterBuffer;
+        // 全画面三角形を作るVS
         Microsoft::WRL::ComPtr<ID3D11VertexShader> m_vertexShader;
+        // 空を描くPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_skyPixelShader;
+        // ブルームを合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_bloomPixelShader;
+        // 深度と法線の輪郭を描くPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_screenOutlinePixelShader;
+        // レンズフレアを合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_lensFlarePixelShader;
+        // トーンと色を補正するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_toneMapPixelShader;
+        // FXAAを適用するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_fxaaPixelShader;
+        // 画像をコピーするPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> m_copyPixelShader;
+        // 画像を左右反転するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_copyMirrorPixelShader;
+        // 光の筋を合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_volumetricPixelShader;
+        // TAAの履歴を合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_temporalPixelShader;
-        // 被写界深度の3パス。
+
+        // 色とぼけ量を準備するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_depthOfFieldPreparePixelShader;
+        // 円形にぼかすPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_depthOfFieldBlurPixelShader;
+        // 被写界深度を合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_depthOfFieldCompositePixelShader;
+        // 被写界深度用の定数バッファ
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_depthOfFieldBuffer;
+        // モーションブラーを合成するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_motionBlurPixelShader;
+        // モーションブラー用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_motionBlurBuffer;
-        // 自動露出の明るさ測定（対数輝度）。
+
+        // 対数輝度を測定するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_luminancePixelShader;
+        // 対数輝度測定用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_luminanceBuffer;
+        // TAA再投影用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_temporalBuffer;
+        // 光の筋用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_volumetricBuffer;
+        // 光の筋用の影比較サンプラー
         Microsoft::WRL::ComPtr<ID3D11SamplerState>
             m_volumetricShadowSampler;
+        // 画面空間AOを計算するPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_ambientOcclusionPixelShader;
+        // AOを深度に応じてぼかすPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_ambientOcclusionBlurPixelShader;
+        // 空描画用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_skyBuffer;
+        // ブルームとFXAA用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_bloomBuffer;
+        // 画面輪郭用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_screenOutlineBuffer;
+        // レンズフレア用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_lensFlareBuffer;
+        // 光条を広げるPS
         Microsoft::WRL::ComPtr<ID3D11PixelShader>
             m_lensFlareStreakPixelShader;
-        // 直前のBuildLensFlareStreaksで仕上がった側のSRV。
+
+        // 借用する直前の光条処理結果
         ID3D11ShaderResourceView* m_lastStreakResource{};
+        // 色補正用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_colorGradingBuffer;
+        // 画面空間AO用の定数
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_ambientOcclusionBuffer;
+        // 線形補間のCLAMPサンプラー
         Microsoft::WRL::ComPtr<ID3D11SamplerState> m_sampler;
+        // 深度比較と書き込みの無効状態
         Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_depthDisabled;
+        // 両面描画用のラスタライザー
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_rasterizer;
     };
 }

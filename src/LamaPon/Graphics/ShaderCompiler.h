@@ -18,16 +18,9 @@ namespace LamaPon
 {
     class AssetManager;
 
-    // HLSLをコンパイルし、バイトコードをディスクへ保存します。
-    // キャッシュはHLSL本体をキーにし、実際にインクルードした全ファイル
-    // の内容hashを依存情報へ記録します。どちらを変更しても再コンパイル
-    // されます。
-    //
-    // 失敗したときはstd::runtime_errorを投げます（コンパイラの
-    // メッセージ入り）。キャッシュの読み書きに失敗しても投げません。
-    // その場合はキャッシュを使わずにコンパイルします。
-    // definesはバリアントのキーワードです。FOG_ONを渡した場合は
-    // #define FOG_ON 1として扱い、組み合わせごとに保存します。
+    // 依存を照合してHLSLをコンパイルまたはキャッシュから取得する(assets: 借用する資産管理器, path: HLSLソースパス, entryPoint: 入口関数名, target: コンパイル先の形式, defines: 整列済みマクロ一覧)。
+    // ソース不在なら索引を使い、コンパイル失敗または書出し先への保存失敗は例外で返す。
+    // 通常の保存失敗は結果を返し、入口不足だけを依存情報付きの失敗記録へ残す。
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob>
         CompileShaderCached(
             AssetManager& assets,
@@ -36,90 +29,55 @@ namespace LamaPon
             const char* target,
             const std::vector<std::string>& defines = {});
 
-    // 直近のcompileが実際に開いたmain source／#include群から、現在の
-    // file revisionを返します。entryごとの依存をdefine集合単位で束ねる
-    // ため、任意entryのManifestでもincludeだけの保存を検出できます。
-    // 未compileまたはarchiveでは0です。
+    // 同じマクロ集合の依存ファイルの状態を識別値へまとめる(assets: 借用する資産管理器, path: HLSLソースパス, defines: 整列済みマクロ一覧)。
+    // 未記録・アーカイブ・取得失敗は0とし、通常はパス・存在・更新時刻・サイズを照合する。
     [[nodiscard]] std::uint64_t ShaderSourceDependencyRevision(
         AssetManager& assets,
         const std::filesystem::path& path,
         const std::vector<std::string>& defines = {}) noexcept;
 
-    // バイトコードをディスクキャッシュへ用意するだけの入口です。
-    // GPUオブジェクト（ID3D11VertexShader等）は作らないので、
-    // 別スレッドから呼べます。エディターの非同期コンパイルは
-    // これをワーカーで回し、出来上がってからメインスレッドで
-    // LitEffectを組み立てます（そのときはキャッシュに当たるので
-    // 一瞬で終わります）。
-    //
-    // 例外は投げません。入口が無いシェーダーは失敗もキャッシュへ
-    // 残るので、あとで試し直されることはありません。
-    //
-    // 注意: AssetManagerからの読み取りがスレッド安全なのは、
-    // 素のファイル（エディター）を読むときだけです。アーカイブ
-    // （書き出したゲーム）では呼ばないでください。
+    // 既知の入口を試してCPU側のコンパイル結果を用意する(assets: 借用する資産管理器, path: HLSLソースパス, keywords: 整列済みマクロ一覧)。
+    // GPU資源を作らず標準例外を破棄するため、通常ファイルの読込時だけワーカーで使う。
     void WarmShaderCache(
         AssetManager& assets,
         const std::filesystem::path& path,
         const std::vector<std::string>& keywords);
 
-    // 事前コンパイルの索引を書き出します。
-    //
-    // 通常のキャッシュキーはHLSLソース内容のハッシュです。
-    // HLSLソースを配布物へ含めない場合は内容ハッシュを計算できないため、
-    // 書き出し時に「パス＋入口＋ターゲット＋キーワード」から
-    // キャッシュキーを検索できる索引も保存します。実行時はソースがあれば
-    // 内容ハッシュを使用し、無ければ索引を参照します。
+    // 指定先の未確定索引とメタデータを既存索引へ追記する(directory: 事前コンパイルの保存先)。
+    // 保存失敗は例外で返し、取り出した未確定索引を待機集合へは戻さない。
     void WriteShaderCacheIndex(
         const std::filesystem::path& directory);
 
-    // キャッシュの置き場所
-    // （%LOCALAPPDATA%\LamaPon\shader-cache）。
-    // プロジェクトごとに分けていないのは、キーが中身のハッシュなので
-    // 分ける必要がないためです。同じエンジンのシェーダーを使う
-    // プロジェクト同士でキャッシュを共有できます。
+    // 通常キャッシュの保存先を返し、解決不能なら空を返す。
     [[nodiscard]] std::filesystem::path ShaderCacheDirectory();
 
-    // 読み取り専用のキャッシュを足します。書き出したゲームへ同梱した
-    // 事前コンパイル済みバイトコード（exeの隣のshader-cache）を
-    // 読むための口です。ここへは書き込みません。書き込みは常に
-    // ShaderCacheDirectory()の側だけで、配布フォルダーが書き込み
-    // 不可の場所（Program Files配下など）にあっても困らないように
-    // しています。
+    // 読込用ディレクトリと索引を追加する(directory: キャッシュの検索先)。
     void AddShaderCacheSearchDirectory(
         std::filesystem::path directory);
+    // 読込用ディレクトリ・索引・メタデータを消去する。
     void ClearShaderCacheSearchDirectories();
 
-    // source-stripped配布用cacheに同梱した、HLSLから抽出済みの
-    // 描画状態とバリアント宣言を読みます。ソース本文は含まず、
-    // 直接HLSL指定の実行時semanticsだけを復元します。
-    // metadataが見つかったときだけtrue。出力pointerは片方だけでも
-    // nullptrでも構いません。
+    // ソースを含まない配布物の描画宣言を復元する(assets: 借用する資産管理器, path: HLSLソースパス, renderState: 任意の出力描画状態, variants: 任意の出力バリアント宣言)。
     [[nodiscard]] bool LoadPrecompiledShaderMetadata(
         AssetManager& assets,
         const std::filesystem::path& path,
         ShaderRenderState* renderState,
         ShaderVariantDeclaration* variants);
 
-    // 事前コンパイルで試す入口の一覧。エンジンが「あれば使う」方式で
-    // 探すものを全部含みます。書き出し時にこれを総当たりし、成功も
-    // 失敗もキャッシュへ残しておくと、プレイヤーの初回起動でも
-    // コンパイルが1本も走りません。
+    // 入口名とコンパイル形式の組。
     struct ShaderEntryPoint final
     {
+        // コンパイルする入口関数名
         const char* entryPoint;
+        // コンパイル先の形式
         const char* target;
     };
 
+    // エンジンが探索する既知の入口と形式の一覧を返す。
     [[nodiscard]] const std::vector<ShaderEntryPoint>&
         KnownShaderEntryPoints();
 
-    // pathのシェーダーについて、既知の入口を総当たりでコンパイルし、
-    // 結果をdestinationDirectoryへ書きます。戻り値は成功した本数。
-    // 失敗は例外にしません（入口が無いのは正常なため）。
-    // usedKeywordsを渡すと、shader_featureのバリアントを
-    // 「実際に使われているもの」だけへ絞ります。nullptrなら全組み合わせを
-    // コンパイルします。
+    // 既知の入口とバリアントを事前コンパイルして成功数を返す(assets: 借用する資産管理器, path: HLSLソースパス, destinationDirectory: キャッシュ出力先, defines: 固定の追加マクロ一覧, usedKeywords: 任意の使用キーワード一覧)。
     std::uint32_t PrecompileShader(
         AssetManager& assets,
         const std::filesystem::path& path,
@@ -127,12 +85,8 @@ namespace LamaPon
         const std::vector<std::string>& defines = {},
         const std::vector<std::string>* usedKeywords = nullptr);
 
-    // callerが指定した入口だけを、指定されたdefinesで1回ずつ
-    // 事前コンパイルする版です。
-    // Shader Manifestのように、実行時まで入口名が決まらないShaderで
-    // 使用します。ソース内のvariant宣言は展開しないため、実行時と同じ
-    // definesを渡してください。entryPointsが参照する文字列は呼び出し中
-    // だけ有効なら構いません。
+    // 指定された入口を一回ずつ事前コンパイルし成功数を返す(assets: 借用する資産管理器, path: HLSLソースパス, destinationDirectory: キャッシュ出力先, entryPoints: 入口と形式の借用一覧, defines: 整列済みマクロ一覧, error: 任意の出力診断)。
+    // バリアントは展開せず、入口名と形式の文字列は呼出し中保持し、保存失敗の例外は伝播させる。
     std::uint32_t PrecompileShader(
         AssetManager& assets,
         const std::filesystem::path& path,
@@ -141,10 +95,7 @@ namespace LamaPon
         const std::vector<std::string>& defines,
         std::string* error = nullptr);
 
-    // caller指定の入口について、HLSL内のmulti_compile /
-    // shader_featureを展開して事前コンパイルします。Material
-    // Manifestのように入口名はManifest、バリアント宣言は参照先HLSL
-    // にある場合に使います。usedKeywordsの扱いは既知入口版と同じです。
+    // 指定入口でHLSLのバリアントを展開して成功数を返す(assets: 借用する資産管理器, path: HLSLソースパス, destinationDirectory: キャッシュ出力先, entryPoints: 入口と形式の借用一覧, defines: 固定の追加マクロ一覧, usedKeywords: 任意の使用キーワード一覧, error: 任意の出力診断)。
     std::uint32_t PrecompileShaderVariants(
         AssetManager& assets,
         const std::filesystem::path& path,
@@ -154,36 +105,36 @@ namespace LamaPon
         const std::vector<std::string>* usedKeywords = nullptr,
         std::string* error = nullptr);
 
-    // 起動からのコンパイル状況。計測とテスト用です。
+    // 前回のリセットからの累積計測。
     struct ShaderCompileStats final
     {
-        // 実際にD3DCompileを呼んだ回数。
+        // 実コンパイルの試行回数
         std::uint32_t compiledCount{};
-        // キャッシュから読めた回数。
+        // 成功と失敗のキャッシュ命中数
         std::uint32_t cacheHitCount{};
-        // D3DCompileに費やした合計ミリ秒。
+        // 実コンパイルの累積ミリ秒
         double compileMilliseconds{};
-        // キャッシュの読み込みに費やした合計ミリ秒。
+        // 内容キャッシュ読込のミリ秒
         double cacheReadMilliseconds{};
     };
 
+    // コンパイルとキャッシュ利用の累積計測を取得する。
     [[nodiscard]] ShaderCompileStats ShaderCompileStatistics() noexcept;
+    // コンパイルとキャッシュ利用の累積計測を消去する。
     void ResetShaderCompileStatistics() noexcept;
 
-    // 実compileが依存一覧を記録した直後に一度だけ呼ぶテスト用hookです。
-    // Compile中の保存を再現する回帰テスト以外では設定しないでください。
+    // 次の実コンパイル後に一回だけ実行する試験用処理を設定する(hook: 依存記録直後のコールバック)。
+    // コンパイル中の保存を再現する回帰試験だけで設定する。
     void SetShaderCompileCompletionHookForTesting(
         std::function<void()> hook);
 
-    // キャッシュを消します。テストと、疑わしいときの手動リセット用。
+    // 依存記録と通常キャッシュの保存ディレクトリを消去する。
     void ClearShaderCache();
-    // 覚えている「失敗」だけを消します（バイトコードは残します）。
-    // 戻り値は消した件数。
-    //
-    // セーフモードから呼び出し、保存済みの失敗記録が再試行を妨げない
-    // 状態へ戻します。成功済みのバイトコードは再利用できるため残します。
+    // 通常キャッシュの失敗記録と対応依存情報を削除し成功数を返す。
     std::size_t ClearShaderCacheFailures();
-    // 切るとキャッシュを読みも書きもしません（前後比較の計測用）。
+    // 通常のキャッシュ読込と保存を切り替える(enabled: 利用フラグ)。
+    // 事前コンパイルの保存とソース不在時の索引読込には適用しない。
     void SetShaderCacheEnabled(bool enabled) noexcept;
+    // 通常のキャッシュ利用設定を返す。
     [[nodiscard]] bool IsShaderCacheEnabled() noexcept;
 }

@@ -54,11 +54,9 @@
 #include "LamaPon/Scene/SceneManager.h"
 
 #include <commdlg.h>
-// WM_DROPFILES（DragAcceptFiles/DragQueryFileW）とShellExecuteWに必要。
+
 #include <shellapi.h>
 #include <imgui.h>
-// EditorLayer.hはjson_fwdのみのため、unique_ptr<nlohmann::json>
-// メンバーを破棄するこの翻訳単位では完全型が必要です。
 #include <nlohmann/json.hpp>
 #include <imgui_internal.h>
 #include <imgui_impl_win32.h>
@@ -86,6 +84,7 @@
 
 using namespace LamaPon::EditorDetail;
 
+// Win32入力をImGuiへ渡します(window: 対象ウィンドウ, message: メッセージ種別, wParam: 主パラメーター, lParam: 補助パラメーター)。
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND window,
     UINT message,
@@ -94,13 +93,17 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 
 namespace
 {
+    // 上部ツールバーの高さ
     constexpr float ToolbarHeight = 52.0f;
-    // 新しい公式サイトが決まったら、このURLだけを差し替えます。
+
+    // オンラインマニュアルのURL
     constexpr wchar_t OnlineManualUrl[] =
         L"https://lamapon-wiki.lamapon.workers.dev";
+    // 保存データ操作の確認Popup ID
     constexpr char OnlinePersistenceConfirmationPopup[] =
         "操作の確認##OnlinePersistenceConfirmation";
 
+    // アカウント状態の表示名を返します(state: 認証状態)。
     [[nodiscard]] const char* OnlineAccountStateLabel(
         const LamaPon::OnlineAccountState state) noexcept
     {
@@ -131,6 +134,7 @@ namespace
         return "不明";
     }
 
+    // クラウド同期状態の表示名を返します(state: 同期状態)。
     [[nodiscard]] const char* OnlineCloudSyncStateLabel(
         const LamaPon::OnlineCloudSyncState state) noexcept
     {
@@ -155,6 +159,7 @@ namespace
         return "不明";
     }
 
+    // 同期停止理由の表示名を返します(reason: 停止理由)。
     [[nodiscard]] const char* OnlineCloudSyncStopReasonLabel(
         const LamaPon::OnlineCloudSyncStopReason reason) noexcept
     {
@@ -179,6 +184,7 @@ namespace
         return "同期処理を続けられません";
     }
 
+    // 保護された保存データの復旧状態を表示名へ変換します(state: 復旧状態)。
     [[nodiscard]] const char* OnlineRecoveryStateLabel(
         const LamaPon::OnlinePersistenceRecoveryState state) noexcept
     {
@@ -197,29 +203,35 @@ namespace
         return "復旧状態を確認できません";
     }
 
+    // 名前末尾のシーン拡張子を大文字小文字を区別せず判定します(path: 判定するパス)。
     bool HasSceneExtension(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(".scene.json");
     }
 
+    // 名前末尾のPrefab拡張子を大文字小文字を区別せず判定します(path: 判定するパス)。
     bool HasPrefabExtension(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(".prefab.json");
     }
 
+    // 日本語フォントを順に試し、取得できなければ既定フォントへ戻してfalseを返します(inputOutput: ImGuiの入出力設定)。
     bool LoadJapaneseFont(ImGuiIO& inputOutput)
     {
+        // 日本語フォントの候補パス
         constexpr std::array fontCandidates{
             "C:/Windows/Fonts/YuGothM.ttc",
             "C:/Windows/Fonts/meiryo.ttc",
             "C:/Windows/Fonts/msgothic.ttc"
         };
 
+        // 日本語フォントの読込設定
         ImFontConfig fontConfig{};
         fontConfig.FontNo = 0;
         fontConfig.OversampleH = 2;
         fontConfig.OversampleV = 1;
 
+        // 試す日本語フォントのパス
         for (const char* fontPath : fontCandidates)
         {
             if (std::filesystem::exists(fontPath)
@@ -237,9 +249,12 @@ namespace
         return false;
     }
 
+    // メニュー定義の変更検出用ハッシュを計算します(text: 比較する定義本文)。
     std::uint64_t HashProjectMenuManifest(const std::string_view text)
     {
+        // 変更検出用の累積ハッシュ
         std::uint64_t value = 1469598103934665603ull;
+        // ハッシュに混ぜる本文の1byte
         for (const unsigned char byte : text)
         {
             value ^= byte;
@@ -248,17 +263,23 @@ namespace
         return value;
     }
 
+    // 1～8階層・各96byte以内のメニューパスを分割し、不正時は例外を投げます(path: スラッシュ区切りのパス)。
     std::vector<std::string> SplitProjectMenuPath(
         const std::string_view path)
     {
+        // 分割したメニュー階層名
         std::vector<std::string> result;
+        // 階層名の開始位置
         std::size_t begin = 0;
         while (begin <= path.size())
         {
+            // 次のスラッシュ位置
             const std::size_t separator = path.find('/', begin);
+            // 階層名の末尾位置
             const std::size_t end = separator == std::string_view::npos
                 ? path.size()
                 : separator;
+            // 検証する階層名
             const std::string_view part = path.substr(begin, end - begin);
             if (part.empty() || part == "." || part == "..")
             {
@@ -285,6 +306,7 @@ namespace
         return result;
     }
 
+    // 引用符と末尾のバックスラッシュを保つWindows引数表現を返します(argument: 単一の引数文字列)。
     std::wstring QuoteWindowsArgument(const std::wstring_view argument)
     {
         if (argument.empty())
@@ -297,8 +319,11 @@ namespace
             return std::wstring{ argument };
         }
 
+        // 引用処理後の引数文字列
         std::wstring result{ L'\"' };
+        // 連続するバックスラッシュ数
         std::size_t backslashes = 0;
+        // 引用処理する文字
         for (const wchar_t character : argument)
         {
             if (character == L'\\')
@@ -326,6 +351,8 @@ namespace
 
 namespace LamaPon
 {
+    // 借用する描画・シーン・保存・オンラインサービスは、このEditorLayerより長寿命である必要があります。
+    // 借用サービスから編集UIと設定を初期化します(window: 対象ウィンドウ, graphics: 描画サービス, scene: 編集シーン, playerPrefs: 個別設定, saveData: セーブデータ, onlineServices: オンラインサービス, scenePath: 開くシーンのパス, engineRoot: エンジンルート, buildConfiguration: ビルド構成)。
     EditorLayer::EditorLayer(
         const HWND window,
         GraphicsDevice& graphics,
@@ -353,10 +380,12 @@ namespace LamaPon
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
 
+        // ImGuiの入出力設定
         auto& inputOutput = ImGui::GetIO();
         inputOutput.ConfigFlags |=
             ImGuiConfigFlags_NavEnableKeyboard
             | ImGuiConfigFlags_DockingEnable;
+        // 保存するUI配置のパス
         const auto layoutPath =
             EditorSettingsPath().parent_path()
             / "imgui-layout.ini";
@@ -366,9 +395,11 @@ namespace LamaPon
         inputOutput.IniFilename =
             m_imguiIniPath.c_str();
         inputOutput.ConfigWindowsMoveFromTitleBarOnly = true;
+        // 日本語フォントの読込成功
         const bool japaneseFontLoaded = LoadJapaneseFont(inputOutput);
 
         ImGui::StyleColorsDark();
+        // 初期化するUIスタイル
         auto& style = ImGui::GetStyle();
         style.WindowRounding = 4.0f;
         style.FrameRounding = 3.0f;
@@ -408,11 +439,13 @@ namespace LamaPon
         RefreshAssets(true);
         CreateDefaultEditorPresets();
         RegisterBuiltInEditorExtensions();
+        // プロジェクト設定の読込エラー
         std::string projectSettingsError;
         try
         {
             if (!LoadProjectConfiguration())
             {
+                // アセットルート基準のシーン
                 const auto relativeScene =
                     m_scenePath.lexically_relative(
                         m_graphics.Assets().AssetRoot());
@@ -424,6 +457,7 @@ namespace LamaPon
                 SaveProjectConfiguration();
             }
         }
+        // 起動時の設定読込エラー
         catch (const std::exception& exception)
         {
             projectSettingsError =
@@ -434,6 +468,7 @@ namespace LamaPon
         }
         try
         {
+            // 編集設定の復元成功
             const bool settingsLoaded = LoadEditorSettings();
             if (!projectSettingsError.empty())
             {
@@ -450,6 +485,7 @@ namespace LamaPon
                     !japaneseFontLoaded);
             }
         }
+        // 起動時の設定読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(
@@ -460,9 +496,10 @@ namespace LamaPon
         DragAcceptFiles(m_window, TRUE);
     }
 
+    // パッケージ処理を待ち、設定保存と拡張終了後にImGuiを破棄します。
     EditorLayer::~EditorLayer()
     {
-        // パッケージの取得/インストールスレッドを先に終わらせます。
+        // 借用サービスを参照するパッケージ処理を、編集状態の破棄前に終了させます。
         JoinPackageWorker();
 
         DragAcceptFiles(m_window, FALSE);
@@ -477,6 +514,7 @@ namespace LamaPon
         {
             SaveEditorSettings();
         }
+        // 終了時の設定保存失敗は終了処理を止めません。
         catch (const std::exception&)
         {
         }
@@ -505,6 +543,7 @@ namespace LamaPon
         }
     }
 
+    // 外部ドロップを予約し、その他の入力をImGuiへ渡します(window: 対象ウィンドウ, message: メッセージ種別, wParam: 主パラメーター, lParam: 補助パラメーター)。
     bool EditorLayer::HandleMessage(
         const HWND window,
         const UINT message,
@@ -513,8 +552,11 @@ namespace LamaPon
     {
         if (message == WM_DROPFILES)
         {
+            // 解放が必要なドロップ情報
             const auto drop = reinterpret_cast<HDROP>(wParam);
+            // 予約する外部ドロップ情報
             PendingExternalAssetDrop pending;
+            // ウィンドウ内の受付座標
             POINT clientPosition{};
             if (DragQueryPoint(drop, &clientPosition))
             {
@@ -526,19 +568,23 @@ namespace LamaPon
 
             try
             {
+                // 外部ドロップのファイル数
                 const UINT fileCount = DragQueryFileW(
                     drop,
                     0xFFFFFFFF,
                     nullptr,
                     0);
                 pending.sources.reserve(fileCount);
+                // 列挙するファイル番号
                 for (UINT index = 0; index < fileCount; ++index)
                 {
+                    // ファイルパスの文字数
                     const UINT length = DragQueryFileW(
                         drop,
                         index,
                         nullptr,
                         0);
+                    // ドロップ元のファイルパス
                     std::wstring path(length + 1, L'\0');
                     if (DragQueryFileW(
                             drop,
@@ -558,6 +604,7 @@ namespace LamaPon
                         std::move(pending));
                 }
             }
+            // ドロップ列挙が失敗してもハンドルを解放します。
             catch (...)
             {
             }
@@ -567,25 +614,22 @@ namespace LamaPon
         return ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam) != 0;
     }
 
+    // リモート入力を注入してImGuiフレームを開始し、段階読込と初回の撮影指示を処理します。
     void EditorLayer::BeginFrame()
     {
         m_editorGuiRenderer->NewFrame();
         ImGui_ImplWin32_NewFrame();
-        // リモート操作: 入力の注入はImGui::NewFrame()の前に
-        // 行います（このフレームのイベントキューへ載せるため）。
+        // このフレームへ反映するリモート入力はImGui::NewFrame前に注入します。
         if (!m_screenshotRequest.remoteDirectory.empty())
         {
-            // UIの記録（dump / click-label用）。前フレームの記録を
-            // 確定し、このフレームの記録を始めます。
+            // 前フレームのUI記録を確定して、次の記録を開始します。
             UiRecorder::SetEnabled(true);
             UiRecorder::NextFrame();
-            // コマンドの注入より先に入れ直します（新しい位置が
-            // 来たときはそちらが後ろに並んで勝ちます）。
+            // 保持位置を先に注入し、新しい位置のコマンドを優先します。
             ReapplyRemoteMousePosition();
             if (!m_remoteMacro.empty())
             {
-                // マクロ実行中は新しいコマンドを受けません
-                // （手順の途中に別の入力が割り込むと壊れるため）。
+                // 手順への入力割込を避けるため、マクロ実行中は新しいコマンドを受けません。
                 RunRemoteMacro();
             }
             else
@@ -598,8 +642,7 @@ namespace LamaPon
 
         ProcessPendingAssetImports();
 
-        // スクリーンショットモード: 1フレーム目にUIを開く指示を
-        // 適用します（0フレーム目はまだレイアウトが無いため）。
+        // レイアウトができた最初のフレームで撮影用UIを開きます。
         if (!m_screenshotRequest.imagePath.empty())
         {
             ++m_screenshotFrame;
@@ -610,35 +653,35 @@ namespace LamaPon
         }
     }
 
+    // リモートのマウス位置を保持してImGuiへ注入します(x: 画面座標X, y: 画面座標Y)。
     void EditorLayer::InjectMousePosition(
         const float x,
         const float y)
     {
-        // 実カーソルは動かしません。ImGui_ImplWin32が毎フレーム
-        // 実カーソル位置を報告して引き戻すので、位置を保持して
-        // ReapplyRemoteMousePositionで毎フレーム入れ直します。
+        // Win32が毎フレーム報告する実カーソルより後に位置を再注入するため、保持します。
         m_remoteMouseHeld = true;
         m_remoteMouseX = x;
         m_remoteMouseY = y;
         ImGui::GetIO().AddMousePosEvent(x, y);
     }
 
+    // Win32の実カーソル報告より後に保持した位置を注入し、リモート位置を優先します。
     void EditorLayer::ReapplyRemoteMousePosition()
     {
         if (!m_remoteMouseHeld)
         {
             return;
         }
-        // ImGui_ImplWin32_NewFrame()の後に積むので、バックエンドが
-        // 報告した実カーソル位置より後ろに並び、こちらが勝ちます
-        // （キューは順に適用され、最後のMousePosが残るため）。
+
         ImGui::GetIO().AddMousePosEvent(
             m_remoteMouseX,
             m_remoteMouseY);
     }
 
+    // 該当フレームの手順を実行し、最終フレーム経過後にマクロを消費します。
     void EditorLayer::RunRemoteMacro()
     {
+        // このフレームの実行手順
         for (const auto& step : m_remoteMacro)
         {
             if (step.frame == m_remoteMacroFrame)
@@ -647,13 +690,15 @@ namespace LamaPon
             }
         }
         ++m_remoteMacroFrame;
-        // 全ステップのフレームを過ぎたら完了。state.jsonの書き込みは
-        // Render側が「マクロが空」を条件に行います。
+
+        // マクロの最終実行フレーム
         std::uint32_t lastFrame = 0;
+        // このフレームの実行手順
         for (const auto& step : m_remoteMacro)
         {
             lastFrame = std::max(lastFrame, step.frame);
         }
+        // マクロを空にするとRender側がstate.jsonを保存できるため、全手順終了後に消去します。
         if (m_remoteMacroFrame > lastFrame)
         {
             m_remoteMacro.clear();
@@ -661,6 +706,7 @@ namespace LamaPon
         }
     }
 
+    // 再生中のリモート入力を出力して残りフレーム数を消費します(snapshot: 消費した入力の出力先)。
     bool EditorLayer::ConsumeInputSnapshot(
         InputSnapshot& snapshot) noexcept
     {
@@ -679,16 +725,24 @@ namespace LamaPon
         return true;
     }
 
+    // 統計・オブジェクト・入力・最新計測と最後の64件中の警告以上をJSONで返します。
     nlohmann::json EditorLayer::BuildRemoteRuntimeState() const
     {
+        // 直近フレームの描画統計
         const auto& frameStats = m_graphics.FrameStats();
+        // 直近フレームのメモリ統計
         const auto& memoryStats = m_graphics.MemoryStats();
+        // GPU計測情報の参照元
         const auto& gpu = m_graphics.Gpu();
+        // 直近のGPUパイプライン統計
         const auto& pipeline =
             gpu.LatestPipelineStatistics();
+        // 直近の物理演算統計
         const auto& physics = m_scene.PhysicsStats();
+        // 直近の可視性判定統計
         const auto& visibility = m_scene.VisibilityStats();
 
+        // 遠隔操作へ返す実行状態JSON
         nlohmann::json runtimeState{
             { "playing", m_playing },
             { "paused", m_paused },
@@ -809,16 +863,21 @@ namespace LamaPon
             } },
         };
 
+        // キー順で出力するゲーム状態
         auto stateValues = nlohmann::json::object();
+        // ゲーム状態値のスナップショット
         auto values = m_scene.Scenes().State().Snapshot();
+        // キー名で昇順に並べます(left: 比較元の状態値, right: 比較先の状態値)。
         std::ranges::sort(
             values,
             [](const auto& left, const auto& right)
             {
                 return left.first < right.first;
             });
+        // key: 状態キー、value: 型付き状態値
         for (const auto& [key, value] : values)
         {
+            // 型を保ってJSONへ格納します(item: 状態値の内容)。
             std::visit(
                 [&stateValues, &key](const auto& item)
                 {
@@ -828,16 +887,22 @@ namespace LamaPon
         }
         runtimeState["gameState"] = std::move(stateValues);
 
+        // 全オブジェクトの出力JSON
         auto objects = nlohmann::json::array();
+        // 実行状態を出力する対象
         for (const auto& object : m_scene.GameObjects())
         {
             if (object == nullptr)
             {
                 continue;
             }
+            // 出力対象のローカル変換
             const auto& transform = object->GetTransform();
+            // 出力するEuler角・rad
             const auto euler = transform.EulerAngles();
+            // 対象のコンポーネント一覧
             auto components = nlohmann::json::array();
+            // 出力するコンポーネント
             for (const auto& component : object->Components())
             {
                 if (component == nullptr)
@@ -889,7 +954,9 @@ namespace LamaPon
         }
         runtimeState["objects"] = std::move(objects);
 
+        // 追加読込したシーンの一覧
         auto loadedScenes = nlohmann::json::array();
+        // 追加シーンの登録情報
         for (const auto& loaded : m_scene.AdditiveScenes())
         {
             loadedScenes.push_back({
@@ -901,10 +968,14 @@ namespace LamaPon
         }
         runtimeState["additiveScenes"] = std::move(loadedScenes);
 
+        // 入力アクションの状態一覧
         auto actions = nlohmann::json::array();
+        // 出力する入力アクション
         for (const auto& action : m_graphics.Input().Actions())
         {
+            // アクションの入力割当一覧
             auto bindings = nlohmann::json::array();
+            // 出力する入力割当
             for (const auto& binding : action.bindings)
             {
                 bindings.push_back({
@@ -929,13 +1000,18 @@ namespace LamaPon
         }
         runtimeState["input"] = std::move(actions);
 
+        // 保存済みの計測フレーム
         const auto profileFrames = Profiler::Instance().Snapshot();
         if (!profileFrames.empty())
         {
+            // 最新の計測フレーム
             const auto& profile = profileFrames.back();
+            // 最新フレームの計測区間一覧
             auto samples = nlohmann::json::array();
+            // 出力する計測区間
             for (const auto& sample : profile.samples)
             {
+                // 計測区間の出力JSON
                 auto entry = nlohmann::json{
                     { "name", sample.name },
                     { "milliseconds", sample.milliseconds },
@@ -966,11 +1042,15 @@ namespace LamaPon
             };
         }
 
+        // 警告・エラーの出力一覧
         auto logs = nlohmann::json::array();
+        // 保存済みログのスナップショット
         const auto logEntries = Logger::Instance().Snapshot();
+        // 最後の64件の開始位置
         const auto firstLog = logEntries.size() > 64
             ? logEntries.end() - 64
             : logEntries.begin();
+        // 出力候補のログ位置
         for (auto iterator = firstLog;
             iterator != logEntries.end();
             ++iterator)
@@ -991,11 +1071,14 @@ namespace LamaPon
         return runtimeState;
     }
 
+    // 未処理の指示JSONを順に実行し、UI入力マクロと描画後の結果出力を予約します。
     void EditorLayer::PollRemoteCommands()
     {
+        // 遠隔操作の指示ファイル
         const auto commandPath =
             m_screenshotRequest.remoteDirectory
             / L"command.json";
+        // 指示JSONの入力ストリーム
         std::ifstream input(
             commandPath,
             std::ios::binary);
@@ -1003,18 +1086,19 @@ namespace LamaPon
         {
             return;
         }
+        // 受信した指示JSON
         nlohmann::json document =
             nlohmann::json::parse(
                 input,
                 nullptr,
                 false);
-        // 書き込み途中のファイルを読むと壊れたJSONになります。
-        // 失敗したら黙って次のフレームで読み直します。
+        // 書込途中のJSONは無視し、次のフレームで再読込します。
         if (document.is_discarded()
             || !document.is_object())
         {
             return;
         }
+        // 新しい指示の通し番号
         const auto sequence =
             document.value<std::uint64_t>("seq", 0);
         if (sequence == 0
@@ -1022,18 +1106,23 @@ namespace LamaPon
         {
             return;
         }
+        // 実行前にseqを消費するため、途中で失敗しても同じseqの指示は再実行されません。
         m_remoteLastSequence = sequence;
         m_remoteReportSequence = sequence;
         m_remoteReportPending = true;
         m_remoteReportError.clear();
 
+        // 入力を注入するImGui状態
         auto& io = ImGui::GetIO();
+        // 順に処理する指示一覧
         const auto commands =
             document.value(
                 "commands",
                 nlohmann::json::array());
+        // 処理する遠隔操作指示
         for (const auto& command : commands)
         {
+            // 指示の操作種別
             const std::string type =
                 command.value("type", std::string{});
             if (type == "play")
@@ -1087,7 +1176,7 @@ namespace LamaPon
             else if (type == "runtime"
                 || type == "observe")
             {
-                // 描画後にstate.jsonへ現在のゲーム状態を含めます。
+
                 m_remoteRuntimePending = true;
             }
             else if (type == "timescale")
@@ -1100,6 +1189,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 指示された入力・設定値
                     const float value =
                         command.at("value").get<float>();
                     if (!std::isfinite(value))
@@ -1128,6 +1218,7 @@ namespace LamaPon
                         "input requires a numeric value.";
                     continue;
                 }
+                // 指示された入力・設定値
                 const float value =
                     command.at("value").get<float>();
                 if (!std::isfinite(value))
@@ -1136,8 +1227,11 @@ namespace LamaPon
                         "input value must be finite.";
                     continue;
                 }
+                // 解決した物理入力コントロール
                 InputControl control{};
+                // 割当倍率を戻した入力値
                 float controlValue = value;
+                // 入力先の解決に成功した
                 bool resolved = false;
                 if (command.contains("control")
                     && command.at("control").is_string())
@@ -1160,8 +1254,10 @@ namespace LamaPon
                 else if (command.contains("action")
                     && command.at("action").is_string())
                 {
+                    // 指定された入力アクション名
                     const auto actionName =
                         command.at("action").get<std::string>();
+                    // 指定名の入力先を探します(candidate: 登録入力アクション)。
                     const auto action = std::find_if(
                         m_graphics.Input().Actions().begin(),
                         m_graphics.Input().Actions().end(),
@@ -1176,6 +1272,7 @@ namespace LamaPon
                     }
                     else
                     {
+                        // 倍率が有効な最初の割当を探します(candidate: 入力割当)。
                         const auto binding = std::find_if(
                             action->bindings.begin(),
                             action->bindings.end(),
@@ -1217,6 +1314,7 @@ namespace LamaPon
                 m_remoteInputSnapshot->Set(
                     control,
                     std::clamp(controlValue, -1.0f, 1.0f));
+                // 入力を保持するフレーム数
                 const auto frames = std::clamp(
                     command.value("frames", 1u),
                     1u,
@@ -1227,13 +1325,16 @@ namespace LamaPon
             }
             else if (type == "move" || type == "click")
             {
+                // 入力する画面座標X
                 const float x =
                     command.value("x", 0.0f);
+                // 入力する画面座標Y
                 const float y =
                     command.value("y", 0.0f);
                 InjectMousePosition(x, y);
                 if (type == "click")
                 {
+                    // 操作するマウスボタン番号
                     const int button =
                         command.value("button", 0);
                     io.AddMouseButtonEvent(button, true);
@@ -1251,15 +1352,18 @@ namespace LamaPon
             }
             else if (type == "click-label")
             {
-                // ラベル指定のクリック。座標を画像から読む必要が
-                // 無いので、AIの操作がレイアウト変更に強くなります。
-                // 直前の完成フレームの記録から探します。
+
+                // 検索するUIラベル
                 const std::string label =
                     command.value("label", std::string{});
+                // 絞り込むウィンドウ名
                 const std::string window =
                     command.value("window", std::string{});
+                // 直前の完成フレームのUI記録
                 const auto items = UiRecorder::Snapshot();
+                // 操作対象のUI記録への参照
                 const UiRecorder::Item* match = nullptr;
+                // ラベル照合するUI項目
                 for (const auto& item : items)
                 {
                     if (!window.empty()
@@ -1273,7 +1377,7 @@ namespace LamaPon
                         match = &item;
                         break;
                     }
-                    // 完全一致が無ければ部分一致を候補に。
+                    // 完全一致を優先し、なければ最初の部分一致を使います。
                     if (match == nullptr
                         && item.label.find(label)
                             != std::string::npos)
@@ -1283,8 +1387,10 @@ namespace LamaPon
                 }
                 if (match != nullptr)
                 {
+                    // 入力する画面座標X
                     const float x =
                         match->x + match->width * 0.5f;
+                    // 入力する画面座標Y
                     const float y =
                         match->y + match->height * 0.5f;
                     InjectMousePosition(x, y);
@@ -1299,30 +1405,25 @@ namespace LamaPon
             }
             else if (type == "dump")
             {
-                // 可視ウィジェットの一覧をstate.jsonへ返します。
-                // "all": true でラベル無しのウィジェット
-                // （Transformの各軸など）も矩形付きで含めます。
+                // all指定ではラベルのないUIも矩形付きで出力します。
                 m_remoteDumpPending = true;
                 m_remoteDumpAll =
                     command.value("all", false);
             }
             else if (type == "set-value")
             {
-                // 値を設定します。対象はラベル指定（label/window）
-                // または座標指定（x/y。ラベルを報告しない
-                // Transformの各軸などに使う）。
-                // チェックボックス: 現在値と違うときだけクリック。
-                // テキスト/数値入力: Ctrl+クリック（Drag/Sliderは
-                // これで入力モードになる）→全選択→入力→Enter、を
-                // 複数フレームのマクロで実行します。
+                // 値の指定はラベルまたは座標で対象を選び、真偽値はクリック、その他は入力マクロで設定します。
                 if (!command.contains("value"))
                 {
                     m_remoteReportError =
                         "set-value requires a value.";
                     continue;
                 }
+                // 入力する画面座標X
                 float x{};
+                // 入力する画面座標Y
                 float y{};
+                // 操作対象のUI記録への参照
                 const UiRecorder::Item* match = nullptr;
                 if (command.contains("x")
                     && command.contains("y"))
@@ -1332,16 +1433,20 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 検索するUIラベル
                     const std::string label =
                         command.value(
                             "label",
                             std::string{});
+                    // 絞り込むウィンドウ名
                     const std::string window =
                         command.value(
                             "window",
                             std::string{});
+                    // 直前の完成フレームのUI記録
                     const auto items =
                         UiRecorder::Snapshot();
+                    // ラベル照合するUI項目
                     for (const auto& item : items)
                     {
                         if (!window.empty()
@@ -1371,14 +1476,15 @@ namespace LamaPon
                     x = match->x + match->width * 0.5f;
                     y = match->y + match->height * 0.5f;
                 }
+                // ラベル指定のmatchは内側のitemsを参照し、そのスコープ終了後は参照先が失効します。
+                // 指示された入力・設定値
                 const auto& value = command.at("value");
                 if (value.is_boolean())
                 {
-                    // ImGuiItemStatusFlags_Checked (1<<23)。
-                    // 座標指定では現在値が分からないので、
-                    // ラベル指定のときだけ差分判定します。
+                    // 記録したCheckedフラグは1<<23で、ラベル指定時だけ現在値との差を判定できます。
                     if (match != nullptr)
                     {
+                        // 対象の現在のチェック状態
                         const bool checked =
                             (match->statusFlags
                                 & (1u << 23)) != 0;
@@ -1392,11 +1498,13 @@ namespace LamaPon
                     io.AddMouseButtonEvent(0, false);
                     continue;
                 }
+                // 値を入力するUTF8文字列
                 const std::string text =
                     value.is_string()
                         ? value.get<std::string>()
                         : value.dump();
                 m_remoteMacroFrame = 0;
+                // Ctrlクリックで入力を開始し、全選択・値入力・Enter確定を順に実行します。
                 m_remoteMacro = {
                     { 0, [this, x, y]
                         {
@@ -1418,10 +1526,9 @@ namespace LamaPon
                             ImGui::GetIO().AddKeyEvent(
                                 ImGuiMod_Ctrl, false);
                         } },
-                    // 全選択（InputTextを直接クリックした場合、
-                    // カーソル位置に文字が挿入されるのを防ぐ）。
                     { 6, []
                         {
+                            // 入力を注入するImGui状態
                             auto& inputOutput =
                                 ImGui::GetIO();
                             inputOutput.AddKeyEvent(
@@ -1431,6 +1538,7 @@ namespace LamaPon
                         } },
                     { 8, []
                         {
+                            // 入力を注入するImGui状態
                             auto& inputOutput =
                                 ImGui::GetIO();
                             inputOutput.AddKeyEvent(
@@ -1458,18 +1566,23 @@ namespace LamaPon
             }
             else if (type == "drag")
             {
-                // 始点から終点まで数フレームかけて引っ張ります。
-                // ギズモ・スライダー・ドッキングの移動用です。
+
+                // ドラッグ始点の画面座標X
                 const float fromX =
                     command.value("x", 0.0f);
+                // ドラッグ始点の画面座標Y
                 const float fromY =
                     command.value("y", 0.0f);
+                // ドラッグ終点の画面座標X
                 const float toX =
                     command.value("toX", fromX);
+                // ドラッグ終点の画面座標Y
                 const float toY =
                     command.value("toY", fromY);
+                // 操作するマウスボタン番号
                 const int button =
                     command.value("button", 0);
+                // ドラッグで移動するフレーム数
                 const std::uint32_t moveFrames =
                     std::clamp(
                         command.value("frames", 10u),
@@ -1477,6 +1590,7 @@ namespace LamaPon
                         120u);
                 m_remoteMacroFrame = 0;
                 m_remoteMacro.clear();
+                // 始点へ移動してボタンを押し、ドラッグを開始します。
                 m_remoteMacro.push_back(
                     { 0, [this, fromX, fromY, button]
                         {
@@ -1486,26 +1600,29 @@ namespace LamaPon
                                 .AddMouseButtonEvent(
                                     button, true);
                         } });
+                // ドラッグ移動の段階番号
                 for (std::uint32_t step = 1;
                     step <= moveFrames;
                     ++step)
                 {
+                    // 始点から終点への移動比率
                     const float ratio =
                         static_cast<float>(step)
                         / static_cast<float>(moveFrames);
+                    // 入力する画面座標X
                     const float x =
                         fromX + (toX - fromX) * ratio;
+                    // 入力する画面座標Y
                     const float y =
                         fromY + (toY - fromY) * ratio;
-                    // 押した直後の1フレームを空けてから動かします
-                    // （同フレームだとドラッグ開始と認識されない
-                    // ウィジェットがあるため）。
+                    // 同フレームの移動をドラッグと認識しないUIがあるため、押下の次フレームは待ちます。
                     m_remoteMacro.push_back(
                         { step + 1, [this, x, y]
                             {
                                 InjectMousePosition(x, y);
                             } });
                 }
+                // 終点に到達した後でボタンを離します。
                 m_remoteMacro.push_back(
                     { moveFrames + 3, [button]
                         {
@@ -1516,10 +1633,11 @@ namespace LamaPon
             }
             else if (type == "wheel")
             {
-                // 指定位置でマウスホイールを回します。deltaYは
-                // ノッチ数（正で上＝スクロールアップ）。
+
+                // 入力する画面座標X
                 const float x =
                     command.value("x", 0.0f);
+                // 入力する画面座標Y
                 const float y =
                     command.value("y", 0.0f);
                 InjectMousePosition(x, y);
@@ -1536,10 +1654,12 @@ namespace LamaPon
             }
             else if (type == "key")
             {
+                // 注入するキーの指定名
                 const std::string name =
                     command.value(
                         "value",
                         std::string{});
+                // 指定名に対応するImGuiキー
                 ImGuiKey key = ImGuiKey_None;
                 if (name == "enter") { key = ImGuiKey_Enter; }
                 else if (name == "tab") { key = ImGuiKey_Tab; }
@@ -1564,9 +1684,7 @@ namespace LamaPon
             }
             else if (type == "screenshot")
             {
-                // 撮影はこのフレームの描画が終わってから
-                // （Renderの末尾）。ファイル名はseqごとに変えます。
-                // ホスト側で古い内容を取得しないよう、固定名を避けます。
+                // 描画後に撮影し、古い内容を再取得しないようseqを含むファイル名を使います。
                 m_remotePendingShot =
                     m_screenshotRequest.remoteDirectory
                     / (L"screenshot-"
@@ -1586,13 +1704,16 @@ namespace LamaPon
         }
     }
 
+    // 応答予約を消費し、指示の結果・要求されたUI一覧・実行状態をstate.jsonへ書きます。
     void EditorLayer::WriteRemoteState()
     {
         if (!m_remoteReportPending)
         {
             return;
         }
+        // 書込結果は検査されず、予約は書込前に消費されるため、失敗時の自動再送はありません。
         m_remoteReportPending = false;
+        // 遠隔操作の結果JSON
         nlohmann::json state{
             { "seq", m_remoteReportSequence },
             { "ok", m_remoteReportError.empty() },
@@ -1609,7 +1730,9 @@ namespace LamaPon
         if (m_remoteDumpPending)
         {
             m_remoteDumpPending = false;
+            // 報告する可視UI項目一覧
             auto items = nlohmann::json::array();
+            // 報告する可視UI項目
             for (const auto& item :
                 UiRecorder::Snapshot(m_remoteDumpAll))
             {
@@ -1630,6 +1753,7 @@ namespace LamaPon
             m_remoteRuntimePending = false;
             state["runtime"] = BuildRemoteRuntimeState();
         }
+        // 応答JSONの出力ストリーム
         std::ofstream output(
             m_screenshotRequest.remoteDirectory
                 / L"state.json",
@@ -1641,8 +1765,10 @@ namespace LamaPon
             nlohmann::json::error_handler_t::replace);
     }
 
+    // 撮影指定から画面・設定カテゴリー・選択対象を開き、必要なら末尾スクロールを予約します。
     void EditorLayer::ApplyScreenshotIntent()
     {
+        // 撮影前に開くUIの指定
         std::string show = m_screenshotRequest.show;
         if (show == "export-windows" || show == "export-web")
         {
@@ -1660,9 +1786,8 @@ namespace LamaPon
         {
             return;
         }
-        // 末尾の「:bottom」は「対象を末尾までスクロールして撮る」
-        // 指定です。設定の物理タブの衝突マトリクスや、Inspectorの
-        // 下の方のコンポーネントは、これが無いと画面外になります。
+
+        // 末尾スクロール指定の接尾辞
         constexpr std::string_view bottomSuffix{
             ":bottom" };
         if (show.size() > bottomSuffix.size()
@@ -1672,14 +1797,18 @@ namespace LamaPon
             show.resize(
                 show.size() - bottomSuffix.size());
         }
+        // 設定カテゴリー指定の接頭辞
         constexpr std::string_view settingsPrefix{
             "project-settings:" };
+        // 選択オブジェクト指定の接頭辞
         constexpr std::string_view inspectorPrefix{
             "inspector:" };
-        // 登録済みパネルをIDで開きます（例: panel:frameDebugger）。
+
+        // 登録パネル指定の接頭辞
         constexpr std::string_view panelPrefix{ "panel:" };
         if (show.starts_with(panelPrefix))
         {
+            // 開く登録パネルのID
             const std::string panelId =
                 show.substr(panelPrefix.size());
             if (!m_editorExtensions.SetPanelOpen(panelId, true))
@@ -1692,8 +1821,8 @@ namespace LamaPon
         }
         if (show.starts_with(settingsPrefix))
         {
-            // カテゴリー名はDrawProjectSettingsDialogと同じ順にします。
-            // ASCIIだけを扱う自動化スクリプト向けに別名も受け付けます。
+
+            // 設定画面の順序で並ぶ日本語名
             constexpr std::array<const char*, 10>
                 categories{
                     "ゲーム",
@@ -1705,8 +1834,9 @@ namespace LamaPon
                     "スクリプト",
                     "ビルドプロファイル",
                     "オンライン",
-                    "シーン遷移"
+                    "サービス連携"
                 };
+            // 同じ順序の英語カテゴリー名
             constexpr std::array<const char*, 10>
                 aliases{
                     "game",
@@ -1718,10 +1848,12 @@ namespace LamaPon
                     "scripts",
                     "build",
                     "online",
-                    "scene-transition"
+                    "services"
                 };
+            // 開く設定カテゴリー名
             const std::string category =
                 show.substr(settingsPrefix.size());
+            // 設定カテゴリーの番号
             for (std::size_t index = 0;
                 index < categories.size();
                 ++index)
@@ -1739,8 +1871,10 @@ namespace LamaPon
         }
         if (show.starts_with(inspectorPrefix))
         {
+            // 選択するオブジェクト名
             const std::string name =
                 show.substr(inspectorPrefix.size());
+            // 撮影時に選択する対象
             if (const auto* target =
                     m_scene.FindGameObjectByName(name))
             {
@@ -1760,8 +1894,10 @@ namespace LamaPon
             + show);
     }
 
+    // バックバッファをPNGへ保存し、撮影結果の報告後に終了を要求します。
     void EditorLayer::CaptureScreenshotAndQuit()
     {
+        // 撮影結果の応答JSON
         nlohmann::json report{
             { "ok", false },
             { "command", "editor-screenshot" },
@@ -1772,8 +1908,11 @@ namespace LamaPon
         };
         try
         {
+            // 撮影画像の幅・pixel
             std::uint32_t width{};
+            // 撮影画像の高さ・pixel
             std::uint32_t height{};
+            // バックバッファの画像データ
             const auto pixels =
                 m_graphics.CaptureBackBuffer(
                     width,
@@ -1787,12 +1926,14 @@ namespace LamaPon
             report["width"] = width;
             report["height"] = height;
         }
+        // 撮影結果へ返す保存エラー
         catch (const std::exception& exception)
         {
             report["error"] = exception.what();
         }
         if (!m_screenshotRequest.reportPath.empty())
         {
+            // 撮影結果JSONの出力先
             std::ofstream output(
                 m_screenshotRequest.reportPath,
                 std::ios::trunc);
@@ -1803,12 +1944,11 @@ namespace LamaPon
                 nlohmann::json::error_handler_t::
                     replace);
         }
-        // 撮ったら終了します。ConfirmCloseを通さないのは、
-        // スクリーンショットモードはシーンを編集しないので
-        // 「未保存の変更」の警告が原理的に不要なためです。
+        // 撮影モードは保存確認を経ずに終了を要求します。
         PostQuitMessage(report["ok"].get<bool>() ? 0 : 1);
     }
 
+    // 更新と編集画面を描画し、GameModuleのビルド中は入力とUI操作を止めます。
     void EditorLayer::Draw()
     {
         UpdateGameModuleBuild();
@@ -1817,10 +1957,12 @@ namespace LamaPon
         UpdateProjectMenus();
         UpdateScriptAutoBuild();
         m_editorExtensions.Update();
+        // GameModuleビルドで操作禁止
         const bool editorLocked =
             m_gameModuleBuildProcess != nullptr;
         if (editorLocked)
         {
+            // 消去するUIの入力状態
             auto& inputOutput = ImGui::GetIO();
             inputOutput.ClearInputKeys();
             inputOutput.ClearInputMouse();
@@ -1830,15 +1972,18 @@ namespace LamaPon
             InputPointerState{});
         if (!m_playing)
         {
+            // プレビューの経過秒・最大0.05
             const float deltaTime =
                 std::min(
                     ImGui::GetIO().DeltaTime,
                     0.05f);
+            // 編集時に更新する対象
             for (const auto& object :
                 m_scene.GameObjects())
             {
                 if (object->IsEnabled())
                 {
+                    // 編集時に動かす粒子
                     if (auto* particles =
                         object->GetComponent<
                             ParticleSystemComponent>();
@@ -1848,7 +1993,8 @@ namespace LamaPon
                         particles->UpdatePreview(
                             deltaTime);
                     }
-                    // 編集モードでもUIレイアウトを反映します。
+
+                    // 編集時に反映するUI配置
                     if (auto* layoutGroup =
                         object->GetComponent<
                             UILayoutGroupComponent>();
@@ -1880,6 +2026,7 @@ namespace LamaPon
         DrawGameModuleBuildOverlay();
     }
 
+    // ビルド中に操作を覆う画面へ回転表示と経過時間を描画します。
     void EditorLayer::DrawGameModuleBuildOverlay()
     {
         if (m_gameModuleBuildProcess == nullptr)
@@ -1887,6 +2034,7 @@ namespace LamaPon
             return;
         }
 
+        // 操作を覆う主ビューポート
         const ImGuiViewport* viewport =
             ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->Pos);
@@ -1894,6 +2042,7 @@ namespace LamaPon
         ImGui::SetNextWindowViewport(viewport->ID);
         ImGui::SetNextWindowFocus();
 
+        // 操作を遮る画面の表示フラグ
         constexpr ImGuiWindowFlags overlayFlags =
             ImGuiWindowFlags_NoDecoration
             | ImGuiWindowFlags_NoMove
@@ -1911,10 +2060,12 @@ namespace LamaPon
             nullptr,
             overlayFlags);
 
+        // ビルド状況カードの幅
         const float cardWidth = std::clamp(
             viewport->Size.x - 40.0f,
             320.0f,
             480.0f);
+        // ビルド状況カードの高さ
         constexpr float cardHeight = 224.0f;
         ImGui::SetCursorPos(ImVec2{
             std::max(
@@ -1946,9 +2097,11 @@ namespace LamaPon
             ImGuiChildFlags_Borders,
             ImGuiWindowFlags_NoScrollbar);
 
+        // カード中央へ文を表示します(text: 表示する文字列)。
         const auto centeredText =
             [cardWidth](const char* text)
             {
+                // 中央表示する文の横幅
                 const float textWidth =
                     ImGui::CalcTextSize(text).x;
                 ImGui::SetCursorPosX(std::max(
@@ -1960,28 +2113,39 @@ namespace LamaPon
         centeredText("C++ Scriptをビルドしています");
         ImGui::Dummy(ImVec2{ 0.0f, 10.0f });
 
+        // 回転表示に並べる点の数
         constexpr int spinnerDotCount = 12;
+        // 回転表示の半径
         constexpr float spinnerRadius = 18.0f;
+        // 回転表示の経過秒
         const double animationTime = ImGui::GetTime();
+        // 回転表示の先頭点番号
         const int spinnerPhase = static_cast<int>(
             animationTime * 12.0)
             % spinnerDotCount;
+        // 回転表示の中心座標
         const ImVec2 spinnerCenter{
             ImGui::GetWindowPos().x + cardWidth * 0.5f,
             ImGui::GetCursorScreenPos().y + spinnerRadius
         };
+        // ビルド状況の描画リスト
         ImDrawList* drawList = ImGui::GetWindowDrawList();
+        // 回転表示の点番号
         for (int index = 0;
+            // 回転表示に並べる点の数
             index < spinnerDotCount;
             ++index)
         {
+            // 回転点の配置角・rad
             const float angle =
                 (static_cast<float>(index)
                     / static_cast<float>(spinnerDotCount))
                 * DirectX::XM_2PI;
+            // 先頭からの点数距離
             const int distanceFromHead =
                 (spinnerPhase - index + spinnerDotCount)
                 % spinnerDotCount;
+            // 先頭からの距離による明度
             const float brightness =
                 1.0f
                 - static_cast<float>(distanceFromHead)
@@ -2012,8 +2176,10 @@ namespace LamaPon
                 : "完了後に自動で読み込み、GameObjectへアタッチします。");
         ImGui::Dummy(ImVec2{ 0.0f, 7.0f });
 
+        // 操作禁止中の説明文
         const char* lockMessage =
             "処理が完了するまでエディターは操作できません。";
+        // 操作禁止説明の横幅
         const float lockMessageWidth =
             ImGui::CalcTextSize(lockMessage).x;
         ImGui::SetCursorPosX(std::max(
@@ -2021,14 +2187,17 @@ namespace LamaPon
             0.0f));
         ImGui::TextDisabled("%s", lockMessage);
 
+        // ビルド開始からの経過秒
         const double elapsedSeconds = std::max(
             animationTime - m_gameModuleBuildStartedAt,
             0.0);
+        // 経過時間の表示文
         const std::string elapsedText =
             "経過時間: "
             + std::to_string(
                 static_cast<int>(elapsedSeconds))
             + " 秒";
+        // 経過時間の表示幅
         const float elapsedTextWidth =
             ImGui::CalcTextSize(elapsedText.c_str()).x;
         ImGui::SetCursorPosX(std::max(
@@ -2046,19 +2215,22 @@ namespace LamaPon
         ImGui::PopStyleVar();
     }
 
+    // Camera描画先を先に更新し、有効な選択ビューと各プレビュー画像を描画します。
     void EditorLayer::RenderSceneViews()
     {
+        // Scene Viewの背景色
         constexpr float sceneClearColor[]{ 0.055f, 0.070f, 0.095f, 1.0f };
+        // Game Viewの背景色
         constexpr float gameClearColor[]{ 0.025f, 0.035f, 0.055f, 1.0f };
 
-        // 描画先テクスチャを持つCameraを先に描きます。
+        // ビュー内で使うCamera画像を、ビュー本体より先に更新します。
         m_scene.RenderTargetTextures();
 
         if (m_activeViewport == ViewportMode::Scene
             && m_sceneRenderTarget.IsValid())
         {
-            // ビューごとに区間を分け、GPU時間とフレームデバッガーの
-            // イベントがどのビューの描画か分かるようにします。
+
+            // Scene ViewのGPU計測区間
             GpuProfiler::SectionScope sceneViewSection{
                 m_graphics.Gpu(),
                 "Scene View"
@@ -2075,14 +2247,15 @@ namespace LamaPon
                 false,
                 m_colliderDebugVisible,
                 &m_sceneRenderTarget);
-            // 並びはRunPostProcessが持っています。
+
             RunPostProcess(
                 m_graphics,
                 m_sceneRenderTarget,
                 m_scene.PostProcessFrameData());
-            // UIはトーンマッピングとFXAAの後に描き、元画像の色と輪郭を保つ。
+            // UIの色と輪郭を保つため、ポスト処理の後に描画します。
             m_scene.Render2D();
-            // エディターの補助表示はUIより手前に保つ。
+
+            // 編集補助表示のGPU計測区間
             GpuProfiler::SectionScope helperOverlaySection{
                 m_graphics.Gpu(),
                 "エディター補助表示"
@@ -2116,26 +2289,27 @@ namespace LamaPon
             {
                 DrawLightGizmos();
             }
-            // 物理デバッガーの接触点と速度（パネルを開いている間だけ）。
+
             DrawAnalysisSceneOverlay();
-            // 選択枠は「今どれを触っているか」の表示なので、
-            // デバッグ線のトグルとは独立に常に出します。
+            // 選択枠はデバッグ線の表示設定に依存させません。
             DrawSelectionHighlight();
-            // 完成画像を表示用へ確定します（ポスト処理のswap回数に
-            // よらず、ImGuiには常に最終結果を見せるため）。
+            // ポスト処理で描画先が入れ替わるため、最終画像を表示用へ公開します。
             m_graphics.PublishOffscreenTarget(
                 m_sceneRenderTarget);
             helperOverlaySection.End();
             sceneViewSection.End();
 
+            // 選択中のオブジェクト
             const auto* selected =
                 m_scene.FindGameObject(m_selectedObjectId);
+            // 選択中のカメラ
             const auto* selectedCamera = selected != nullptr
                 ? selected->GetComponent<CameraComponent>()
                 : nullptr;
             if (selectedCamera != nullptr
                 && m_cameraPreviewRenderTarget.IsValid())
             {
+                // カメラ画像のGPU計測区間
                 GpuProfiler::SectionScope cameraPreviewSection{
                     m_graphics.Gpu(),
                     "カメラプレビュー"
@@ -2166,6 +2340,7 @@ namespace LamaPon
         else if (m_activeViewport == ViewportMode::Game
             && m_gameRenderTarget.IsValid())
         {
+            // Game ViewのGPU計測区間
             GpuProfiler::SectionScope gameViewSection{
                 m_graphics.Gpu(),
                 "Game View"
@@ -2180,26 +2355,20 @@ namespace LamaPon
                 m_gameRenderTarget.AspectRatio(),
                 false,
                 &m_gameRenderTarget);
-            // 並びはRunPostProcessが持っています。
+
             RunPostProcess(
                 m_graphics,
                 m_gameRenderTarget,
                 m_scene.PostProcessFrameData());
             m_scene.Render2D();
 
-            auto& scenes =
+            // 遷移・読込表示の管理元
+            const auto& scenes =
                 m_scene.Scenes();
-            if (!m_playing && scenes.IsTransitioning())
+            if (m_playing)
             {
-                // 編集中はSceneを更新しないため、Inspectorから再生した
-                // 遷移のプレビューだけをここで実時間で進めます。
-                scenes.AdvanceTransition(Time::UnscaledDeltaTime());
-            }
-            if (m_playing || scenes.IsTransitioning())
-            {
-                // 遷移の覆いとローディング表示もUIと同様に
-                // ポストエフェクト後へ重ねる。
-                m_graphics.DrawSceneTransition(
+                // 読込表示はポスト処理後に重ね、遷移の覆いはScene側が描きます。
+                m_graphics.DrawLoadingScreen(
                     scenes.TransitionFrame(),
                     scenes.LoadingScreen(),
                     m_gameRenderTarget.Width(),
@@ -2212,6 +2381,7 @@ namespace LamaPon
         RenderMaterialPreview();
     }
 
+    // 初回だけMaterial確認用の球体と太陽光を持つシーンを作成します。
     void EditorLayer::EnsureMaterialPreviewScene()
     {
         if (m_materialPreviewScene != nullptr)
@@ -2224,12 +2394,14 @@ namespace LamaPon
             { 0.62f, 0.68f, 0.80f });
         m_materialPreviewScene->SetAmbientLightIntensity(0.32f);
 
+        // Material確認用の球体
         auto& sphere = m_materialPreviewScene->CreateGameObject(
             "Material Preview Sphere");
         m_materialPreviewRenderer =
             &sphere.AddComponent<MeshRendererComponent>(
                 PrimitiveShape::Sphere);
 
+        // Material確認用の太陽光
         auto& light = m_materialPreviewScene->CreateGameObject(
             "Material Preview Light");
         light.GetTransform().SetRotationVector(
@@ -2240,6 +2412,7 @@ namespace LamaPon
             false);
     }
 
+    // 編集中のMaterialを回転する球体へ適用し、確認画像を描画します。
     void EditorLayer::RenderMaterialPreview()
     {
         if (!m_materialInspectorLoaded
@@ -2263,13 +2436,16 @@ namespace LamaPon
                 0.0f
             });
 
+        // Material確認画像の背景色
         constexpr float clearColor[]{
             0.035f, 0.045f, 0.065f, 1.0f
         };
+        // Material確認用の視点行列
         const auto view = DirectX::XMMatrixLookAtLH(
             DirectX::XMVectorSet(0.0f, 0.0f, 2.15f, 1.0f),
             DirectX::XMVectorZero(),
             DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        // Material確認用の透視投影
         const auto projection = DirectX::XMMatrixPerspectiveFovLH(
             DirectX::XMConvertToRadians(34.0f),
             1.0f,
@@ -2292,12 +2468,12 @@ namespace LamaPon
             m_materialPreviewRenderTarget);
     }
 
+    // 編集UIを描画し、Present前の撮影と遠隔操作の完了結果を出力します。
     void EditorLayer::Render()
     {
         ImGui::Render();
-        // エディターのUI自体もGPUを使います。ビューポートの絵と
-        // 分けて出さないと、GPU合計との差がどこから来たのか
-        // 判断できません（パネルの枚数で普通に数ms動きます）。
+
+        // 編集UIのGPU計測区間
         GpuProfiler::SectionScope editorUiSection{
             m_graphics.Gpu(),
             "エディターUI"
@@ -2305,25 +2481,26 @@ namespace LamaPon
         m_editorGuiRenderer->RenderDrawData(ImGui::GetDrawData());
         editorUiSection.End();
 
-        // スクリーンショットモード: UIがバックバッファへ描かれた
-        // この時点（Presentの前）で撮ります。
+        // UI描画後かつPresent前にバックバッファを撮影します。
         if (!m_screenshotRequest.imagePath.empty()
             && m_screenshotFrame
                 >= m_screenshotRequest.captureFrame)
         {
             CaptureScreenshotAndQuit();
-            // 二重撮影よけ（PostQuitMessageの後も数フレーム
-            // 回ることがあるため）。
+            // 終了要求後もフレームが回る可能性があるため、撮影要求を消費します。
             m_screenshotRequest.imagePath.clear();
         }
 
-        // リモート操作の撮影依頼も同じ時点（Presentの前）で撮ります。
+
         if (!m_remotePendingShot.empty())
         {
             try
             {
+                // 遠隔撮影画像の幅・pixel
                 std::uint32_t width{};
+                // 遠隔撮影画像の高さ・pixel
                 std::uint32_t height{};
+                // 遠隔撮影の画像データ
                 const auto pixels =
                     m_graphics.CaptureBackBuffer(
                         width,
@@ -2334,6 +2511,7 @@ namespace LamaPon
                     height,
                     pixels);
             }
+            // 遠隔撮影の応答へ返す保存エラー
             catch (const std::exception& exception)
             {
                 m_remoteReportError = exception.what();
@@ -2344,30 +2522,23 @@ namespace LamaPon
         else if (m_remoteReportPending
             && m_remoteMacro.empty())
         {
-            // 撮影を伴わないコマンド（クリック等）は、実行した
-            // フレームの描画が終わった時点で完了とみなします。
-            // マクロ（set-value / drag）は全ステップが終わるまで
-            // 完了を報告しません（ホストが早読みしないように）。
+            // 描画完了後に応答し、入力マクロは全手順が終わるまで応答を待ちます。
             WriteRemoteState();
         }
     }
 
-    // これがtrueの間、ApplicationはActionのキーボード入力を丸ごと
-    // 切ります（Input().Update(!WantsKeyboard())）。ImGuiのキー処理は
-    // 別経路なので、ここでfalseを返してもエディターの操作性は変わりません。
-    //
-    // WantCaptureKeyboardはキーボードナビゲーション中も立ち続けるため、
-    // テキスト入力中かキーボード操作中の場合だけ入力を遮断します。
+
+    // 文字入力中または編集時のUI入力取得中に、ゲーム側のキー入力を遮断します。
     bool EditorLayer::WantsKeyboard() const noexcept
     {
+        // UIの入力取得要求
         const auto& inputOutput = ImGui::GetIO();
-        // 名前や数値を打ち込んでいる最中は、絶対にゲームへ渡しません
-        // （オブジェクト名に"w"と打つたびに主人公が動くと困ります）。
+
         if (inputOutput.WantTextInput)
         {
             return true;
         }
-        // 再生中はゲームがキーボードの主役です。
+
         if (m_playing)
         {
             return false;
@@ -2375,6 +2546,7 @@ namespace LamaPon
         return inputOutput.WantCaptureKeyboard;
     }
 
+    // ウィンドウの位置とスタイルを保存して全画面へ切り替え、次回は保存した表示へ戻します。
     void EditorLayer::ToggleFullscreen()
     {
         if (!m_fullscreen)
@@ -2391,9 +2563,11 @@ namespace LamaPon
                 return;
             }
 
+            // 切替先モニターの表示情報
             MONITORINFO monitorInfo{
                 sizeof(MONITORINFO)
             };
+            // 最寄りモニターのハンドル
             const HMONITOR monitor = MonitorFromWindow(
                 m_window,
                 MONITOR_DEFAULTTONEAREST);
@@ -2429,6 +2603,7 @@ namespace LamaPon
                         WS_EX_WINDOWEDGE
                         | WS_EX_CLIENTEDGE));
 
+            // 切替先モニター全体の矩形
             const RECT& monitorBounds =
                 monitorInfo.rcMonitor;
             if (SetWindowPos(
@@ -2492,8 +2667,10 @@ namespace LamaPon
         SetStatus("ウィンドウ表示に戻しました");
     }
 
+    // 2秒間隔で定義の内容変更を検出し、検証成功時に専用メニューとパネルを置き換えます。
     void EditorLayer::UpdateProjectMenus()
     {
+        // メニュー定義の監視時刻・秒
         const double now = ImGui::GetTime();
         if (now - m_lastProjectMenuScanAt < 2.0)
         {
@@ -2501,9 +2678,12 @@ namespace LamaPon
         }
         m_lastProjectMenuScanAt = now;
 
+        // プロジェクトメニュー定義パス
         const auto manifestPath = ProjectSettingsPath().parent_path()
             / L"editor-menu.json";
+        // 定義ファイルの確認エラー
         std::error_code existsError;
+        // メニュー定義ファイルがある
         const bool exists = std::filesystem::is_regular_file(
             manifestPath,
             existsError);
@@ -2520,6 +2700,7 @@ namespace LamaPon
             return;
         }
 
+        // メニュー定義の入力ストリーム
         std::ifstream input(manifestPath, std::ios::binary);
         if (!input)
         {
@@ -2529,10 +2710,12 @@ namespace LamaPon
                 true);
             return;
         }
+        // メニュー定義の本文
         const std::string source{
             std::istreambuf_iterator<char>{ input },
             std::istreambuf_iterator<char>{}
         };
+        // 本文の変更検出ハッシュ
         const std::uint64_t sourceHash = HashProjectMenuManifest(source);
         if (m_projectMenuManifestSeen
             && sourceHash == m_projectMenuManifestHash)
@@ -2540,10 +2723,12 @@ namespace LamaPon
             return;
         }
         m_projectMenuManifestSeen = true;
+        // 検証失敗でもハッシュを記憶し、同じ本文は再検証せずメニューを解除します。
         m_projectMenuManifestHash = sourceHash;
 
         try
         {
+            // 検証するメニュー定義JSON
             const auto document = nlohmann::json::parse(source);
             if (!document.is_object()
                 || document.value("format", std::string{})
@@ -2553,6 +2738,7 @@ namespace LamaPon
                 throw std::runtime_error(
                     "format=LamaPonEditorMenu / version=1 が必要です");
             }
+            // 検証するメニュー項目一覧
             const auto& items = document.at("items");
             if (!items.is_array() || items.size() > 128u)
             {
@@ -2560,12 +2746,16 @@ namespace LamaPon
                     "items は128件以内の配列にしてください");
             }
 
+            // 検証済みのメニューツリー
             std::vector<ProjectMenuNode> menus;
+            // 検証済みの専用パネル一覧
             std::vector<ProjectPanelDefinition> panels;
+            // 専用メニューに使えない先頭名
             constexpr std::array<std::string_view, 8> reservedRoots{
                 "ファイル", "編集", "シーン", "GameObject",
                 "アセット", "ウィンドウ", "拡張機能", "ヘルプ"
             };
+            // 検証するメニュー項目
             for (const auto& item : items)
             {
                 if (!item.is_object())
@@ -2573,6 +2763,7 @@ namespace LamaPon
                     throw std::runtime_error(
                         "items の各要素はオブジェクトにしてください");
                 }
+                // 分割・検証したメニュー階層
                 const auto path = SplitProjectMenuPath(
                     item.at("path").get<std::string>());
                 if (std::ranges::find(reservedRoots, path.front())
@@ -2583,16 +2774,21 @@ namespace LamaPon
                         + path.front());
                 }
 
+                // この項目の実行コマンド
                 std::optional<ProjectMenuCommand> action;
+                // この項目の専用パネル番号
                 std::optional<std::size_t> panelIndex;
                 if (item.contains("panel"))
                 {
+                    // 専用パネルの定義JSON
                     const auto& value = item.at("panel");
                     if (!value.is_object())
                     {
                         throw std::runtime_error("panel はオブジェクトにしてください");
                     }
+                    // 検証する専用パネル定義
                     ProjectPanelDefinition panel;
+                    // 専用パネルの種別
                     const auto type = value.value("type", std::string{});
                     if (type == "bgm-loop")
                     {
@@ -2623,6 +2819,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 検証するツール実行定義
                     ProjectMenuCommand command;
                     command.command = item.at("command").get<std::string>();
                     if (command.command.empty())
@@ -2643,10 +2840,14 @@ namespace LamaPon
                     action = std::move(command);
                 }
 
+                // 挿入先の同階層ノード一覧
                 auto* siblings = &menus;
+                // 追加した末尾メニューノード
                 ProjectMenuNode* node = nullptr;
+                // 追加するメニュー階層名
                 for (const auto& segment : path)
                 {
+                    // 同名ノードの位置
                     auto existing = std::ranges::find(
                         *siblings,
                         segment,
@@ -2676,6 +2877,7 @@ namespace LamaPon
                 + std::to_string(items.size())
                 + "件）");
         }
+        // 定義の検証・生成を中断した原因
         catch (const std::exception& exception)
         {
             m_projectMenus.clear();
@@ -2687,12 +2889,15 @@ namespace LamaPon
         }
     }
 
+    // 定義の引数と作業先でツールを起動し、起動成否を通知します(command: 実行するツール定義)。
     void EditorLayer::LaunchProjectMenuCommand(
         const ProjectMenuCommand& command)
     {
+        // プロジェクトのルートパス
         const auto projectRoot = ProjectSettingsPath()
             .parent_path()
             .parent_path();
+        // 起動する実行ファイルのパス
         std::filesystem::path executable = PathFromUtf8(command.command);
         if (!executable.is_absolute()
             && (command.command.find('/') != std::string::npos
@@ -2701,6 +2906,7 @@ namespace LamaPon
             executable = projectRoot / executable;
         }
 
+        // ツールを起動する作業パス
         std::filesystem::path workingDirectory = command.workingDirectory;
         if (workingDirectory.empty())
         {
@@ -2712,7 +2918,9 @@ namespace LamaPon
         }
         workingDirectory = workingDirectory.lexically_normal();
 
+        // 引用処理した引数文字列
         std::wstring parameters;
+        // 引用する起動引数
         for (const auto& argument : command.arguments)
         {
             if (!parameters.empty())
@@ -2721,6 +2929,7 @@ namespace LamaPon
             }
             parameters += QuoteWindowsArgument(Utf8ToWide(argument));
         }
+        // ShellExecuteの起動結果
         const HINSTANCE result = ShellExecuteW(
             m_window,
             L"open",
@@ -2741,14 +2950,18 @@ namespace LamaPon
                 + command.command);
     }
 
+    // ノードの再生可否とパネル・コマンド操作を描画し、子へ再帰します(node: 描画するノード, idPath: 親階層の識別パス)。
     void EditorLayer::DrawProjectMenuNode(
         ProjectMenuNode& node,
         const std::string_view idPath)
     {
+        // 階層を含むメニューID
         const std::string id = std::string{ idPath }
             + "/" + node.label;
+        // 表示名と重複回避用ID
         const std::string itemLabel = node.label
             + "##ProjectMenu/" + id;
+        // 再生状態による実行可否
         const bool enabled = !m_playing
             || (node.action.has_value()
                 && node.action->enabledWhilePlaying);
@@ -2777,6 +2990,7 @@ namespace LamaPon
         {
             if (node.action.has_value() || node.panelIndex.has_value())
             {
+                // 親項目を開くための表示名
                 const std::string openLabel = "開く##ProjectMenuOpen/" + id;
                 if (ImGui::MenuItem(
                     openLabel.c_str(),
@@ -2795,6 +3009,7 @@ namespace LamaPon
                 }
                 ImGui::Separator();
             }
+            // 描画する子メニューノード
             for (auto& child : node.children)
             {
                 DrawProjectMenuNode(child, id);
@@ -2803,28 +3018,32 @@ namespace LamaPon
         }
     }
 
+    // 登録されたプロジェクト専用メニューを描画します。
     void EditorLayer::DrawProjectMenus()
     {
+        // 描画する先頭メニューノード
         for (auto& menu : m_projectMenus)
         {
             DrawProjectMenuNode(menu, "root");
         }
     }
 
+    // 編集中の専用パネルを描画し、閉じたBGMパネルと再生中の試聴を止めます。
     void EditorLayer::DrawProjectPanels()
     {
-        // 再生を始めたらBGMの試聴は必ず止めます。パネル自体はPlay中
-        // 描かれないので、ここで止めないと鳴りっぱなしになります。
+        // 再生中はパネルを描かないため、パネル側へ任せずここで試聴を止めます。
         if (m_playing && m_bgmPanel)
         {
             m_bgmPanel->StopPreview();
         }
+        // 描画する専用パネル番号
         for (std::size_t index = 0; index < m_projectPanels.size(); ++index)
         {
+            // 描画する専用パネル定義
             auto& panel = m_projectPanels[index];
             if (!panel.open)
             {
-                // 閉じられたBGMパネルの試聴も残さない。
+
                 if (m_bgmPanel
                     && m_bgmPanel->Matches(
                         ProjectSettingsPath().parent_path().parent_path()
@@ -2849,18 +3068,23 @@ namespace LamaPon
         }
     }
 
+    // BGMカタログに対応する編集パネルを描画します(panel: 描画するパネル定義)。
     void EditorLayer::DrawProjectBgmPanel(
         const std::size_t, ProjectPanelDefinition& panel)
     {
+        // プロジェクトのルートパス
         const auto root = ProjectSettingsPath().parent_path().parent_path();
+        // BGMカタログの絶対パス
         const auto catalog = root / panel.dataPath;
         if (!m_bgmPanel || !m_bgmPanel->Matches(catalog))
         {
+            // BGM編集の通知を転送します(message: 表示文, error: エラー表示か)。
             m_bgmPanel = std::make_unique<BgmLoopPanel>(
                 m_graphics.Audio(), m_graphics.Assets(), root, catalog,
                 [this](std::string message, const bool error)
                 { SetStatus(std::move(message), error); });
         }
+        // 保存後に定義されたツールを起動します。
         m_bgmPanel->Draw(panel.title, panel.open, [&]
         {
             if (!panel.saveCommand.command.empty())
@@ -2870,15 +3094,19 @@ namespace LamaPon
         });
     }
 
+    // 車両データに対応する編集パネルを描画します(panel: 描画するパネル定義)。
     void EditorLayer::DrawProjectVehiclePanel(
         const std::size_t,
         ProjectPanelDefinition& panel)
     {
+        // プロジェクトのルートパス
         const auto root = ProjectSettingsPath().parent_path().parent_path();
+        // 車両設定データの絶対パス
         const auto dataPath = root / panel.dataPath;
         if (!m_vehicleParametersPanel
             || !m_vehicleParametersPanel->Matches(dataPath))
         {
+            // 車両編集の通知を転送します(message: 表示文, error: エラー表示か)。
             m_vehicleParametersPanel =
                 std::make_unique<VehicleParametersPanel>(
                     m_graphics,
@@ -2887,6 +3115,7 @@ namespace LamaPon
                     [this](std::string message, const bool error)
                     { SetStatus(std::move(message), error); });
         }
+        // 保存後に定義されたツールを起動します。
         m_vehicleParametersPanel->Draw(
             *m_editorGuiRenderer,
             *m_editorModelPreviewRenderer,
@@ -2901,12 +3130,15 @@ namespace LamaPon
             });
     }
 
+    // メニュー・再生操作・統計を描画し、編集用ショートカットを処理します。
     void EditorLayer::DrawToolbar()
     {
+        // ツールバー操作の入力状態
         const auto& inputOutput = ImGui::GetIO();
         ImGui::SetNextWindowPos(ImVec2{ 0.0f, 0.0f });
         ImGui::SetNextWindowSize(ImVec2{ inputOutput.DisplaySize.x, ToolbarHeight });
 
+        // ツールバーの表示フラグ
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoDecoration
             | ImGuiWindowFlags_NoMove
@@ -3013,6 +3245,7 @@ namespace LamaPon
                     Redo();
                 }
                 ImGui::Separator();
+                // 選択オブジェクトが存在する
                 const bool hasSelection =
                     m_scene.FindGameObject(
                         m_selectedObjectId) != nullptr;
@@ -3063,6 +3296,7 @@ namespace LamaPon
 
             if (ImGui::BeginMenu("GameObject"))
             {
+                // 選択オブジェクトが存在する
                 const bool hasSelection =
                     m_scene.FindGameObject(
                         m_selectedObjectId) != nullptr;
@@ -3180,6 +3414,7 @@ namespace LamaPon
 
             if (ImGui::BeginMenu("コンポーネント"))
             {
+                // 選択オブジェクトが存在する
                 const bool hasSelection =
                     m_scene.FindGameObject(
                         m_selectedObjectId) != nullptr;
@@ -3189,8 +3424,7 @@ namespace LamaPon
                     false,
                     !m_playing && hasSelection))
                 {
-                    // Asset Inspectorが前面でも、選択済みGameObjectの
-                    // Inspectorへ戻して追加ピッカーを開きます。
+                    // アセット選択を解除して、GameObjectのInspectorへ追加ピッカーを予約します。
                     m_selectedAsset.clear();
                     m_addComponentPickerRequested = true;
                 }
@@ -3291,8 +3525,7 @@ namespace LamaPon
 
             DrawProjectMenus();
 
-            // パッケージはパネルの表示切り替えではなく機能追加の
-            // 入口なので、独立したメニューにします。
+
             if (ImGui::BeginMenu("拡張機能"))
             {
                 DrawRegisteredExtensionMenuItems();
@@ -3337,28 +3570,34 @@ namespace LamaPon
             ImGui::EndMenuBar();
         }
 
+        // 操作ボタン行のY座標
         const float rowY = ImGui::GetCursorPosY();
+        // ツールバーの横幅
         const float windowWidth =
             ImGui::GetWindowWidth();
 
         ImGui::SetCursorPos(
             ImVec2{ 8.0f, rowY + 3.0f });
+        // 操作結果の表示色
         const ImVec4 statusColor = m_statusIsError
             ? ImVec4{ 1.0f, 0.35f, 0.30f, 1.0f }
             : ImVec4{ 0.35f, 0.85f, 0.55f, 1.0f };
+        // 開いているシーンの表示名
         const std::string sceneLabel =
             m_scenePath.empty()
                 ? "無題のシーン"
                 : PathToUtf8(m_scenePath.filename());
-        // セーフモード中は、C++スクリプトが動いていないことを
-        // 常に分かるようにします（Play中の不可解な挙動を防ぐため）。
+
+        // Script無効状態の表示文
         const std::string safeModeLabel =
             "セーフモード：C++スクリプトは読み込まれていません";
+        // 左端に表示する状態文
         const std::string& leftText = m_safeMode
             ? safeModeLabel
             : (m_statusMessage.empty()
                 ? sceneLabel
                 : m_statusMessage);
+        // ツールバー左上の座標
         const auto windowPosition =
             ImGui::GetWindowPos();
         ImGui::PushClipRect(
@@ -3383,10 +3622,7 @@ namespace LamaPon
             if (ImGui::SmallButton(
                 "通常モードで開き直す"))
             {
-                // ここで未保存を確認し、確定したらウィンドウを破棄
-                // します（WM_CLOSE経由だと確認が二重になるため）。
-                // 実際の再起動は、プロジェクトのロックが解放された
-                // プロセス終了後に行います。
+                // 保存確認を二重にしないようウィンドウを直接破棄し、再起動はプロジェクトのロック解放後に行います。
                 if (ConfirmClose())
                 {
                     s_normalModeRestartRequested = true;
@@ -3409,14 +3645,17 @@ namespace LamaPon
         }
         ImGui::PopClipRect();
 
-        // 再生中は「停止／一時停止（再開）／次のフレーム」の3つを並べます
-        // ボタンの数で幅が変わるので、まとめて
-        // 中央へ寄せます。
+
+        // 再生・停止ボタンの幅
         constexpr float playButtonWidth = 72.0f;
+        // 一時停止・再開ボタンの幅
         constexpr float pauseButtonWidth = 96.0f;
+        // 1フレーム進行ボタンの幅
         constexpr float stepButtonWidth = 112.0f;
+        // 再生操作ボタン間の余白
         const float spacing =
             ImGui::GetStyle().ItemSpacing.x;
+        // 中央へ置く操作ボタン全幅
         const float groupWidth = m_playing
             ? playButtonWidth
                 + pauseButtonWidth
@@ -3475,7 +3714,7 @@ namespace LamaPon
             }
 
             ImGui::SameLine();
-            // ステップは一時停止中だけ意味があります。
+
             ImGui::BeginDisabled(!m_paused);
             if (ImGui::Button(
                 "次のフレーム",
@@ -3493,6 +3732,7 @@ namespace LamaPon
             }
         }
 
+        // 右端に表示する統計文
         const std::string statistics =
             "FPS: "
             + std::to_string(
@@ -3512,6 +3752,7 @@ namespace LamaPon
             + "  文字: "
             + std::to_string(
                 m_graphics.Assets().CachedTextCount());
+        // 統計文の表示幅
         const float statisticsWidth =
             ImGui::CalcTextSize(
                 statistics.c_str()).x;
@@ -3651,14 +3892,18 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // ツールバー下にドックスペースを作り、要求時と初回に既定のパネル配置を組み立てます。
     void EditorLayer::DrawDockSpace()
     {
+        // 配置元の主ビューポート
         const ImGuiViewport* viewport =
             ImGui::GetMainViewport();
+        // ツールバー下の配置原点
         const ImVec2 dockPosition{
             viewport->Pos.x,
             viewport->Pos.y + ToolbarHeight
         };
+        // ツールバーを除く表示サイズ
         const ImVec2 dockSize{
             viewport->Size.x,
             std::max(
@@ -3670,6 +3915,7 @@ namespace LamaPon
         ImGui::SetNextWindowSize(dockSize);
         ImGui::SetNextWindowViewport(viewport->ID);
 
+        // ドック配置元の表示フラグ
         constexpr ImGuiWindowFlags hostFlags =
             ImGuiWindowFlags_NoDocking
             | ImGuiWindowFlags_NoTitleBar
@@ -3695,6 +3941,7 @@ namespace LamaPon
             hostFlags);
         ImGui::PopStyleVar(3);
 
+        // 主ドックスペースのID
         const ImGuiID dockspaceId =
             ImGui::GetID("LamaPonDockSpace");
         if (m_resetDockLayout
@@ -3713,8 +3960,11 @@ namespace LamaPon
                 dockspaceId,
                 dockSize);
 
+            // 中央ビューポートのノードID
             ImGuiID centerId = dockspaceId;
+            // ヒエラルキーのノードID
             ImGuiID leftId{};
+            // インスペクターのノードID
             ImGuiID rightId{};
             ImGui::DockBuilderSplitNode(
                 centerId,
@@ -3729,6 +3979,7 @@ namespace LamaPon
                 &rightId,
                 &centerId);
 
+            // 下部共有パネルのノードID
             ImGuiID consoleId{};
             ImGui::DockBuilderSplitNode(
                 centerId,
@@ -3743,9 +3994,7 @@ namespace LamaPon
             ImGui::DockBuilderDockWindow(
                 "ビューポート",
                 centerId);
-            // 日常的に使うAssetを中央下の先頭タブにし、Consoleを
-            // その隣へまとめます。必要時だけ開く補助パネルも同じ
-            // ノードへ置き、画面を細かく分割しません。
+            // アセット・コンソールと補助パネルは下部ノードを共有します。
             ImGui::DockBuilderDockWindow(
                 "アセット",
                 consoleId);
@@ -3776,6 +4025,7 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // ログの一時停止・検索・レベル別表示・コピーと関連対象の選択を描画します(open: ウィンドウの開閉状態)。
     void EditorLayer::DrawConsole(bool& open)
     {
         if (!open)
@@ -3800,6 +4050,7 @@ namespace LamaPon
             return;
         }
 
+        // ログの取得・消去元
         auto& logger = Logger::Instance();
         if (!m_consolePaused)
         {
@@ -3832,9 +4083,13 @@ namespace LamaPon
             "自動スクロール",
             &m_consoleAutoScroll);
 
+        // 保存済みInfoログの件数
         std::size_t infoCount{};
+        // 保存済み警告ログの件数
         std::size_t warningCount{};
+        // 保存済みエラーログの件数
         std::size_t errorCount{};
+        // 集計・表示するログ項目
         for (const auto& entry :
             m_consoleEntries)
         {
@@ -3878,15 +4133,18 @@ namespace LamaPon
             m_consoleFilter.data(),
             m_consoleFilter.size());
 
+        // 小文字化したログ検索文字列
         const std::string filter =
             Lowercase(
                 std::string{
                     m_consoleFilter.data() });
+        // 保存済みログの最新番号
         const std::uint64_t newestSequence =
             m_consoleEntries.empty()
                 ? 0
                 : m_consoleEntries.back().
                     sequence;
+        // 前回と最新ログ番号が異なる
         const bool hasNewEntries =
             newestSequence
                 != m_consoleLastSequence;
@@ -3896,6 +4154,7 @@ namespace LamaPon
             ImVec2{ 0.0f, 0.0f },
             ImGuiChildFlags_Borders,
             ImGuiWindowFlags_HorizontalScrollbar);
+        // 集計・表示するログ項目
         for (const auto& entry :
             m_consoleEntries)
         {
@@ -3912,6 +4171,7 @@ namespace LamaPon
                 continue;
             }
 
+            // ログ発生元のファイル名
             const std::string sourceName =
                 entry.sourceFile.empty()
                     ? std::string{}
@@ -3921,6 +4181,7 @@ namespace LamaPon
                             .filename());
             if (!filter.empty())
             {
+                // 検索する本文と発生元名
                 const std::string searchable =
                     Lowercase(
                         entry.message
@@ -3933,20 +4194,24 @@ namespace LamaPon
                 }
             }
 
+            // 発生時刻のミリ秒部分
             const auto milliseconds =
                 std::chrono::duration_cast<
                     std::chrono::milliseconds>(
                         entry.timestamp.
                             time_since_epoch())
                     % 1000;
+            // 発生時刻の暦変換用値
             const std::time_t rawTime =
                 std::chrono::system_clock::
                     to_time_t(
                         entry.timestamp);
+            // 発生時刻のローカル暦時刻
             std::tm localTime{};
             localtime_s(
                 &localTime,
                 &rawTime);
+            // 発生時刻の表示バッファ
             std::array<char, 32>
                 timeBuffer{};
             std::snprintf(
@@ -3959,6 +4224,7 @@ namespace LamaPon
                 static_cast<long long>(
                     milliseconds.count()));
 
+            // ログレベルの短縮表示
             const char* levelText =
                 entry.level
                     == LogLevel::Warning
@@ -3967,6 +4233,7 @@ namespace LamaPon
                         == LogLevel::Error
                         ? "ERROR"
                         : "INFO";
+            // ログレベルの表示色
             const ImVec4 color =
                 entry.level
                     == LogLevel::Warning
@@ -3981,6 +4248,7 @@ namespace LamaPon
                         : ImVec4{
                             0.76f, 0.84f,
                             0.92f, 1.0f };
+            // 日時・本文・発生元の表示文
             std::string display =
                 std::string{ "[" }
                 + timeBuffer.data()
@@ -4074,24 +4342,30 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // ヘルプとサポート画面の表示を予約します。
     void EditorLayer::OpenHelpCenter()
     {
         m_helpCenterRequested = true;
     }
 
+    // ローカル文書の候補を順に調べ、見つからなければ空パスを返します。
     std::filesystem::path
         EditorLayer::LocalDocumentationIndexPath() const
     {
+        // 実行ファイルの所在パス
         const auto executableDirectory =
             ExecutableDirectory();
+        // ローカル文書の候補パス
         const std::array candidates{
             m_engineRoot / L"docs" / L"index.md",
             executableDirectory / L"docs" / L"index.md",
             executableDirectory.parent_path()
                 / L"docs" / L"index.md"
         };
+        // 存在を調べる文書パス
         for (const auto& candidate : candidates)
         {
+            // 文書ファイルの確認エラー
             std::error_code error;
             if (std::filesystem::is_regular_file(
                 candidate,
@@ -4103,8 +4377,10 @@ namespace LamaPon
         return {};
     }
 
+    // 既定ブラウザーでオンラインマニュアルを開き、起動成否を通知します。
     void EditorLayer::OpenOnlineManual()
     {
+        // ブラウザー起動の結果
         const HINSTANCE result = ShellExecuteW(
             m_window,
             L"open",
@@ -4122,8 +4398,10 @@ namespace LamaPon
         SetStatus("オンラインマニュアルを開きました");
     }
 
+    // 存在するローカル文書を関連付けで開き、起動成否を通知します。
     void EditorLayer::OpenLocalDocumentation()
     {
+        // ローカル文書の所在パス
         const auto documentation =
             LocalDocumentationIndexPath();
         if (documentation.empty())
@@ -4133,6 +4411,7 @@ namespace LamaPon
                 true);
             return;
         }
+        // 文書を開く起動結果
         const HINSTANCE result = ShellExecuteW(
             m_window,
             L"open",
@@ -4153,15 +4432,20 @@ namespace LamaPon
                 + PathToUtf8(documentation));
     }
 
+    // 存在するログまたは保存先を関連付けで開きます(openFolder: 保存先フォルダーを開くか)。
     void EditorLayer::OpenEditorLog(
         const bool openFolder)
     {
+        // 出力中のログファイルパス
         const auto logPath =
             Logger::Instance().FilePath();
+        // 開くログ・フォルダーのパス
         const auto target = openFolder
             ? logPath.parent_path()
             : logPath;
+        // ログ所在の確認エラー
         std::error_code error;
+        // 開く対象が存在する
         const bool exists = openFolder
             ? std::filesystem::is_directory(target, error)
             : std::filesystem::is_regular_file(target, error);
@@ -4174,6 +4458,7 @@ namespace LamaPon
                 true);
             return;
         }
+        // ログ閲覧の起動結果
         const HINSTANCE result = ShellExecuteW(
             m_window,
             L"open",
@@ -4198,13 +4483,17 @@ namespace LamaPon
                 : "エディターログを開きました");
     }
 
+    // ビルド・動作モード・プロジェクト・シーン・ログの情報をクリップボードへコピーします。
     void EditorLayer::CopySupportInformation()
     {
+        // プロジェクトのルートパス
         const auto projectRoot =
             ProjectSettingsPath().parent_path().
                 parent_path();
+        // 現在のログ出力パス
         const auto logPath =
             Logger::Instance().FilePath();
+        // サポート情報の整形先
         std::ostringstream information;
         information
             << "LamaPon Engine: " << FormatBuildLabel()
@@ -4225,13 +4514,16 @@ namespace LamaPon
                 : PathToUtf8(m_scenePath))
             << '\n'
             << "Log: " << PathToUtf8(logPath);
+        // コピーするサポート情報
         const std::string text = information.str();
         ImGui::SetClipboardText(text.c_str());
         SetStatus("サポート情報をクリップボードへコピーしました");
     }
 
+    // ヘルプの表示予約を消費し、文書・ログ閲覧とサポート情報のコピーを描画します。
     void EditorLayer::DrawHelpCenter()
     {
+        // ヘルプ画面のPopup ID
         constexpr const char* popupName =
             "ヘルプとサポート##HelpCenter";
         if (m_helpCenterRequested)
@@ -4251,7 +4543,9 @@ namespace LamaPon
             return;
         }
 
+        // 実行中ビルドの識別情報
         const auto& buildInfo = GetBuildInfo();
+        // 表示するビルド名
         const std::string buildLabel = FormatBuildLabel();
         ImGui::Text(
             "LamaPon Engine  %s",
@@ -4288,6 +4582,7 @@ namespace LamaPon
             {
                 OpenOnlineManual();
             }
+            // 利用可能なローカル文書
             const auto documentation =
                 LocalDocumentationIndexPath();
             ImGui::BeginDisabled(documentation.empty());
@@ -4367,6 +4662,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // 描画時間・GPU・メモリ・物理・可視性と最新CPU計測を描画します(open: ウィンドウの開閉状態)。
     void EditorLayer::DrawPerformancePanel(bool& open)
     {
         if (!open)
@@ -4386,6 +4682,7 @@ namespace LamaPon
             return;
         }
 
+        // 直近フレームの描画統計
         const auto& frame =
             m_graphics.FrameStats();
         m_performanceFrameTimes[
@@ -4398,14 +4695,17 @@ namespace LamaPon
             (m_performanceSampleIndex + 1)
             % m_performanceFrameTimes.size();
 
+        // 描画速度と経路の設定
         const auto& settings =
             m_graphics.Settings();
+        // 目標フレーム時間・ms
         const float frameBudget =
             settings.targetFrameRate > 0
             ? 1000.0f
                 / static_cast<float>(
                     settings.targetFrameRate)
             : 16.6667f;
+        // 目標達成状態の表示色
         const ImVec4 frameColor =
             frame.frameTimeMilliseconds
                 <= frameBudget
@@ -4438,9 +4738,7 @@ namespace LamaPon
                 : std::to_string(
                     settings.targetFrameRate)
                     .c_str());
-        // 「FPS上限を上げたのに数字が動かない」の理由が出るのはここ
-        // だけです。どちらの場合も、実際の上限は設定値ではなく
-        // モニターのリフレッシュレートになります。
+
         if (settings.vSyncEnabled)
         {
             ImGui::TextDisabled(
@@ -4454,6 +4752,7 @@ namespace LamaPon
                 "実際の上限はモニターのリフレッシュレートです");
         }
 
+        // 時間グラフの表示上限・ms
         const float graphMaximum =
             std::max(
                 33.3333f,
@@ -4485,6 +4784,7 @@ namespace LamaPon
             ImVec2{ 0.0f, 54.0f });
 
         ImGui::SeparatorText("GPU");
+        // GPU計測結果の取得元
         const auto& gpu = m_graphics.Gpu();
         if (!gpu.IsSupported())
         {
@@ -4493,10 +4793,11 @@ namespace LamaPon
         }
         else
         {
-            // 値は数フレーム前の確定した計測結果です。
+            // GPU計測値は非同期回収した数フレーム前の結果です。
             ImGui::Text(
                 "GPU合計 %.2f ms",
                 gpu.LatestFrameMilliseconds());
+            // 確定済みGPUパイプライン統計
             const auto& pipeline =
                 gpu.LatestPipelineStatistics();
             if (pipeline.valid)
@@ -4516,10 +4817,11 @@ namespace LamaPon
                     static_cast<unsigned long long>(
                         pipeline.computeShaderInvocations));
             }
-            // 区間は入れ子にできるので、深さでインデントし、
-            // 合計は最上位（depth==0）だけを足します。内側も
-            // 足すと二重に数えてGPU合計を超えます。
+            // 区間は入れ子にできるので、深さでインデントし、合計は最上位（depth==0）だけを足します。
+            // 最上位GPU区間の合計・ms
+            // 入れ子の区間を二重集計しないよう、depth==0だけを合計します。
             float topLevelTotal = 0.0f;
+            // 確定済みのGPU計測区間
             for (const auto& section :
                 gpu.LatestSections())
             {
@@ -4535,9 +4837,8 @@ namespace LamaPon
                     section.name.c_str(),
                     section.milliseconds);
             }
-            // 区間で囲われていないGPU作業には、Present待ちや
-            // 計測対象外の描画が含まれます。値が大きい場合は
-            // 計測区間の追加が必要です。
+            // 区間で囲われていないGPU作業には、Present待ちや計測対象外の描画が含まれます。
+            // GPU合計との差分・ms
             const float unmeasured =
                 gpu.LatestFrameMilliseconds()
                 - topLevelTotal;
@@ -4550,7 +4851,9 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("メモリ");
+        // 使用メモリとVRAM予算の統計
         const auto& memory = m_graphics.MemoryStats();
+        // MiBへ変換するbyte数
         constexpr double bytesPerMiB = 1024.0 * 1024.0;
         ImGui::Text(
             "Process RAM: working %.1f MiB  private %.1f MiB",
@@ -4596,12 +4899,14 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("固定物理");
+        // 補間が有効なボディを数えます(object: 設定を調べる対象)。
         const std::size_t interpolatedBodies =
             static_cast<std::size_t>(
                 std::ranges::count_if(
                     m_scene.GameObjects(),
                     [](const auto& object)
                     {
+                        // 補間設定を調べる物理ボディ
                         const auto* body =
                             object->template GetComponent<
                                 RigidbodyComponent>();
@@ -4614,6 +4919,7 @@ namespace LamaPon
             m_scene.PhysicsFixedStepsLastFrame(),
             m_scene.PhysicsInterpolationAlpha(),
             interpolatedBodies);
+        // 直近の物理演算統計
         const auto& physics =
             m_scene.PhysicsStats();
         ImGui::Text(
@@ -4626,11 +4932,11 @@ namespace LamaPon
                 + physics.narrowPhaseTestCount3D,
             physics.activeContactCount);
 
+        // 直近の可視性判定統計
         const auto& visibility =
             m_scene.VisibilityStats();
         ImGui::SeparatorText("描画");
-        // どちらの経路で描いているかは絵からは判別できないので、
-        // 設定が効いているかの確認用に出します。
+
         ImGui::Text(
             "描画方式: %s",
             settings.renderingPath
@@ -4671,7 +4977,7 @@ namespace LamaPon
                 / (1024.0 * 1024.0));
 
         ImGui::SeparatorText("CPUプロファイラー");
-        // 履歴のタイムラインや呼び出し木は専用パネルで扱います。
+
         if (ImGui::SmallButton("プロファイラーを開く"))
         {
             static_cast<void>(
@@ -4684,7 +4990,9 @@ namespace LamaPon
                 MemoryProfilerPanelId,
                 true));
         }
+        // CPU計測の設定・出力元
         auto& profiler = Profiler::Instance();
+        // CPUフレーム計測の有効状態
         bool profilerEnabled = profiler.IsEnabled();
         if (ImGui::Checkbox(
                 "フレーム計測を有効化",
@@ -4695,6 +5003,7 @@ namespace LamaPon
         ImGui::SameLine();
         if (ImGui::Button("JSONを書き出す"))
         {
+            // CPU計測JSONの出力先
             const auto profilePath =
                 m_graphics.Assets().AssetRoot().
                     parent_path()
@@ -4714,6 +5023,7 @@ namespace LamaPon
             }
         }
 
+        // 保存済みのCPU計測フレーム
         const auto profileFrames = profiler.Snapshot();
         if (!profileFrames.empty()
             && ImGui::BeginTable(
@@ -4733,12 +5043,13 @@ namespace LamaPon
                 ImGuiTableColumnFlags_WidthFixed,
                 60.0f);
             ImGui::TableHeadersRow();
+            // 最新フレームのCPU計測区間
             for (const auto& sample :
                 profileFrames.back().samples)
             {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                // 入れ子の区間は深さの分だけ字下げします。
+
                 ImGui::Text(
                     "%*s%s",
                     static_cast<int>(sample.depth * 2),
@@ -4754,6 +5065,7 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // 保存先と確認対象の変化を反映し、個別設定・セーブ・同期・保護データの操作を描画します(open: ウィンドウの開閉状態)。
     void EditorLayer::DrawPersistencePanel(bool& open)
     {
         static_cast<void>(
@@ -4766,12 +5078,17 @@ namespace LamaPon
             return;
         }
 
+        // オンライン認証の状態
         const auto accountState = m_onlineServices.State();
+        // オンラインへサインイン済み
         const bool onlineAccountActive =
             m_onlineServices.IsSignedIn();
+        // クラウド同期の状態
         const auto syncStatus =
             m_onlineServices.CloudSyncStatus();
+        // 現在のクラウド競合一覧
         std::vector<OnlineCloudConflict> cloudConflicts;
+        // 競合一覧の取得に成功した
         bool cloudConflictsAvailable = true;
         try
         {
@@ -4779,24 +5096,29 @@ namespace LamaPon
         }
         catch (const std::exception&)
         {
-            // ID生成やsnapshot取得の失敗内容はUIへ流さず、既存の
-            // 確認対象も「消失」と同じfail-closedで閉じます。
+            // 競合情報の取得失敗は詳細を表示せず、対象消失として既存の確認を閉じます。
             cloudConflictsAvailable = false;
         }
+        // 保護データの復旧状態
         const auto recoveryStatus =
             m_onlineServices.PersistenceRecoveryStatus();
+        // 確認中のオンライン操作種別
         const auto confirmationKind =
             m_persistencePanelState.OnlineConfirmationKind();
+        // 競合解決の確認中
         const bool confirmingConflict =
             confirmationKind
                 == Detail::PersistenceConfirmationKind::UseRemote
             || confirmationKind
                 == Detail::PersistenceConfirmationKind::RetryLocal;
+        // 確認中の競合が現在も存在する
         bool confirmationConflictStillExists = false;
         if (confirmingConflict)
         {
+            // 確認対象の不透明な競合ID
             const auto& confirmationConflictId =
                 m_persistencePanelState.ConfirmationConflictId();
+            // 確認対象が残っているか調べます(conflict: 現在の競合)。
             confirmationConflictStillExists =
                 std::ranges::any_of(
                     cloudConflicts,
@@ -4805,6 +5127,7 @@ namespace LamaPon
                         return conflict.id == confirmationConflictId;
                     });
         }
+        // アカウント・競合・復旧改訂が変わった操作確認を失効させます。
         static_cast<void>(
             m_persistencePanelState.SynchronizeOnlineConfirmation(
                 onlineAccountActive,
@@ -4823,8 +5146,10 @@ namespace LamaPon
             ImGui::End();
             return;
         }
+        // 旧保存先の全削除確認を閉じる
         const bool closeStaleDeleteAllPopup =
             m_persistencePanelState.CloseDeleteAllPopupRequested();
+        // 失効したオンライン確認を閉じる
         bool closeStaleOnlinePopup =
             m_persistencePanelState.
                 CloseOnlineConfirmationPopupRequested();
@@ -4837,6 +5162,7 @@ namespace LamaPon
             closeStaleOnlinePopup = false;
         }
 
+        // 操作結果を固定文で通知します(result: オンライン操作結果, successMessage: 成功時の表示文)。
         const auto reportOnlineOperationResult =
             [this](
                 const OnlinePersistenceOperationResult result,
@@ -4876,6 +5202,7 @@ namespace LamaPon
             OnlineAccountStateLabel(accountState));
         if (onlineAccountActive)
         {
+            // 認証したプレイヤーの表示名
             const auto& displayName =
                 m_onlineServices.Player().displayName;
             if (displayName.empty())
@@ -4891,6 +5218,7 @@ namespace LamaPon
             }
         }
 
+        // 保護データの復旧待ちがある
         const bool recoveryPending =
             recoveryStatus.state
             != OnlinePersistenceRecoveryState::None;
@@ -4910,6 +5238,7 @@ namespace LamaPon
             ImGui::BeginDisabled(recoveryPending);
             if (ImGui::Button("Discordでログイン"))
             {
+                // Discord認証の開始成功
                 bool started = false;
                 try
                 {
@@ -4918,8 +5247,7 @@ namespace LamaPon
                 }
                 catch (const std::exception&)
                 {
-                    // 例外本文へ接続先や内部状態が含まれ得るため、
-                    // 直後の固定messageだけを表示します。
+                    // 例外の接続先や内部状態を表示せず、固定文で開始失敗を通知します。
                 }
                 SetStatus(
                     started
@@ -5001,6 +5329,7 @@ namespace LamaPon
             OnlineRecoveryStateLabel(recoveryStatus.state));
         if (recoveryPending)
         {
+            // 保護データを復元可能
             const bool restoreAvailable =
                 recoveryStatus.state
                     == OnlinePersistenceRecoveryState::MemorySnapshot
@@ -5046,13 +5375,14 @@ namespace LamaPon
             ImGui::TextDisabled(
                 "%zu件の競合があります",
                 cloudConflicts.size());
+            // 競合一覧の表示番号
             for (std::size_t index = 0;
                 index < cloudConflicts.size();
                 ++index)
             {
+                // 表示する競合の状態
                 const auto& conflict = cloudConflicts[index];
-                // process-local opaque IDはImGui内部の安定keyにだけ使い、
-                // label・status・recording textへは渡しません。
+                // 不透明な競合IDはUI内部の識別だけに使い、表示文や記録へ渡しません。
                 ImGui::PushID(conflict.id.c_str());
                 if (conflict.kind
                     == OnlineCloudResourceKind::Preferences)
@@ -5100,6 +5430,7 @@ namespace LamaPon
                 nullptr,
                 ImGuiWindowFlags_AlwaysAutoResize))
         {
+            // Popupが確認中の操作種別
             const auto pendingKind =
                 m_persistencePanelState.OnlineConfirmationKind();
             if (closeStaleOnlinePopup
@@ -5140,9 +5471,11 @@ namespace LamaPon
 
                 if (ImGui::Button("実行する"))
                 {
+                    // 確認したオンライン操作の結果
                     OnlinePersistenceOperationResult result{
                         OnlinePersistenceOperationResult::Failed
                     };
+                    // 成功時に表示する通知文
                     const char* successMessage =
                         "オンライン操作を完了しました";
                     switch (pendingKind)
@@ -5221,6 +5554,7 @@ namespace LamaPon
                         parent_path()).c_str());
         }
 
+        // 保存先変更を識別する改訂番号
         const auto persistenceBindingRevision =
             m_persistencePanelState.BindingRevision();
         ImGui::PushID(static_cast<int>(
@@ -5298,13 +5632,17 @@ namespace LamaPon
                 ImGuiTableColumnFlags_WidthFixed,
                 64.0f);
             ImGui::TableHeadersRow();
+            // 表示・編集する個別設定のキー
             for (const auto& key :
                 m_playerPrefs.Keys())
             {
                 ImGui::PushID(key.c_str());
+                // 個別設定の保存型
                 const auto type =
                     m_playerPrefs.TypeOf(key);
+                // 個別設定の型表示名
                 std::string typeName;
+                // 表示・入力する個別設定値
                 std::string value;
                 switch (type)
                 {
@@ -5353,6 +5691,7 @@ namespace LamaPon
             "キー##PlayerPref",
             m_persistencePanelState.playerPrefKey.data(),
             m_persistencePanelState.playerPrefKey.size());
+        // 個別設定の入力型表示一覧
         constexpr const char* types[]{
             "整数",
             "小数",
@@ -5381,8 +5720,10 @@ namespace LamaPon
         {
             try
             {
+                // 表示・編集する個別設定のキー
                 const std::string key(
                     m_persistencePanelState.playerPrefKey.data());
+                // 表示・入力する個別設定値
                 const std::string value(
                     m_persistencePanelState.playerPrefValue.data());
                 switch (m_persistencePanelState.playerPrefType)
@@ -5457,7 +5798,7 @@ namespace LamaPon
         else if (closeStaleDeleteAllPopup
             && !ImGui::IsPopupOpen("DeleteAllPlayerPrefs"))
         {
-            // popupが存在しないことを確認できた場合だけsignalを消費します。
+            // Popupが存在しないと確認できた時点で、閉じる要求を消費します。
             m_persistencePanelState.AcknowledgeCloseDeleteAllPopup();
         }
 
@@ -5471,6 +5812,7 @@ namespace LamaPon
             "SaveSlotList",
             ImVec2{ 190.0f, 150.0f },
             ImGuiChildFlags_Borders);
+        // 選択するセーブスロット名
         for (const auto& slot :
             m_saveData.ListSlots())
         {
@@ -5487,6 +5829,7 @@ namespace LamaPon
                         m_persistencePanelState.saveSlot.size(),
                         slot.c_str(),
                         _TRUNCATE);
+                    // 選択スロットのJSON本文
                     const auto json =
                         m_saveData.LoadJson(slot);
                     strncpy_s(
@@ -5566,12 +5909,14 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // 階層・名前検索・選択・ドロップを描画し、走査完了後に予約した変更を実行します。
     void EditorLayer::DrawHierarchy()
     {
         ImGui::SetNextWindowSize(
             ImVec2{ HierarchyWidth, 420.0f },
             ImGuiCond_FirstUseEver);
 
+        // ヒエラルキー画面の表示フラグ
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse;
 
@@ -5580,15 +5925,17 @@ namespace LamaPon
         m_hierarchyContextAction =
             HierarchyContextAction::None;
 
-        // 名前で絞り込みます（空なら全表示）。
+
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputTextWithHint(
             "##HierarchyFilter",
             "名前で検索",
             m_hierarchyFilter.data(),
             m_hierarchyFilter.size());
+        // 対象名の検索文字列
         const std::string hierarchyFilter =
             m_hierarchyFilter.data();
+        // 選択中のオブジェクト数
         const int selectionCount =
             static_cast<int>(SelectedObjects().size());
         if (selectionCount > 1)
@@ -5608,10 +5955,13 @@ namespace LamaPon
         DrawHierarchyRootContextMenu();
         if (!m_playing && ImGui::BeginDragDropTarget())
         {
+            // 受け取った移動・素材データ
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(GameObjectPayload))
             {
+                // 移動するオブジェクトID
                 GameObjectId draggedId{};
                 std::memcpy(&draggedId, payload->Data, sizeof(draggedId));
+                // 移動するオブジェクト
                 if (auto* dragged = m_scene.FindGameObject(draggedId);
                     dragged != nullptr && dragged->Parent() != nullptr)
                 {
@@ -5622,17 +5972,18 @@ namespace LamaPon
                     };
                 }
             }
+            // 受け取った移動・素材データ
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(AssetPayload))
             {
-                // 空白へドロップされたアセットは、ファイル名の
-                // GameObjectを新規作成して割り当てます。
+                // 割り当てる相対アセットパス
                 const auto asset = PathFromUtf8(
                     static_cast<const char*>(payload->Data));
                 if (!IsCppScriptAsset(asset)
                     && !IsSceneAsset(asset)
                     && !IsPrefabAsset(asset))
                 {
+                    // 素材を割り当てる新規対象
                     auto& created = m_scene.CreateGameObject(
                         PathToUtf8(asset.stem()));
                     if (!ApplyDroppedAsset(created, asset))
@@ -5648,6 +5999,7 @@ namespace LamaPon
 
         if (hierarchyFilter.empty())
         {
+            // 表示・検索する対象
             for (const auto& gameObject :
                 m_scene.GameObjects())
             {
@@ -5658,15 +6010,16 @@ namespace LamaPon
                     DrawHierarchyNode(*gameObject);
                 }
             }
-            // 追加読み込みしたシーンは、由来ごとにまとめます。
+
             DrawAdditiveSceneNodes();
         }
         else
         {
-            // 検索中は階層をたたまず、一致したものを平らに出します。
+            // 検索用に文字列を小文字化します(value: 変換する文字列)。
             const auto lowered =
                 [](std::string value)
                 {
+                    // 1byteずつ小文字へ変換します(character: 変換する文字)。
                     std::ranges::transform(
                         value,
                         value.begin(),
@@ -5677,8 +6030,11 @@ namespace LamaPon
                         });
                     return value;
                 };
+            // 小文字化した検索文字列
             const auto needle = lowered(hierarchyFilter);
+            // 検索に一致する対象がある
             bool matched = false;
+            // 表示・検索する対象
             for (const auto& gameObject :
                 m_scene.GameObjects())
             {
@@ -5760,15 +6116,18 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // 親変更の予約を消費し、存在する対象の親を変更して履歴へ記録します。
     void EditorLayer::ExecutePendingHierarchyParentChange()
     {
         if (!m_pendingHierarchyParentChange.requested)
         {
             return;
         }
+        // 消費する親変更の予約
         const auto request = m_pendingHierarchyParentChange;
         m_pendingHierarchyParentChange = {};
 
+        // 親を変更する対象
         auto* const moved =
             m_scene.FindGameObject(request.moved);
         if (moved == nullptr)
@@ -5776,6 +6135,7 @@ namespace LamaPon
             return;
         }
 
+        // 移動先の親・nullptrはルート
         GameObject* parent = nullptr;
         if (request.parent != 0)
         {
@@ -5800,23 +6160,28 @@ namespace LamaPon
                     ? "親子関係を変更しました"
                     : "シーンルートへ移動しました");
         }
+        // 階層変更を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 並び替え予約を消費し、必要なら基準の親へ移してから挿入位置を変更します。
     void EditorLayer::ExecutePendingHierarchyReorder()
     {
         if (!m_pendingHierarchyReorder.requested)
         {
             return;
         }
+        // 消費する並び替えの予約
         const auto request = m_pendingHierarchyReorder;
         m_pendingHierarchyReorder = {};
 
+        // 並び替える対象
         auto* const moved =
             m_scene.FindGameObject(request.moved);
+        // 挿入位置の基準対象
         auto* const reference =
             m_scene.FindGameObject(request.reference);
         if (moved == nullptr || reference == nullptr)
@@ -5828,7 +6193,7 @@ namespace LamaPon
         {
             if (request.reparentToReferenceLevel)
             {
-                // 階層をまたぐ移動。基準と同じ親へ移してから並べます。
+                // 基準の親へ移した後に並び替えが失敗しても、親変更は元へ戻りません。
                 moved->SetParent(reference->Parent());
             }
             if (m_scene.ReorderGameObject(
@@ -5846,12 +6211,14 @@ namespace LamaPon
                     true);
             }
         }
+        // 階層変更を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 追加シーンごとの階層と破棄操作を描画し、走査後に破棄要求を実行します。
     void EditorLayer::DrawAdditiveSceneNodes()
     {
         if (m_scene.AdditiveScenes().empty())
@@ -5859,17 +6226,20 @@ namespace LamaPon
             return;
         }
 
-        // 破棄はGameObjectの走査が終わってから実行します。
+        // 走査後に破棄する追加シーン
         SceneHandle unloadRequest =
             Scene::PrimarySceneHandle();
+        // 表示する追加シーン
         for (const auto& additiveScene :
             m_scene.AdditiveScenes())
         {
             ImGui::PushID(
                 static_cast<int>(
                     additiveScene.handle));
+            // 追加シーンの表示名
             const std::string label =
                 "[追加] " + additiveScene.name;
+            // 追加シーンのツリーが開いている
             const bool open = ImGui::TreeNodeEx(
                 label.c_str(),
                 ImGuiTreeNodeFlags_DefaultOpen
@@ -5897,6 +6267,7 @@ namespace LamaPon
             }
             if (open)
             {
+                // 追加シーンのルート候補
                 for (const auto& gameObject :
                     m_scene.GameObjects())
                 {
@@ -5912,11 +6283,11 @@ namespace LamaPon
             ImGui::PopID();
         }
 
+        // 走査中の破棄は避け、追加シーンは主シーンのUndo履歴へ記録しません。
         if (unloadRequest
             != Scene::PrimarySceneHandle())
         {
-            // 追加シーンはUndo履歴（主シーンのスナップショット）に
-            // 含まれないため、履歴は記録しません。
+            // 追加シーンはUndo履歴（主シーンのスナップショット）に含まれないため、履歴は記録しません。
             if (m_scene.UnloadScene(unloadRequest))
             {
                 if (m_selectedObjectId != 0
@@ -5930,12 +6301,15 @@ namespace LamaPon
         }
     }
 
+    // 対象行の選択・操作・移動予約を描画し、開いた子ノードへ再帰します(gameObject: 描画する対象)。
     void EditorLayer::DrawHierarchyNode(GameObject& gameObject)
     {
+        // 階層ノードの表示フラグ
         ImGuiTreeNodeFlags flags =
             ImGuiTreeNodeFlags_OpenOnArrow
             | ImGuiTreeNodeFlags_SpanAvailWidth;
 
+        // 対象に子オブジェクトがある
         const bool hasChildren = !gameObject.Children().empty();
         if (!hasChildren)
         {
@@ -5946,8 +6320,10 @@ namespace LamaPon
             flags |= ImGuiTreeNodeFlags_Selected;
         }
 
+        // 対象ID由来の階層ノードID
         const auto nodeId = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(gameObject.Id()));
+        // 対象ノードが開いている
         const bool open = ImGui::TreeNodeEx(
             nodeId,
             flags,
@@ -5960,15 +6336,15 @@ namespace LamaPon
                 : "",
             gameObject.Name().c_str());
 
-        // 行の矩形はここで取っておきます。この下にはコンテキスト
-        // メニューの送出があり、ImGuiの「直前の項目」がそちらへ
-        // 移っている可能性があるためです（ドロップ位置の判定に使う）。
+        // 対象行の矩形左上
+        // Popup描画で直前の項目が変わる前に、ドロップ判定用の行矩形を記録します。
         const ImVec2 nodeRectMinimum = ImGui::GetItemRectMin();
+        // 対象行の矩形右下
         const ImVec2 nodeRectMaximum = ImGui::GetItemRectMax();
 
         if (ImGui::IsItemClicked())
         {
-            // Ctrl+クリックで選択に追加／解除します。
+
             SelectObject(
                 gameObject.Id(),
                 ImGui::GetIO().KeyCtrl);
@@ -5976,17 +6352,13 @@ namespace LamaPon
         if (ImGui::IsItemHovered()
             && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         {
-            // ダブルクリックでそのGameObjectを単独選択し、
-            // Scene Viewのカメラをフォーカスします
-            // （「シーンルート」項目はDrawHierarchy側の別処理で
-            // 描画しているため、ここには含まれません）。
+
             SelectObject(gameObject.Id(), false);
             FocusSelection();
         }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
         {
-            // 右クリックは、選択済みなら選択を保ったまま
-            // メニューを開きます（まとめて操作するため）。
+            // 右クリックした選択済み対象は、複数選択を保って操作します。
             if (!IsObjectSelected(gameObject.Id()))
             {
                 SelectObject(gameObject.Id(), false);
@@ -6049,6 +6421,7 @@ namespace LamaPon
 
         if (!m_playing && ImGui::BeginDragDropSource())
         {
+            // ドラッグする対象のID
             const GameObjectId id = gameObject.Id();
             ImGui::SetDragDropPayload(GameObjectPayload, &id, sizeof(id));
             ImGui::TextUnformatted(gameObject.Name().c_str());
@@ -6057,46 +6430,47 @@ namespace LamaPon
 
         if (!m_playing && ImGui::BeginDragDropTarget())
         {
-            // 「子にする」のか「間に入れる」のかは、行のどこへ落としたかで
-            // 決めます（上端・下端＝並び替え、真ん中＝子にする）。
-            // 行の位置に応じて、並び替えまたは子への移動を行います。
+            // ドロップ判定用の矩形左上
             const ImVec2 itemMinimum = nodeRectMinimum;
+            // ドロップ判定用の矩形右下
             const ImVec2 itemMaximum = nodeRectMaximum;
+            // 対象行の高さ
             const float itemHeight = std::max(
                 itemMaximum.y - itemMinimum.y,
                 1.0f);
+            // 行内のドロップ位置・0～1
             const float positionRatio = std::clamp(
                 (ImGui::GetMousePos().y - itemMinimum.y)
                     / itemHeight,
                 0.0f,
                 1.0f);
-            // 上下30%を並び替え帯にします。行が薄いので、これ以上
-            // 狭いと狙えません。
+            // 並び替え帯の上下端割合
             constexpr float reorderEdgeRatio = 0.3f;
+            // insertBefore: 対象rowの前へ挿入する位置か。
             const bool insertBefore =
                 positionRatio < reorderEdgeRatio;
+            // 対象行の後へ挿入する
             const bool insertAfter =
                 positionRatio > 1.0f - reorderEdgeRatio;
+            // 子へ移動せず並び替える
             const bool reordering = insertBefore || insertAfter;
 
-            // ImGuiの既定の枠を止めて自分で描きます。既定の枠は
-            // 行全体を囲むので、間に入れるつもりでも「子にします」
-            // に見えてしまうためです。
+            // 移動データ・既定の枠を抑制
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(
                         GameObjectPayload,
                         ImGuiDragDropFlags_AcceptBeforeDelivery
                             | ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
             {
+                // ドロップ位置の描画先
                 auto* const drawList =
                     ImGui::GetWindowDrawList();
+                // ドロップ位置の表示色
                 const auto highlight = ImGui::GetColorU32(
                     ImGuiCol_DragDropTarget);
                 if (reordering)
                 {
-                    // 挿入位置を示す横線と、左端の丸印。線だけだと
-                    // 行の境界と紛れるので、印を付けて「ここへ挟む」
-                    // と分かるようにします。
+                    // 並び替え挿入線のY座標
                     const float lineY = insertBefore
                         ? itemMinimum.y
                         : itemMaximum.y;
@@ -6112,7 +6486,7 @@ namespace LamaPon
                 }
                 else
                 {
-                    // 子にする場合は行を囲みます。
+
                     drawList->AddRect(
                         itemMinimum,
                         itemMaximum,
@@ -6124,8 +6498,10 @@ namespace LamaPon
 
                 if (payload->IsDelivery())
                 {
+                    // 移動するオブジェクトID
                     GameObjectId draggedId{};
                     std::memcpy(&draggedId, payload->Data, sizeof(draggedId));
+                    // 移動するオブジェクト
                     auto* dragged = m_scene.FindGameObject(draggedId);
 
                     if (dragged != nullptr
@@ -6135,12 +6511,7 @@ namespace LamaPon
                         {
                             if (reordering)
                             {
-                                // ここで並べ替えると、ヒエラルキーを
-                                // 走査しているfor文の対象
-                                // （Scene::GameObjects()）を反復中に
-                                // 壊します。要求だけ溜めて、走査後に
-                                // ExecutePendingHierarchyReorderで
-                                // 適用します。
+                                // GameObjectsの反復を壊さないよう、並び替えは予約して走査後に適用します。
                                 m_pendingHierarchyReorder = {
                                     dragged->Id(),
                                     gameObject.Id(),
@@ -6153,9 +6524,7 @@ namespace LamaPon
                             else if (dragged->Parent()
                                 != &gameObject)
                             {
-                                // 描画中にChildren()を変更すると、現在の
-                                // ツリー走査とImGuiのTreeNode/TreePopの
-                                // 対応を壊すため、走査後に適用します。
+                                // 子の反復とTreeNodeの対応を保つため、親変更は予約して走査後に適用します。
                                 m_pendingHierarchyParentChange = {
                                     dragged->Id(),
                                     gameObject.Id(),
@@ -6163,6 +6532,7 @@ namespace LamaPon
                                 };
                             }
                         }
+                        // 移動予約を中断した失敗原因
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -6170,9 +6540,11 @@ namespace LamaPon
                     }
                 }
             }
+            // 受け取った移動・素材データ
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(AssetPayload))
             {
+                // 割り当てる相対アセットパス
                 const auto asset = PathFromUtf8(
                     static_cast<const char*>(payload->Data));
                 if (IsCppScriptAsset(asset))
@@ -6194,6 +6566,7 @@ namespace LamaPon
 
         if (open && hasChildren)
         {
+            // 描画する子オブジェクト
             for (auto* child : gameObject.Children())
             {
                 DrawHierarchyNode(*child);
@@ -6202,6 +6575,7 @@ namespace LamaPon
         }
     }
 
+    // シーンルートの操作メニューを描画し、作成と貼り付けを予約します。
     void EditorLayer::DrawHierarchyRootContextMenu()
     {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -6242,6 +6616,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // 描画中に予約した階層操作を実行し、予約を解除します。
     void EditorLayer::ExecuteHierarchyContextAction()
     {
         switch (m_hierarchyContextAction)
@@ -6281,8 +6656,10 @@ namespace LamaPon
             HierarchyContextAction::None;
     }
 
+    // 空のルート対象を作成して選択し、履歴へ記録します。
     void EditorLayer::CreateRootGameObject()
     {
+        // 作成したルート対象
         auto& gameObject = m_scene.CreateGameObject("GameObject");
         m_selectedObjectId = gameObject.Id();
         m_selectedAsset.clear();
@@ -6290,14 +6667,17 @@ namespace LamaPon
         SetStatus("ルートGameObjectを作成しました");
     }
 
+    // 選択対象の空の子を作成して選択し、履歴へ記録します。
     void EditorLayer::CreateChildGameObject()
     {
+        // 選択中の親対象
         auto* parent = m_scene.FindGameObject(m_selectedObjectId);
         if (parent == nullptr)
         {
             return;
         }
 
+        // 作成した子対象
         auto& gameObject = m_scene.CreateGameObject("GameObject");
         gameObject.SetParent(parent);
         m_selectedObjectId = gameObject.Id();
@@ -6306,6 +6686,7 @@ namespace LamaPon
         SetStatus("子GameObjectを作成しました");
     }
 
+    // 編集中に種別に応じた対象とコンポーネントを作成します(kind: 作成する組込種別)。
     void EditorLayer::CreateBuiltInGameObject(
         const BuiltInGameObjectKind kind)
     {
@@ -6314,6 +6695,7 @@ namespace LamaPon
             return;
         }
 
+        // 組込種別に対応する対象名
         const char* name = "GameObject";
         switch (kind)
         {
@@ -6355,11 +6737,13 @@ namespace LamaPon
             break;
         }
 
+        // 作成した組込対象
         auto& gameObject = m_scene.CreateGameObject(name);
         switch (kind)
         {
         case BuiltInGameObjectKind::Camera:
         {
+            // 追加したカメラ
             auto& camera =
                 gameObject.AddComponent<CameraComponent>();
             if (m_scene.MainCamera() == nullptr)
@@ -6419,31 +6803,38 @@ namespace LamaPon
         SetStatus(std::string{ name } + "を作成しました");
     }
 
+    // Canvasコンポーネントを持つ対象を作成します。
     void EditorLayer::CreateUICanvasGameObject()
     {
         CreateBuiltInGameObject(
             BuiltInGameObjectKind::UICanvas);
     }
 
+    // 選択対象をIDで再確認しながら階層ごと削除し、選択解除と履歴記録を行います。
     void EditorLayer::DeleteSelectedGameObject()
     {
+        // 削除前の選択対象一覧
         const auto selection = SelectedObjects();
         if (selection.empty())
         {
             return;
         }
 
-        // 親を消すと子も消えるため、まだ生きているものだけを
-        // IDで引き直しながら削除します。
+        // 削除時に引き直す対象ID一覧
         std::vector<GameObjectId> ids;
         ids.reserve(selection.size());
+        // 削除候補の対象
         for (const auto* object : selection)
         {
             ids.push_back(object->Id());
         }
+        // 削除を実行した階層数
         std::size_t deleted = 0;
+        // 削除候補の対象ID
+        // 親の削除で子も消えるため、保持したIDから生存する対象だけを引き直します。
         for (const auto id : ids)
         {
+            // 削除候補の対象
             if (auto* object = m_scene.FindGameObject(id))
             {
                 m_scene.DestroyGameObject(*object);
@@ -6462,8 +6853,10 @@ namespace LamaPon
                     "GameObject階層を削除しました" });
     }
 
+    // 編集中の選択階層を同じ親へ複製し、複製した対象を選択して履歴へ記録します。
     void EditorLayer::DuplicateSelectedGameObject()
     {
+        // 複製する選択対象一覧
         const auto selection = SelectedObjects();
         if (selection.empty() || m_playing)
         {
@@ -6472,11 +6865,14 @@ namespace LamaPon
 
         try
         {
-            // 複製した側を新しい選択にします。
+            // 複製後に選択する対象ID一覧
+            // 複製の途中で失敗しても、作成済みの複製は元へ戻りません。
             std::vector<GameObjectId> duplicates;
             duplicates.reserve(selection.size());
+            // 複製元の対象
             for (auto* object : selection)
             {
+                // 新たに複製した対象
                 auto& duplicate =
                     m_scene.DuplicateGameObject(
                         *object,
@@ -6497,14 +6893,17 @@ namespace LamaPon
                     : std::string{
                         "GameObject階層を複製しました" });
         }
+        // 作成・コピー・再読込の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // シーン全体のJSONと主選択対象のIDを、貼り付け用に保持します。
     void EditorLayer::CopySelectedGameObject()
     {
+        // コピー元の主選択対象
         const auto* selected = m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr)
         {
@@ -6517,14 +6916,17 @@ namespace LamaPon
             m_clipboardObjectId = selected->Id();
             SetStatus("GameObject階層をコピーしました");
         }
+        // 作成・コピー・再読込の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中にシーンJSONと主選択対象IDを保持し、その階層を削除して履歴へ記録します。
     void EditorLayer::CutSelectedGameObject()
     {
+        // 切り取る主選択対象
         auto* selected = m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr || m_playing)
         {
@@ -6540,12 +6942,14 @@ namespace LamaPon
             RecordHistory();
             SetStatus("GameObject階層を切り取りました");
         }
+        // 作成・コピー・再読込の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // コピー時のシーンJSONから対象を復元し、現在の選択対象と同じ親へ複製します。
     void EditorLayer::PasteGameObject()
     {
         if (m_clipboardSceneJson.empty() || m_playing)
@@ -6555,8 +6959,10 @@ namespace LamaPon
 
         try
         {
+            // コピー時のシーン復元先
             Scene clipboardScene(m_graphics);
             clipboardScene.LoadFromJson(m_clipboardSceneJson);
+            // コピー時の主選択対象
             const auto* clipboardObject =
                 clipboardScene.FindGameObject(m_clipboardObjectId);
             if (clipboardObject == nullptr)
@@ -6564,10 +6970,13 @@ namespace LamaPon
                 throw std::runtime_error("The copied GameObject is no longer available.");
             }
 
+            // 現在の主選択対象
             auto* currentSelection = m_scene.FindGameObject(m_selectedObjectId);
+            // 貼付先の親・nullptrはルート
             auto* targetParent = currentSelection != nullptr
                 ? currentSelection->Parent()
                 : nullptr;
+            // 新たに貼り付けた対象
             auto& pasted = m_scene.DuplicateGameObject(
                 *clipboardObject,
                 targetParent);
@@ -6575,12 +6984,14 @@ namespace LamaPon
             RecordHistory();
             SetStatus("GameObject階層を貼り付けました");
         }
+        // 作成・コピー・再読込の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中かつビルド停止中に、選択アセットを再インポートします。
     void EditorLayer::ReimportSelectedAsset()
     {
         if (m_selectedAsset.empty()
@@ -6593,6 +7004,7 @@ namespace LamaPon
         ReimportAssets(m_selectedAsset);
     }
 
+    // 編集中かつビルド停止中に、全アセットを再インポートします。
     void EditorLayer::ReimportAllAssets()
     {
         if (m_playing
@@ -6604,10 +7016,13 @@ namespace LamaPon
         ReimportAssets(std::nullopt);
     }
 
+    // キャッシュを無効化し、使用中の該当参照を再読込します(asset: 対象相対パス・nulloptは全件)。
     void EditorLayer::ReimportAssets(
         const std::optional<std::filesystem::path>& asset)
     {
+        // 全アセットを再インポートする
         const bool allAssets = !asset.has_value();
+        // 空でない対象参照を選びます(reference: 使用中の参照パス)。
         const auto matches =
             [&asset, allAssets](
                 const std::filesystem::path& reference)
@@ -6638,9 +7053,12 @@ namespace LamaPon
                 }
             }
 
+            // 参照を再読込する対象
+            // 再読込は順に適用するため、途中で失敗しても先に更新した参照は元へ戻りません。
             for (const auto& gameObject :
                 m_scene.GameObjects())
             {
+                // 画像・Shaderの再読込対象
                 if (auto* sprite =
                         gameObject->GetComponent<
                             SpriteRendererComponent>();
@@ -6650,6 +7068,7 @@ namespace LamaPon
                     sprite->SetTexturePath(
                         sprite->TexturePath());
                 }
+                // 画像・Shaderの再読込対象
                 if (auto* sprite =
                         gameObject->GetComponent<
                             SpriteRendererComponent>();
@@ -6658,6 +7077,7 @@ namespace LamaPon
                 {
                     sprite->ReloadShader();
                 }
+                // 音声の再読込対象
                 if (auto* audio =
                         gameObject->GetComponent<
                             AudioSourceComponent>();
@@ -6667,6 +7087,7 @@ namespace LamaPon
                     audio->SetAudioPath(
                         audio->AudioPath());
                 }
+                // アニメーションの再読込対象
                 if (auto* animator =
                         gameObject->GetComponent<
                             TransformAnimatorComponent>();
@@ -6682,6 +7103,7 @@ namespace LamaPon
                         animator->ReloadClip();
                     }
                 }
+                // モデル描画素材の再読込対象
                 if (auto* model =
                         gameObject->GetComponent<
                             ModelRendererComponent>();
@@ -6743,6 +7165,7 @@ namespace LamaPon
                         model->ReloadShader();
                     }
                 }
+                // メッシュ描画素材の再読込対象
                 if (auto* mesh =
                         gameObject->GetComponent<
                             MeshRendererComponent>();
@@ -6794,6 +7217,7 @@ namespace LamaPon
                         mesh->ReloadShader();
                     }
                 }
+                // 粒子画像・Shaderの再読込対象
                 if (auto* particles =
                         gameObject->GetComponent<
                             ParticleSystemComponent>();
@@ -6815,6 +7239,7 @@ namespace LamaPon
                         particles->ReloadShader();
                     }
                 }
+                // 2D粒子画像の再読込対象
                 if (auto* particles2D =
                         gameObject->GetComponent<
                             SpriteParticles2DComponent>();
@@ -6824,6 +7249,7 @@ namespace LamaPon
                     particles2D->SetTexturePath(
                         particles2D->TexturePath());
                 }
+                // タイル画像の再読込対象
                 if (auto* tilemap =
                         gameObject->GetComponent<
                             TilemapComponent>();
@@ -6833,6 +7259,7 @@ namespace LamaPon
                     tilemap->SetTexturePath(
                         tilemap->TexturePath());
                 }
+                // ボタン画像の再読込対象
                 if (auto* button =
                         gameObject->GetComponent<
                             UIButtonComponent>();
@@ -6842,6 +7269,7 @@ namespace LamaPon
                     button->SetTexturePath(
                         button->TexturePath());
                 }
+                // UI画像の再読込対象
                 if (auto* image =
                         gameObject->GetComponent<
                             UIImageComponent>();
@@ -6851,6 +7279,7 @@ namespace LamaPon
                     image->SetTexturePath(
                         image->TexturePath());
                 }
+                // 衝突モデルの再読込対象
                 if (auto* collider =
                         gameObject->GetComponent<
                             MeshCollider3DComponent>();
@@ -6878,6 +7307,7 @@ namespace LamaPon
                     + PathToUtf8(*asset));
             }
         }
+        // 作成・コピー・再読込の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(
@@ -6891,12 +7321,14 @@ namespace LamaPon
         }
     }
 
+    // DBのファイル・実フォルダー・データ型一覧を更新して無効な選択を解除します(reuseExistingDatabase: 走査済みDBを再利用するか)。
     void EditorLayer::RefreshAssets(
         const bool reuseExistingDatabase)
     {
         m_assetFiles.clear();
         m_assetDirectories.clear();
 
+        // アセットのルートパス
         const auto& assetRoot = m_graphics.Assets().AssetRoot();
         if (!std::filesystem::exists(assetRoot))
         {
@@ -6905,6 +7337,7 @@ namespace LamaPon
             return;
         }
 
+        // 一覧の取得元アセットDB
         auto& database = m_graphics.Assets().Database();
         if (!reuseExistingDatabase || !database.HasRefreshed())
         {
@@ -6913,18 +7346,19 @@ namespace LamaPon
         m_assetFiles.reserve(
             database.Assets().size());
         m_dataAssetTypeByPath.clear();
+        // 一覧へ追加するDB登録情報
         for (const auto& asset :
             m_graphics.Assets().Database().Assets())
         {
             m_assetFiles.push_back(asset.path);
-            // データアセットは中身の"type"で種類が決まるため、
-            // 走査のついでに読み出して表にしておきます。参照欄の
-            // 絞り込みと、アセット一覧の表示に使います。
+            // 参照欄の絞込と一覧表示のため、データアセット本文のtypeをキャッシュします。
             if (IsDataAsset(asset.path))
             {
+                // データアセットの型名
                 std::string typeName;
                 try
                 {
+                    // 型を調べるアセット本文
                     const auto bytes =
                         m_graphics.Assets().ReadFileBytes(
                             asset.path);
@@ -6940,8 +7374,7 @@ namespace LamaPon
                 }
                 catch (const std::exception&)
                 {
-                    // 壊れたファイルは「型なし」として扱います。
-                    // 一覧の走査を止める理由にはしません。
+                    // 型の取得失敗は空の型名として扱い、一覧の更新を続けます。
                 }
                 m_dataAssetTypeByPath.insert_or_assign(
                     Lowercase(PathToUtf8(asset.path)),
@@ -6949,10 +7382,13 @@ namespace LamaPon
             }
         }
 
+        // フォルダー走査のエラー
         std::error_code error;
+        // 権限拒否を飛ばす走査設定
         const auto options =
             std::filesystem::directory_options::skip_permission_denied;
 
+        // アセットフォルダーの再帰走査位置
         for (std::filesystem::recursive_directory_iterator iterator{
                 assetRoot,
                 options,
@@ -6969,6 +7405,7 @@ namespace LamaPon
 
             if (iterator->is_directory(error) && !error)
             {
+                // 検出フォルダーの相対パス
                 const auto directory =
                     iterator->path().lexically_relative(assetRoot);
                 if (!directory.empty())
@@ -6981,6 +7418,7 @@ namespace LamaPon
 
         std::ranges::sort(m_assetFiles);
         std::ranges::sort(m_assetDirectories);
+        // 重複を除いた後の不要な末尾
         const auto uniqueDirectories = std::ranges::unique(m_assetDirectories);
         m_assetDirectories.erase(
             uniqueDirectories.begin(),
@@ -7000,6 +7438,7 @@ namespace LamaPon
         }
     }
 
+    // 編集中に選択したシーンを開き、タイムラインを閉じて履歴と保存基準を初期化します。
     void EditorLayer::OpenSelectedAsset()
     {
         if (!IsSceneAsset(m_selectedAsset) || m_playing)
@@ -7009,6 +7448,7 @@ namespace LamaPon
 
         try
         {
+            // 開くシーンの絶対パス
             const auto scenePath = m_graphics.Assets().ResolvePath(m_selectedAsset);
             if (m_animationTimelineOpen)
             {
@@ -7021,12 +7461,14 @@ namespace LamaPon
             MarkSceneSaved();
             SetStatus("シーンを開きました: " + PathToUtf8(m_selectedAsset));
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中に選択Prefabを主選択対象の子へ配置し、選択と履歴を更新します。
     void EditorLayer::InstantiateSelectedPrefab()
     {
         if (!IsPrefabAsset(m_selectedAsset) || m_playing)
@@ -7036,7 +7478,9 @@ namespace LamaPon
 
         try
         {
+            // Prefabを配置する親対象
             auto* parent = m_scene.FindGameObject(m_selectedObjectId);
+            // 配置したPrefabルート
             auto& instance = m_scene.InstantiatePrefab(
                 m_selectedAsset,
                 parent);
@@ -7046,16 +7490,20 @@ namespace LamaPon
                 "Prefabを配置しました: "
                 + PathToUtf8(m_selectedAsset));
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 選択対象のPrefab変更を元アセットへ保存し、差分キャッシュと一覧を更新します。
     void EditorLayer::ApplySelectedPrefab()
     {
+        // 選択中の対象
         auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
+        // 選択対象を含むPrefabルート
         auto* prefabRoot = selected != nullptr
             ? m_scene.FindPrefabInstanceRoot(*selected)
             : nullptr;
@@ -7075,6 +7523,7 @@ namespace LamaPon
                 + PathToUtf8(
                     prefabRoot->PrefabAssetPath()));
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             m_prefabStatusRootId = 0;
@@ -7082,10 +7531,13 @@ namespace LamaPon
         }
     }
 
+    // 選択対象のPrefab階層を元アセットから置換し、選択と履歴を更新します。
     bool EditorLayer::RevertSelectedPrefab()
     {
+        // 選択中の対象
         auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
+        // 選択対象を含むPrefabルート
         auto* prefabRoot = selected != nullptr
             ? m_scene.FindPrefabInstanceRoot(*selected)
             : nullptr;
@@ -7096,8 +7548,10 @@ namespace LamaPon
 
         try
         {
+            // 復元元のPrefabパス
             const auto assetPath =
                 prefabRoot->PrefabAssetPath();
+            // 置換後のPrefabルート
             auto& replacement =
                 m_scene.RevertPrefabInstance(
                     *prefabRoot);
@@ -7111,6 +7565,7 @@ namespace LamaPon
                 + PathToUtf8(assetPath));
             return true;
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             m_prefabStatusRootId = 0;
@@ -7119,11 +7574,14 @@ namespace LamaPon
         }
     }
 
+    // 選択Prefabの指定差分を元アセットへ保存し、差分キャッシュを破棄します(path: 差分項目の識別パス)。
     void EditorLayer::ApplySelectedPrefabOverride(
         const std::string_view path)
     {
+        // 選択中の対象
         auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
+        // 選択対象を含むPrefabルート
         auto* prefabRoot = selected != nullptr
             ? m_scene.FindPrefabInstanceRoot(*selected)
             : nullptr;
@@ -7134,6 +7592,7 @@ namespace LamaPon
 
         try
         {
+            // キャッシュ消去前にコピーした項目
             const std::string pathCopy{ path };
             m_scene.ApplyPrefabOverride(
                 *prefabRoot,
@@ -7146,6 +7605,7 @@ namespace LamaPon
                 + FormatPrefabOverridePath(
                     pathCopy));
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             m_prefabStatusRootId = 0;
@@ -7154,11 +7614,14 @@ namespace LamaPon
         }
     }
 
+    // 選択Prefabの指定差分を戻して階層を置換し、選択と履歴を更新します(path: 差分項目の識別パス)。
     bool EditorLayer::RevertSelectedPrefabOverride(
         const std::string_view path)
     {
+        // 選択中の対象
         auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
+        // 選択対象を含むPrefabルート
         auto* prefabRoot = selected != nullptr
             ? m_scene.FindPrefabInstanceRoot(*selected)
             : nullptr;
@@ -7169,7 +7632,9 @@ namespace LamaPon
 
         try
         {
+            // キャッシュ消去前にコピーした項目
             const std::string pathCopy{ path };
+            // 置換後のPrefabルート
             auto& replacement =
                 m_scene.RevertPrefabOverride(
                     *prefabRoot,
@@ -7185,6 +7650,7 @@ namespace LamaPon
                     pathCopy));
             return true;
         }
+        // シーン読込・Prefab操作の失敗原因
         catch (const std::exception& exception)
         {
             m_prefabStatusRootId = 0;
@@ -7194,26 +7660,34 @@ namespace LamaPon
         }
     }
 
+    // 編集中に選択画像を対象の既存コンポーネントへ割り当て、履歴へ記録します。
     void EditorLayer::AssignSelectedTexture()
     {
+        // 画像を割り当てる選択対象
         auto* gameObject = m_scene.FindGameObject(m_selectedObjectId);
+        // スプライト画像の割当先
         auto* sprite = gameObject != nullptr
             ? gameObject->GetComponent<SpriteRendererComponent>()
             : nullptr;
+        // メッシュのアルベド割当先
         auto* mesh = gameObject != nullptr
             ? gameObject->GetComponent<MeshRendererComponent>()
             : nullptr;
+        // モデルのアルベド割当先
         auto* model = gameObject != nullptr
             ? gameObject->GetComponent<ModelRendererComponent>()
             : nullptr;
+        // タイルシートの割当先
         auto* tilemap = gameObject != nullptr
             ? gameObject->GetComponent<
                 TilemapComponent>()
             : nullptr;
+        // 粒子画像の割当先
         auto* particles = gameObject != nullptr
             ? gameObject->GetComponent<
                 ParticleSystemComponent>()
             : nullptr;
+        // ボタン画像の割当先
         auto* uiButton = gameObject != nullptr
             ? gameObject->GetComponent<
                 UIButtonComponent>()
@@ -7267,6 +7741,7 @@ namespace LamaPon
                 }
             }
             RecordHistory();
+            // 画像用途の通知用表示名
             const char* target = sprite != nullptr
                 ? "スプライト画像"
                 : tilemap != nullptr
@@ -7283,12 +7758,14 @@ namespace LamaPon
                 + "を割り当てました: "
                 + PathToUtf8(m_selectedAsset));
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 種類と既存構成に応じて素材を割り当て、必要なコンポーネントを追加します(gameObject: 割当対象, asset: 相対アセットパス)。
     bool EditorLayer::ApplyDroppedAsset(
         GameObject& gameObject,
         const std::filesystem::path& asset)
@@ -7300,11 +7777,14 @@ namespace LamaPon
 
         try
         {
+            // 素材割当結果の表示文
             std::string message;
             if (IsModelAsset(asset))
             {
+                // モデル描画・制御器の割当先
                 auto* model = gameObject.GetComponent<
                     ModelRendererComponent>();
+                // 素材を割り当てる描画先
                 auto& renderer = model != nullptr
                     ? *model
                     : gameObject.AddComponent<
@@ -7314,21 +7794,21 @@ namespace LamaPon
             }
             else if (IsTextureAsset(asset))
             {
-                // 相手の構成から用途を推測します（Tilemapなら
-                // タイルシート、3D描画ならアルベド、それ以外は
-                // スプライト）。
+                // タイルシートの割当先
                 if (auto* tilemap = gameObject.GetComponent<
                     TilemapComponent>())
                 {
                     tilemap->SetTexturePath(asset);
                     message = "タイルシートを割り当てました: ";
                 }
+                // ボタン画像の割当先
                 else if (auto* button = gameObject.GetComponent<
                     UIButtonComponent>())
                 {
                     button->SetTexturePath(asset);
                     message = "ボタン画像を割り当てました: ";
                 }
+                // 粒子画像・Shaderの割当先
                 else if (auto* particles =
                     gameObject.GetComponent<
                         ParticleSystemComponent>())
@@ -7336,12 +7816,14 @@ namespace LamaPon
                     particles->SetTexturePath(asset);
                     message = "パーティクル画像を割り当てました: ";
                 }
+                // メッシュ描画素材の割当先
                 else if (auto* mesh = gameObject.GetComponent<
                     MeshRendererComponent>())
                 {
                     mesh->SetAlbedoTexturePath(asset);
                     message = "アルベドを割り当てました: ";
                 }
+                // モデル描画・制御器の割当先
                 else if (auto* model = gameObject.GetComponent<
                     ModelRendererComponent>())
                 {
@@ -7350,8 +7832,10 @@ namespace LamaPon
                 }
                 else
                 {
+                    // スプライト素材の割当先
                     auto* sprite = gameObject.GetComponent<
                         SpriteRendererComponent>();
+                    // 素材を割り当てる描画先
                     auto& renderer = sprite != nullptr
                         ? *sprite
                         : gameObject.AddComponent<
@@ -7362,11 +7846,13 @@ namespace LamaPon
             }
             else if (IsMaterialAsset(asset))
             {
+                // メッシュ描画素材の割当先
                 if (auto* mesh = gameObject.GetComponent<
                     MeshRendererComponent>())
                 {
                     mesh->SetMaterialAssetPath(asset);
                 }
+                // モデル描画・制御器の割当先
                 else if (auto* model = gameObject.GetComponent<
                     ModelRendererComponent>())
                 {
@@ -7382,9 +7868,7 @@ namespace LamaPon
             }
             else if (IsShaderErrorPlaceholder(asset))
             {
-                // 壊れている印に使うShaderは、どの経路からも
-                // 割り当てさせません。黙って無視すると「ドロップ
-                // したのに効かない」になるので理由を出します。
+                // エラー表示用Shaderは素材として割り当てず、拒否理由を通知します。
                 SetStatus(
                     "このShaderはエンジンが「壊れている印」に使うため、"
                     "割り当てられません",
@@ -7393,21 +7877,25 @@ namespace LamaPon
             }
             else if (IsShaderAsset(asset))
             {
+                // メッシュ描画素材の割当先
                 if (auto* mesh = gameObject.GetComponent<
                     MeshRendererComponent>())
                 {
                     mesh->SetShaderPath(asset);
                 }
+                // モデル描画・制御器の割当先
                 else if (auto* model = gameObject.GetComponent<
                     ModelRendererComponent>())
                 {
                     model->SetShaderPath(asset);
                 }
+                // スプライト素材の割当先
                 else if (auto* sprite = gameObject.GetComponent<
                     SpriteRendererComponent>())
                 {
                     sprite->SetShaderPath(asset);
                 }
+                // 粒子画像・Shaderの割当先
                 else if (auto* particles =
                     gameObject.GetComponent<
                         ParticleSystemComponent>())
@@ -7422,8 +7910,10 @@ namespace LamaPon
             }
             else if (IsAudioAsset(asset))
             {
+                // 既存の音声コンポーネント
                 auto* audio = gameObject.GetComponent<
                     AudioSourceComponent>();
+                // 既存・追加した音声の割当先
                 auto& source = audio != nullptr
                     ? *audio
                     : gameObject.AddComponent<
@@ -7433,8 +7923,10 @@ namespace LamaPon
             }
             else if (IsAnimationAsset(asset))
             {
+                // 既存のTransform制御器
                 auto* animator = gameObject.GetComponent<
                     TransformAnimatorComponent>();
+                // 既存・追加したTransform制御器
                 auto& target = animator != nullptr
                     ? *animator
                     : gameObject.AddComponent<
@@ -7444,7 +7936,7 @@ namespace LamaPon
             }
             else if (IsAnimatorControllerAsset(asset))
             {
-                // モデルがあればスケルタル側、無ければTransform側。
+                // モデル描画・制御器の割当先
                 if (auto* model = gameObject.GetComponent<
                     ModelRendererComponent>())
                 {
@@ -7452,8 +7944,10 @@ namespace LamaPon
                 }
                 else
                 {
+                    // 既存のTransform制御器
                     auto* animator = gameObject.GetComponent<
                         TransformAnimatorComponent>();
+                    // 既存・追加したTransform制御器
                     auto& target = animator != nullptr
                         ? *animator
                         : gameObject.AddComponent<
@@ -7467,11 +7961,13 @@ namespace LamaPon
                 return false;
             }
 
+            // 割当失敗時も、追加済みコンポーネントや先に設定した値は元へ戻りません。
             m_selectedObjectId = gameObject.Id();
             RecordHistory();
             SetStatus(message + PathToUtf8(asset));
             return true;
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
@@ -7479,6 +7975,7 @@ namespace LamaPon
         }
     }
 
+    // 主選択または追加選択に対象IDが含まれるか返します(id: 判定する対象ID・0は未選択)。
     bool EditorLayer::IsObjectSelected(
         const GameObjectId id) const noexcept
     {
@@ -7492,6 +7989,7 @@ namespace LamaPon
                 id) != m_additionalSelection.end();
     }
 
+    // アセット選択を解除し、単独選択または選択集合の増減を行います(id: 対象ID・0は未選択, additive: 選択への追加・解除か)。
     void EditorLayer::SelectObject(
         const GameObjectId id,
         const bool additive)
@@ -7514,8 +8012,7 @@ namespace LamaPon
         }
         if (m_selectedObjectId == id)
         {
-            // 主選択をCtrl+クリックしたら選択から外し、
-            // 残りの先頭を新しい主選択にします。
+
             if (m_additionalSelection.empty())
             {
                 m_selectedObjectId = 0;
@@ -7527,6 +8024,7 @@ namespace LamaPon
                 m_additionalSelection.begin());
             return;
         }
+        // 追加選択にある対象IDの位置
         if (const auto found = std::ranges::find(
                 m_additionalSelection,
                 id);
@@ -7538,22 +8036,28 @@ namespace LamaPon
         m_additionalSelection.push_back(id);
     }
 
+    // 主選択を維持して追加選択だけを解除します。
     void EditorLayer::ClearMultiSelection()
     {
         m_additionalSelection.clear();
     }
 
+    // 主選択から順に生存する対象の借用一覧を返します。
     std::vector<GameObject*>
         EditorLayer::SelectedObjects() const
     {
+        // 生存する選択対象の借用一覧
         std::vector<GameObject*> objects;
+        // 生存する主選択対象
         if (auto* primary =
             m_scene.FindGameObject(m_selectedObjectId))
         {
             objects.push_back(primary);
         }
+        // 追加選択の対象ID
         for (const auto id : m_additionalSelection)
         {
+            // 生存する追加選択対象
             if (auto* object = m_scene.FindGameObject(id))
             {
                 objects.push_back(object);
@@ -7562,10 +8066,13 @@ namespace LamaPon
         return objects;
     }
 
+    // 一致するPrefabルートをまとめて選択し、見つからなければ現在の選択を保ちます(prefabAsset: 検索するPrefab参照)。
     void EditorLayer::SelectPrefabInstances(
         const std::filesystem::path& prefabAsset)
     {
+        // 一致するPrefabルートのID一覧
         std::vector<GameObjectId> found;
+        // インスタンスを調べる対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
             if (gameObject->IsPrefabInstanceRoot()
@@ -7598,9 +8105,12 @@ namespace LamaPon
             + PathToUtf8(prefabAsset.filename()));
     }
 
+    // 編集中に選択モデルを既存のModelRendererへ割り当て、履歴へ記録します。
     void EditorLayer::AssignSelectedModel()
     {
+        // モデルを割り当てる選択対象
         auto* gameObject = m_scene.FindGameObject(m_selectedObjectId);
+        // 既存のモデル描画先
         auto* model = gameObject != nullptr
             ? gameObject->GetComponent<ModelRendererComponent>()
             : nullptr;
@@ -7616,19 +8126,24 @@ namespace LamaPon
             RecordHistory();
             SetStatus("モデルを割り当てました: " + PathToUtf8(m_selectedAsset));
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中に選択Materialを既存の描画コンポーネントへ割り当て、履歴へ記録します。
     void EditorLayer::AssignSelectedMaterial()
     {
+        // Materialを割り当てる選択対象
         auto* gameObject =
             m_scene.FindGameObject(m_selectedObjectId);
+        // メッシュのMaterial割当先
         auto* mesh = gameObject != nullptr
             ? gameObject->GetComponent<MeshRendererComponent>()
             : nullptr;
+        // モデルのMaterial割当先
         auto* model = gameObject != nullptr
             ? gameObject->GetComponent<ModelRendererComponent>()
             : nullptr;
@@ -7655,17 +8170,21 @@ namespace LamaPon
                 "Lit Materialを割り当てました: "
                 + PathToUtf8(m_selectedAsset));
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中に選択クリップを事前読込し、既存のTransform制御器へ割り当てます。
     void EditorLayer::AssignSelectedAnimation()
     {
+        // クリップを割り当てる選択対象
         auto* gameObject =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // 既存のTransform制御器
         auto* animator = gameObject != nullptr
             ? gameObject->GetComponent<
                 TransformAnimatorComponent>()
@@ -7690,21 +8209,26 @@ namespace LamaPon
                 "Animation Clipを割り当てました: "
                 + PathToUtf8(m_selectedAsset));
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 選択制御器を事前読込し、Transform制御器を優先して既存の制御先へ割り当てます。
     void EditorLayer::AssignSelectedAnimatorController()
     {
+        // 制御器を割り当てる選択対象
         auto* gameObject =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // Transform制御器の割当先
         auto* animator = gameObject != nullptr
             ? gameObject->GetComponent<
                 TransformAnimatorComponent>()
             : nullptr;
+        // モデル制御器の割当先
         auto* model = gameObject != nullptr
             ? gameObject->GetComponent<
                 ModelRendererComponent>()
@@ -7738,17 +8262,21 @@ namespace LamaPon
                 "Animator Controllerを割り当てました: "
                 + PathToUtf8(m_selectedAsset));
         }
+        // 素材割当を中断した失敗原因
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 同じMaterialを参照するメッシュとモデルを再読込します(materialAsset: 更新したMaterial参照)。
     void EditorLayer::ReloadSharedMaterial(
         const std::filesystem::path& materialAsset)
     {
+        // 共有Material参照の更新対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
+            // 共有Materialを持つメッシュ
             if (auto* mesh =
                 gameObject->GetComponent<MeshRendererComponent>();
                 mesh != nullptr
@@ -7758,6 +8286,7 @@ namespace LamaPon
             {
                 mesh->ReloadMaterialAsset();
             }
+            // 共有Materialを持つモデル
             if (auto* model =
                 gameObject->GetComponent<ModelRendererComponent>();
                 model != nullptr
@@ -7770,11 +8299,14 @@ namespace LamaPon
         }
     }
 
+    // 同じモデルを参照する描画先を再読込します(modelAsset: 更新したモデル参照)。
     void EditorLayer::ReloadSharedModel(
         const std::filesystem::path& modelAsset)
     {
+        // 共有モデル参照の更新対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
+            // 共有モデルを持つ描画先
             if (auto* model =
                 gameObject->GetComponent<ModelRendererComponent>();
                 model != nullptr
@@ -7782,14 +8314,13 @@ namespace LamaPon
                     model->ModelPath(),
                     modelAsset))
             {
-                // ReloadModel()はprivateなので、同じパスを渡して
-                // 強制的に読み直させます（SetModelPathはパスの
-                // 異同を見ずに常に再読み込みします）。
+                // SetModelPathは同じパスでも再読込するため、既存パスを渡して更新します。
                 model->SetModelPath(model->ModelPath());
             }
         }
     }
 
+    // 未保存確認をせず編集中のシーンを初期カメラと太陽光へ置き換え、保存先と履歴を初期化します。
     void EditorLayer::NewScene()
     {
         if (m_playing)
@@ -7805,13 +8336,16 @@ namespace LamaPon
             }
             m_scene.Clear();
 
+            // 初期メインカメラの対象
             auto& cameraObject = m_scene.CreateGameObject("メインカメラ");
             cameraObject.GetTransform().position = { 0.0f, 1.6f, 7.0f };
             cameraObject.GetTransform().SetEulerAngles(
                 { -0.12f, 0.0f, 0.0f });
+            // 初期メインカメラ
             auto& camera = cameraObject.AddComponent<CameraComponent>();
             m_scene.SetMainCamera(camera);
 
+            // 初期太陽光の対象
             auto& lightObject =
                 m_scene.CreateGameObject("太陽光");
             lightObject.GetTransform().SetEulerAngles({
@@ -7833,12 +8367,14 @@ namespace LamaPon
             MarkSceneSaved();
             SetStatus("新しいシーンを作成しました");
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集中のシーンを保存し、保存先未指定なら名前指定ダイアログへ進みます。
     void EditorLayer::SaveScene()
     {
         if (m_playing)
@@ -7862,12 +8398,14 @@ namespace LamaPon
             RefreshAssets();
             SetStatus("保存しました: " + PathToUtf8(m_scenePath.filename()));
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // ファイル選択後に未保存確認をせずシーンを開き、履歴と保存基準を初期化します。
     void EditorLayer::OpenScene()
     {
         if (m_playing)
@@ -7875,17 +8413,22 @@ namespace LamaPon
             return;
         }
 
+        // 選択・入力するファイル名
         std::array<wchar_t, 32768> filename{};
+        // シーン保存先の既定パス
         const auto sceneDirectory =
             m_graphics.Assets().AssetRoot()
             / L"scenes";
+        // ダイアログの初期表示パス
         const std::wstring initialDirectory =
             sceneDirectory.wstring();
 
+        // 選択できるファイルの一覧
         constexpr wchar_t filter[] =
             L"LamaPon シーン (*.scene.json)\0*.scene.json\0"
             L"JSON (*.json)\0*.json\0\0";
 
+        // Win32のファイルダイアログ
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -7916,6 +8459,7 @@ namespace LamaPon
 
         try
         {
+            // 開くシーンのパス
             const std::filesystem::path source{
                 filename.data()
             };
@@ -7935,12 +8479,14 @@ namespace LamaPon
                 + PathToUtf8(
                     m_scenePath.filename()));
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 指定した名前へ編集中のシーンを保存し、シーンパスと保存基準を更新します。
     void EditorLayer::SaveSceneAs()
     {
         if (m_playing)
@@ -7948,22 +8494,29 @@ namespace LamaPon
             return;
         }
 
+        // 選択・入力するファイル名
         std::array<wchar_t, 32768> filename{};
+        // 保存名の初期候補
         const std::wstring suggestedName = m_scenePath.empty()
             ? L"NewScene.scene.json"
             : m_scenePath.filename().wstring();
         wcscpy_s(filename.data(), filename.size(), suggestedName.c_str());
 
+        // シーン保存先の既定パス
         const auto sceneDirectory =
             m_graphics.Assets().AssetRoot() / L"scenes";
+        // 既定保存先の作成エラー
         std::error_code directoryError;
         std::filesystem::create_directories(sceneDirectory, directoryError);
+        // ダイアログの初期表示パス
         const std::wstring initialDirectory = sceneDirectory.wstring();
 
+        // 選択できるファイルの一覧
         constexpr wchar_t filter[] =
             L"LamaPon シーン (*.scene.json)\0*.scene.json\0"
             L"JSON (*.json)\0*.json\0\0";
 
+        // Win32のファイルダイアログ
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -7990,12 +8543,14 @@ namespace LamaPon
 
         try
         {
+            // 名前を指定した保存先
             std::filesystem::path destination{ filename.data() };
             if (!HasSceneExtension(destination))
             {
                 destination.replace_extension(L".scene.json");
             }
 
+            // 保存完了後の一覧更新に失敗しても、書き込んだファイルは元へ戻りません。
             m_scene.SaveToFile(destination);
             m_scenePath = std::move(destination);
             MarkSceneSaved();
@@ -8007,14 +8562,17 @@ namespace LamaPon
                 "名前を付けて保存しました: "
                 + PathToUtf8(m_scenePath.filename()));
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 主選択階層をassets内へPrefabとして保存し、元対象のPrefab参照と履歴を更新します。
     void EditorLayer::SaveSelectedAsPrefab()
     {
+        // 保存する主選択対象
         auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr || m_playing)
@@ -8022,9 +8580,12 @@ namespace LamaPon
             return;
         }
 
+        // 対象名から作るPrefab基本名
         const std::wstring baseName = SuggestedPrefabFileStem(selected->Name());
 
+        // 選択・入力する保存ファイル名
         std::array<wchar_t, 32768> filename{};
+        // Prefab保存名の初期候補
         const std::wstring suggestedName =
             baseName + L".prefab.json";
         wcscpy_s(
@@ -8032,10 +8593,13 @@ namespace LamaPon
             filename.size(),
             suggestedName.c_str());
 
+        // 字句正規化したアセットルート
         const auto assetRoot =
             std::filesystem::absolute(
                 m_graphics.Assets().AssetRoot()).lexically_normal();
+        // Prefab保存先の既定パス
         const auto prefabDirectory = assetRoot / L"prefabs";
+        // Prefab保存先の作成エラー
         std::error_code directoryError;
         std::filesystem::create_directories(
             prefabDirectory,
@@ -8047,13 +8611,16 @@ namespace LamaPon
                 true);
             return;
         }
+        // 保存ダイアログの初期表示先
         const std::wstring initialDirectory =
             prefabDirectory.wstring();
 
+        // 保存できるファイルの一覧
         constexpr wchar_t filter[] =
             L"LamaPon Prefab (*.prefab.json)\0*.prefab.json\0"
             L"JSON (*.json)\0*.json\0\0";
 
+        // Prefab保存ダイアログ
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -8082,6 +8649,7 @@ namespace LamaPon
 
         try
         {
+            // Prefabの保存先絶対パス
             std::filesystem::path destination{ filename.data() };
             if (!HasPrefabExtension(destination))
             {
@@ -8096,6 +8664,7 @@ namespace LamaPon
             }
 
             m_scene.SavePrefab(*selected, destination);
+            // 保存したPrefabの相対パス
             const auto relativePath =
                 destination.lexically_relative(assetRoot);
             selected->SetPrefabAssetPath(
@@ -8108,12 +8677,14 @@ namespace LamaPon
                 "Prefabを保存しました: "
                 + PathToUtf8(relativePath));
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 編集状態の保存基準と既存シーンの更新時刻を記録し、JSON取得失敗時は基準を破棄します。
     void EditorLayer::MarkSceneSaved()
     {
         try
@@ -8127,7 +8698,9 @@ namespace LamaPon
 
         if (!m_scenePath.empty())
         {
+            // 保存シーンの時刻取得エラー
             std::error_code error;
+            // 保存シーンの最終更新時刻
             const auto writeTime =
                 std::filesystem::last_write_time(
                     m_scenePath,
@@ -8141,6 +8714,7 @@ namespace LamaPon
         }
     }
 
+    // 0.5秒間隔で外部更新を調べ、未保存なら一度通知し、保存済みなら再読込します。
     void EditorLayer::UpdateExternalSceneFile()
     {
         if (m_scenePath.empty()
@@ -8150,6 +8724,7 @@ namespace LamaPon
             return;
         }
 
+        // 外部シーン変更の監視時刻・秒
         const double now = ImGui::GetTime();
         if (now - m_lastSceneScanAt < 0.5)
         {
@@ -8157,15 +8732,16 @@ namespace LamaPon
         }
         m_lastSceneScanAt = now;
 
+        // 外部シーンの時刻取得エラー
         std::error_code error;
+        // 外部シーンの最終更新時刻
         const auto writeTime =
             std::filesystem::last_write_time(
                 m_scenePath,
                 error);
         if (error)
         {
-            // 外部ツールが一時ファイルを置き換えている途中は、
-            // 次のスキャンで再試行できるように基準時刻を保持します。
+            // 外部ファイルの置換中は基準時刻を変えず、次の走査で再確認します。
             return;
         }
 
@@ -8196,12 +8772,13 @@ namespace LamaPon
         ReloadScene();
     }
 
+    // 編集状態を保存基準と比較し、比較不能なら未保存変更ありとして扱います。
     bool EditorLayer::HasUnsavedSceneChanges() const
     {
         try
         {
-            // Play中は実行時の状態ではなく、Play開始前の編集状態
-            // （停止時に復元されるスナップショット）と比較します。
+            // 比較する編集状態のJSON
+            // 再生中は実行状態ではなく、停止時に復元する開始前の編集状態と比較します。
             const std::string current = m_playing
                 ? m_playSnapshot
                 : m_scene.SerializeToJson();
@@ -8209,11 +8786,12 @@ namespace LamaPon
         }
         catch (const std::exception&)
         {
-            // 判定できないときは安全側（警告を出す）に倒します。
+
             return true;
         }
     }
 
+    // 未保存変更の保存・破棄・中止を確認し、終了可能ならtrueを返します。
     bool EditorLayer::ConfirmClose()
     {
         if (!HasUnsavedSceneChanges())
@@ -8223,8 +8801,7 @@ namespace LamaPon
 
         if (m_scenePath.empty())
         {
-            // 保存先が未確定の新規シーン。ここからWin32の
-            // 保存ダイアログへは進めないため、破棄の確認だけ行います。
+            // 保存先未指定のシーンは保存ダイアログへ進まず、破棄だけを確認します。
             return MessageBoxW(
                 m_window,
                 L"保存されていないシーンの変更があります。\n"
@@ -8234,6 +8811,7 @@ namespace LamaPon
                 == IDYES;
         }
 
+        // 保存・破棄・中止の選択結果
         const int choice = MessageBoxW(
             m_window,
             L"シーンに保存していない変更があります。\n\n"
@@ -8250,7 +8828,7 @@ namespace LamaPon
         {
             try
             {
-                // Play中なら編集状態へ戻してから保存します。
+                // 再生時の変更を保存しないよう、停止して編集状態へ戻してから保存します。
                 if (m_playing)
                 {
                     StopPlaying();
@@ -8258,6 +8836,7 @@ namespace LamaPon
                 m_scene.SaveToFile(m_scenePath);
                 MarkSceneSaved();
             }
+            // 終了を中止して表示する保存エラー
             catch (const std::exception& exception)
             {
                 MessageBoxW(
@@ -8272,6 +8851,7 @@ namespace LamaPon
         return true;
     }
 
+    // 現在のパスからシーンを再読込して再生を停止し、履歴と保存基準を初期化します。
     void EditorLayer::ReloadScene()
     {
         if (m_scenePath.empty())
@@ -8297,6 +8877,7 @@ namespace LamaPon
                 "再読み込みしました: "
                 + PathToUtf8(m_scenePath.filename()));
         }
+        // シーンの作成・保存・読込エラー
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);

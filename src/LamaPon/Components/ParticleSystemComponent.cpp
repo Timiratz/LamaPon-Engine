@@ -14,6 +14,7 @@ namespace LamaPon
 {
     struct ParticleSystemComponent::RenderData final
     {
+        // 再利用する全粒子の四頂点
         std::vector<ParticleRenderVertex> vertices;
     };
 
@@ -246,6 +247,7 @@ namespace LamaPon
     void ParticleSystemComponent::SetTexturePath(
         std::filesystem::path path)
     {
+        // 差し替え前に読む共有画像
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr
             && !path.empty())
@@ -268,6 +270,7 @@ namespace LamaPon
     void ParticleSystemComponent::SetAuxiliaryTexturePath(
         std::filesystem::path path)
     {
+        // 差し替え前に読む共有画像
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr
             && !path.empty())
@@ -331,13 +334,17 @@ namespace LamaPon
     void ParticleSystemComponent::Emit(
         const std::uint32_t count)
     {
+        // 上限まで追加できる粒子数
         const std::uint32_t available =
             m_maxParticles
                 - static_cast<std::uint32_t>(
                     m_particles.size());
+        // 今回要求する生成粒子数
         const std::uint32_t spawnCount =
             std::min(count, available);
+        // 今回生成する粒子の番号
         for (std::uint32_t index{};
+            // 今回要求する生成粒子数
             index < spawnCount;
             ++index)
         {
@@ -407,6 +414,7 @@ namespace LamaPon
     void ParticleSystemComponent::Simulate(
         const float deltaTime)
     {
+        // 0〜0.1に収めた経過秒数
         const float step =
             std::clamp(
                 deltaTime,
@@ -417,6 +425,7 @@ namespace LamaPon
             return;
         }
 
+        // 更新または描画する生存粒子
         for (auto& particle : m_particles)
         {
             particle.age += step;
@@ -436,6 +445,7 @@ namespace LamaPon
                 particle.angularVelocity
                 * step;
         }
+        // 寿命を終えた粒子を除去する(particle: 寿命を判定する粒子)。
         std::erase_if(
             m_particles,
             [](const Particle& particle)
@@ -449,6 +459,7 @@ namespace LamaPon
             return;
         }
         m_emittingTime += step;
+        // 生成期間内で追加できるか
         bool canEmit = true;
         if (m_emittingTime >= m_duration)
         {
@@ -471,8 +482,9 @@ namespace LamaPon
             return;
         }
 
-        m_spawnAccumulator +=
-            m_emissionRate * step;
+        // m_spawnAccumulator: 次のparticle生成へ持ち越すfractional count。
+        m_spawnAccumulator += m_emissionRate * step;
+        // 今回要求する生成粒子数
         const auto spawnCount =
             static_cast<std::uint32_t>(
                 m_spawnAccumulator);
@@ -506,12 +518,15 @@ namespace LamaPon
         ParticleSystemComponent::
             RandomUnitVector() noexcept
     {
+        // 球面方向のY成分
         const float z =
             RandomRange(-1.0f, 1.0f);
+        // 方向を選ぶ方位角のラジアン
         const float angle =
             RandomRange(
                 0.0f,
                 DirectX::XM_2PI);
+        // 球面方向のXZ成分の半径
         const float radius =
             std::sqrt(
                 std::max(
@@ -528,9 +543,12 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 生成元のワールド行列
         XMMATRIX world =
             Owner().WorldMatrix();
+        // 生成形状内のローカル位置
         XMFLOAT3 localPosition{};
+        // 生成形状内のローカル初速方向
         XMFLOAT3 localDirection{
             0.0f,
             1.0f,
@@ -540,18 +558,22 @@ namespace LamaPon
         {
         case ParticleEmitterShape::Cone:
         {
+            // 円錐半角の余弦の下限
             const float cosineMinimum =
                 std::cos(m_coneAngle);
+            // 角度の余弦
             const float cosine =
                 RandomRange(
                     cosineMinimum,
                     1.0f);
+            // 角度の正弦
             const float sine =
                 std::sqrt(
                     std::max(
                         1.0f
                             - cosine * cosine,
                         0.0f));
+            // 方向を選ぶ方位角のラジアン
             const float angle =
                 RandomRange(
                     0.0f,
@@ -584,7 +606,9 @@ namespace LamaPon
             break;
         }
 
+        // 生成位置のワールド座標
         XMFLOAT3 position{};
+        // 正規化したワールド初速方向
         XMFLOAT3 direction{};
         XMStoreFloat3(
             &position,
@@ -599,6 +623,7 @@ namespace LamaPon
                     XMLoadFloat3(
                         &localDirection),
                     world)));
+        // 生成時に選ぶ毎秒の初速距離
         const float speed =
             RandomRange(
                 m_startSpeed.x,
@@ -639,14 +664,18 @@ namespace LamaPon
             return;
         }
 
+        // カメラのワールド行列
         const XMMATRIX inverseView =
             XMMatrixInverse(nullptr, view);
+        // カメラのワールド右方向
         const XMVECTOR cameraRight =
             XMVector3Normalize(
                 inverseView.r[0]);
+        // カメラのワールド上方向
         const XMVECTOR cameraUp =
             XMVector3Normalize(
                 inverseView.r[1]);
+        // カメラのワールド位置
         XMFLOAT3 cameraPosition{};
         XMStoreFloat3(
             &cameraPosition,
@@ -660,21 +689,25 @@ namespace LamaPon
             std::size_t{});
         if (!m_additive)
         {
+            // カメラから遠い粒子を先に並べる(left: 左の比較粒子の番号, right: 右の比較粒子の番号)。
             std::ranges::sort(
                 m_renderOrder,
                 [this, cameraPosition](
                     const std::size_t left,
                     const std::size_t right)
                 {
+                    // 比較用のカメラ位置ベクトル
                     const XMVECTOR camera =
                         XMLoadFloat3(
                             &cameraPosition);
+                    // 左の比較粒子までの変位
                     const XMVECTOR leftOffset =
                         XMVectorSubtract(
                             XMLoadFloat3(
                                 &m_particles[
                                     left].position),
                             camera);
+                    // 右の比較粒子までの変位
                     const XMVECTOR rightOffset =
                         XMVectorSubtract(
                             XMLoadFloat3(
@@ -690,25 +723,31 @@ namespace LamaPon
                 });
         }
 
+        // キャッシュする全粒子の頂点
         auto& renderVertices = m_renderData->vertices;
         renderVertices.clear();
+        // 描く粒子の格納番号
         for (const std::size_t particleIndex :
             m_renderOrder)
         {
+            // 更新または描画する生存粒子
             const auto& particle =
                 m_particles[particleIndex];
+            // 寿命全体に対する経過割合
             const float normalizedAge =
                 std::clamp(
                     particle.age
                         / particle.lifetime,
                     0.0f,
                     1.0f);
+            // 寿命割合で補間した一辺の長さ
             const float size =
                 particle.startSize
                 * (1.0f
                     + (m_endSizeMultiplier
                         - 1.0f)
                         * normalizedAge);
+            // 寿命割合で補間したRGBA
             const XMFLOAT4 color{
                 m_startColor.x
                     + (m_endColor.x
@@ -727,26 +766,31 @@ namespace LamaPon
                         - m_startColor.w)
                         * normalizedAge
             };
+            // 角度の余弦
             const float cosine =
                 std::cos(
                     particle.rotation);
+            // 角度の正弦
             const float sine =
                 std::sin(
                     particle.rotation);
-            // 原作の地面エフェクトはXZ平面に置かれるため、
-            // BillboardとHorizontalで回転の基準軸を切り替えます。
+            // XZ平面とカメラ平面では回転の基準軸と正弦項の符号を切り替える。
+            // 板の回転前の右方向
             const XMVECTOR baseRight =
                 m_renderMode
                     == ParticleRenderMode::Horizontal
                 ? g_XMIdentityR0
                 : cameraRight;
+            // 板の回転前の上方向
             const XMVECTOR baseUp =
                 m_renderMode
                     == ParticleRenderMode::Horizontal
                 ? g_XMIdentityR2
                 : cameraUp;
+            // 板がワールドXZ平面にあるか
             const bool horizontal = m_renderMode
                 == ParticleRenderMode::Horizontal;
+            // 面内回転後の右方向
             const XMVECTOR rotatedRight =
                 XMVectorAdd(
                     XMVectorScale(
@@ -755,6 +799,7 @@ namespace LamaPon
                     XMVectorScale(
                         baseUp,
                         horizontal ? -sine : sine));
+            // 面内回転後の上方向
             const XMVECTOR rotatedUp =
                 XMVectorAdd(
                     XMVectorScale(
@@ -763,17 +808,21 @@ namespace LamaPon
                     XMVectorScale(
                         baseUp,
                         cosine));
+            // 粒子中心のワールド位置
             const XMVECTOR center =
                 XMLoadFloat3(
                     &particle.position);
+            // 板の半幅を持つ右ベクトル
             const XMVECTOR right =
                 XMVectorScale(
                     rotatedRight,
                     size * 0.5f);
+            // 板の半高を持つ上ベクトル
             const XMVECTOR up =
                 XMVectorScale(
                     rotatedUp,
                     size * 0.5f);
+            // 粒子の板のワールド座標の四隅
             XMFLOAT3 corners[4]{};
             XMStoreFloat3(
                 &corners[0],
@@ -825,13 +874,16 @@ namespace LamaPon
             });
         }
 
+        // 粒子画像のGPU資源の借用
         const auto textureResources = m_texture
             ? m_texture->resources.Acquire()
             : nullptr;
+        // 補助画像のGPU資源の借用
         const auto auxiliaryTextureResources =
             m_auxiliaryTexture
                 ? m_auxiliaryTexture->resources.Acquire()
                 : nullptr;
+        // 全粒子の描画指定
         ParticleDrawRequest request;
         request.vertices =
             std::span<const ParticleRenderVertex>{ renderVertices };

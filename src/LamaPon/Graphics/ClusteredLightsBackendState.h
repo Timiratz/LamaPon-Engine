@@ -1,7 +1,5 @@
 #pragma once
 
-// ClusteredLightsの公開レイアウトからBackend stateを隠すための
-// Runtime内部ヘッダーです。SDKにはインストールしません。
 #include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <memory>
@@ -13,25 +11,32 @@ namespace LamaPon
 
 namespace LamaPon::Detail
 {
-    // 描画APIに依存しない出力状態です。3本のviewは同じBackend世代で
-    // 全て作成できた後にだけ、具象stateと一緒に公開します。
+    // 全ビューを同じバックエンド世代で作成してから公開する出力状態。
     struct ClusteredLightsBackendState
     {
+        // 派生側を含むバックエンド資源を解放する。
         virtual ~ClusteredLightsBackendState() noexcept = default;
 
+        // ライト情報の読込ビュー
         GraphicsViewHandle m_lightView;
+        // クラスタ別ライト索引のビュー
         GraphicsViewHandle m_indexListView;
+        // クラスタ別ライト数のビュー
         GraphicsViewHandle m_countView;
+        // 資源初期化の完了有無
         bool m_initialized{};
     };
 
-    // Backend実装だけがopaque stateを参照・公開するための内部bridgeです。
+    // バックエンド状態の参照・公開用の内部窓口。
     struct ClusteredLightsBackendAccess final
     {
+        // 所有する状態を借用し、未公開ならヌルを返す(clusteredLights: 参照する公開窓口)。
         [[nodiscard]] static ClusteredLightsBackendState*
             Get(ClusteredLights& clusteredLights) noexcept;
+        // 所有する状態を読取専用で借用し、未公開ならヌルを返す(clusteredLights: 参照する公開窓口)。
         [[nodiscard]] static const ClusteredLightsBackendState*
             Get(const ClusteredLights& clusteredLights) noexcept;
+        // 状態の所有権を公開窓口へ移し、既存状態を解放する(clusteredLights: 公開する窓口, state: 完成したバックエンド状態)。
         static void Publish(
             ClusteredLights& clusteredLights,
             std::unique_ptr<ClusteredLightsBackendState> state) noexcept;

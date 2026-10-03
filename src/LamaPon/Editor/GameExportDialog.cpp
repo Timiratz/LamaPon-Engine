@@ -10,6 +10,7 @@ namespace LamaPon
 {
     void GameExportDialog::SetPath(const std::filesystem::path& path)
     {
+        // 編集バッファに移す出力パス
         const auto utf8 = PathToUtf8(path);
         strncpy_s(m_path.data(), m_path.size(), utf8.c_str(), _TRUNCATE);
     }
@@ -22,6 +23,7 @@ namespace LamaPon
     void GameExportDialog::SelectTarget(const GameExportTarget target)
     {
         if (m_web.Running() || target == m_target) return;
+        // 切替前の形式の既定出力先
         const auto oldDefault = m_projectRoot / L"dist"
             / (m_target == GameExportTarget::Windows ? L"LamaPonGame" : L"LamaPonWeb");
         m_target = target;
@@ -46,10 +48,12 @@ namespace LamaPon
             m_completedOutput.clear();
             try
             {
+                // 読込または入力したWeb出力ツール
                 const auto tools = LoadWebExportTools();
                 strncpy_s(m_python.data(), m_python.size(), PathToUtf8(tools.python).c_str(), _TRUNCATE);
                 strncpy_s(m_emsdk.data(), m_emsdk.size(), PathToUtf8(tools.emsdk).c_str(), _TRUNCATE);
             }
+            // 設定読込またはフォルダー参照の失敗理由
             catch (const std::exception& error) { m_error = error.what(); }
         }
         m_requested = true;
@@ -63,14 +67,14 @@ namespace LamaPon
             m_success.clear();
             m_completedOutput.clear();
             if (m_path[0] == '\0') throw std::runtime_error("出力先フォルダーを指定してください。");
-            // Windows/Webのどちらも配布物です。ローカル開発用HTTPを
-            // 有効なオンライン設定と一緒に外へ出しません。
+            // 配布物に開発用HTTP設定を混ぜないようWindows・Webとも配布設定として検証する。
             ValidateProjectSettings(
                 context.settings,
                 ProjectSettingsFileType::GamePackage);
             context.prepareScene();
             if (m_target == GameExportTarget::Web)
             {
+                // 読込または入力したWeb出力ツール
                 const WebExportTools tools{PathFromUtf8(m_python.data()), PathFromUtf8(m_emsdk.data())};
                 SaveWebExportTools(tools);
                 m_web.Start(context.engineRoot, context.projectFile, OutputDirectory(), tools);
@@ -78,6 +82,7 @@ namespace LamaPon
             }
             else
             {
+                // Windows配布物の出力と署名設定
                 GameExportOptions options{context.runtimeDirectory, context.assetDirectory,
                     OutputDirectory(), context.settings,
                     m_projectRoot / L".lamapon" / L"bin" / L"LamaPonGameModule.dll"};
@@ -92,6 +97,7 @@ namespace LamaPon
                     options.signing.timestampUrl =
                         m_timestampUrl.data();
                 }
+                // Windowsパッケージの出力結果
                 const auto result = ExportGamePackage(options);
                 m_completedOutput = result.outputDirectory;
                 m_success = "Windows（EXE）の出力が完了しました: " + PathToUtf8(result.executablePath);
@@ -100,6 +106,7 @@ namespace LamaPon
                 context.setStatus(m_success, false);
             }
         }
+        // 出力準備または配布物生成の失敗理由
         catch (const std::exception& error)
         {
             m_error = error.what();
@@ -123,11 +130,13 @@ namespace LamaPon
                 context.setStatus("Web出力に失敗しました: " + m_error, true);
             }
         }
+        // 出力ダイアログのImGui ID
         constexpr auto popup = "ゲームをエクスポート##GameExport";
         if (m_requested) { ImGui::OpenPopup(popup); m_requested = false; }
         ImGui::SetNextWindowSize(ImVec2{740.0f, 0.0f}, ImGuiCond_Appearing);
         if (!ImGui::BeginPopupModal(popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 710.0f);
+        // Web出力を実行中か
         const bool busy = m_web.Running();
         ImGui::BeginDisabled(busy);
         ImGui::TextUnformatted("出力形式");
@@ -144,10 +153,13 @@ namespace LamaPon
         {
             try
             {
+                // フォルダー参照の初期表示先
                 auto initial = OutputDirectory();
                 if (!std::filesystem::is_directory(initial)) initial = initial.parent_path();
+                // 選択した出力先またはSDKパス
                 if (const auto selected = context.browse(initial)) SetPath(*selected);
             }
+            // 設定読込またはフォルダー参照の失敗理由
             catch (const std::exception& error) { m_error = error.what(); }
         }
         ImGui::Text("ゲーム名: %s", context.settings.gameName.c_str());
@@ -166,9 +178,11 @@ namespace LamaPon
                 {
                     try
                     {
+                        // 選択した出力先またはSDKパス
                         if (const auto selected = context.browse(PathFromUtf8(m_emsdk.data())))
                             strncpy_s(m_emsdk.data(), m_emsdk.size(), PathToUtf8(*selected).c_str(), _TRUNCATE);
                     }
+                    // SDKフォルダー参照の失敗理由
                     catch (const std::exception& error) { m_error = error.what(); }
                 }
                 ImGui::SetNextItemWidth(510.0f);

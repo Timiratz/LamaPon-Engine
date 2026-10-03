@@ -23,11 +23,13 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // 最近のプロジェクトの上限
     constexpr std::size_t MaximumRecentProjects = 20;
 
     class ProjectCreationRollback final
     {
     public:
+        // 生成失敗時の保存先削除を準備する(projectRoot: 保存先, restoreEmptyDirectory: 既存の空フォルダーを戻すか)。
         ProjectCreationRollback(
             std::filesystem::path projectRoot,
             const bool restoreEmptyDirectory)
@@ -36,6 +38,7 @@ namespace
         {
         }
 
+        // 未確定なら保存先を削除し、元の空フォルダーの再作成を試みる。
         ~ProjectCreationRollback()
         {
             if (m_committed)
@@ -43,6 +46,7 @@ namespace
                 return;
             }
 
+            // ファイル操作のエラー
             std::error_code error;
             std::filesystem::remove_all(m_projectRoot, error);
             if (m_restoreEmptyDirectory)
@@ -54,25 +58,34 @@ namespace
             }
         }
 
+        // 複製を禁止する。
         ProjectCreationRollback(
             const ProjectCreationRollback&) = delete;
+        // 複製代入を禁止する。
         ProjectCreationRollback& operator=(
             const ProjectCreationRollback&) = delete;
 
+        // 保存先を確定し、破棄時の削除を止める。
         void Commit() noexcept
         {
             m_committed = true;
         }
 
     private:
+        // 失敗時に削除する保存先
         std::filesystem::path m_projectRoot;
+        // 元の空フォルダーを戻すか
         bool m_restoreEmptyDirectory{};
+        // 生成が完了したか
         bool m_committed{};
     };
 
+    // Windows既知フォルダーを取得し、未作成なら作成する(id: フォルダーID)。
     std::filesystem::path KnownFolder(const KNOWNFOLDERID& id)
     {
+        // Windowsが確保したフォルダーパス
         PWSTR value{};
+        // フォルダー取得結果
         const HRESULT result = SHGetKnownFolderPath(
             id,
             KF_FLAG_CREATE,
@@ -87,26 +100,34 @@ namespace
             throw std::runtime_error(
                 "Windows known folder could not be resolved.");
         }
+        // 処理対象の保存パス
         const std::filesystem::path path{ value };
         CoTaskMemFree(value);
         return path;
     }
 
+    // 絶対パスを正規化し、可能なら実体パスへ解決する(path: 対象パス)。
     std::filesystem::path Normalize(
         const std::filesystem::path& path)
     {
+        // 字句正規化した絶対パス
         const auto absolute =
             std::filesystem::absolute(path).lexically_normal();
+        // ファイル操作のエラー
         std::error_code error;
+        // 実体へ解決したパス
         const auto canonical =
             std::filesystem::weakly_canonical(absolute, error);
         return error ? absolute : canonical;
     }
 
+    // 比較用に正規化したパスを小文字化する(path: 対象パス)。
     std::wstring ComparisonKey(
         const std::filesystem::path& path)
     {
+        // 大小文字を揃えた比較用パス
         auto key = Normalize(path).native();
+        // パス文字を小文字へ変換する(value: パス内の文字)。
         std::transform(
             key.begin(),
             key.end(),
@@ -118,11 +139,13 @@ namespace
         return key;
     }
 
+    // JSONを上書き保存する(path: 保存先, value: 保存内容)。
     void WriteJson(
         const std::filesystem::path& path,
         const Json& value)
     {
         std::filesystem::create_directories(path.parent_path());
+        // 保存先の出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -141,11 +164,13 @@ namespace
         }
     }
 
+    // テキストを上書き保存する(path: 保存先, value: 保存内容)。
     void WriteText(
         const std::filesystem::path& path,
         const std::string_view value)
     {
         std::filesystem::create_directories(path.parent_path());
+        // 保存先の出力
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -166,13 +191,16 @@ namespace
         }
     }
 
+    // 実行ファイル同梱アセットをプロジェクトへコピーする(projectRoot: プロジェクトルート, relativePath: assets内の相対パス)。
     void CopyBuiltInAsset(
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& relativePath)
     {
+        // 同梱アセットのコピー元
         const auto source = LamaPon::ExecutableDirectory()
             / L"assets"
             / relativePath;
+        // アセットのコピー先
         const auto destination = projectRoot
             / L"assets"
             / relativePath;
@@ -184,6 +212,7 @@ namespace
         }
 
         std::filesystem::create_directories(destination.parent_path());
+        // ファイル操作のエラー
         std::error_code error;
         std::filesystem::copy_file(
             source,
@@ -200,6 +229,7 @@ namespace
         }
     }
 
+    // TransformのJSONを組み立てる(position: 位置, rotation: オイラー角, scale: 倍率)。
     Json Transform(
         Json position = Json::array({ 0.0, 0.0, 0.0 }),
         Json rotation = Json::array({ 0.0, 0.0, 0.0 }),
@@ -212,7 +242,9 @@ namespace
         };
     }
 
+    // 有効なGameObjectのJSONを組み立てる(id: Object ID, name: 表示名, transform: Transform JSON, components: Component配列, parent: 親Object IDまたはnull)。
     Json Object(
+        // 確認対象の親フォルダー
         const std::uint64_t id,
         std::string name,
         Json transform,
@@ -229,6 +261,7 @@ namespace
         };
     }
 
+    // 既定の透視CameraのJSONを返す。
     Json CameraComponent()
     {
         return {
@@ -240,6 +273,7 @@ namespace
         };
     }
 
+    // 既定環境と空のObject配列を持つScene JSONを返す。
     Json BaseScene()
     {
         return {
@@ -331,8 +365,10 @@ namespace
         };
     }
 
+    // CameraとSpriteを持つ2Dテンプレートを返す。
     Json TwoDimensionalScene()
     {
+        // 生成するScene JSON
         Json scene = BaseScene();
         scene["mainCamera"] = 2;
         scene["environment"]["sky"]["enabled"] = false;
@@ -382,8 +418,10 @@ namespace
         return scene;
     }
 
+    // Camera・光源・Cube・地面を持つ3Dテンプレートを返す。
     Json ThreeDimensionalScene()
     {
+        // 生成するScene JSON
         Json scene = BaseScene();
         scene["mainCamera"] = 2;
         scene["objects"].push_back(Object(
@@ -474,17 +512,16 @@ namespace
         return scene;
     }
 
-    // 最初からゲーム制作を試せる学習シーンです。移動はRuntime内蔵の
-    // InputMoverなので、C++ Game Moduleの初回ビルド前でも試せます。
-    // LearningPlayerは回転とJumpの反応だけを担当し、ビルド後に自然に
-    // 機能が増える構成にしています。
+    // 3DテンプレートへPlayer・Goal・障害物を追加する。
     Json LearningThreeDimensionalScene()
     {
+        // 生成するScene JSON
         Json scene = ThreeDimensionalScene();
         scene["objects"].at(1)["transform"] = Transform(
             { 0.0, 6.2, 9.2 },
             { -0.52, 0.0, 0.0 });
 
+        // 学習用PlayerのObject JSON
         auto& player = scene["objects"].at(3);
         player["name"] = "Player";
         player["transform"] = Transform({ -3.0, 0.55, 2.0 });
@@ -574,11 +611,12 @@ namespace
         return scene;
     }
 
-    // 2D版の学習シーンです。通常の2Dテンプレートを土台に、
-    // 学習用のPlayerとGoalを置いてゲーム制作をすぐ試せるようにします。
+    // 2Dテンプレートへ学習用PlayerとGoalを配置する。
     Json LearningTwoDimensionalScene()
     {
+        // 生成するScene JSON
         Json scene = TwoDimensionalScene();
+        // 学習用PlayerのObject JSON
         auto& player = scene["objects"].at(2);
         player["name"] = "Player";
         player["transform"] = Transform({ -2.0, 0.0, 0.0 });
@@ -601,6 +639,7 @@ namespace
         return scene;
     }
 
+    // 指定テンプレートのScene JSONを返す(projectTemplate: テンプレート種別)。
     Json SceneForTemplate(
         const LamaPon::Hub::ProjectTemplate projectTemplate)
     {
@@ -618,18 +657,20 @@ namespace
         }
     }
 
-    // hub.jsonを読み込みます。壊れている・形式が違う場合は
-    // 空の有効ドキュメントを返します。recentProjects以外のキー
-    // （スキップしたバージョン等）を保存時に失わないための共通入口です。
+    // Hub設定を読み、解析・形式の不一致は空の設定へ戻す。
     Json LoadSettingsDocument()
     {
+        // 処理対象の保存パス
         const auto path = LamaPon::Hub::SettingsPath();
         if (std::filesystem::is_regular_file(path))
         {
             try
             {
+                // Hub設定の入力
                 std::ifstream input(path, std::ios::binary);
+                // Hub設定のJSON
                 Json document;
+                // Hub設定のJSON
                 input >> document;
                 if (document.is_object()
                     && document.value("format", std::string{})
@@ -649,11 +690,14 @@ namespace
         };
     }
 
+    // 他のHub設定キーを保って最近の一覧を保存する(paths: 登録順のルート一覧)。
     void SaveRecentPaths(
         const std::vector<std::filesystem::path>& paths)
     {
+        // Hub設定のJSON
         auto document = LoadSettingsDocument();
         document["recentProjects"] = Json::array();
+        // 処理対象の保存パス
         for (const auto& path : paths)
         {
             document["recentProjects"].push_back(
@@ -662,10 +706,14 @@ namespace
         WriteJson(LamaPon::Hub::SettingsPath(), document);
     }
 
+    // Hub設定から保存順のプロジェクトパスを読む。
     std::vector<std::filesystem::path> LoadRecentPaths()
     {
+        // Hub設定のJSON
         const auto document = LoadSettingsDocument();
+        // 保存順のプロジェクトパス
         std::vector<std::filesystem::path> result;
+        // 保存済みのルート文字列
         for (const auto& value : document.value(
             "recentProjects",
             Json::array()))
@@ -698,6 +746,7 @@ namespace LamaPon::Hub
 
     void SaveSkippedUpdateVersion(const std::string& version)
     {
+        // Hub設定のJSON
         auto document = LoadSettingsDocument();
         document["skippedUpdateVersion"] = version;
         WriteJson(SettingsPath(), document);
@@ -714,6 +763,7 @@ namespace LamaPon::Hub
     void SaveLastProjectLocation(
         const std::filesystem::path& location)
     {
+        // Hub設定のJSON
         auto document = LoadSettingsDocument();
         document["lastProjectLocation"] =
             LamaPon::PathToUtf8(location);
@@ -741,15 +791,15 @@ namespace LamaPon::Hub
             projectRoot / L".lamapon" / L"project.json").gameName;
     }
 
+    // 親を辿ってLamaPonソース配下か調べる(requestedPath: 確認するパス)。
     bool IsInsideEngineSourceTree(
         const std::filesystem::path& requestedPath)
     {
+        // 親を辿る確認対象フォルダー
         auto candidate = Normalize(requestedPath);
         while (!candidate.empty())
         {
-            // 単なるCMakeプロジェクトを誤検出しないよう、LamaPon固有の
-            // ソースを2か所確認します。まだ存在しない子フォルダーでも
-            // weakly_canonical済みの親を辿るため検出できます。
+            // CMakeListsに加えLamaPon固有のソース2か所を確認する。
             if (std::filesystem::is_regular_file(
                     candidate / L"CMakeLists.txt")
                 && std::filesystem::is_regular_file(
@@ -761,6 +811,7 @@ namespace LamaPon::Hub
             {
                 return true;
             }
+            // 確認対象の親フォルダー
             const auto parent = candidate.parent_path();
             if (parent == candidate)
             {
@@ -771,6 +822,7 @@ namespace LamaPon::Hub
         return false;
     }
 
+    // 空の保存先にプロジェクトを生成する(requestedProjectRoot: 保存先, projectName: ゲーム名, projectTemplate: 初期教材の種類, allowInsideEngineSource: エンジン配下への作成を許すか)。
     void CreateProject(
         const std::filesystem::path& requestedProjectRoot,
         const std::string& projectName,
@@ -782,6 +834,7 @@ namespace LamaPon::Hub
             throw std::invalid_argument(
                 "Project name must not be empty.");
         }
+        // 正規化した生成先
         const auto projectRoot = Normalize(requestedProjectRoot);
         if (!allowInsideEngineSource
             && IsInsideEngineSourceTree(projectRoot))
@@ -792,6 +845,7 @@ namespace LamaPon::Hub
                 " engine repository instead: "
                 + PathToUtf8(projectRoot));
         }
+        // 生成先が元から存在したか
         const bool projectRootExisted =
             std::filesystem::exists(projectRoot);
         if (projectRootExisted
@@ -802,14 +856,10 @@ namespace LamaPon::Hub
                 + PathToUtf8(projectRoot));
         }
 
+        // 生成するプロジェクト設定
         ProjectSettings settings;
         settings.gameName = projectName;
         settings.startupScene = L"scenes/Main.scene.json";
-        // 新しいプロジェクトでは、シーン移動を短いフェードでつなぎます
-        // （既存プロジェクトは設定が無いので従来どおり切り替えます）。
-        settings.sceneTransition = MakeSceneTransition(
-            SceneTransitionEffect::Fade,
-            0.3f);
         if (projectTemplate == ProjectTemplate::TwoDimensional
             || projectTemplate
                 == ProjectTemplate::LearningTwoDimensional)
@@ -820,22 +870,17 @@ namespace LamaPon::Hub
         }
         ValidateProjectSettings(settings);
 
+        // 未完了時の保存先削除管理
         ProjectCreationRollback rollback{
             projectRoot,
             projectRootExisted
         };
 
-        // 生成するのは必要なものだけにします（scenes=起動シーン、
-        // shaders=描画本体のLit/Environment、Light2D用のSpriteLit、
-        // Sprite Mask用のSpriteMask、「新規カスタムShader」の雛形になる
-        // CustomMaterial）。空の3D/2Dではscripts/textures等のフォルダーを
-        // 作らず、必要になったときにAsset Browserから追加できます。
-        // 学習テンプレートだけは、この共通部分の後で教材と最初の
-        // C++スクリプトを追加します。
+        // 学習テンプレートの教材は共通アセットの生成後に追加する。
         std::filesystem::create_directories(
             projectRoot / L"assets" / L"scenes");
-        // 新規作成と既存プロジェクトの更新で同じ組み込みアセット一覧を
-        // 使用します。
+
+        // コピーする同梱アセットのパス
         for (const auto& relative :
             LamaPon::BuiltInProjectAssets())
         {
@@ -846,16 +891,14 @@ namespace LamaPon::Hub
             projectRoot / L".lamapon" / L"project.json",
             settings,
             ProjectSettingsFileType::Project);
-        // 作った直後のプロジェクトにエンジンバージョンを記録します。
-        // 記録が無いと、最初に開いたときに旧版として判定されます。
+        // 初回起動で旧版と判定されないよう、生成時の版を記録する。
         RecordProjectEngineVersion(
             projectRoot,
             VersionString);
         WriteJson(
             projectRoot / L"assets" / L"scenes" / L"Main.scene.json",
             SceneForTemplate(projectTemplate));
-        // Gitで共有するproject.jsonを除き、.lamapon内の端末固有データ
-        // （レイアウト、ログ、ビルド生成物）を除外します。
+        // project.jsonと教材を共有し、端末固有の進捗・ログ・生成物は除外する。
         WriteText(
             projectRoot / L".gitignore",
             ".lamapon/editor-settings.json\n"
@@ -863,32 +906,22 @@ namespace LamaPon::Hub
             ".lamapon/LamaPonEditor.log\n"
             ".lamapon/bin/\n"
             ".lamapon/build/\n"
-            // GPUプロファイラーが出力する端末固有の計測値。
             ".lamapon/profile.json\n"
-            // プロファイラーとメモリプロファイラーが保存する解析の記録。
             ".lamapon/profiles/\n"
             ".lamapon/memory/\n"
-            // C++ Game Moduleのビルドログ。
             ".lamapon/game-module-build.log\n"
-            // パッケージ更新前に作る1世代分のバックアップ。
             ".lamapon/package-backups/\n"
-            // 実行した端末のクラッシュダンプ。
             ".lamapon/Crashes/\n"
-            // CLIの非同期実行・常駐Runtimeが作るセッション記録。
             ".lamapon/jobs/\n"
             ".lamapon/runtime/\n"
-            // 学習教材は共有し、完了状態と選んだ役割だけを各PCに
-            // 保持します。
             ".lamapon/learning-progress.json\n"
             "build/\n"
             "dist/\n"
-            // 自動撮影やテスト補助スクリプトの生成物。
             "captures/\n"
             "tests/output/\n"
             "__pycache__/\n"
             ".pytest_cache/\n"
             "*.py[cod]\n"
-            // プロジェクト移行時に作る組み込みアセットのバックアップ。
             "*.bak\n");
         if (projectTemplate == ProjectTemplate::LearningThreeDimensional
             || projectTemplate == ProjectTemplate::LearningTwoDimensional)
@@ -920,11 +953,16 @@ namespace LamaPon::Hub
 
     std::vector<RecentProject> LoadRecentProjects()
     {
+        // 返す最近のプロジェクト一覧
         std::vector<RecentProject> projects;
+        // 登録済みの比較用パス
         std::vector<std::wstring> keys;
+        // Hub設定内の保存済みパス
         for (const auto& storedPath : LoadRecentPaths())
         {
+            // 処理対象の保存パス
             const auto path = Normalize(storedPath);
+            // 大小文字を揃えた比較用パス
             const auto key = ComparisonKey(path);
             if (!IsProject(path)
                 || std::find(keys.begin(), keys.end(), key)
@@ -951,14 +989,18 @@ namespace LamaPon::Hub
     void AddRecentProject(
         const std::filesystem::path& projectRoot)
     {
+        // 正規化した登録対象パス
         const auto normalized = Normalize(projectRoot);
         if (!IsProject(normalized))
         {
             throw std::runtime_error(
                 "The selected folder is not a LamaPon project.");
         }
+        // 登録・削除対象の比較用パス
         const auto selectedKey = ComparisonKey(normalized);
+        // 保存する最近のルート一覧
         std::vector<std::filesystem::path> paths{ normalized };
+        // 処理対象の保存パス
         for (const auto& path : LoadRecentPaths())
         {
             if (ComparisonKey(path) != selectedKey
@@ -977,8 +1019,11 @@ namespace LamaPon::Hub
     void RemoveRecentProject(
         const std::filesystem::path& projectRoot)
     {
+        // 登録・削除対象の比較用パス
         const auto selectedKey = ComparisonKey(projectRoot);
+        // 保存する最近のルート一覧
         std::vector<std::filesystem::path> paths;
+        // 処理対象の保存パス
         for (const auto& path : LoadRecentPaths())
         {
             if (ComparisonKey(path) != selectedKey)
