@@ -788,17 +788,18 @@ namespace LamaPon
             / L"LamaPonGameModule.dll";
         command.usesLocalBuildCache =
             ShouldUseLocalGameModuleBuildCache(projectRoot);
+        // 最適化設定ごとに中間ファイルを分離
+        const auto buildDirectoryName = fastBuild
+            ? L"game-module" : L"game-module-optimized";
         command.buildDirectory = command.usesLocalBuildCache
             ? LocalBuildCacheRoot()
                 / ProjectCacheKey(projectRoot)
                 / Utf8ToWide(configuration)
-                / L"game-module"
-            : lamaponDirectory / L"build" / L"game-module";
-        // ビルド中のDLL出力先
+                / buildDirectoryName
+            : lamaponDirectory / L"build" / buildDirectoryName;
+        // 各モードが再利用するDLL出力先
         const auto workingOutputDirectory =
-            command.usesLocalBuildCache
-                ? command.buildDirectory.parent_path() / L"bin"
-                : command.outputModule.parent_path();
+            command.buildDirectory / L"bin";
         // ビルド中のログ出力先
         const auto workingLogPath = command.usesLocalBuildCache
             ? command.buildDirectory.parent_path()
@@ -923,6 +924,20 @@ namespace LamaPon
                 + command.logPath.wstring()
                 + L"\" > nul 2>&1"
                 L" & exit /b !lamapon_build_exit!\"";
+        }
+        else
+        {
+            // 再リンクなしでも選択モードのDLLを配置します。
+            command.parameters +=
+                L" && cmake -E make_directory \""
+                + command.outputModule.parent_path().wstring()
+                + L"\" && cmake -E copy_if_different \""
+                + (workingOutputDirectory / L"LamaPonGameModule.dll").wstring()
+                + L"\" \""
+                + command.outputModule.wstring()
+                + L"\" >> "
+                + quotedLogPath
+                + L" 2>&1";
         }
         return command;
     }

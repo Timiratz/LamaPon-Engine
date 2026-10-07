@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Scripting/GameModuleHost.h"
+#include "LamaPon/Scripting/Script.h"
 
 #include <nlohmann/json.hpp>
 
@@ -180,6 +181,29 @@ namespace LamaPon
         DestroyInstance();
         m_propertiesJson = std::move(propertiesJson);
         EnsureInstance();
+    }
+
+    void NativeScriptComponent::ApplyPropertiesJsonLive(std::string propertiesJson)
+    {
+        ValidateProperties(propertiesJson);
+        const auto schema = nlohmann::json::parse(PropertiesSchemaJson(), nullptr, false);
+        if (schema.is_discarded() || !schema.is_object()
+            || !schema.contains("liveEditable") || !schema["liveEditable"].is_boolean()
+            || !schema["liveEditable"].get<bool>())
+            throw std::invalid_argument("This script does not opt in to live property editing.");
+        auto* script = ScriptInstance();
+        if (script == nullptr)
+            throw std::runtime_error("The script instance is not available for live editing.");
+        try
+        {
+            script->LoadSerializedProperties(propertiesJson.c_str());
+        }
+        catch (...)
+        {
+            script->m_propertiesJson = m_propertiesJson;
+            throw;
+        }
+        m_propertiesJson = std::move(propertiesJson);
     }
 
     Script* NativeScriptComponent::ScriptInstance() const noexcept

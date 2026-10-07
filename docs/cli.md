@@ -27,13 +27,14 @@ LamaPonCli.exe prefab validate --project "C:\path\to\MyProject" --path prefabs/p
 LamaPonCli.exe patch --project "C:\path\to\MyProject" --scene scenes/main.scene.json --operations patch.json --dry-run
 LamaPonCli.exe test --project "C:\path\to\MyProject" --scene scenes/main.scene.json --spec scene.tests.json
 LamaPonCli.exe build --project "C:\path\to\MyProject"
+LamaPonCli.exe build --project "C:\path\to\MyProject" --optimized --config Release
 LamaPonCli.exe export --project "C:\path\to\MyProject" --zip
 ```
 
 - `new` は3D学習を既定で作ります（`--template 3d`／`2d`／`learning-3d`／`learning-2d`）
 - `learn` は学習進捗、役職、教材診断をJSONで扱います
 - `render` は `shot.png` にスクリーンショットを書き出します
-- `build` はC++ Game Moduleをビルドします。Release版CLIでは配布向けの全体最適化を使い、エディターの保存時ビルドでは共通ヘッダーの再利用と増分リンクを使います
+- `build` は編集向けの高速設定でC++ Game Moduleをビルドします。エディターと共通のプリコンパイル済みヘッダーとキャッシュを再利用し、Scriptの最適化を省いてコンパイル時間を短縮します。配布時や実行性能の測定には `build --optimized --config Release` を使ってください
 - `export` はエディターの「エクスポート」と同じ配布用パッケージを作ります
 - どのコマンドも標準出力にJSONのレポートが1つ出ます（下記）
 - 終了コードは 0=成功 / 1=失敗 です

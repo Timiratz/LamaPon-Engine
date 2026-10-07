@@ -23,6 +23,14 @@ namespace LamaPon
         workspace.id = "lamapon.workspace";
         workspace.displayName = "標準エディター";
         workspace.panels = {
+            // 登録したインスペクターを描画します(open: パネルの表示状態)。
+            EditorPanelDefinition{
+                std::string{ InspectorPanelId },
+                "インスペクター",
+                true,
+                true,
+                [this](bool& open) { DrawInspector(open); }
+            },
             // 登録したコンソールパネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ConsolePanelId },

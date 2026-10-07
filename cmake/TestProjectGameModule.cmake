@@ -15,22 +15,32 @@ foreach(requiredVariable
     endif()
 endforeach()
 
-file(REMOVE_RECURSE "${TEST_BUILD_DIR}" "${TEST_OUTPUT_DIR}")
-
-# fastBuild: 同じキャッシュで通常・高速・通常へ切り替える設定。
-foreach(fastBuild OFF ON OFF)
+# seen_ON/seen_OFF: 今回検証したモード。
+set(seen_ON FALSE)
+set(seen_OFF FALSE)
+# fastBuild: キャッシュを再利用して切り替えるモード。
+foreach(fastBuild ON OFF ON OFF)
+    # modeBuildDir/modeOutputDir: モード別の中間・DLL配置先。
+    set(modeBuildDir "${TEST_BUILD_DIR}/${fastBuild}")
+    set(modeOutputDir "${TEST_OUTPUT_DIR}/${fastBuild}")
+    # modulePath: キャッシュに保持するDLL。
+    set(modulePath "${modeOutputDir}/LamaPonGameModule.dll")
+    # previousModeTime: 他モードのビルド前に保持した時刻。
+    if(seen_${fastBuild})
+        file(TIMESTAMP "${modulePath}" previousModeTime "%s.%f")
+    endif()
     # configureResult/Output/Error: configure exit codeとdiagnostics。
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
             -S "${ENGINE_ROOT}/tools/ProjectGameModule"
-            -B "${TEST_BUILD_DIR}"
+            -B "${modeBuildDir}"
             -G "${TEST_GENERATOR}"
             "-DCMAKE_BUILD_TYPE=${TEST_BUILD_TYPE}"
             "-DLAMAPON_MODULE_FAST_BUILD:BOOL=${fastBuild}"
             "-DLAMAPON_ENGINE_ROOT:PATH=${ENGINE_ROOT}"
             "-DLAMAPON_PROJECT_ROOT:PATH=${PROJECT_ROOT}"
             "-DLAMAPON_RUNTIME_DIR:PATH=${RUNTIME_DIR}"
-            "-DLAMAPON_MODULE_OUTPUT_DIR:PATH=${TEST_OUTPUT_DIR}"
+            "-DLAMAPON_MODULE_OUTPUT_DIR:PATH=${modeOutputDir}"
             "-DLAMAPON_GENERATED_INCLUDE_DIR:PATH=${GENERATED_INCLUDE_DIR}"
         RESULT_VARIABLE configureResult
         OUTPUT_VARIABLE configureOutput
@@ -46,8 +56,8 @@ foreach(fastBuild OFF ON OFF)
     # buildResult/Output/Error: module build exit codeとdiagnostics。
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
-            --build "${TEST_BUILD_DIR}"
-            --target LamaPonGameModule
+            --build "${modeBuildDir}"
+            --target LamaPonGameModule --parallel 2
         RESULT_VARIABLE buildResult
         OUTPUT_VARIABLE buildOutput
         ERROR_VARIABLE buildError
@@ -59,8 +69,23 @@ foreach(fastBuild OFF ON OFF)
         )
     endif()
 
-    # modulePath: build artifactのexpected DLL path。
-    set(modulePath "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll")
+    # 他モードへの切り替えで再コンパイル・再リンクしないことを確認します。
+    if(seen_${fastBuild})
+        # reusedModeTime: 再利用後のDLL時刻。
+        file(TIMESTAMP "${modulePath}" reusedModeTime "%s.%f")
+        if(NOT previousModeTime STREQUAL reusedModeTime)
+            message(FATAL_ERROR "Switching modes rebuilt an unchanged cached module.")
+        endif()
+    endif()
+    set(seen_${fastBuild} TRUE)
+    # 選択モードのDLLを既定配置先へ戻し、キャッシュとの一致を確認します。
+    file(COPY_FILE "${modulePath}" "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll" ONLY_IF_DIFFERENT)
+    # cachedHash/deployedHash: キャッシュ・配置後の内容。
+    file(SHA256 "${modulePath}" cachedHash)
+    file(SHA256 "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll" deployedHash)
+    if(NOT cachedHash STREQUAL deployedHash)
+        message(FATAL_ERROR "The deployed module does not match the selected mode.")
+    endif()
     # module artifactの有無を確認します。
     if(NOT EXISTS "${modulePath}")
         message(FATAL_ERROR "Project Game Module DLL was not generated.")
@@ -68,7 +93,7 @@ foreach(fastBuild OFF ON OFF)
 
     # loadResult/Output/Error: module load probeの終了codeとdiagnostics。
     execute_process(
-        COMMAND "${TEST_LOADER}" "${modulePath}"
+        COMMAND "${TEST_LOADER}" "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll"
             "${ENGINE_ROOT}/packages/src/scene-transition-showcase"
             "${ENGINE_ROOT}/packages/src/network-session-workflow"
             "${ENGINE_ROOT}/packages/src/ollama-ai"
@@ -89,8 +114,8 @@ foreach(fastBuild OFF ON OFF)
     # moduleTimeBefore: 再ビルド前のDLL時刻。
     file(TIMESTAMP "${modulePath}" moduleTimeBefore "%s.%f")
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" --build "${TEST_BUILD_DIR}"
-            --target LamaPonGameModule
+        COMMAND "${CMAKE_COMMAND}" --build "${modeBuildDir}"
+            --target LamaPonGameModule --parallel 2
         RESULT_VARIABLE buildResult
         OUTPUT_VARIABLE buildOutput
         ERROR_VARIABLE buildError)

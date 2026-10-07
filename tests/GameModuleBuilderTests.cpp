@@ -204,7 +204,7 @@ int main()
         Require(
             command.parameters.find(L"LAMAPON_MODULE_FAST_BUILD:BOOL=OFF")
                 != std::wstring::npos,
-            "CLI and export builds must explicitly reset cached fast settings.");
+            "Optimized builds must explicitly select the distribution settings.");
         Require(
             fastCommand.outputModule == command.outputModule,
             "Fast builds must preserve the deployed module path.");
@@ -220,6 +220,38 @@ int main()
                     L"--parallel " + std::to_wstring(command.parallelJobs) + L" >> ")
                     != std::wstring::npos,
             "Cached CLI commands must enforce the same resource limit.");
+
+        // ローカルの配布向けコマンド
+        const auto optimizedCommand = LamaPon::MakeGameModuleBuildCommand(
+            project, engine, runtime, "Release", false);
+        Require(
+            fastCommand.buildDirectory != optimizedCommand.buildDirectory
+                && fastCommand.buildDirectory.filename() == L"game-module"
+                && optimizedCommand.buildDirectory.filename() == L"game-module-optimized",
+            "Iteration and optimized builds must not invalidate each other's cache.");
+        Require(
+            fastCommand.parameters.find(L" && cmake -E copy_if_different ")
+                != std::wstring::npos
+                && optimizedCommand.parameters.find(L" && cmake -E copy_if_different ")
+                != std::wstring::npos,
+            "Local builds must deploy their cached DLL even without a relink.");
+        Require(
+            SetEnvironmentVariableW(L"LAMAPON_GAME_MODULE_CACHE_ROOT", cache.c_str()) != FALSE,
+            "Could not restore the test cache root.");
+        // ネットワーク用キャッシュの編集向けコマンド
+        const auto cachedFastCommand = LamaPon::MakeGameModuleBuildCommand(
+            project, engine, runtime, "Release", true);
+        static_cast<void>(SetEnvironmentVariableW(L"LAMAPON_GAME_MODULE_CACHE_ROOT", nullptr));
+        Require(
+            cachedFastCommand.buildDirectory != command.buildDirectory
+                && cachedFastCommand.buildDirectory.parent_path() == command.buildDirectory.parent_path(),
+            "External caches must also isolate the build modes.");
+        Require(
+            cachedFastCommand.parameters.find(
+                (cachedFastCommand.buildDirectory / L"bin").wstring()) != std::wstring::npos
+                && command.parameters.find(
+                    (command.buildDirectory / L"bin").wstring()) != std::wstring::npos,
+            "Each external cache must retain its own compiled DLL.");
 
         // staleness判定に使うGame Module source
         const auto source = project / L"assets" / L"scripts"

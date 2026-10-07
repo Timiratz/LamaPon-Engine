@@ -199,6 +199,15 @@ target_link_options(LamaPonGameModule PRIVATE
     $<$<CONFIG:Release>:/PDBALTPATH:LamaPonGameModule.pdb>
 )
 if(LAMAPON_MODULE_FAST_BUILD)
+    # configuration: 編集時に最適化を省く構成。
+    foreach(configuration RELEASE RELWITHDEBINFO MINSIZEREL)
+        string(REGEX REPLACE "(^|[ \t])[/-]O[12xs]([ \t]|$)" "\\1\\2"
+            CMAKE_CXX_FLAGS_${configuration} "${CMAKE_CXX_FLAGS_${configuration}}")
+        string(REGEX REPLACE "(^|[ \t])[/-]Ob[123]([ \t]|$)" "\\1\\2"
+            CMAKE_CXX_FLAGS_${configuration} "${CMAKE_CXX_FLAGS_${configuration}}")
+    endforeach()
+    # RuntimeとのABIを維持し、Scriptだけ最適化を省きます。
+    target_compile_options(LamaPonGameModule PRIVATE /Od /Ob0)
     target_precompile_headers(LamaPonGameModule PRIVATE
         "${LAMAPON_ENGINE_ROOT}/src/LamaPon/LamaPon.h")
     target_link_options(LamaPonGameModule PRIVATE

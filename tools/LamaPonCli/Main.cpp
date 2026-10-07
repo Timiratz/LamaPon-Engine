@@ -5911,6 +5911,8 @@ namespace
         // configuration: CLIと一致させるRelease/Debug構成。
         std::string configuration{
             LAMAPON_BUILD_CONFIGURATION };
+        // 配布向け最適化を有効にするか
+        bool optimized{};
     };
     // LooksLikeValidUtf8(bytes: 検査するbyte列): UTF-8として妥当か返します。
     [[nodiscard]] bool LooksLikeValidUtf8(
@@ -6152,16 +6154,19 @@ namespace
                 projectRoot,
                 engineRoot,
                 LamaPon::ExecutableDirectory(),
-                options.configuration);
+                options.configuration,
+                !options.optimized);
         Progress(
             "build: "
             + LamaPon::PathToUtf8(
                 buildCommand.outputModule));
-        // touchedStaleSources: timestampに頼らず再build対象にしたsource数。
-        const int touchedStaleSources =
-            LamaPon::RefreshStaleGameModuleSources(
+        // ローカルではEditorのビルド済みソースを再度touchしません。
+        // touchedStaleSources: 時刻が動かない変更を補ったsource数。
+        const int touchedStaleSources = buildCommand.usesLocalBuildCache
+            ? LamaPon::RefreshStaleGameModuleSources(
                 projectRoot,
-                buildCommand.buildDirectory);
+                buildCommand.buildDirectory)
+            : 0;
         // timeError: build開始前のDLL時刻取得error。
         std::error_code timeError;
         // moduleTimeBefore: build開始前のmodule更新時刻。
@@ -6345,6 +6350,8 @@ namespace
             { "project",
                 LamaPon::PathToUtf8(projectRoot) },
             { "configuration", options.configuration },
+            { "buildMode", options.optimized ? "optimized" : "iteration" },
+            { "parallelJobs", buildCommand.parallelJobs },
             { "module",
                 LamaPon::PathToUtf8(
                     buildCommand.outputModule) },
@@ -6588,6 +6595,8 @@ namespace
             " (required)\n"
             "  --config <c>      Release or Debug"
             " (default: same as this tool)\n"
+            "  --optimized       distribution optimization"
+            " (default: fast iteration)\n"
             "\n"
             "export options:\n"
             "  --project <dir>   LamaPon project root"
@@ -8212,6 +8221,11 @@ int wmain(const int argumentCount, wchar_t** arguments)
                         LamaPon::PathToUtf8(
                             std::filesystem::path{
                                 next() });
+                }
+                // 配布向けビルドを明示した場合だけ最適化します。
+                else if (argument == L"--optimized")
+                {
+                    options.optimized = true;
                 }
                 // 直前条件に該当しない場合を処理します。
                 else

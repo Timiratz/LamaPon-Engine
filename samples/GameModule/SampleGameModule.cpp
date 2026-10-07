@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -225,6 +226,31 @@ namespace
     };
 
 }
+
+// Exercise the Script bridge's live-edit contract without resetting runtime state.
+namespace
+{
+    class LivePropertyProbe final : public LamaPon::Script
+    {
+    public:
+        void Start() override { ++m_starts; }
+        void Update(float dt) override { m_phase += dt * m_speed; }
+        void LoadProperties(std::string_view text) override
+        {
+            const auto json = nlohmann::json::parse(text);
+            const float speed = json.value("speed", 1.0f);
+            if (!std::isfinite(speed)) throw std::invalid_argument("Non-finite speed");
+            m_speed = speed;
+        }
+        std::string SaveProperties() const override
+        { return nlohmann::json{{"speed", m_speed}, {"phase", m_phase}, {"starts", m_starts}}.dump(); }
+    private:
+        float m_speed{1.0f}, m_phase{};
+        int m_starts{};
+    };
+    constexpr char LivePropertySchema[] = R"({"liveEditable":true,"fields":[{"name":"speed","type":"float","default":1.0}]})";
+}
+LAMAPON_SCRIPT_WITH_SCHEMA(LivePropertyProbe, "Sample.LivePropertyProbe", "Live property probe", LivePropertySchema);
 
 // Game Moduleの型記述をDLL利用側へ公開します。
 LAMAPON_GAME_MODULE_EXPORT
