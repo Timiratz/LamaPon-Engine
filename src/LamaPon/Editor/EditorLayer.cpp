@@ -2014,7 +2014,7 @@ namespace LamaPon
         DrawProjectPanels();
         DrawHierarchy();
         DrawViewport();
-        DrawInspector();
+        DrawSceneSettingsPanels();
         DrawPackageBuildDialog();
         DrawAnimationTimeline();
         DrawAnimatorControllerGraph();
@@ -3426,6 +3426,9 @@ namespace LamaPon
                 {
                     // アセット選択を解除して、GameObjectのInspectorへ追加ピッカーを予約します。
                     m_selectedAsset.clear();
+                    static_cast<void>(m_editorExtensions.SetPanelOpen(
+                        InspectorPanelId,
+                        true));
                     m_addComponentPickerRequested = true;
                 }
                 ImGui::EndMenu();

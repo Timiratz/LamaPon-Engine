@@ -129,6 +129,36 @@ int main()
                     == "amplitude",
             "Native component Inspector schema was invalid.");
 
+        {
+            LamaPon::GraphicsDevice liveGraphics;
+            LamaPon::Scene liveScene(liveGraphics);
+            auto& liveObject = liveScene.CreateGameObject("Live properties");
+            auto& live = liveObject.AddComponent<LamaPon::NativeScriptComponent>(
+                "Sample.LivePropertyProbe", R"({"speed":1.0})");
+            liveScene.Update(0.25f);
+            auto* instance = live.ScriptInstance();
+            live.ApplyPropertiesJsonLive(R"({"speed":2.0})");
+            Require(live.ScriptInstance() == instance, "Live editing recreated the script instance.");
+            liveScene.Update(0.25f);
+            const auto values = nlohmann::json::parse(live.SerializedProperties());
+            Require(values.at("phase").get<float>() == 0.75f && values.at("starts").get<int>() == 1,
+                "Live editing reset state, repeated Start, or failed to update the value.");
+            bool rejected{};
+            try { live.ApplyPropertiesJsonLive(R"({"speed":"invalid"})"); }
+            catch (const std::exception&) { rejected = true; }
+            Require(rejected && live.ScriptInstance() == instance
+                && nlohmann::json::parse(live.PropertiesJson()).at("speed") == 2.0,
+                "Invalid live properties changed the committed values or the instance.");
+            auto& legacyObject = liveScene.CreateGameObject("Not opted in");
+            auto& legacy = legacyObject.AddComponent<LamaPon::NativeScriptComponent>(
+                "Sample.FloatingAccent", "{}");
+            liveScene.Update(0.01f);
+            rejected = false;
+            try { legacy.ApplyPropertiesJsonLive("{}"); }
+            catch (const std::exception&) { rejected = true; }
+            Require(rejected, "Live editing was enabled for a script without opt-in.");
+        }
+
         // NativeScriptの実行先となるgraphics device
         LamaPon::GraphicsDevice graphics;
         // Module Test scene

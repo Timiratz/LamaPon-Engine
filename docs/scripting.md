@@ -34,6 +34,10 @@ DLLは起動時に自動検出され、登録された型はInspectorの「コ�
 
 **書いたコードを保存すると、少し待ってから自動でビルドされます。** `assets`内の`.cpp`／`.h`が対象で、保存が続いている間は待ち、静かになってから1回だけビルドします。
 ビルドが終わるとHot Reloadが差し替えるので、エディターの再起動は不要です。
+エディターと通常のCLIビルドは共通ヘッダーのプリコンパイルと増分リンクを使い、Scriptの最適化を省いてコンパイル時間を短縮します。エンジンRuntimeの最適化やDebug／ReleaseのABIは変更しません。初回や共通ヘッダーを変更した後は準備が必要ですが、以後のScript編集では生成済みのヘッダーを再利用します。
+Game Moduleのビルドは最大2並列です。開始時の空き物理メモリ・コミット容量のどちらかが6GiB未満なら1並列へ減らし、メモリ情報を取得できない場合も1並列にします。CPUが少ない場合は並列数をさらに制限します。
+これは起動するコンパイラー数の制限です。他のアプリや別の開発ツールが同時に起動するコンパイラーの数・メモリ使用量は制御しません。
+編集向けのDLLは実行速度が配布向けと異なります。実行性能の測定やWindowsへの配布前には、CLIで `build --project "<プロジェクト>" --optimized --config Release` を実行してください。Windowsへの書き出しはビルド済みのDLLを同梱します。
 再生中は自動ビルドしません。
 オフにしたい場合は「ファイル」→「プロジェクト設定とビルド...」→「スクリプト」の「保存したらGame Moduleを自動ビルド」を外します。
 
@@ -352,7 +356,7 @@ m_subscriptions.Add(
 `Timer`と`Interval`の第2引数を`true`にすると、`timeScale`の影響を
 受けない時間を使います。通知は`Scene::Update`の先頭で同期実行されます。
 
-ビルド結果はプロジェクトごとの`.lamapon/bin/LamaPonGameModule.dll`へ出力され、中間ファイルは`.lamapon/build/game-module`へ分離されます。
+ビルド結果はプロジェクトごとの`.lamapon/bin/LamaPonGameModule.dll`へ配置されます。編集向けの中間ファイルとDLLは`.lamapon/build/game-module`、`--optimized`の中間ファイルとDLLは`.lamapon/build/game-module-optimized`へ保持されます。モードを切り替えても各キャッシュを再利用し、再リンクが不要な場合も選択したモードのDLLを既定配置先へ戻します。各モードの初回ビルドでは容量と時間が必要です。
 別のプロジェクトを開くとEditorはそのプロジェクトのDLLへ切り替えるため、他ゲームのC++ Componentは混ざりません。
 DLLがまだない新規プロジェクトも通常どおり開け、最初のビルドが完了すると自動でHot Reloadされます。
 プロジェクトDLLのDebug／Release構成は、起動中のEditorに自動追従します。
@@ -459,3 +463,12 @@ weapon.SetParent(&player);
 ```
 
 エンジン内蔵コンポーネントは`LamaPon::Component`を継承し、ゲーム固有コンポーネントは上記のC++ Game Moduleへ登録します。
+
+### 再生中の公開値の編集
+
+`LAMAPON_SCRIPT_WITH_SCHEMA`のスキーマのルートへ`"liveEditable": true`を
+指定したScriptだけ、標準Inspectorの公開プロパティを再生中にも編集できます。
+変更は`LoadProperties`へ渡され、実体の再生成・Startの再実行は行いません。
+コールバックは入力全体の検証を先に行ってから値を更新してください。
+再生中の編集は停止で元に戻ります。初期値を保存する場合は停止中に編集し、
+Sceneを保存してください。opt-inの無いScriptは従来どおり再生中は編集禁止です。

@@ -25,6 +25,7 @@
 namespace LamaPon
 {
     class DataAsset;
+    class NativeScriptComponent;
     class GraphicsDevice;
     struct CollisionEvent;
 
@@ -941,6 +942,7 @@ namespace LamaPon
         }
 
     private:
+        friend class NativeScriptComponent;
         template<typename TScript>
         friend struct Detail::ScriptBridge;
 

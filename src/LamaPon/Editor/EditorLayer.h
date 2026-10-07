@@ -177,6 +177,8 @@ namespace LamaPon
         }
 
     private:
+        // インスペクターのパネルID
+        static constexpr std::string_view InspectorPanelId{ "inspector" };
         // コンソールのパネルID
         static constexpr std::string_view ConsolePanelId{ "console" };
         // 性能表示のパネルID
@@ -496,7 +498,9 @@ namespace LamaPon
         // 有効な選択対象の境界を描画し、主選択と追加選択の色を分けます。
         void DrawSelectionHighlight();
         // 選択中のGameObjectまたはアセットのInspectorを描画します。
-        void DrawInspector();
+        void DrawInspector(bool& open);
+        // シーン環境と物理設定の補助ウィンドウを描画します。
+        void DrawSceneSettingsPanels();
         // Material設定とShaderパラメーターを編集します。
         void DrawMaterialAssetInspector();
         // 選択中Materialの編集バッファを読み込みます。

@@ -3192,7 +3192,7 @@ namespace LamaPon
         return result;
     }
 
-    void EditorLayer::DrawInspector()
+    void EditorLayer::DrawSceneSettingsPanels()
     {
         if (m_sceneEnvironmentOpen)
         {
@@ -4739,6 +4739,14 @@ namespace LamaPon
             }
             ImGui::End();
         }
+    }
+
+    void EditorLayer::DrawInspector(bool& open)
+    {
+        if (!open)
+        {
+            return;
+        }
 
         ImGui::SetNextWindowSize(
             ImVec2{ InspectorWidth, 640.0f },
@@ -4752,10 +4760,14 @@ namespace LamaPon
         {
             ImGui::SetNextWindowFocus();
         }
-        ImGui::Begin(
+        if (!ImGui::Begin(
             "インスペクター",
-            nullptr,
-            inspectorFlags);
+            &open,
+            inspectorFlags))
+        {
+            ImGui::End();
+            return;
+        }
         // スクリーンショット撮影までInspector末尾を表示し続けます。
         if (m_screenshotScrollToBottom
             && !m_screenshotRequest.imagePath.empty())
@@ -11766,6 +11778,15 @@ namespace LamaPon
                 // 公開プロパティのスキーマJSON
                 const auto schemaJson =
                     nativeScript->PropertiesSchemaJson();
+                const auto liveSchema = nlohmann::json::parse(schemaJson, nullptr, false);
+                const bool liveEditable = liveSchema.is_object()
+                    && liveSchema.contains("liveEditable") && liveSchema["liveEditable"].is_boolean()
+                    && liveSchema["liveEditable"].get<bool>();
+                const bool propertiesLocked = m_playing && !liveEditable;
+                // Suspend the outer Play-mode lock only for native property controls.
+                ImGui::EndDisabled();
+                if (m_playing && liveEditable)
+                    ImGui::TextWrapped("再生中の変更は即時反映されます。停止すると編集前の値に戻ります。");
                 if (!schemaJson.empty())
                 {
                     try
@@ -11774,7 +11795,7 @@ namespace LamaPon
                         auto properties = nlohmann::json::parse(
                             nativeScript->PropertiesJson());
                         ImGui::SeparatorText("公開プロパティ");
-                        ImGui::BeginDisabled(m_playing);
+                        ImGui::BeginDisabled(propertiesLocked);
                         // 公開プロパティの編集結果
                         const auto edit =
                             DrawNativeScriptProperties(
@@ -11800,10 +11821,12 @@ namespace LamaPon
                                 "Inspectorスキーマ: %s",
                                 edit.error.c_str());
                         }
-                        if (edit.changed && !m_playing)
+                        if (edit.changed && !propertiesLocked)
                         {
-                            nativeScript->SetPropertiesJson(
-                                properties.dump());
+                            if (m_playing)
+                                nativeScript->ApplyPropertiesJsonLive(properties.dump());
+                            else
+                                nativeScript->SetPropertiesJson(properties.dump());
                             nativePropertiesBuffer.fill('\0');
                             strncpy_s(
                                 nativePropertiesBuffer.data(),
@@ -11833,20 +11856,24 @@ namespace LamaPon
                         "詳細設定 (Properties JSON)");
                 if (showRawJson)
                 {
+                    ImGui::BeginDisabled(propertiesLocked);
                     ImGui::InputTextMultiline(
                         "Properties JSON",
                         nativePropertiesBuffer.data(),
                         nativePropertiesBuffer.size(),
                         ImVec2{ -1.0f, 90.0f });
 
-                    ImGui::BeginDisabled(m_playing);
                     if (ImGui::Button("JSONを適用"))
                     {
                         try
                         {
-                            nativeScript->SetPropertiesJson(
-                                nativePropertiesBuffer.data());
-                            RecordHistory();
+                            if (m_playing)
+                                nativeScript->ApplyPropertiesJsonLive(nativePropertiesBuffer.data());
+                            else
+                            {
+                                nativeScript->SetPropertiesJson(nativePropertiesBuffer.data());
+                                RecordHistory();
+                            }
                             SetStatus(
                                 "C++ ComponentのPropertiesを更新しました");
                         }
@@ -11862,6 +11889,7 @@ namespace LamaPon
                 }
 
                 // 現在読み込まれているGame Module
+                ImGui::BeginDisabled(m_playing);
                 if (auto* module =
                         GameModuleHost::Current();
                     module != nullptr)
