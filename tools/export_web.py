@@ -242,7 +242,7 @@ PORTABLE_APPROXIMATE_SCENE_COMPONENTS = {"DirectionalLight"}
 # 新しいnative componentはWeb互換を宣言する前に両registryへ分類します。
 # Web判定対象のcomponent。
 KNOWN_NATIVE_SCENE_COMPONENTS = {
-    "AudioListener", "AudioSource", "Billboard", "BoxCollider2D",
+    "AudioListener", "AudioSource", "Billboard", "Blink2D", "BoxCollider2D",
     "BoxCollider3D", "Camera", "CapsuleCollider3D", "CharacterController",
     "CircleCollider2D", "ConvexHullCollider3D", "DirectionalLight",
     "InputMover", "Joint", "LODGroup", "Light2D", "MeshCollider3D",

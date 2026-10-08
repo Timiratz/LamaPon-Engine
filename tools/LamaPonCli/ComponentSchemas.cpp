@@ -324,6 +324,23 @@ namespace LamaPon::Cli
                         field("windFrequency", "number", 0.5),
                         field("windPhase", "number", 0.0),
                     })),
+                schema(
+                    "Blink2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("columns", "integer", 3),
+                        field("rows", "integer", 1),
+                        field("openFrame", "integer", 0),
+                        field("closingStartFrame", "integer", 1),
+                        field("closingFrameCount", "integer", 2),
+                        field("frameSeconds", "number", 0.04),
+                        field("closedSeconds", "number", 0.06),
+                        field("intervalMin", "number", 2.0),
+                        field("intervalMax", "number", 6.0),
+                        field("doubleBlinkChance", "number", 0.15),
+                        field("autoBlink", "bool", true),
+                        field("includeChildren", "bool", true),
+                    })),
             });
         }
 

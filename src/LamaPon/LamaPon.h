@@ -46,6 +46,7 @@
 #include "LamaPon/Components/UISliderComponent.h"
 #include "LamaPon/Components/UIToggleComponent.h"
 #include "LamaPon/Components/BillboardComponent.h"
+#include "LamaPon/Components/Blink2DComponent.h"
 #include "LamaPon/Components/RotatorComponent.h"
 #include "LamaPon/Components/RigidbodyComponent.h"
 #include "LamaPon/Components/SpriteAnimatorComponent.h"

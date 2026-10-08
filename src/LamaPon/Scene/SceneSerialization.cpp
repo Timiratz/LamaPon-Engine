@@ -45,6 +45,7 @@
 #include "LamaPon/Components/RenderCullingComponent.h"
 #include "LamaPon/Components/SpriteMaskComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
+#include "LamaPon/Components/Blink2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
@@ -2029,6 +2030,33 @@ namespace
             result["windPhase"] =
                 settings.windPhaseDegrees;
         }
+        // 保存する2D瞬き設定
+        else if (const auto* blink =
+            dynamic_cast<
+                const LamaPon::Blink2DComponent*>(
+                    &component))
+        {
+            // 保存する補正済みの瞬き設定
+            const auto& settings = blink->Settings();
+            result["columns"] = settings.columns;
+            result["rows"] = settings.rows;
+            result["openFrame"] = settings.openFrame;
+            result["closingStartFrame"] =
+                settings.closingStartFrame;
+            result["closingFrameCount"] =
+                settings.closingFrameCount;
+            result["frameSeconds"] = settings.frameSeconds;
+            result["closedSeconds"] = settings.closedSeconds;
+            result["intervalMin"] =
+                settings.intervalMinSeconds;
+            result["intervalMax"] =
+                settings.intervalMaxSeconds;
+            result["doubleBlinkChance"] =
+                settings.doubleBlinkChance;
+            result["autoBlink"] = settings.autoBlink;
+            result["includeChildren"] =
+                settings.includeChildren;
+        }
         // 保存するビルボード設定
         else if (const auto* billboard =
             dynamic_cast<
@@ -3776,6 +3804,53 @@ namespace
                     settings.windPhaseDegrees);
             component = &gameObject.AddComponent<
                 LamaPon::Sway2DComponent>(settings);
+        }
+        else if (type == "Blink2D")
+        {
+            // 省略された項目を既定値で埋める瞬き設定
+            LamaPon::Blink2DSettings settings{};
+            settings.columns =
+                value.value("columns", settings.columns);
+            settings.rows =
+                value.value("rows", settings.rows);
+            settings.openFrame =
+                value.value("openFrame", settings.openFrame);
+            settings.closingStartFrame =
+                value.value(
+                    "closingStartFrame",
+                    settings.closingStartFrame);
+            settings.closingFrameCount =
+                value.value(
+                    "closingFrameCount",
+                    settings.closingFrameCount);
+            settings.frameSeconds =
+                value.value(
+                    "frameSeconds",
+                    settings.frameSeconds);
+            settings.closedSeconds =
+                value.value(
+                    "closedSeconds",
+                    settings.closedSeconds);
+            settings.intervalMinSeconds =
+                value.value(
+                    "intervalMin",
+                    settings.intervalMinSeconds);
+            settings.intervalMaxSeconds =
+                value.value(
+                    "intervalMax",
+                    settings.intervalMaxSeconds);
+            settings.doubleBlinkChance =
+                value.value(
+                    "doubleBlinkChance",
+                    settings.doubleBlinkChance);
+            settings.autoBlink =
+                value.value("autoBlink", settings.autoBlink);
+            settings.includeChildren =
+                value.value(
+                    "includeChildren",
+                    settings.includeChildren);
+            component = &gameObject.AddComponent<
+                LamaPon::Blink2DComponent>(settings);
         }
         else if (type == "TransformAnimator")
         {

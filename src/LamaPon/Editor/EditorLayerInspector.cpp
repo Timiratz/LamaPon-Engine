@@ -43,6 +43,7 @@
 #include "LamaPon/Components/SpriteRendererComponent.h"
 #include "LamaPon/Components/SpriteMaskComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
+#include "LamaPon/Components/Blink2DComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
@@ -1187,6 +1188,10 @@ namespace
         if (typeName == "Sway2D")
         {
             return "Sway 2D";
+        }
+        if (typeName == "Blink2D")
+        {
+            return "Blink 2D";
         }
         if (typeName == "TransformAnimator")
         {
@@ -11301,6 +11306,116 @@ namespace LamaPon
                     "しなるように揺れます。アニメーションの回転"
                     "にも上乗せされます。");
             }
+            // 現在編集する2D瞬き
+            else if (auto* blink =
+                dynamic_cast<
+                    Blink2DComponent*>(
+                        component.get()))
+            {
+                // 2D瞬きの編集中コピー
+                auto blinkSettings = blink->Settings();
+                // いずれかの欄で値を変えたか
+                bool blinkChanged = false;
+                // いずれかの欄で編集を確定したか
+                bool blinkEditFinished = false;
+                // 直前の欄で編集を確定したかを集計します。
+                const auto trackBlinkEdit =
+                    [&blinkEditFinished]()
+                    {
+                        blinkEditFinished =
+                            blinkEditFinished
+                            || ImGui::
+                                IsItemDeactivatedAfterEdit();
+                    };
+
+                // シート分割の列数と行数
+                int blinkGrid[2]{
+                    blinkSettings.columns,
+                    blinkSettings.rows };
+                if (ImGui::InputInt2(
+                    "シート分割（列×行）##Blink2D",
+                    blinkGrid))
+                {
+                    blinkSettings.columns = blinkGrid[0];
+                    blinkSettings.rows = blinkGrid[1];
+                    blinkChanged = true;
+                }
+                trackBlinkEdit();
+                blinkChanged |= ImGui::InputInt(
+                    "開いた目のコマ##Blink2D",
+                    &blinkSettings.openFrame);
+                trackBlinkEdit();
+                blinkChanged |= ImGui::InputInt(
+                    "閉じ始めのコマ##Blink2D",
+                    &blinkSettings.closingStartFrame);
+                trackBlinkEdit();
+                blinkChanged |= ImGui::InputInt(
+                    "閉じるまでのコマ数##Blink2D",
+                    &blinkSettings.closingFrameCount);
+                trackBlinkEdit();
+                blinkChanged |= ImGui::DragFloat(
+                    "途中のコマ秒数##Blink2D",
+                    &blinkSettings.frameSeconds,
+                    0.005f,
+                    0.001f,
+                    10.0f,
+                    "%.3f 秒");
+                trackBlinkEdit();
+                blinkChanged |= ImGui::DragFloat(
+                    "閉じている秒数##Blink2D",
+                    &blinkSettings.closedSeconds,
+                    0.005f,
+                    0.0f,
+                    10.0f,
+                    "%.3f 秒");
+                trackBlinkEdit();
+                blinkChanged |= ImGui::DragFloatRange2(
+                    "間隔##Blink2D",
+                    &blinkSettings.intervalMinSeconds,
+                    &blinkSettings.intervalMaxSeconds,
+                    0.05f,
+                    0.05f,
+                    3600.0f,
+                    "最短 %.2f 秒",
+                    "最長 %.2f 秒");
+                trackBlinkEdit();
+                blinkChanged |= ImGui::SliderFloat(
+                    "二度瞬きの確率##Blink2D",
+                    &blinkSettings.doubleBlinkChance,
+                    0.0f,
+                    1.0f,
+                    "%.2f");
+                trackBlinkEdit();
+                if (ImGui::Checkbox(
+                    "自動で瞬く##Blink2D",
+                    &blinkSettings.autoBlink))
+                {
+                    blinkChanged = true;
+                    blinkEditFinished = true;
+                }
+                if (ImGui::Checkbox(
+                    "子のSpriteも切り替える##Blink2D",
+                    &blinkSettings.includeChildren))
+                {
+                    blinkChanged = true;
+                    blinkEditFinished = true;
+                }
+                if (blinkChanged)
+                {
+                    blink->SetSettings(blinkSettings);
+                }
+                if (blinkEditFinished)
+                {
+                    RecordHistory();
+                }
+                ImGui::TextDisabled(
+                    "目のスプライトシートを「開→半目→閉→半目→開」"
+                    "のコマで切り替えて瞬きさせます。閉じ始めの"
+                    "コマから閉じた目まで連続して並べてください"
+                    "（例: 3列1行で0=開、1=半目、2=閉）。左右の目を"
+                    "まとめた親に付けると両目が同時に瞬きます。"
+                    "Sprite Animatorと同じ対象には使わないでください。");
+            }
             else if (auto* listener =
                 dynamic_cast<AudioListenerComponent*>(
                     component.get()))
@@ -13558,6 +13673,10 @@ namespace LamaPon
         const bool hasSway2D =
             gameObject.GetComponent<
                 Sway2DComponent>() != nullptr;
+        // Blink 2Dを追加済みか
+        const bool hasBlink2D =
+            gameObject.GetComponent<
+                Blink2DComponent>() != nullptr;
         // Billboardを追加済みか
         const bool hasBillboard =
             gameObject.GetComponent<
@@ -13983,6 +14102,17 @@ namespace LamaPon
                     Sway2DComponent>();
                 RecordHistory();
                 SetStatus("Sway 2Dを追加しました");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(hasBlink2D);
+            if (showComponent("Blink 2D", "Animation")
+                && ImGui::Selectable("Blink 2D"))
+            {
+                gameObject.AddComponent<
+                    Blink2DComponent>();
+                RecordHistory();
+                SetStatus("Blink 2Dを追加しました");
             }
             ImGui::EndDisabled();
 

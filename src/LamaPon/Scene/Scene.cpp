@@ -47,6 +47,7 @@
 #include "LamaPon/Components/SpriteAnimatorComponent.h"
 #include "LamaPon/Components/SpriteRendererComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
+#include "LamaPon/Components/Blink2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/TransformAnimatorComponent.h"
@@ -2865,6 +2866,17 @@ namespace LamaPon
                             &duplicate.AddComponent<
                                 Sway2DComponent>(
                                     sway->Settings());
+                    }
+                    // 複製元の2D瞬き設定
+                    else if (const auto* blink =
+                        dynamic_cast<
+                            const Blink2DComponent*>(
+                                sourceComponent.get()))
+                    {
+                        duplicateComponent =
+                            &duplicate.AddComponent<
+                                Blink2DComponent>(
+                                    blink->Settings());
                     }
                     // 複製元のビルボード設定
                     else if (const auto* billboard =

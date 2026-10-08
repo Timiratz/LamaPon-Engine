@@ -2605,6 +2605,59 @@ void Start() override
 
 ---
 
+### Blink2DComponent
+
+**宣言**
+
+```cpp
+explicit Blink2DComponent(const Blink2DSettings& settings = {});
+```
+
+**概略**
+
+自身と子孫のSprite Rendererを「開→半目→閉→半目→開」のコマで切り替えて、ランダムな間隔で瞬きさせます。
+
+**引数**
+
+| 引数 | 説明 |
+|---|---|
+| `settings` | 瞬きの設定。範囲外や非有限の値は補正されます |
+
+`Blink2DSettings`は`columns`／`rows`（シート分割）、`openFrame`（開いた目のコマ）、
+`closingStartFrame`／`closingFrameCount`（閉じ始めから閉じた目までの連続コマ）、`frameSeconds`／`closedSeconds`（表示秒数）、
+`intervalMinSeconds`／`intervalMaxSeconds`（間隔）、`doubleBlinkChance`、`autoBlink`、`includeChildren`を持つ構造体です。
+
+**主なメソッド**
+
+| メソッド | 引数 | 戻り値・説明 |
+|---|---|---|
+| `Blink` | なし | 目が開いていれば瞬きを始めます |
+| `SetHoldClosed` | `holdClosed` : 閉じたままにするか | 解除すると閉じている秒数の後に開きます |
+| `SetRandomSeed` | `seed` : 乱数の種 | 間隔を再現可能にし、次の瞬きまでの時間を引き直します |
+| `IsBlinking` | なし | 閉じ始めてから開ききるまでの間ならtrue |
+| `CurrentFrame` | なし | 現在表示するシートのコマ番号 |
+| `SetSettings` | `settings` : 瞬きの設定 | 補正して置き換え、現在のコマをすぐ反映します |
+
+**解説**
+
+左右の目をまとめた親に付けると、両目が同時に瞬きます。別の`Blink2DComponent`を持つ子孫は上書きしません。
+対象の画像領域を毎フレーム書き換えるため、同じSpriteに`SpriteAnimatorComponent`を併用しないでください。
+
+**サンプル**
+
+```cpp
+void OnSleep()
+{
+    if (auto* blink =
+            GetComponentInChildren<LamaPon::Blink2DComponent>())
+    {
+        blink->SetHoldClosed(true);
+    }
+}
+```
+
+---
+
 ## UI
 
 ### UIButtonComponent

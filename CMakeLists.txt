@@ -245,6 +245,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/RigidbodyComponent.h
     src/LamaPon/Components/Sway2DComponent.cpp
     src/LamaPon/Components/Sway2DComponent.h
+    src/LamaPon/Components/Blink2DComponent.cpp
+    src/LamaPon/Components/Blink2DComponent.h
     src/LamaPon/Components/NativeScriptComponent.cpp
     src/LamaPon/Components/NativeScriptComponent.h
     src/LamaPon/Core/Application.cpp
@@ -1430,6 +1432,25 @@ if(BUILD_TESTING)
         COMMAND LamaPonSway2DTests)
     set_tests_properties(
         Sway2DMotion
+        PROPERTIES
+            LABELS "scene;animation;2d"
+    )
+
+    add_executable(LamaPonBlink2DTests
+        tests/Blink2DTests.cpp
+    )
+    target_link_libraries(
+        LamaPonBlink2DTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonBlink2DTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME Blink2DFrames
+        COMMAND LamaPonBlink2DTests)
+    set_tests_properties(
+        Blink2DFrames
         PROPERTIES
             LABELS "scene;animation;2d"
     )
