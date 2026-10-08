@@ -1803,12 +1803,156 @@ explicit SpriteRendererComponent(
 | `SetSourceRect` | `rect` : `{x, y, 幅, 高さ}`（各0〜1） | 画像の一部だけを表示します |
 | `SetShaderPath` | `path` : `.hlsl`のパス | カスタムShaderに切り替えます |
 | `SetCustomParameter` | `index` : 0〜7<br>`value` : 4つ組の値（`XMFLOAT4`） | カスタムShaderへ値を渡します |
+| `SetMeshGrid` | `columns`, `rows` : 1〜64 | 画像を格子状のメッシュに分けて描きます。1×1は通常の矩形 |
+| `MeshRestPositions` | なし | 変形前の格子頂点（基準点が原点のローカル座標） |
+| `SetMeshDeformation` | `positions` : 格子と同数の頂点位置 | 格子頂点を動かして絵を曲げます。空で解除。数が合わなければfalse |
 
 **解説**
 
 `SetSourceRect`はテクスチャの一部だけを表示する指定です（値は0〜1の正規化座標）。
 スプライトシートから1コマだけ出すときに使います。
 コマ送りアニメーションは`SpriteAnimatorComponent`が自動でこれを更新します。
+
+`SetMeshGrid`で分割すると、矩形の代わりに三角形のメッシュで描きます。分割しただけでは見た目は変わりません。
+`SetMeshDeformation`で頂点を動かすと、髪の毛先だけを曲げるといった変形ができます
+（頂点は上の行から順に、各行を左から並べます）。変形は保存されない実行時の状態です。
+メッシュではワールド行列をそのまま頂点に掛けるため、親の左右反転や斜めの歪みも絵に反映されます。
+UI Rect Transformを持つ場合とWeb書き出しでは、常に通常の矩形で描きます。
+
+描画APIを直接使う場合は、`SpriteDrawContext::DrawMesh`へ画面座標の頂点・UV・色と三角形の頂点番号を渡します
+（頂点は65535個まで、頂点番号は3個ずつ）。それまでに積んだスプライトの後に、同じシェーダー・合成方式・クリップで描かれます。
+
+格子を毎フレーム自分で曲げたい場合は、`SpriteMeshDeformer`を継承したコンポーネントを同じGameObjectへ追加し、
+`DeformSpriteMesh(sprite, positions)`で頂点位置（ローカル座標）を書き換えます。
+全ての更新と揺れが終わった描画の直前に、部品の並び順で重ねて呼ばれます（`SpriteSkin2DComponent`もこの仕組みです）。
+`DeformedMeshPositions()`で、変形を適用した後の頂点を取得できます。
+
+---
+
+### SpriteSkin2DComponent
+
+**宣言**
+
+```cpp
+explicit SpriteSkin2DComponent(std::vector<std::uint64_t> bones = {});
+```
+
+**概略**
+
+ボーンにしたGameObjectの動きに合わせて、同じGameObjectのSprite Rendererのメッシュを曲げます。
+
+**引数**
+
+| 引数 | 説明 |
+|---|---|
+| `bones` | ボーンにするGameObjectのID |
+
+**主なメソッド**
+
+| メソッド | 引数 | 戻り値・説明 |
+|---|---|---|
+| `CreateBoneChain` | `boneCount` : 1〜16<br>`addSway` : 揺れ物を付けるか | 基準点から反対側の端まで子のボーンを並べてバインドし、作ったボーンを返します。2本以上なら根元は揺らしません |
+| `SetBones` | `bones` : GameObjectのID | ボーンを置き換えます（バインドは解除） |
+| `Bind` | なし | 現在の姿勢を基準にします。重みが格子と合わなければ自動で付けます |
+| `ComputeAutomaticWeights` | なし | ボーンからの距離で重みを付け直します（1頂点に最大4本） |
+| `SetWeights` | `weights` : 頂点ごとの重み | 重みを手で設定します（正規化されます） |
+| `SetWeightFalloff` | `falloff` : 0.5〜16 | 自動の重みの距離減衰。大きいほど近いボーンだけが効きます |
+
+**解説**
+
+頂点は「バインドした時点のボーンの姿勢から、現在の姿勢への動き」を重みで混ぜて動きます。
+ボーンがSpriteの子なら、Sprite全体を動かしても形は崩れません。見つからないボーンの部分はSpriteと一緒に動きます。
+メッシュ分割を変えた後は`Bind`をやり直してください。
+
+**サンプル**
+
+```cpp
+void Start() override
+{
+    auto* sprite = GetComponent<LamaPon::SpriteRendererComponent>();
+    sprite->SetMeshGrid(1, 6);
+    auto& skin = AddComponent<LamaPon::SpriteSkin2DComponent>();
+    skin.CreateBoneChain(3, true);
+}
+```
+
+---
+
+### Rig2DComponent
+
+**宣言**
+
+```cpp
+explicit Rig2DComponent(std::vector<Rig2DParameter> parameters = {});
+```
+
+**概略**
+
+キャラクターの部品をまとめて動かす名前付きのパラメータ（角度X・目の開きなど）を持ちます。子孫の`Keyform2DComponent`がその値で部品を動かします。
+
+**引数**
+
+| 引数 | 説明 |
+|---|---|
+| `parameters` | `Rig2DParameter`（`name`・`minimum`・`maximum`・`defaultValue`・`value`・`autoAmplitude`・`autoFrequency`）の一覧 |
+
+**主なメソッド**
+
+| メソッド | 引数 | 戻り値・説明 |
+|---|---|---|
+| `AddParameter` | `parameter` : パラメータ | 同名は置き換え、なければ追加。名前が空か64バイト超ならfalse |
+| `SetParameter` | `name` : 名前<br>`value` : 値 | 範囲へ収めて値を設定。名前がなければfalse |
+| `ParameterValue` | `name` : 名前 | 自動の揺れを含めた現在の値 |
+| `ResetParameters` | なし | 全パラメータを既定値へ戻します |
+| `ApplyToHierarchy` | なし | 子孫のKeyform2Dへ今の値の姿勢をすぐ適用します（編集中のプレビュー用） |
+
+---
+
+### Keyform2DComponent
+
+**宣言**
+
+```cpp
+explicit Keyform2DComponent(std::vector<Keyform2DChannel> channels = {});
+```
+
+**概略**
+
+祖先の`Rig2DComponent`のパラメータ値に合わせて、この部品の位置・回転・拡縮・不透明度・メッシュの頂点をキーの間で補間します。
+
+**主なメソッド**
+
+| メソッド | 引数 | 戻り値・説明 |
+|---|---|---|
+| `SetKey` | `parameter` : パラメータ名<br>`key` : `Keyform2DKey` | キーを追加します。同じ値のキーは置き換えます |
+| `RemoveKey` | `parameter`, `value` | 同じ値のキーを除去します |
+| `CaptureRestPose` | なし | 現在の姿勢と不透明度を基準姿勢にします |
+| `RecordPoseKey` | `parameter`, `value` | 現在の姿勢の基準からの差をキーに記録します |
+| `RecordMeshKey` | `parameter`, `value` | 他の変形（ボーンなど）で曲げた形を、キーの頂点移動に記録します |
+| `EvaluatePose` | なし | 今の値で全パラメータを合成した差 |
+
+**解説**
+
+`Keyform2DKey`は`value`（パラメータ値）、`positionOffset`、`rotationDegrees`、`scale`、`opacity`、`vertexOffsets`を持ちます。
+位置・回転・頂点移動はパラメータごとに足し合わせ、拡縮と不透明度は掛け合わせます。範囲外の値では端のキーを使います。
+姿勢は基準姿勢からの差として毎フレーム書き込むため、同じ部品に`TransformAnimatorComponent`は併用しません。
+
+**サンプル**
+
+```cpp
+void Start() override
+{
+    auto& keyform = AddComponent<LamaPon::Keyform2DComponent>();
+    LamaPon::Keyform2DKey left;
+    left.value = -30.0f;
+    left.positionOffset = { -12.0f, 0.0f };
+    LamaPon::Keyform2DKey right;
+    right.value = 30.0f;
+    right.positionOffset = { 12.0f, 0.0f };
+    keyform.SetKey("AngleX", left);
+    keyform.SetKey("AngleX", right);
+}
+```
 
 **サンプル**
 

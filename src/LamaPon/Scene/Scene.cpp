@@ -48,6 +48,9 @@
 #include "LamaPon/Components/SpriteRendererComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/Blink2DComponent.h"
+#include "LamaPon/Components/SpriteSkin2DComponent.h"
+#include "LamaPon/Components/Rig2DComponent.h"
+#include "LamaPon/Components/Keyform2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/TransformAnimatorComponent.h"
@@ -2189,8 +2192,15 @@ namespace LamaPon
                                 sprite->TexturePath());
                         duplicateSprite.SetSortOrder(
                             sprite->SortOrder());
+                        duplicateSprite.SetPivot(
+                            sprite->Pivot());
+                        duplicateSprite.SetRenderTexture(
+                            sprite->RenderTexture());
                         duplicateSprite.SetSourceRect(
                             sprite->SourceRect());
+                        duplicateSprite.SetMeshGrid(
+                            sprite->MeshColumns(),
+                            sprite->MeshRows());
                         duplicateSprite.SetShaderPath(
                             sprite->ShaderPath());
                         duplicateSprite.SetMaskInteraction(
@@ -2867,6 +2877,63 @@ namespace LamaPon
                                 Sway2DComponent>(
                                     sway->Settings());
                     }
+                    // 複製元の2Dリグ
+                    else if (const auto* rig =
+                        dynamic_cast<
+                            const Rig2DComponent*>(
+                                sourceComponent.get()))
+                    {
+                        duplicateComponent =
+                            &duplicate.AddComponent<
+                                Rig2DComponent>(
+                                    rig->Parameters());
+                    }
+                    // 複製元の2Dキーフォーム
+                    else if (const auto* keyform =
+                        dynamic_cast<
+                            const Keyform2DComponent*>(
+                                sourceComponent.get()))
+                    {
+                        // キーと基準姿勢を引き継ぐキーフォーム
+                        auto& duplicateKeyform =
+                            duplicate.AddComponent<
+                                Keyform2DComponent>(
+                                    keyform->Channels());
+                        if (keyform->HasRestPose())
+                        {
+                            duplicateKeyform.SetRestPose(
+                                keyform->RestPosition(),
+                                keyform->RestRotation(),
+                                keyform->RestScale(),
+                                keyform->RestOpacity());
+                        }
+                        duplicateComponent = &duplicateKeyform;
+                    }
+                    // 複製元の2Dスキン
+                    else if (const auto* skin =
+                        dynamic_cast<
+                            const SpriteSkin2DComponent*>(
+                                sourceComponent.get()))
+                    {
+                        // ボーンとバインドを引き継ぐ2Dスキン
+                        auto& duplicateSkin =
+                            duplicate.AddComponent<
+                                SpriteSkin2DComponent>(
+                                    skin->Bones());
+                        duplicateSkin.SetWeightFalloff(
+                            skin->WeightFalloff());
+                        if (skin->IsBound())
+                        {
+                            static_cast<void>(
+                                duplicateSkin.RestoreBinding(
+                                    skin->BoneBindPoses(),
+                                    skin->SpriteBindPose(),
+                                    skin->Weights(),
+                                    skin->BoundColumns(),
+                                    skin->BoundRows()));
+                        }
+                        duplicateComponent = &duplicateSkin;
+                    }
                     // 複製元の2D瞬き設定
                     else if (const auto* blink =
                         dynamic_cast<
@@ -3107,6 +3174,29 @@ namespace LamaPon
                     }
                     lodGroup->SetLevels(
                         std::move(levels));
+                }
+                // 一緒に複製したボーンへ付け替える2Dスキン
+                if (auto* skin =
+                        duplicate != nullptr
+                        ? duplicate->GetComponent<
+                            SpriteSkin2DComponent>()
+                        : nullptr)
+                {
+                    // 付け替えるボーンID列
+                    auto bones = skin->Bones();
+                    // 付け替えるボーンID
+                    for (auto& bone : bones)
+                    {
+                        // 複製先番号の対応表の位置
+                        if (const auto target =
+                                duplicatedIds.find(bone);
+                            target != duplicatedIds.end())
+                        {
+                            bone = target->second;
+                        }
+                    }
+                    static_cast<void>(
+                        skin->RemapBones(std::move(bones)));
                 }
             }
             return result;

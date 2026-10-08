@@ -44,6 +44,9 @@
 #include "LamaPon/Components/SpriteMaskComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/Blink2DComponent.h"
+#include "LamaPon/Components/SpriteSkin2DComponent.h"
+#include "LamaPon/Components/Rig2DComponent.h"
+#include "LamaPon/Components/Keyform2DComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
@@ -1192,6 +1195,18 @@ namespace
         if (typeName == "Blink2D")
         {
             return "Blink 2D";
+        }
+        if (typeName == "SpriteSkin2D")
+        {
+            return "Sprite Skin 2D";
+        }
+        if (typeName == "Rig2D")
+        {
+            return "Rig 2D";
+        }
+        if (typeName == "Keyform2D")
+        {
+            return "Keyform 2D";
         }
         if (typeName == "TransformAnimator")
         {
@@ -10243,6 +10258,27 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // メッシュ分割の列数と行数
+                int meshGrid[2]{
+                    sprite->MeshColumns(),
+                    sprite->MeshRows() };
+                if (ImGui::InputInt2(
+                        "メッシュ分割（列×行）",
+                        meshGrid))
+                {
+                    sprite->SetMeshGrid(
+                        meshGrid[0],
+                        meshGrid[1]);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    RecordHistory();
+                }
+                ImGui::TextDisabled(
+                    "1×1は通常の矩形です。分割すると格子状の"
+                    "メッシュで描き、ボーンやパラメータで"
+                    "絵を曲げられるようになります（1〜64）");
+
                 // Sprite Shaderのパス
                 auto spriteShader = sprite->ShaderPath();
                 if (DrawShaderAssetSelector(
@@ -11415,6 +11451,562 @@ namespace LamaPon
                     "（例: 3列1行で0=開、1=半目、2=閉）。左右の目を"
                     "まとめた親に付けると両目が同時に瞬きます。"
                     "Sprite Animatorと同じ対象には使わないでください。");
+            }
+            // 現在編集する2Dスキン
+            else if (auto* skin =
+                dynamic_cast<
+                    SpriteSkin2DComponent*>(
+                        component.get()))
+            {
+                // 警告文の色
+                const ImVec4 skinWarningColor{ 1.0f, 0.35f, 0.30f, 1.0f };
+                // 格子を持つSprite Renderer
+                const auto* skinSprite =
+                    selected->GetComponent<
+                        SpriteRendererComponent>();
+                if (skinSprite == nullptr)
+                {
+                    ImGui::TextColored(
+                        skinWarningColor,
+                        "同じGameObjectにSprite Rendererが必要です");
+                }
+                ImGui::Text(
+                    "ボーン %zu本・%s",
+                    skin->Bones().size(),
+                    skin->IsBound() ? "バインド済み" : "未バインド");
+
+                // 外すボーンの番号
+                std::optional<std::size_t> removedBone;
+                // 表示するボーンの番号
+                for (std::size_t index = 0;
+                    index < skin->Bones().size();
+                    ++index)
+                {
+                    // ボーンにしたGameObject
+                    const auto* bone =
+                        m_scene.FindGameObject(
+                            skin->Bones()[index]);
+                    ImGui::BulletText(
+                        "%s",
+                        bone != nullptr
+                            ? bone->Name().c_str()
+                            : "（見つかりません）");
+                    ImGui::SameLine();
+                    // 外すボタンの識別名
+                    const std::string removeLabel =
+                        "外す##SpriteSkin2DBone"
+                        + std::to_string(index);
+                    if (ImGui::SmallButton(removeLabel.c_str()))
+                    {
+                        removedBone = index;
+                    }
+                }
+                if (removedBone.has_value())
+                {
+                    // 1本を外したボーン一覧
+                    auto bones = skin->Bones();
+                    bones.erase(
+                        bones.begin()
+                        + static_cast<std::ptrdiff_t>(*removedBone));
+                    skin->SetBones(std::move(bones));
+                    static_cast<void>(skin->Bind());
+                    RecordHistory();
+                }
+                if (ImGui::BeginCombo(
+                    "ボーンを追加##SpriteSkin2D",
+                    "GameObjectを選択"))
+                {
+                    // ボーンの候補
+                    for (const auto& candidate :
+                        m_scene.GameObjects())
+                    {
+                        if (candidate.get() == selected
+                            || std::find(
+                                skin->Bones().begin(),
+                                skin->Bones().end(),
+                                candidate->Id())
+                                != skin->Bones().end())
+                        {
+                            continue;
+                        }
+                        // 候補の表示名
+                        const std::string label =
+                            candidate->Name()
+                            + " (ID "
+                            + std::to_string(candidate->Id())
+                            + ")";
+                        if (ImGui::Selectable(label.c_str()))
+                        {
+                            // 1本を足したボーン一覧
+                            auto bones = skin->Bones();
+                            bones.push_back(candidate->Id());
+                            skin->SetBones(std::move(bones));
+                            static_cast<void>(skin->Bind());
+                            RecordHistory();
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+
+                // 鎖のボーン数
+                int* const chainCount =
+                    ImGui::GetStateStorage()->GetIntRef(
+                        ImGui::GetID("SpriteSkin2DChainCount"),
+                        3);
+                // 鎖に揺れ物を付けるか
+                bool* const chainSway =
+                    ImGui::GetStateStorage()->GetBoolRef(
+                        ImGui::GetID("SpriteSkin2DChainSway"),
+                        true);
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::InputInt(
+                    "本##SpriteSkin2DChainCount",
+                    chainCount))
+                {
+                    *chainCount = std::clamp(*chainCount, 1, 16);
+                }
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "揺れ物も付ける##SpriteSkin2D",
+                    chainSway);
+                ImGui::BeginDisabled(skinSprite == nullptr);
+                if (ImGui::Button(
+                    "ボーンの鎖を作成##SpriteSkin2D"))
+                {
+                    // 作ったボーン
+                    const auto bones = skin->CreateBoneChain(
+                        *chainCount,
+                        *chainSway);
+                    RecordHistory();
+                    SetStatus(
+                        std::to_string(bones.size())
+                        + "本のボーンを作成しました");
+                }
+                ImGui::EndDisabled();
+
+                ImGui::BeginDisabled(skin->Bones().empty());
+                if (ImGui::Button(
+                    "現在の姿勢でバインド##SpriteSkin2D"))
+                {
+                    if (skin->Bind())
+                    {
+                        RecordHistory();
+                    }
+                    else
+                    {
+                        SetStatus(
+                            "バインドできません。Sprite Rendererと"
+                            "全てのボーンが必要です");
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(
+                    "重みを付け直す##SpriteSkin2D")
+                    && skin->ComputeAutomaticWeights())
+                {
+                    RecordHistory();
+                }
+                ImGui::EndDisabled();
+
+                // 自動の重みの距離減衰
+                float falloff = skin->WeightFalloff();
+                if (ImGui::DragFloat(
+                    "重みの減衰##SpriteSkin2D",
+                    &falloff,
+                    0.05f,
+                    0.5f,
+                    16.0f,
+                    "%.2f"))
+                {
+                    skin->SetWeightFalloff(falloff);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    static_cast<void>(
+                        skin->ComputeAutomaticWeights());
+                    RecordHistory();
+                }
+                if (skinSprite != nullptr
+                    && skin->IsBound()
+                    && (skinSprite->MeshColumns()
+                            != skin->BoundColumns()
+                        || skinSprite->MeshRows()
+                            != skin->BoundRows()))
+                {
+                    ImGui::TextColored(
+                        skinWarningColor,
+                        "メッシュ分割が変わったため、バインドし直してください");
+                }
+                ImGui::TextDisabled(
+                    "ボーンにしたGameObjectの動きに合わせて、Spriteの"
+                    "メッシュ（Sprite Rendererのメッシュ分割）を曲げます。"
+                    "「ボーンの鎖を作成」は基準点から反対側の端まで"
+                    "子のボーンを並べてバインドします。揺れ物も付けると、"
+                    "髪や服がしなるように揺れます。ボーンを動かす前の"
+                    "姿勢が基準で、姿勢を変えた後は「現在の姿勢で"
+                    "バインド」で基準を取り直せます。");
+            }
+            // 現在編集する2Dリグ
+            else if (auto* rig =
+                dynamic_cast<
+                    Rig2DComponent*>(
+                        component.get()))
+            {
+                // 編集中のパラメータ一覧
+                auto parameters = rig->Parameters();
+                // 一覧のいずれかを変えたか
+                bool parametersChanged = false;
+                // 編集を確定したか
+                bool parametersEditFinished = false;
+                // プレビューの値を変えたか
+                bool previewChanged = false;
+                // 削除するパラメータの番号
+                std::optional<std::size_t> removedParameter;
+                // 表示するパラメータの番号
+                for (std::size_t index = 0;
+                    index < parameters.size();
+                    ++index)
+                {
+                    // 編集するパラメータ
+                    auto& parameter = parameters[index];
+                    ImGui::PushID(static_cast<int>(index) + 93000);
+                    ImGui::SeparatorText(parameter.name.c_str());
+                    if (ImGui::SliderFloat(
+                        "値",
+                        &parameter.value,
+                        parameter.minimum,
+                        parameter.maximum,
+                        "%.2f"))
+                    {
+                        parametersChanged = true;
+                        previewChanged = true;
+                    }
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    // パラメータ名の入力欄
+                    std::array<char, 65> parameterNameBuffer{};
+                    strncpy_s(
+                        parameterNameBuffer.data(),
+                        parameterNameBuffer.size(),
+                        parameter.name.c_str(),
+                        _TRUNCATE);
+                    if (ImGui::InputText(
+                        "名前",
+                        parameterNameBuffer.data(),
+                        parameterNameBuffer.size())
+                        && parameterNameBuffer[0] != '\0')
+                    {
+                        parameter.name = parameterNameBuffer.data();
+                        parametersChanged = true;
+                    }
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    parametersChanged |= ImGui::DragFloatRange2(
+                        "範囲",
+                        &parameter.minimum,
+                        &parameter.maximum,
+                        0.1f);
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    parametersChanged |= ImGui::DragFloat(
+                        "既定値",
+                        &parameter.defaultValue,
+                        0.05f);
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    parametersChanged |= ImGui::DragFloat(
+                        "自動の揺れ幅",
+                        &parameter.autoAmplitude,
+                        0.01f,
+                        0.0f,
+                        1000.0f);
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    parametersChanged |= ImGui::DragFloat(
+                        "自動の周波数",
+                        &parameter.autoFrequency,
+                        0.01f,
+                        0.0f,
+                        60.0f,
+                        "%.2f Hz");
+                    parametersEditFinished =
+                        parametersEditFinished
+                        || ImGui::IsItemDeactivatedAfterEdit();
+                    if (ImGui::SmallButton("削除"))
+                    {
+                        removedParameter = index;
+                    }
+                    ImGui::PopID();
+                }
+                if (removedParameter.has_value())
+                {
+                    parameters.erase(
+                        parameters.begin()
+                        + static_cast<std::ptrdiff_t>(
+                            *removedParameter));
+                    parametersChanged = true;
+                    parametersEditFinished = true;
+                }
+                if (ImGui::Button("パラメータを追加##Rig2D"))
+                {
+                    // 重複しない新しい名前の番号
+                    std::size_t suffix = parameters.size() + 1;
+                    // 追加するパラメータ
+                    Rig2DParameter added{};
+                    do
+                    {
+                        added.name =
+                            "Parameter" + std::to_string(suffix++);
+                    }
+                    while (std::any_of(
+                        parameters.begin(),
+                        parameters.end(),
+                        // 同名か判定します(existing: 登録済みのパラメータ)。
+                        [&added](const Rig2DParameter& existing)
+                        {
+                            return existing.name == added.name;
+                        }));
+                    parameters.push_back(std::move(added));
+                    parametersChanged = true;
+                    parametersEditFinished = true;
+                }
+                if (parametersChanged)
+                {
+                    rig->SetParameters(std::move(parameters));
+                }
+                if (previewChanged)
+                {
+                    rig->ApplyToHierarchy();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("既定値に戻す##Rig2D"))
+                {
+                    rig->ResetParameters();
+                    rig->ApplyToHierarchy();
+                    parametersEditFinished = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("基準姿勢に戻す##Rig2D"))
+                {
+                    rig->RestoreHierarchyRestPose();
+                    parametersEditFinished = true;
+                }
+                if (parametersEditFinished)
+                {
+                    RecordHistory();
+                }
+                ImGui::TextDisabled(
+                    "顔の向きや目の開きなどを名前付きの値にまとめ、"
+                    "子孫のKeyform 2Dがその値に合わせて部品を動かします。"
+                    "値を動かすと編集中でも姿勢を確認できます。"
+                    "自動の揺れ幅を入れると、呼吸のように値が揺れ続けます。");
+            }
+            // 現在編集する2Dキーフォーム
+            else if (auto* keyform =
+                dynamic_cast<
+                    Keyform2DComponent*>(
+                        component.get()))
+            {
+                // 警告文の色
+                const ImVec4 keyformWarningColor{ 1.0f, 0.35f, 0.30f, 1.0f };
+                // 値を読むリグ
+                auto* keyformRig =
+                    selected->GetComponentInParent<
+                        Rig2DComponent>(true);
+                if (keyformRig == nullptr)
+                {
+                    ImGui::TextColored(
+                        keyformWarningColor,
+                        "自身か親のGameObjectにRig 2Dが必要です");
+                }
+                ImGui::Text(
+                    "基準姿勢: %s",
+                    keyform->HasRestPose() ? "記録済み" : "未記録");
+                if (ImGui::Button("現在の姿勢を基準姿勢として記録##Keyform2D"))
+                {
+                    keyform->CaptureRestPose();
+                    RecordHistory();
+                }
+
+                // 編集中のチャンネル
+                auto channels = keyform->Channels();
+                // キーの値を変えたか
+                bool keysChanged = false;
+                // 編集を確定したか
+                bool keysEditFinished = false;
+                // 後で実行するキーの操作(0=姿勢を記録, 1=メッシュを記録, 2=削除)
+                int keyAction = -1;
+                // 操作するキーのパラメータ名
+                std::string actionParameter;
+                // 操作するキーの値
+                float actionValue{};
+                // 表示するチャンネルの番号
+                for (std::size_t channelIndex = 0;
+                    channelIndex < channels.size();
+                    ++channelIndex)
+                {
+                    // 編集するチャンネル
+                    auto& channel = channels[channelIndex];
+                    ImGui::SeparatorText(channel.parameter.c_str());
+                    // 表示するキーの番号
+                    for (std::size_t keyIndex = 0;
+                        keyIndex < channel.keys.size();
+                        ++keyIndex)
+                    {
+                        // 編集するキー
+                        auto& key = channel.keys[keyIndex];
+                        ImGui::PushID(
+                            static_cast<int>(
+                                channelIndex * 1000 + keyIndex)
+                            + 94000);
+                        keysChanged |= ImGui::DragFloat(
+                            "値", &key.value, 0.05f);
+                        keysEditFinished = keysEditFinished
+                            || ImGui::IsItemDeactivatedAfterEdit();
+                        keysChanged |= ImGui::DragFloat2(
+                            "移動", &key.positionOffset.x, 0.5f);
+                        keysEditFinished = keysEditFinished
+                            || ImGui::IsItemDeactivatedAfterEdit();
+                        keysChanged |= ImGui::DragFloat(
+                            "回転",
+                            &key.rotationDegrees,
+                            0.5f,
+                            -360.0f,
+                            360.0f,
+                            "%.1f°");
+                        keysEditFinished = keysEditFinished
+                            || ImGui::IsItemDeactivatedAfterEdit();
+                        keysChanged |= ImGui::DragFloat2(
+                            "拡縮", &key.scale.x, 0.01f);
+                        keysEditFinished = keysEditFinished
+                            || ImGui::IsItemDeactivatedAfterEdit();
+                        keysChanged |= ImGui::SliderFloat(
+                            "不透明度", &key.opacity, 0.0f, 1.0f);
+                        keysEditFinished = keysEditFinished
+                            || ImGui::IsItemDeactivatedAfterEdit();
+                        ImGui::TextDisabled(
+                            "頂点の移動: %zu頂点",
+                            key.vertexOffsets.size());
+                        if (ImGui::SmallButton("姿勢を記録"))
+                        {
+                            keyAction = 0;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("メッシュを記録"))
+                        {
+                            keyAction = 1;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("削除"))
+                        {
+                            keyAction = 2;
+                        }
+                        if (keyAction >= 0 && actionParameter.empty())
+                        {
+                            actionParameter = channel.parameter;
+                            actionValue = key.value;
+                        }
+                        ImGui::PopID();
+                    }
+                }
+                if (keysChanged)
+                {
+                    keyform->SetChannels(std::move(channels));
+                    if (keyformRig != nullptr)
+                    {
+                        keyformRig->ApplyToHierarchy();
+                    }
+                }
+                if (keyAction == 0)
+                {
+                    static_cast<void>(keyform->RecordPoseKey(
+                        actionParameter,
+                        actionValue));
+                    keysEditFinished = true;
+                }
+                else if (keyAction == 1)
+                {
+                    static_cast<void>(keyform->RecordMeshKey(
+                        actionParameter,
+                        actionValue));
+                    keysEditFinished = true;
+                }
+                else if (keyAction == 2)
+                {
+                    static_cast<void>(keyform->RemoveKey(
+                        actionParameter,
+                        actionValue));
+                    keysEditFinished = true;
+                }
+
+                if (keyformRig != nullptr
+                    && !keyformRig->Parameters().empty())
+                {
+                    // キーを追加するパラメータの番号
+                    int* const parameterIndex =
+                        ImGui::GetStateStorage()->GetIntRef(
+                            ImGui::GetID("Keyform2DParameter"),
+                            0);
+                    *parameterIndex = std::clamp(
+                        *parameterIndex,
+                        0,
+                        static_cast<int>(
+                            keyformRig->Parameters().size()) - 1);
+                    // キーを追加するパラメータ
+                    const auto& target = keyformRig->Parameters()[
+                        static_cast<std::size_t>(*parameterIndex)];
+                    if (ImGui::BeginCombo(
+                        "パラメータ##Keyform2D",
+                        target.name.c_str()))
+                    {
+                        // 候補のパラメータの番号
+                        for (int index = 0;
+                            index
+                                < static_cast<int>(
+                                    keyformRig->Parameters().size());
+                            ++index)
+                        {
+                            if (ImGui::Selectable(
+                                keyformRig->Parameters()[
+                                    static_cast<std::size_t>(index)]
+                                    .name.c_str(),
+                                index == *parameterIndex))
+                            {
+                                *parameterIndex = index;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::Button(
+                        "現在の値で姿勢をキーに記録##Keyform2D"))
+                    {
+                        if (!keyform->HasRestPose())
+                        {
+                            keyform->CaptureRestPose();
+                        }
+                        static_cast<void>(keyform->RecordPoseKey(
+                            target.name,
+                            keyformRig->ParameterValue(target.name)));
+                        keysEditFinished = true;
+                    }
+                }
+                if (keysEditFinished)
+                {
+                    RecordHistory();
+                }
+                ImGui::TextDisabled(
+                    "親のRig 2Dのパラメータの値に合わせて、この部品の"
+                    "位置・回転・拡縮・不透明度・メッシュの頂点をキーの"
+                    "間で補間します。パラメータを既定値にして基準姿勢を"
+                    "記録し、値を変えて部品を動かしてから「姿勢を記録」"
+                    "します。「メッシュを記録」はボーンなどで曲げた形を"
+                    "頂点の移動として保存します（記録後はボーンを元に"
+                    "戻してください）。");
             }
             else if (auto* listener =
                 dynamic_cast<AudioListenerComponent*>(
@@ -13677,6 +14269,18 @@ namespace LamaPon
         const bool hasBlink2D =
             gameObject.GetComponent<
                 Blink2DComponent>() != nullptr;
+        // Sprite Skin 2Dを追加済みか
+        const bool hasSpriteSkin2D =
+            gameObject.GetComponent<
+                SpriteSkin2DComponent>() != nullptr;
+        // Rig 2Dを追加済みか
+        const bool hasRig2D =
+            gameObject.GetComponent<
+                Rig2DComponent>() != nullptr;
+        // Keyform 2Dを追加済みか
+        const bool hasKeyform2D =
+            gameObject.GetComponent<
+                Keyform2DComponent>() != nullptr;
         // Billboardを追加済みか
         const bool hasBillboard =
             gameObject.GetComponent<
@@ -14113,6 +14717,37 @@ namespace LamaPon
                     Blink2DComponent>();
                 RecordHistory();
                 SetStatus("Blink 2Dを追加しました");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(hasSpriteSkin2D);
+            if (showComponent("Sprite Skin 2D", "Animation")
+                && ImGui::Selectable("Sprite Skin 2D"))
+            {
+                gameObject.AddComponent<
+                    SpriteSkin2DComponent>();
+                RecordHistory();
+                SetStatus("Sprite Skin 2Dを追加しました");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(hasRig2D);
+            if (showComponent("Rig 2D", "Animation")
+                && ImGui::Selectable("Rig 2D"))
+            {
+                gameObject.AddComponent<Rig2DComponent>();
+                RecordHistory();
+                SetStatus("Rig 2Dを追加しました");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(hasKeyform2D);
+            if (showComponent("Keyform 2D", "Animation")
+                && ImGui::Selectable("Keyform 2D"))
+            {
+                gameObject.AddComponent<Keyform2DComponent>();
+                RecordHistory();
+                SetStatus("Keyform 2Dを追加しました");
             }
             ImGui::EndDisabled();
 

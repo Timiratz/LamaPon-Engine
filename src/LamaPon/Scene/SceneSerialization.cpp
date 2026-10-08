@@ -46,6 +46,9 @@
 #include "LamaPon/Components/SpriteMaskComponent.h"
 #include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/Blink2DComponent.h"
+#include "LamaPon/Components/SpriteSkin2DComponent.h"
+#include "LamaPon/Components/Rig2DComponent.h"
+#include "LamaPon/Components/Keyform2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
@@ -568,6 +571,62 @@ namespace
     Json ToJson(const DirectX::XMFLOAT4& value)
     {
         return Json::array({ value.x, value.y, value.z, value.w });
+    }
+
+    // 2DスキンのボーンIDを新しいIDへ置き換えます(skin: 更新するスキン, translate: 元のIDから新しいIDを返し対応がなければ0を返す処理)。
+    template<typename Translate>
+    void RemapSpriteSkinBones(
+        LamaPon::SpriteSkin2DComponent& skin,
+        const Translate& translate)
+    {
+        // 置き換えるボーンID列
+        auto bones = skin.Bones();
+        // 置き換えるボーンID
+        for (auto& bone : bones)
+        {
+            bone = translate(bone);
+        }
+        static_cast<void>(skin.RemapBones(std::move(bones)));
+    }
+
+    // 4×4行列を行順の16要素のJSON配列へ変換します(value: 保存する行列)。
+    Json ToJson(const DirectX::XMFLOAT4X4& value)
+    {
+        // 行順に並べる16要素
+        Json result = Json::array();
+        // 保存する行番号
+        for (int row = 0; row < 4; ++row)
+        {
+            // 保存する列番号
+            for (int column = 0; column < 4; ++column)
+            {
+                result.push_back(value.m[row][column]);
+            }
+        }
+        return result;
+    }
+
+    // 行順の16要素の数値配列を読み、長さや型が不正なら例外を伝播します(value: 行列のJSON配列)。
+    DirectX::XMFLOAT4X4 ReadFloat4x4(const Json& value)
+    {
+        if (!value.is_array() || value.size() != 16)
+        {
+            throw std::runtime_error("Expected a JSON array with sixteen numbers.");
+        }
+        // 読み込んだ行列
+        DirectX::XMFLOAT4X4 result{};
+        // 読み込む行番号
+        for (int row = 0; row < 4; ++row)
+        {
+            // 読み込む列番号
+            for (int column = 0; column < 4; ++column)
+            {
+                result.m[row][column] =
+                    value.at(static_cast<std::size_t>(row * 4 + column))
+                        .get<float>();
+            }
+        }
+        return result;
     }
 
     // 二要素の数値配列を読み、長さや型が不正なら例外を伝播します(value: XY順のJSON配列)。
@@ -1346,6 +1405,13 @@ namespace
             {
                 result["sourceRect"] = ToJson(sourceRect);
             }
+            // 分割しない既定の矩形以外のときだけ保存します。
+            if (sprite->MeshColumns() != 1
+                || sprite->MeshRows() != 1)
+            {
+                result["meshColumns"] = sprite->MeshColumns();
+                result["meshRows"] = sprite->MeshRows();
+            }
             SerializeAssetReference(
                 result,
                 "texture",
@@ -2057,6 +2123,111 @@ namespace
             result["includeChildren"] =
                 settings.includeChildren;
         }
+        // 保存する2Dスキン
+        else if (const auto* skin =
+            dynamic_cast<
+                const LamaPon::SpriteSkin2DComponent*>(
+                    &component))
+        {
+            result["bones"] = skin->Bones();
+            result["weightFalloff"] = skin->WeightFalloff();
+            result["bound"] = skin->IsBound();
+            if (skin->IsBound())
+            {
+                result["boundColumns"] = skin->BoundColumns();
+                result["boundRows"] = skin->BoundRows();
+                result["spriteBindPose"] =
+                    ToJson(skin->SpriteBindPose());
+                result["boneBindPoses"] = Json::array();
+                // 保存するボーンのバインド姿勢
+                for (const auto& pose : skin->BoneBindPoses())
+                {
+                    result["boneBindPoses"].push_back(ToJson(pose));
+                }
+                // 番号4個と重み4個を並べた頂点ごとの重み
+                result["weights"] = Json::array();
+                // 保存する頂点の重み
+                for (const auto& weight : skin->Weights())
+                {
+                    result["weights"].push_back(Json::array({
+                        weight.bones[0],
+                        weight.bones[1],
+                        weight.bones[2],
+                        weight.bones[3],
+                        weight.weights[0],
+                        weight.weights[1],
+                        weight.weights[2],
+                        weight.weights[3] }));
+                }
+            }
+        }
+        // 保存する2Dリグのパラメータ
+        else if (const auto* rig =
+            dynamic_cast<
+                const LamaPon::Rig2DComponent*>(
+                    &component))
+        {
+            result["parameters"] = Json::array();
+            // 保存するパラメータ
+            for (const auto& parameter : rig->Parameters())
+            {
+                result["parameters"].push_back({
+                    { "name", parameter.name },
+                    { "minimum", parameter.minimum },
+                    { "maximum", parameter.maximum },
+                    { "defaultValue", parameter.defaultValue },
+                    { "value", parameter.value },
+                    { "autoAmplitude", parameter.autoAmplitude },
+                    { "autoFrequency", parameter.autoFrequency } });
+            }
+        }
+        // 保存する2Dキーフォーム
+        else if (const auto* keyform =
+            dynamic_cast<
+                const LamaPon::Keyform2DComponent*>(
+                    &component))
+        {
+            if (keyform->HasRestPose())
+            {
+                result["rest"] = {
+                    { "position", ToJson(keyform->RestPosition()) },
+                    { "rotation", ToJson(keyform->RestRotation()) },
+                    { "scale", ToJson(keyform->RestScale()) },
+                    { "opacity", keyform->RestOpacity() } };
+            }
+            result["channels"] = Json::array();
+            // 保存するチャンネル
+            for (const auto& channel : keyform->Channels())
+            {
+                // 保存するキーの配列
+                Json keys = Json::array();
+                // 保存するキー
+                for (const auto& key : channel.keys)
+                {
+                    // 保存する1キー
+                    Json serializedKey{
+                        { "value", key.value },
+                        { "position", ToJson(key.positionOffset) },
+                        { "rotation", key.rotationDegrees },
+                        { "scale", ToJson(key.scale) },
+                        { "opacity", key.opacity } };
+                    if (!key.vertexOffsets.empty())
+                    {
+                        serializedKey["vertices"] = Json::array();
+                        // 保存する頂点移動
+                        for (const auto& offset : key.vertexOffsets)
+                        {
+                            serializedKey["vertices"].push_back(
+                                ToJson(offset));
+                        }
+                    }
+                    keys.push_back(std::move(serializedKey));
+                }
+                result["channels"].push_back({
+                    { "parameter", channel.parameter },
+                    { "keys", std::move(keys) } });
+            }
+        }
         // 保存するビルボード設定
         else if (const auto* billboard =
             dynamic_cast<
@@ -2657,6 +2828,9 @@ namespace
                 sprite.SetSourceRect(
                     ReadFloat4(value.at("sourceRect")));
             }
+            sprite.SetMeshGrid(
+                value.value("meshColumns", 1),
+                value.value("meshRows", 1));
             sprite.SetShaderPath(
                 ReadAssetReference(
                     value,
@@ -3852,6 +4026,165 @@ namespace
             component = &gameObject.AddComponent<
                 LamaPon::Blink2DComponent>(settings);
         }
+        else if (type == "SpriteSkin2D")
+        {
+            // 復元した2Dスキン
+            auto& skin = gameObject.AddComponent<
+                LamaPon::SpriteSkin2DComponent>(
+                    value.value(
+                        "bones",
+                        std::vector<std::uint64_t>{}));
+            skin.SetWeightFalloff(
+                value.value(
+                    "weightFalloff",
+                    LamaPon::SpriteSkin2DComponent::
+                        DefaultWeightFalloff));
+            if (value.value("bound", false)
+                && value.contains("spriteBindPose")
+                && value.contains("boneBindPoses")
+                && value.contains("weights"))
+            {
+                // 復元するボーンのバインド姿勢
+                std::vector<DirectX::XMFLOAT4X4> bonePoses;
+                // 読み込むボーンの姿勢
+                for (const auto& pose : value.at("boneBindPoses"))
+                {
+                    bonePoses.push_back(ReadFloat4x4(pose));
+                }
+                // 復元する頂点ごとの重み
+                std::vector<LamaPon::SpriteSkinWeight> weights;
+                // 読み込む頂点の重み
+                for (const auto& entry : value.at("weights"))
+                {
+                    if (!entry.is_array() || entry.size() != 8)
+                    {
+                        throw std::runtime_error(
+                            "A SpriteSkin2D weight needs eight numbers.");
+                    }
+                    // 復元する1頂点の重み
+                    LamaPon::SpriteSkinWeight weight{};
+                    // 読み込む影響の番号
+                    for (std::size_t index = 0; index < 4; ++index)
+                    {
+                        weight.bones[index] =
+                            entry.at(index).get<std::uint16_t>();
+                        weight.weights[index] =
+                            entry.at(index + 4).get<float>();
+                    }
+                    weights.push_back(weight);
+                }
+                static_cast<void>(skin.RestoreBinding(
+                    std::move(bonePoses),
+                    ReadFloat4x4(value.at("spriteBindPose")),
+                    std::move(weights),
+                    value.value("boundColumns", 1),
+                    value.value("boundRows", 1)));
+            }
+            component = &skin;
+        }
+        else if (type == "Rig2D")
+        {
+            // 復元するパラメータ
+            std::vector<LamaPon::Rig2DParameter> parameters;
+            if (value.contains("parameters"))
+            {
+                // 読み込むパラメータ
+                for (const auto& entry : value.at("parameters"))
+                {
+                    // 省略された項目を既定値で埋めるパラメータ
+                    LamaPon::Rig2DParameter parameter{};
+                    parameter.name =
+                        entry.value("name", std::string{});
+                    parameter.minimum =
+                        entry.value("minimum", parameter.minimum);
+                    parameter.maximum =
+                        entry.value("maximum", parameter.maximum);
+                    parameter.defaultValue =
+                        entry.value(
+                            "defaultValue",
+                            parameter.defaultValue);
+                    parameter.value =
+                        entry.value("value", parameter.defaultValue);
+                    parameter.autoAmplitude =
+                        entry.value(
+                            "autoAmplitude",
+                            parameter.autoAmplitude);
+                    parameter.autoFrequency =
+                        entry.value(
+                            "autoFrequency",
+                            parameter.autoFrequency);
+                    parameters.push_back(std::move(parameter));
+                }
+            }
+            component = &gameObject.AddComponent<
+                LamaPon::Rig2DComponent>(std::move(parameters));
+        }
+        else if (type == "Keyform2D")
+        {
+            // 復元するチャンネル
+            std::vector<LamaPon::Keyform2DChannel> channels;
+            if (value.contains("channels"))
+            {
+                // 読み込むチャンネル
+                for (const auto& entry : value.at("channels"))
+                {
+                    // 復元する1チャンネル
+                    LamaPon::Keyform2DChannel channel;
+                    channel.parameter =
+                        entry.value("parameter", std::string{});
+                    if (entry.contains("keys"))
+                    {
+                        // 読み込むキー
+                        for (const auto& serializedKey : entry.at("keys"))
+                        {
+                            // 省略された項目を既定値で埋めるキー
+                            LamaPon::Keyform2DKey key{};
+                            key.value = serializedKey.value("value", 0.0f);
+                            if (serializedKey.contains("position"))
+                            {
+                                key.positionOffset = ReadFloat2(
+                                    serializedKey.at("position"));
+                            }
+                            key.rotationDegrees =
+                                serializedKey.value("rotation", 0.0f);
+                            if (serializedKey.contains("scale"))
+                            {
+                                key.scale = ReadFloat2(
+                                    serializedKey.at("scale"));
+                            }
+                            key.opacity =
+                                serializedKey.value("opacity", 1.0f);
+                            if (serializedKey.contains("vertices"))
+                            {
+                                // 読み込む頂点移動
+                                for (const auto& offset :
+                                    serializedKey.at("vertices"))
+                                {
+                                    key.vertexOffsets.push_back(
+                                        ReadFloat2(offset));
+                                }
+                            }
+                            channel.keys.push_back(std::move(key));
+                        }
+                    }
+                    channels.push_back(std::move(channel));
+                }
+            }
+            // 復元した2Dキーフォーム
+            auto& keyform = gameObject.AddComponent<
+                LamaPon::Keyform2DComponent>(std::move(channels));
+            if (value.contains("rest"))
+            {
+                // 保存した基準姿勢
+                const auto& rest = value.at("rest");
+                keyform.SetRestPose(
+                    ReadFloat3(rest.at("position")),
+                    ReadFloat4(rest.at("rotation")),
+                    ReadFloat3(rest.at("scale")),
+                    rest.value("opacity", 1.0f));
+            }
+            component = &keyform;
+        }
         else if (type == "TransformAnimator")
         {
             component = &gameObject.AddComponent<
@@ -4807,6 +5140,23 @@ namespace
                 }
                 lodGroup->SetLevels(
                     std::move(levels));
+            }
+            // 内部参照を更新する2Dスキン
+            if (auto* skin =
+                    gameObject->GetComponent<
+                        LamaPon::SpriteSkin2DComponent>())
+            {
+                RemapSpriteSkinBones(
+                    *skin,
+                    // 元のボーンIDを新しいIDへ変えます(id: 保存された元のID)。
+                    [&objectsById](const LamaPon::GameObjectId id)
+                    {
+                        // 参照先の新しい物体の格納位置
+                        const auto target = objectsById.find(id);
+                        return target != objectsById.end()
+                            ? target->second->Id()
+                            : LamaPon::GameObjectId{};
+                    });
             }
         }
 
@@ -5774,6 +6124,23 @@ namespace LamaPon
                     lodGroup->SetLevels(
                         std::move(levels));
                 }
+                // 参照を新番号へ変える2Dスキン
+                if (auto* skin =
+                        gameObject->GetComponent<
+                            SpriteSkin2DComponent>())
+                {
+                    RemapSpriteSkinBones(
+                        *skin,
+                        // 元のボーンIDを新しいIDへ変えます(id: 保存された元のID)。
+                        [&objectsById](const GameObjectId id)
+                        {
+                            // 内部参照の復元先の格納位置
+                            const auto target = objectsById.find(id);
+                            return target != objectsById.end()
+                                ? target->second->Id()
+                                : GameObjectId{};
+                        });
+                }
             }
         }
 
@@ -5951,6 +6318,20 @@ namespace LamaPon
                         {
                             level["targetId"] = 0;
                         }
+                    }
+                    continue;
+                }
+                if (componentType == "SpriteSkin2D")
+                {
+                    // 番号をローカル化するボーンID
+                    for (auto& bone : component["bones"])
+                    {
+                        // ボーンのローカル番号の位置
+                        const auto local =
+                            localIds.find(bone.get<GameObjectId>());
+                        bone = local != localIds.end()
+                            ? local->second
+                            : GameObjectId{};
                     }
                     continue;
                 }

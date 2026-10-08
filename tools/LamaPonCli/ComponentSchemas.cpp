@@ -341,6 +341,25 @@ namespace LamaPon::Cli
                         field("autoBlink", "bool", true),
                         field("includeChildren", "bool", true),
                     })),
+                schema(
+                    "SpriteSkin2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("bones", "array", nlohmann::json::array()),
+                        field("weightFalloff", "number", 4.0),
+                    })),
+                schema(
+                    "Rig2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("parameters", "array", nlohmann::json::array()),
+                    })),
+                schema(
+                    "Keyform2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("channels", "array", nlohmann::json::array()),
+                    })),
             });
         }
 

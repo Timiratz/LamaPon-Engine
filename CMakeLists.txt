@@ -247,6 +247,13 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/Sway2DComponent.h
     src/LamaPon/Components/Blink2DComponent.cpp
     src/LamaPon/Components/Blink2DComponent.h
+    src/LamaPon/Components/SpriteMeshDeformer.h
+    src/LamaPon/Components/SpriteSkin2DComponent.cpp
+    src/LamaPon/Components/SpriteSkin2DComponent.h
+    src/LamaPon/Components/Rig2DComponent.cpp
+    src/LamaPon/Components/Rig2DComponent.h
+    src/LamaPon/Components/Keyform2DComponent.cpp
+    src/LamaPon/Components/Keyform2DComponent.h
     src/LamaPon/Components/NativeScriptComponent.cpp
     src/LamaPon/Components/NativeScriptComponent.h
     src/LamaPon/Core/Application.cpp
@@ -1202,6 +1209,20 @@ if(BUILD_TESTING)
     set_tests_properties(D3D12SpriteRenderingWarp PROPERTIES
         LABELS "graphics"
         TIMEOUT 180)
+    add_executable(LamaPonSpriteMeshRenderingTests
+        tests/SpriteMeshRenderingTests.cpp)
+    target_link_libraries(LamaPonSpriteMeshRenderingTests PRIVATE LamaPonRuntime)
+    target_compile_definitions(LamaPonSpriteMeshRenderingTests PRIVATE
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+    target_compile_options(LamaPonSpriteMeshRenderingTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME SpriteMeshRenderingWarp
+        COMMAND LamaPonSpriteMeshRenderingTests)
+    set_tests_properties(SpriteMeshRenderingWarp PROPERTIES
+        LABELS "graphics;2d"
+        TIMEOUT 180)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
@@ -1451,6 +1472,44 @@ if(BUILD_TESTING)
         COMMAND LamaPonBlink2DTests)
     set_tests_properties(
         Blink2DFrames
+        PROPERTIES
+            LABELS "scene;animation;2d"
+    )
+
+    add_executable(LamaPonSpriteSkin2DTests
+        tests/SpriteSkin2DTests.cpp
+    )
+    target_link_libraries(
+        LamaPonSpriteSkin2DTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonSpriteSkin2DTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME SpriteSkin2DDeformation
+        COMMAND LamaPonSpriteSkin2DTests)
+    set_tests_properties(
+        SpriteSkin2DDeformation
+        PROPERTIES
+            LABELS "scene;animation;2d"
+    )
+
+    add_executable(LamaPonRig2DTests
+        tests/Rig2DTests.cpp
+    )
+    target_link_libraries(
+        LamaPonRig2DTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonRig2DTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME Rig2DKeyforms
+        COMMAND LamaPonRig2DTests)
+    set_tests_properties(
+        Rig2DKeyforms
         PROPERTIES
             LABELS "scene;animation;2d"
     )

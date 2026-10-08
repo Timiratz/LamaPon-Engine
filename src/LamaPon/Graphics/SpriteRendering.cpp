@@ -7,11 +7,56 @@
 #include "LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h"
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
+#include <cmath>
 #include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+
+namespace
+{
+    // 2Dメッシュの頂点・索引が描画可能な範囲か返します(request: 確認するメッシュ)。
+    [[nodiscard]] bool IsValidSpriteMesh(
+        const LamaPon::SpriteMeshDrawRequest& request) noexcept
+    {
+        if (request.vertices.empty()
+            || request.vertices.size()
+                > LamaPon::MaximumSpriteMeshVertices
+            || request.indices.empty()
+            || request.indices.size()
+                > LamaPon::MaximumSpriteMeshIndices
+            || request.indices.size() % 3u != 0u
+            || !std::isfinite(request.layerDepth))
+        {
+            return false;
+        }
+        // 確認する頂点
+        for (const auto& vertex : request.vertices)
+        {
+            if (!std::isfinite(vertex.position.x)
+                || !std::isfinite(vertex.position.y)
+                || !std::isfinite(vertex.textureCoordinate.x)
+                || !std::isfinite(vertex.textureCoordinate.y)
+                || !std::isfinite(vertex.color.x)
+                || !std::isfinite(vertex.color.y)
+                || !std::isfinite(vertex.color.z)
+                || !std::isfinite(vertex.color.w))
+            {
+                return false;
+            }
+        }
+        // 確認する頂点番号
+        for (const auto index : request.indices)
+        {
+            if (index >= request.vertices.size())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+}
 
 namespace LamaPon::Detail
 {
@@ -111,6 +156,31 @@ namespace LamaPon::Detail
                 return m_d3d12Renderer->Draw(m_token, request);
             }
             return m_gate->owner->DrawD3D11Sprite(
+                m_token,
+                request);
+        }
+
+        // 開始スレッドから描画器へメッシュを送ります(request: 画像と頂点・索引)。
+        bool DrawMesh(const SpriteMeshDrawRequest& request)
+        {
+            if (m_gate == nullptr || !IsValidSpriteMesh(request))
+            {
+                return false;
+            }
+            // デバイス寿命の排他ロック
+            std::scoped_lock lock(m_gate->mutex);
+            if (m_phase != Phase::Active
+                || m_gate->closed
+                || m_gate->owner == nullptr)
+            {
+                return false;
+            }
+            RequireRenderThread();
+            if (m_d3d12Renderer != nullptr)
+            {
+                return m_d3d12Renderer->DrawMesh(m_token, request);
+            }
+            return m_gate->owner->DrawD3D11SpriteMesh(
                 m_token,
                 request);
         }
@@ -327,6 +397,14 @@ namespace LamaPon
         return state != nullptr && state->Draw(request);
     }
 
+    bool SpriteDrawContext::DrawMesh(
+        const SpriteMeshDrawRequest& request) const
+    {
+        // 描画パスの共有状態
+        const auto state = m_state.lock();
+        return state != nullptr && state->DrawMesh(request);
+    }
+
     bool SpriteDrawContext::PushScissor(
         const SpriteClipRectangle& rectangle) const
     {
@@ -393,6 +471,12 @@ namespace LamaPon
         const SpriteDrawRequest& request) const
     {
         return m_state != nullptr && m_state->Draw(request);
+    }
+
+    bool SpriteRenderPass::DrawMesh(
+        const SpriteMeshDrawRequest& request) const
+    {
+        return m_state != nullptr && m_state->DrawMesh(request);
     }
 
     bool SpriteRenderPass::PushScissor(
