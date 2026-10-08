@@ -310,6 +310,20 @@ namespace LamaPon::Cli
                         field("defaultClip", "string", ""),
                         field("clips", "array", nlohmann::json::array()),
                     })),
+                schema(
+                    "Sway2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("tipOffset", "vec2", vec2(0, 100)),
+                        field("stiffness", "number", 60.0),
+                        field("damping", "number", 8.0),
+                        field("inertia", "number", 1.0),
+                        field("gravity", "vec2", vec2(0, 0)),
+                        field("maxAngle", "number", 45.0),
+                        field("windAmplitude", "number", 0.0),
+                        field("windFrequency", "number", 0.5),
+                        field("windPhase", "number", 0.0),
+                    })),
             });
         }
 

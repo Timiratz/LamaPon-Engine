@@ -250,7 +250,7 @@ KNOWN_NATIVE_SCENE_COMPONENTS = {
     "NavMeshAgent", "ParallaxLayer", "ParticleSystem", "PointLight",
     "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rigidbody",
     "Rotator", "SphereCollider3D", "SpotLight", "SpriteAnimator",
-    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "TextRenderer",
+    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "Sway2D", "TextRenderer",
     "Tilemap", "TransformAnimator", "UIButton", "UICanvas", "UIImage",
     "UIInputField", "UILayoutGroup", "UIRectTransform", "UIScrollView",
     "UISlider", "UIToggle",

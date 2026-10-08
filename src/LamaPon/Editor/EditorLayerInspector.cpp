@@ -42,6 +42,7 @@
 #include "LamaPon/Components/SpriteAnimatorComponent.h"
 #include "LamaPon/Components/SpriteRendererComponent.h"
 #include "LamaPon/Components/SpriteMaskComponent.h"
+#include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
@@ -1182,6 +1183,10 @@ namespace
         if (typeName == "Rotator")
         {
             return "Rotator";
+        }
+        if (typeName == "Sway2D")
+        {
+            return "Sway 2D";
         }
         if (typeName == "TransformAnimator")
         {
@@ -11160,6 +11165,142 @@ namespace LamaPon
                     "（近景）。背景Tilemapに付けて奥行きの"
                     "あるスクロールを作れます。");
             }
+            // 現在編集する2D揺れ物
+            else if (auto* sway =
+                dynamic_cast<
+                    Sway2DComponent*>(
+                        component.get()))
+            {
+                // 2D揺れ物の編集中コピー
+                auto swaySettings = sway->Settings();
+                // いずれかの欄で値を変えたか
+                bool swayChanged = false;
+                // いずれかの欄で編集を確定したか
+                bool swayEditFinished = false;
+                // 直前の欄で編集を確定したかを集計します。
+                const auto trackSwayEdit =
+                    [&swayEditFinished]()
+                    {
+                        swayEditFinished =
+                            swayEditFinished
+                            || ImGui::
+                                IsItemDeactivatedAfterEdit();
+                    };
+
+                swayChanged |= ImGui::DragFloat2(
+                    "先端##Sway2D",
+                    &swaySettings.tipOffset.x,
+                    1.0f);
+                trackSwayEdit();
+                swayChanged |= ImGui::DragFloat(
+                    "ばね##Sway2D",
+                    &swaySettings.stiffness,
+                    0.5f,
+                    0.0f,
+                    10000.0f,
+                    "%.1f");
+                trackSwayEdit();
+                swayChanged |= ImGui::DragFloat(
+                    "減衰##Sway2D",
+                    &swaySettings.damping,
+                    0.1f,
+                    0.0f,
+                    1000.0f,
+                    "%.2f");
+                trackSwayEdit();
+                swayChanged |= ImGui::SliderFloat(
+                    "慣性##Sway2D",
+                    &swaySettings.inertia,
+                    0.0f,
+                    1.0f,
+                    "%.2f");
+                trackSwayEdit();
+                swayChanged |= ImGui::DragFloat2(
+                    "重力##Sway2D",
+                    &swaySettings.gravity.x,
+                    1.0f);
+                trackSwayEdit();
+                swayChanged |= ImGui::SliderFloat(
+                    "最大角度##Sway2D",
+                    &swaySettings.maxAngleDegrees,
+                    0.0f,
+                    180.0f,
+                    "%.0f°");
+                trackSwayEdit();
+                swayChanged |= ImGui::SliderFloat(
+                    "風の揺れ幅##Sway2D",
+                    &swaySettings.windAmplitudeDegrees,
+                    0.0f,
+                    90.0f,
+                    "%.1f°");
+                trackSwayEdit();
+                swayChanged |= ImGui::DragFloat(
+                    "風の周波数##Sway2D",
+                    &swaySettings.windFrequency,
+                    0.01f,
+                    0.0f,
+                    60.0f,
+                    "%.2f Hz");
+                trackSwayEdit();
+                swayChanged |= ImGui::DragFloat(
+                    "風の位相##Sway2D",
+                    &swaySettings.windPhaseDegrees,
+                    1.0f,
+                    -360.0f,
+                    360.0f,
+                    "%.0f°");
+                trackSwayEdit();
+                if (swayChanged)
+                {
+                    sway->SetSettings(swaySettings);
+                }
+                if (swayEditFinished)
+                {
+                    RecordHistory();
+                }
+
+                // 先端を合わせる元のSprite Renderer
+                if (const auto* swaySprite =
+                        selected->GetComponent<
+                            SpriteRendererComponent>();
+                    swaySprite != nullptr
+                    && ImGui::Button(
+                        "Sprite Rendererの大きさから先端を設定##Sway2D"))
+                {
+                    // Spriteの基準点比率
+                    const auto& swayPivot =
+                        swaySprite->Pivot();
+                    // Spriteの表示サイズ
+                    const auto& swaySize =
+                        swaySprite->Size();
+                    // 基準点から見た反対側の端
+                    DirectX::XMFLOAT2 swayTip{
+                        (1.0f - 2.0f * swayPivot.x)
+                            * swaySize.x,
+                        (1.0f - 2.0f * swayPivot.y)
+                            * swaySize.y };
+                    if (std::abs(swayTip.x)
+                            + std::abs(swayTip.y)
+                        < 1.0e-3f)
+                    {
+                        swayTip = { 0.0f, swaySize.y * 0.5f };
+                    }
+                    swaySettings = sway->Settings();
+                    swaySettings.tipOffset = swayTip;
+                    sway->SetSettings(swaySettings);
+                    RecordHistory();
+                }
+                ImGui::TextDisabled(
+                    "髪・服・飾りなどを回転中心（Sprite Rendererの"
+                    "基準点）から揺らします。先端は回転中心から"
+                    "垂れ下がる先までのローカル座標です。親が"
+                    "動いたり回ったりすると先端が取り残され、"
+                    "ばねで静止姿勢へ戻ります。慣性0で移動に"
+                    "反応せず、重力（Yは下向き）を入れると垂れ"
+                    "下がります。数節に分けて親子でつなぐと、"
+                    "しなるように揺れます。アニメーションの回転"
+                    "にも上乗せされます。");
+            }
             else if (auto* listener =
                 dynamic_cast<AudioListenerComponent*>(
                     component.get()))
@@ -13413,6 +13554,10 @@ namespace LamaPon
         const bool hasAudio = gameObject.GetComponent<AudioSourceComponent>() != nullptr;
         // Rotatorを追加済みか
         const bool hasRotator = gameObject.GetComponent<RotatorComponent>() != nullptr;
+        // Sway 2Dを追加済みか
+        const bool hasSway2D =
+            gameObject.GetComponent<
+                Sway2DComponent>() != nullptr;
         // Billboardを追加済みか
         const bool hasBillboard =
             gameObject.GetComponent<
@@ -13827,6 +13972,17 @@ namespace LamaPon
                 gameObject.AddComponent<RotatorComponent>();
                 RecordHistory();
                 SetStatus("Rotatorを追加しました");
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(hasSway2D);
+            if (showComponent("Sway 2D", "Animation")
+                && ImGui::Selectable("Sway 2D"))
+            {
+                gameObject.AddComponent<
+                    Sway2DComponent>();
+                RecordHistory();
+                SetStatus("Sway 2Dを追加しました");
             }
             ImGui::EndDisabled();
 

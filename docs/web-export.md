@@ -126,7 +126,7 @@ OSのフォント名だけに依存せず、フォントアセットをプロジ
 | 区分 | コンポーネント |
 | --- | --- |
 | 対応 | `NativeScript`、`Camera`、`DirectionalLight`（影を除く）、`AudioSource`／`AudioListener`、`MeshRenderer`、`ModelRenderer`、`BoxCollider3D`、`Rigidbody`の基本機能、`ParticleSystem`、`SpriteRenderer`／`SpriteMask`／`SpriteAnimator`、`TextRenderer`、`UIRectTransform`、`TransformAnimator`の直接クリップ、`Rotator`、`InputMover`、`ParallaxLayer`、`RenderCulling` |
-| 拒否 | `PointLight`／`SpotLight`、`ReflectionProbe`、影、高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、`UIRectTransform`以外のUI Canvas系コンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
+| 拒否 | `PointLight`／`SpotLight`、`ReflectionProbe`、影、高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、`Sway2D`、`UIRectTransform`以外のUI Canvas系コンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
 
 対応表にないコンポーネントも拒否します。対応を追加する場合は、ポータブル版の処理と
 互換性テストを用意してから許可リストへ登録します。

@@ -44,6 +44,7 @@
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Components/RenderCullingComponent.h"
 #include "LamaPon/Components/SpriteMaskComponent.h"
+#include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/ParallaxLayerComponent.h"
@@ -2007,6 +2008,27 @@ namespace
         {
             result["angularVelocity"] = ToJson(rotator->AngularVelocity());
         }
+        // 保存する2D揺れ物設定
+        else if (const auto* sway =
+            dynamic_cast<
+                const LamaPon::Sway2DComponent*>(
+                    &component))
+        {
+            // 保存する補正済みの揺れ設定
+            const auto& settings = sway->Settings();
+            result["tipOffset"] = ToJson(settings.tipOffset);
+            result["stiffness"] = settings.stiffness;
+            result["damping"] = settings.damping;
+            result["inertia"] = settings.inertia;
+            result["gravity"] = ToJson(settings.gravity);
+            result["maxAngle"] = settings.maxAngleDegrees;
+            result["windAmplitude"] =
+                settings.windAmplitudeDegrees;
+            result["windFrequency"] =
+                settings.windFrequency;
+            result["windPhase"] =
+                settings.windPhaseDegrees;
+        }
         // 保存するビルボード設定
         else if (const auto* billboard =
             dynamic_cast<
@@ -3715,6 +3737,45 @@ namespace
                 value.contains("angularVelocity")
                     ? ReadFloat3(value.at("angularVelocity"))
                     : DirectX::XMFLOAT3{ 0.0f, 1.0f, 0.0f });
+        }
+        else if (type == "Sway2D")
+        {
+            // 省略された項目を既定値で埋める揺れ設定
+            LamaPon::Sway2DSettings settings{};
+            if (value.contains("tipOffset"))
+            {
+                settings.tipOffset =
+                    ReadFloat2(value.at("tipOffset"));
+            }
+            settings.stiffness =
+                value.value("stiffness", settings.stiffness);
+            settings.damping =
+                value.value("damping", settings.damping);
+            settings.inertia =
+                value.value("inertia", settings.inertia);
+            if (value.contains("gravity"))
+            {
+                settings.gravity =
+                    ReadFloat2(value.at("gravity"));
+            }
+            settings.maxAngleDegrees =
+                value.value(
+                    "maxAngle",
+                    settings.maxAngleDegrees);
+            settings.windAmplitudeDegrees =
+                value.value(
+                    "windAmplitude",
+                    settings.windAmplitudeDegrees);
+            settings.windFrequency =
+                value.value(
+                    "windFrequency",
+                    settings.windFrequency);
+            settings.windPhaseDegrees =
+                value.value(
+                    "windPhase",
+                    settings.windPhaseDegrees);
+            component = &gameObject.AddComponent<
+                LamaPon::Sway2DComponent>(settings);
         }
         else if (type == "TransformAnimator")
         {

@@ -243,6 +243,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/RotatorComponent.h
     src/LamaPon/Components/RigidbodyComponent.cpp
     src/LamaPon/Components/RigidbodyComponent.h
+    src/LamaPon/Components/Sway2DComponent.cpp
+    src/LamaPon/Components/Sway2DComponent.h
     src/LamaPon/Components/NativeScriptComponent.cpp
     src/LamaPon/Components/NativeScriptComponent.h
     src/LamaPon/Core/Application.cpp
@@ -1411,6 +1413,25 @@ if(BUILD_TESTING)
         TransformRotation
         PROPERTIES
             LABELS "core;transform"
+    )
+
+    add_executable(LamaPonSway2DTests
+        tests/Sway2DTests.cpp
+    )
+    target_link_libraries(
+        LamaPonSway2DTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonSway2DTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME Sway2DMotion
+        COMMAND LamaPonSway2DTests)
+    set_tests_properties(
+        Sway2DMotion
+        PROPERTIES
+            LABELS "scene;animation;2d"
     )
 
     add_executable(LamaPonBillboardTests

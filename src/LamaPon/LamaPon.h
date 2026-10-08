@@ -50,6 +50,7 @@
 #include "LamaPon/Components/RigidbodyComponent.h"
 #include "LamaPon/Components/SpriteAnimatorComponent.h"
 #include "LamaPon/Components/SpriteRendererComponent.h"
+#include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/TransformAnimatorComponent.h"

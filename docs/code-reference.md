@@ -2553,6 +2553,58 @@ void Update(float) override
 
 ---
 
+### Sway2DComponent
+
+**宣言**
+
+```cpp
+explicit Sway2DComponent(const Sway2DSettings& settings = {});
+```
+
+**概略**
+
+髪・服・飾りなど、回転中心から垂れ下がる2Dパーツを、親の動きに遅れて揺らします。
+
+**引数**
+
+| 引数 | 説明 |
+|---|---|
+| `settings` | 揺れの設定。範囲外や非有限の値は補正されます |
+
+`Sway2DSettings`は`tipOffset`（回転中心から先端までのローカルXY）、`stiffness`（ばね）、`damping`（減衰）、
+`inertia`（移動に取り残される割合0〜1）、`gravity`（先端の加速度、Yは下向き）、`maxAngleDegrees`（最大角度）、
+`windAmplitudeDegrees`／`windFrequency`／`windPhaseDegrees`（周期的な揺れ）を持つ構造体です。
+
+**主なメソッド**
+
+| メソッド | 引数 | 戻り値・説明 |
+|---|---|---|
+| `SetSettings` | `settings` : 揺れの設定 | 補正して置き換えます |
+| `Settings` | なし | 補正済みの設定 |
+| `ResetSimulation` | なし | 揺れを止め、次の更新で現在の姿勢からやり直します |
+| `CurrentAngle` | なし | 静止姿勢へ足しているZ回転（ラジアン） |
+
+**解説**
+
+通常更新が終わった時点の回転を静止姿勢とし、LateUpdateで揺れの角度を足します。
+そのため`TransformAnimatorComponent`の回転にも上乗せできます。
+回転中心はSprite Rendererの基準点（Pivot）なので、付け根に合わせてください。
+使い方の手順は[UIと2D機能](ui-2d.md)の「髪・服・飾りの揺れ」を参照してください。
+
+**サンプル**
+
+```cpp
+void Start() override
+{
+    LamaPon::Sway2DSettings settings{};
+    settings.tipOffset = { 0.0f, 120.0f };
+    settings.gravity = { 0.0f, 980.0f };
+    AddComponent<LamaPon::Sway2DComponent>(settings);
+}
+```
+
+---
+
 ## UI
 
 ### UIButtonComponent

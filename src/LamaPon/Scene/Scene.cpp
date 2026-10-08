@@ -46,6 +46,7 @@
 #include "LamaPon/Components/SphereCollider3DComponent.h"
 #include "LamaPon/Components/SpriteAnimatorComponent.h"
 #include "LamaPon/Components/SpriteRendererComponent.h"
+#include "LamaPon/Components/Sway2DComponent.h"
 #include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/TransformAnimatorComponent.h"
@@ -2853,6 +2854,17 @@ namespace LamaPon
                     {
                         duplicateComponent = &duplicate.AddComponent<RotatorComponent>(
                             rotator->AngularVelocity());
+                    }
+                    // 複製元の2D揺れ物設定
+                    else if (const auto* sway =
+                        dynamic_cast<
+                            const Sway2DComponent*>(
+                                sourceComponent.get()))
+                    {
+                        duplicateComponent =
+                            &duplicate.AddComponent<
+                                Sway2DComponent>(
+                                    sway->Settings());
                     }
                     // 複製元のビルボード設定
                     else if (const auto* billboard =
