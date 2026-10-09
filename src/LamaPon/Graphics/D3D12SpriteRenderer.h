@@ -64,6 +64,11 @@ namespace LamaPon::Detail
         [[nodiscard]] bool Draw(
             std::uint64_t token,
             const SpriteDrawRequest& request);
+        // 待機中の矩形を送信してから検証済みのメッシュを描けたか返します(token: パス識別番号, request: 画像と頂点・索引)。
+        // 画面効果の描画中や画像を解決できない場合はfalseで、記録に失敗した場合は再初期化まで新規パスを拒否します。
+        [[nodiscard]] bool DrawMesh(
+            std::uint64_t token,
+            const SpriteMeshDrawRequest& request);
         // クリップ範囲を積めたか返します(token: パス識別番号, rectangle: ピクセル座標の矩形)。
         [[nodiscard]] bool PushScissor(
             std::uint64_t token,
@@ -314,6 +319,14 @@ namespace LamaPon::Detail
         void RequireOwner(std::uint64_t token) const;
         // 待機中の矩形を現在の出力へ送信します。
         void Flush();
+        // メッシュの頂点・索引を転送して描画を記録します(texture: 入力画像のGPU記述子, request: 検証済みのメッシュ)。
+        void RecordMesh(
+            D3D12_GPU_DESCRIPTOR_HANDLE texture,
+            const SpriteMeshDrawRequest& request);
+        // 予約描画と同じルート引数・PSO・定数・クリップを設定します(commandList: 記録先, cullNone: 裏面も描く指定)。
+        void BindPipeline(
+            ID3D12GraphicsCommandList* commandList,
+            bool cullNone);
         // 送信に失敗したパスを閉じ、再初期化まで新規パスを拒否します。
         void FlushOrFail();
         // パスの参照と送信待ちの矩形を解放します。

@@ -310,6 +310,56 @@ namespace LamaPon::Cli
                         field("defaultClip", "string", ""),
                         field("clips", "array", nlohmann::json::array()),
                     })),
+                schema(
+                    "Sway2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("tipOffset", "vec2", vec2(0, 100)),
+                        field("stiffness", "number", 60.0),
+                        field("damping", "number", 8.0),
+                        field("inertia", "number", 1.0),
+                        field("gravity", "vec2", vec2(0, 0)),
+                        field("maxAngle", "number", 45.0),
+                        field("windAmplitude", "number", 0.0),
+                        field("windFrequency", "number", 0.5),
+                        field("windPhase", "number", 0.0),
+                    })),
+                schema(
+                    "Blink2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("columns", "integer", 3),
+                        field("rows", "integer", 1),
+                        field("openFrame", "integer", 0),
+                        field("closingStartFrame", "integer", 1),
+                        field("closingFrameCount", "integer", 2),
+                        field("frameSeconds", "number", 0.04),
+                        field("closedSeconds", "number", 0.06),
+                        field("intervalMin", "number", 2.0),
+                        field("intervalMax", "number", 6.0),
+                        field("doubleBlinkChance", "number", 0.15),
+                        field("autoBlink", "bool", true),
+                        field("includeChildren", "bool", true),
+                    })),
+                schema(
+                    "SpriteSkin2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("bones", "array", nlohmann::json::array()),
+                        field("weightFalloff", "number", 4.0),
+                    })),
+                schema(
+                    "Rig2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("parameters", "array", nlohmann::json::array()),
+                    })),
+                schema(
+                    "Keyform2D",
+                    "Animation",
+                    nlohmann::json::array({
+                        field("channels", "array", nlohmann::json::array()),
+                    })),
             });
         }
 

@@ -22,6 +22,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "LamaPon/Portable/PortableCharacterRig2D.h"
+
 #ifndef LAMAPON_WEB_AUDIO_ENABLED
 #define LAMAPON_WEB_AUDIO_ENABLED 0
 #endif
@@ -4496,6 +4498,7 @@ namespace LamaPon
                     sprite.SetMaskInteraction(static_cast<SpriteMaskInteraction>(
                         std::clamp(component.value("maskInteraction", 0), 0, 2)));
                     sprite.SetSortOrder(component.value("sortOrder", 0));
+                    CharacterRig2DRuntime::LoadSpriteMesh(sprite, component);
                     sprite.SetEnabled(component.value("enabled", true));
                 }
                 // SpriteMask componentを復元します。
@@ -4563,6 +4566,12 @@ namespace LamaPon
                 {
                     // Web AudioはAudioContextごとにListenerを1つ管理します。
                 }
+                // 2Dキャラクター部品を復元し、それ以外の型は無視します。
+                else
+                {
+                    static_cast<void>(CharacterRig2DRuntime::LoadComponent(
+                        object, type, component));
+                }
             }
         }
         // object生成後にsource IDからparent参照を解決します。
@@ -4576,6 +4585,7 @@ namespace LamaPon
                 pending.object->SetParent(found->second);
             }
         }
+        CharacterRig2DRuntime::ResolveReferences(bySourceId);
 
         // scene JSONに指定されたmain camera source IDです。
         const auto mainCameraId = document.value("mainCamera", 0ll);
@@ -5182,6 +5192,8 @@ namespace LamaPon
 #endif
             }
         }
+        // 通常の更新の後に2Dキャラクター部品を進めます。
+        CharacterRig2DRuntime::Update(m_objects, deltaTime);
     }
 
     // scene objectをworld描画しPortable UIを同期します。
@@ -5653,6 +5665,12 @@ namespace LamaPon
                 {
                     // Web rendererへ渡すvirtual texture pathです。
                     const std::string path = VirtualAssetPath(sprite->m_texture);
+                    // メッシュで描くSpriteは三角形のDOMで描きます。
+                    if (CharacterRig2DRuntime::RenderSpriteMesh(
+                            *object, *sprite, model, path))
+                    {
+                        continue;
+                    }
                     // model matrixのx軸scaleです。
                     const float scaleX = std::hypot(
                         model.values[0], model.values[1]);

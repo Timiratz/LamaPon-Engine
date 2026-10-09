@@ -42,4 +42,5 @@ jobs:
           cmake --build build-web-tests --parallel 2
           python tests/RunBrowserTests.py --browser "$(command -v google-chrome)" --html build-web-tests/WebLifecycleTests.html
           python tests/RunBrowserTests.py --browser "$(command -v google-chrome)" --html build-web-tests/PortableSmoke.html --runtime
+          python tests/RunBrowserTests.py --browser "$(command -v google-chrome)" --html build-web-tests/CharacterRigSmoke.html
           python tests/WebExportToolTests.py

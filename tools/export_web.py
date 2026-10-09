@@ -242,19 +242,45 @@ PORTABLE_APPROXIMATE_SCENE_COMPONENTS = {"DirectionalLight"}
 # 新しいnative componentはWeb互換を宣言する前に両registryへ分類します。
 # Web判定対象のcomponent。
 KNOWN_NATIVE_SCENE_COMPONENTS = {
-    "AudioListener", "AudioSource", "Billboard", "BoxCollider2D",
+    "AudioListener", "AudioSource", "Billboard", "Blink2D", "BoxCollider2D",
     "BoxCollider3D", "Camera", "CapsuleCollider3D", "CharacterController",
     "CircleCollider2D", "ConvexHullCollider3D", "DirectionalLight",
-    "InputMover", "Joint", "LODGroup", "Light2D", "MeshCollider3D",
+    "InputMover", "Joint", "Keyform2D", "LODGroup", "Light2D", "MeshCollider3D",
     "MeshRenderer", "ModelRenderer", "NativeScript", "NetworkIdentity", "NavMesh",
     "NavMeshAgent", "ParallaxLayer", "ParticleSystem", "PointLight",
-    "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rigidbody",
+    "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rig2D", "Rigidbody",
     "Rotator", "SphereCollider3D", "SpotLight", "SpriteAnimator",
-    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "TextRenderer",
+    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "SpriteSkin2D", "Sway2D",
+    "TextRenderer",
     "Tilemap", "TransformAnimator", "UIButton", "UICanvas", "UIImage",
     "UIInputField", "UILayoutGroup", "UIRectTransform", "UIScrollView",
     "UISlider", "UIToggle",
 }
+
+# 2Dキャラクター部品のAPI typeと必要module。
+PORTABLE_API_MODULES.update({
+    "Blink2DComponent": "renderer2d",
+    "Blink2DSettings": "renderer2d",
+    "Keyform2DChannel": "core",
+    "Keyform2DComponent": "core",
+    "Keyform2DKey": "core",
+    "Keyform2DPose": "core",
+    "Rig2DComponent": "core",
+    "Rig2DParameter": "core",
+    "SpriteMeshDeformer": "renderer2d",
+    "SpriteSkin2DComponent": "renderer2d",
+    "SpriteSkinWeight": "renderer2d",
+    "Sway2DComponent": "core",
+    "Sway2DSettings": "core",
+})
+# 2Dキャラクター部品のscene componentと必要module。
+PORTABLE_SCENE_COMPONENTS.update({
+    "Blink2D": "renderer2d",
+    "Keyform2D": "core",
+    "Rig2D": "core",
+    "SpriteSkin2D": "renderer2d",
+    "Sway2D": "core",
+})
 
 # API名の検索pattern.
 LAMAPON_API_TOKEN = re.compile(r"\bLamaPon::([A-Za-z_][A-Za-z0-9_]*)")
