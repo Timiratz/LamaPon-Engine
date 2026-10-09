@@ -64,6 +64,18 @@ def wait_for_start_count(minimum):
                        + startup_diagnostics())
 
 
+def wait_for_resume(initial_count, initial_pid):
+    count = None
+    pid = ""
+    for _ in range(45):
+        count = saved_start_count()
+        pid = game_pid()
+        if pid == initial_pid or (count is not None and count != initial_count):
+            return count, pid
+        time.sleep(1)
+    return count, pid
+
+
 def game_pid():
     return adb("shell", "pidof", PACKAGE, check=False).stdout.strip()
 
@@ -139,10 +151,13 @@ def main():
     adb("shell", "input", "keyevent", "KEYCODE_HOME")
     time.sleep(2)
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
-    resumed_count = wait_for_start_count(initial_count)
-    resumed_pid = game_pid()
-    assert resumed_count == initial_count, "The game restarted during foreground resume"
-    assert resumed_pid == initial_pid, "Android replaced the game process during foreground resume"
+    resumed_count, resumed_pid = wait_for_resume(initial_count, initial_pid)
+    if resumed_count != initial_count or resumed_pid != initial_pid:
+        raise AssertionError(
+            "Android changed game state during foreground resume; "
+            "count={!r}->{!r}, pid={!r}->{!r}; {}".format(
+                initial_count, resumed_count, initial_pid, resumed_pid,
+                startup_diagnostics()))
 
     try:
         adb("shell", "wm", "size", "720x1280")
