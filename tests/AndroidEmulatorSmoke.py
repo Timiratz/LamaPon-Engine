@@ -143,7 +143,7 @@ def main():
         time.sleep(1)
     else:
         raise RuntimeError("Android screenshot did not contain the exported scene green UI marker: "
-                           + json.dumps(rendered))
+                           + json.dumps(rendered) + "; " + startup_diagnostics())
 
     screen_width, screen_height = struct.unpack(">II", screenshot[16:24])
     adb("shell", "input", "tap", str(screen_width // 2), str(screen_height // 2))
@@ -183,7 +183,8 @@ def main():
         else:
             raise RuntimeError("Android game did not keep rendering after display resize: "
                                + json.dumps({"size": [resized_width, resized_height],
-                                             **resized_render}))
+                                             **resized_render})
+                               + "; " + startup_diagnostics())
         resized_pid = wait_for_game_pid()
         if resized_pid != initial_pid:
             raise AssertionError(
