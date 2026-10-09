@@ -333,7 +333,12 @@ def check_apk(artifact: Path, description: dict, asset_sources: dict[str, Path] 
             actual = {entry.filename for entry in entries
                       if entry.filename.startswith("assets/assets/") and not entry.is_dir()}
             if actual != expected.keys():
-                raise ExportError("APK game assets differ from the current selection")
+                missing = sorted(expected.keys() - actual)
+                unexpected = sorted(actual - expected.keys())
+                raise ExportError(
+                    "APK game assets differ from the current selection"
+                    + " (missing: " + ", ".join(missing)
+                    + "; unexpected: " + ", ".join(unexpected) + ")")
             for name, source in expected.items():
                 with source.open("rb") as original, archive.open(name) as packaged:
                     if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(packaged, "sha256").digest():

@@ -829,8 +829,17 @@ namespace
             else if (m_frame == 3 && EM_ASM_INT({ return Boolean(window.__probeClicked)
                 && window.__encodedImageProbe === 'passed'; }))
             {
-                if (!button->ConsumeClick() || button->ConsumeClick())
-                    throw std::runtime_error("Web button click must be consumable once.");
+                const bool hovered = button->IsHovered();
+                const bool pressed = button->IsPressed();
+                const bool wasClicked = button->WasClicked();
+                const bool consumed = button->ConsumeClick();
+                const bool consumedAgain = button->ConsumeClick();
+                if (!consumed || consumedAgain)
+                    throw std::runtime_error(
+                        "Web button click must be consumable once (hovered="
+                        + std::to_string(hovered) + ", pressed="
+                        + std::to_string(pressed) + ", wasClicked="
+                        + std::to_string(wasClicked) + ").");
                 if (m_buttonEventCount != 2 || m_lastButtonEventSender != "Test Button")
                     throw std::runtime_error("Web pointer clickEvent did not emit exactly once to Script::On.");
                 if (!EM_ASM_INT({
