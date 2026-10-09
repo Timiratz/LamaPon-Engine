@@ -284,19 +284,46 @@ PORTABLE_AUDIO_BUS_COUNT = 4
 # 新しいnative componentはWeb互換を宣言する前に両registryへ分類します。
 # Web判定対象のcomponent。
 KNOWN_NATIVE_SCENE_COMPONENTS = {
-    "AudioListener", "AudioSource", "Billboard", "BoxCollider2D",
+    "AudioListener", "AudioSource", "Billboard", "Blink2D", "BoxCollider2D",
     "BoxCollider3D", "Camera", "CapsuleCollider3D", "CharacterController",
     "CircleCollider2D", "ConvexHullCollider3D", "DirectionalLight",
-    "InputMover", "Joint", "LODGroup", "Light2D", "MeshCollider3D",
+    "InputMover", "Joint", "Keyform2D", "LODGroup", "Light2D", "MeshCollider3D",
     "MeshRenderer", "ModelRenderer", "NativeScript", "NetworkIdentity", "NavMesh",
     "NavMeshAgent", "ParallaxLayer", "ParticleSystem", "PointLight",
-    "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rigidbody",
+    "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rig2D", "Rigidbody",
     "Rotator", "SphereCollider3D", "SpotLight", "SpriteAnimator",
-    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "TextRenderer",
+    "SpriteMask", "SpriteParticles2D", "SpriteRenderer", "SpriteSkin2D", "Sway2D",
+    "TextRenderer",
     "Tilemap", "TransformAnimator", "UIButton", "UICanvas", "UIImage",
     "UIInputField", "UILayoutGroup", "UIRectTransform", "UIScrollView",
     "UISlider", "UIToggle",
 }
+
+# 2Dキャラクター部品のAPI typeと必要module。
+PORTABLE_API_MODULES.update({
+    "Blink2DComponent": "renderer2d",
+    "Blink2DSettings": "renderer2d",
+    "CharacterRig2DRuntime": "renderer2d",
+    "Keyform2DChannel": "core",
+    "Keyform2DComponent": "core",
+    "Keyform2DKey": "core",
+    "Keyform2DPose": "core",
+    "Rig2DComponent": "core",
+    "Rig2DParameter": "core",
+    "SpriteMeshDeformer": "renderer2d",
+    "SpriteSkin2DComponent": "renderer2d",
+    "SpriteSkinWeight": "renderer2d",
+    "Sway2DComponent": "core",
+    "Sway2DSettings": "core",
+})
+# 2Dキャラクター部品のscene componentと必要module。
+PORTABLE_SCENE_COMPONENTS.update({
+    "Blink2D": "renderer2d",
+    "Keyform2D": "core",
+    "Rig2D": "core",
+    "SpriteSkin2D": "renderer2d",
+    "Sway2D": "core",
+})
 
 # API名の検索pattern.
 LAMAPON_API_TOKEN = re.compile(r"\bLamaPon\s*::\s*([A-Za-z_][A-Za-z0-9_]*)")
@@ -715,12 +742,10 @@ PORTABLE_UNSUPPORTED_COMPONENT_METHODS = {
     ),
     "SpriteRendererComponent": (
         "BeginRenderPass",
-        "Color",
         "CustomParameter",
         "CustomParameterValues",
         "DescribeDrawEvent",
         "MaskInteraction",
-        "Pivot",
         "ReloadShader",
         "RenderSortOrder",
         "RenderTexture",
@@ -730,10 +755,6 @@ PORTABLE_UNSUPPORTED_COMPONENT_METHODS = {
         "ShaderError",
         "ShaderGeneration",
         "ShaderPath",
-        "Size",
-        "SortOrder",
-        "SourceRect",
-        "TexturePath"
     ),
     "TextRendererComponent": (
         "DescribeDrawEvent",
@@ -827,6 +848,7 @@ PORTABLE_SCENE_COMPONENT_BOOLEAN_FIELDS = {
     "alwaysVisible", "castsShadows", "applyRootMotion", "useLegacyShading",
     "preserveEmbeddedMaterialColor", "reloadCurrentScene", "loadTargetAdditive",
     "streaming", "previewInEditor", "worldOverlay", "interpolate",
+    "autoBlink", "includeChildren", "bound",
 }
 PORTABLE_SCENE_COMPONENT_FLOAT_FIELDS = {
     "verticalFieldOfView", "nearPlane", "farPlane", "intensity", "range",
@@ -837,11 +859,16 @@ PORTABLE_SCENE_COMPONENT_FLOAT_FIELDS = {
     "occlusionStrength", "shadowDistance", "shadowBias", "shadowNormalBias",
     "shadowStrength", "shadowSplitLambda", "angularDiameterDegrees",
     "friction", "restitution", "mass", "linearDrag", "angularDrag",
+    "stiffness", "damping", "inertia", "maxAngle", "windAmplitude",
+    "windFrequency", "windPhase", "frameSeconds", "closedSeconds",
+    "intervalMin", "intervalMax", "doubleBlinkChance", "weightFalloff",
 }
 PORTABLE_SCENE_COMPONENT_INTEGER_FIELDS = {
     "animationIndex", "layer", "mask", "maxParticles", "bus", "sortOrder",
     "maskInteraction", "columns", "rows", "referenceId", "targetTextureWidth",
-    "targetTextureHeight", "shadowCascadeCount",
+    "targetTextureHeight", "shadowCascadeCount", "meshColumns", "meshRows",
+    "openFrame", "closingStartFrame", "closingFrameCount", "boundColumns",
+    "boundRows",
 }
 PORTABLE_SCENE_COMPONENT_INTEGER_FIELD_TYPES = {
     "animationIndex": "unsigned integer",
@@ -857,6 +884,13 @@ PORTABLE_SCENE_COMPONENT_INTEGER_FIELD_TYPES = {
     "targetTextureWidth": "signed 32-bit integer",
     "targetTextureHeight": "signed 32-bit integer",
     "shadowCascadeCount": "signed 32-bit integer",
+    "meshColumns": "signed 32-bit integer",
+    "meshRows": "signed 32-bit integer",
+    "openFrame": "signed 32-bit integer",
+    "closingStartFrame": "signed 32-bit integer",
+    "closingFrameCount": "signed 32-bit integer",
+    "boundColumns": "signed 32-bit integer",
+    "boundRows": "signed 32-bit integer",
 }
 PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS = {
     "color", "size", "offset", "velocity", "lifetime", "startSpeed",
@@ -866,19 +900,27 @@ PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS = {
     "hoveredColor", "pressedColor", "disabledColor", "textColor",
     "fallbackSize", "layoutSize", "sourceRect", "factor", "baseColor",
     "emissiveColor", "targetClearColor", "border", "centerOfMass",
+    "tipOffset", "spriteBindPose",
 }
-PORTABLE_SCENE_COMPONENT_OBJECT_FIELDS = {"properties", "constraints"}
+PORTABLE_SCENE_COMPONENT_OBJECT_FIELDS = {"properties", "constraints", "rest"}
 PORTABLE_SCENE_COMPONENT_OBJECT_FIELD_TYPES = {
     "constraints": "boolean object",
     "properties": "object",
+    "rest": "object",
 }
 PORTABLE_SCENE_COMPONENT_LIST_FIELDS = {
-    "clips", "shaderKeywords", "customParameters",
+    "clips", "shaderKeywords", "customParameters", "bones", "boneBindPoses",
+    "weights", "parameters", "channels",
 }
 PORTABLE_SCENE_COMPONENT_LIST_FIELD_TYPES = {
     "clips": "array",
     "shaderKeywords": "string array",
     "customParameters": "number arrays",
+    "bones": "unsigned integer array",
+    "boneBindPoses": "number arrays",
+    "weights": "number arrays",
+    "parameters": "object array",
+    "channels": "object array",
 }
 PORTABLE_SCENE_COMPONENT_FIELDS = (
     PORTABLE_SCENE_COMPONENT_STRING_FIELDS
@@ -906,7 +948,14 @@ PORTABLE_SCENE_COMPONENT_RUNTIME_FIELDS = {
     "circularHitArea", "wordWrap", "sortOrder", "horizontalAlignment", "verticalAlignment",
     "targetScene", "clickEvent", "reloadCurrentScene",
     "text", "fontAsset", "maskInteraction", "columns", "rows", "defaultClip",
-    "clips", "referenceId", "alwaysVisible", "cullingMargin", "anchorMax",
+    "clips", "referenceId", "alwaysVisible", "cullingMargin", "meshColumns",
+    "meshRows", "tipOffset", "stiffness", "damping", "inertia", "maxAngle",
+    "windAmplitude", "windFrequency", "windPhase", "frameSeconds",
+    "closedSeconds", "intervalMin", "intervalMax", "doubleBlinkChance",
+    "autoBlink", "includeChildren", "openFrame", "closingStartFrame",
+    "closingFrameCount", "weightFalloff", "bound", "boundColumns", "boundRows",
+    "spriteBindPose", "boneBindPoses", "bones", "weights", "parameters",
+    "channels", "rest", "anchorMax",
     "anchorMin", "anchoredPosition", "angularVelocity", "color", "disabledColor",
     "emitterSize", "endColor", "factor", "fallbackSize", "gravity",
     "hoveredColor", "layoutSize", "lifetime", "normalColor", "offset",
@@ -1034,6 +1083,15 @@ def portable_scene_json_value_matches(value: Any, expected: str) -> bool:
                     and all(is_finite_portable_float(channel) for channel in item)
                     for item in value
                 ))
+    if expected == "unsigned integer array":
+        return (isinstance(value, list)
+                and all(
+                    isinstance(item, int) and not isinstance(item, bool)
+                    and 0 <= item < (1 << 64)
+                    for item in value
+                ))
+    if expected == "object array":
+        return isinstance(value, list) and all(isinstance(item, dict) for item in value)
     if expected == "object":
         return isinstance(value, dict)
     if expected == "boolean object":
@@ -1056,6 +1114,8 @@ def portable_scene_expected_type_label(expected: str) -> str:
         "unsigned 32-bit integer": "32ビット符号なし整数",
         "number array": "有限な数値配列",
         "number arrays": "有限な数値配列の配列",
+        "unsigned integer array": "64ビット符号なし整数配列",
+        "object array": "オブジェクト配列",
         "string array": "文字列配列",
         "object": "オブジェクト",
         "boolean object": "boolean値を持つオブジェクト",

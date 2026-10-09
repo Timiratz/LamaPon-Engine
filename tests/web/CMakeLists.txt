@@ -36,3 +36,10 @@ target_link_options(PortableSmoke PRIVATE
 set_property(TARGET PortableSmoke APPEND PROPERTY LINK_DEPENDS
     "${engine_root}/tests/fixtures/models/embedded-data.gltf"
     "${engine_root}/tests/fixtures/models/embedded-buffer.glb")
+# 2Dキャラクター部品とメッシュのDOM描画をブラウザーで検証します。
+lamapon_add_web_game(CharacterRigSmoke
+    PORTABLE_GAME SINGLE_FILE
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/CharacterRigSmoke.cpp"
+    MODULES core input renderer2d
+    ASSET_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/character-rig-assets"
+    SHELL_FILE "${engine_root}/src/LamaPon/Web/default-shell.html")

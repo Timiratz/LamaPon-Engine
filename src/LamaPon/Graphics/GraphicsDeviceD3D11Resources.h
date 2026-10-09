@@ -184,6 +184,28 @@ namespace LamaPon
             ID3D11BlendState* spriteBlendState{};
             // バッチ終了時のシェーダー結合処理
             std::function<void()> spriteShaderCallback;
+            // 2Dメッシュの頂点シェーダー
+            Microsoft::WRL::ComPtr<ID3D11VertexShader>
+                spriteMeshVertexShader;
+            // 独自シェーダーがないときの2Dメッシュの画素シェーダー
+            Microsoft::WRL::ComPtr<ID3D11PixelShader>
+                spriteMeshPixelShader;
+            // 2Dメッシュの頂点入力配置
+            Microsoft::WRL::ComPtr<ID3D11InputLayout>
+                spriteMeshInputLayout;
+            // 画素座標をクリップ座標へ移す定数
+            Microsoft::WRL::ComPtr<ID3D11Buffer>
+                spriteMeshViewportBuffer;
+            // 2Dメッシュの動的頂点バッファ
+            Microsoft::WRL::ComPtr<ID3D11Buffer>
+                spriteMeshVertexBuffer;
+            // 2Dメッシュの動的索引バッファ
+            Microsoft::WRL::ComPtr<ID3D11Buffer>
+                spriteMeshIndexBuffer;
+            // 頂点バッファに入る頂点数
+            UINT spriteMeshVertexCapacity{};
+            // 索引バッファに入る索引数
+            UINT spriteMeshIndexCapacity{};
         };
 
         // D3D11の描画サービスを作成する(device: 描画デバイス, context: 描画コンテキスト, backend: 借用する描画基盤)。

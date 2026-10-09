@@ -933,6 +933,10 @@ namespace LamaPon
         [[nodiscard]] bool DrawD3D11Sprite(
             std::uint64_t token,
             const SpriteDrawRequest& request);
+        // 待機中の画像を送信してから検証済みのメッシュを描けたか返します(token: パス識別番号, request: 画像と頂点・索引)。
+        [[nodiscard]] bool DrawD3D11SpriteMesh(
+            std::uint64_t token,
+            const SpriteMeshDrawRequest& request);
         // 共通パスへ有限の矩形を積めたか返します(token: パス識別番号, rectangle: ピクセル座標の矩形)。
         [[nodiscard]] bool PushD3D11SpriteScissor(
             std::uint64_t token,

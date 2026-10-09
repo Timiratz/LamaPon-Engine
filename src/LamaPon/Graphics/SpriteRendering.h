@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace LamaPon
@@ -106,6 +107,35 @@ namespace LamaPon
         float layerDepth{};
     };
 
+    struct SpriteMeshVertex final
+    {
+        // 画面位置（ピクセル）
+        DirectX::XMFLOAT2 position{};
+        // 正規化した画像UV
+        DirectX::XMFLOAT2 textureCoordinate{};
+        // RGBAの乗算色
+        DirectX::XMFLOAT4 color{ 1.0f, 1.0f, 1.0f, 1.0f };
+    };
+
+    // 2Dメッシュの頂点数の上限
+    inline constexpr std::size_t MaximumSpriteMeshVertices = 65535u;
+    // 2Dメッシュの索引数の上限
+    inline constexpr std::size_t MaximumSpriteMeshIndices = 393216u;
+
+    // 三角形リストで描く2Dメッシュです。空のtextureは白へ置換し、裏面も描きます。
+    // 頂点と索引は描画の呼び出し中だけ参照し、色はSpriteDrawRequestのtintと同じ扱いです。
+    struct SpriteMeshDrawRequest final
+    {
+        // 描画画像の読み取りビュー
+        GraphicsViewHandle texture;
+        // 頂点列
+        std::span<const SpriteMeshVertex> vertices;
+        // 3個ずつで三角形を作る頂点番号列
+        std::span<const std::uint16_t> indices;
+        // 描画深度
+        float layerDepth{};
+    };
+
     struct SpritePassDescription final
     {
         // 画像の合成方式
@@ -150,6 +180,9 @@ namespace LamaPon
 
         // 画像を送信できたか返します(request: 画像と位置・色・変形の指定)。
         bool Draw(const SpriteDrawRequest& request) const;
+        // 三角形メッシュを送信できたか返します(request: 画像と頂点・索引)。
+        // 頂点数・索引数が上限外、索引が3の倍数でない、範囲外の索引や非有限値を含む場合はfalseです。
+        bool DrawMesh(const SpriteMeshDrawRequest& request) const;
         // クリップ範囲を積めたか返します(rectangle: ピクセル座標の矩形)。
         bool PushScissor(
             const SpriteClipRectangle& rectangle) const;
@@ -198,6 +231,8 @@ namespace LamaPon
 
         // 画像を送信できたか返します(request: 画像と位置・色・変形の指定)。
         bool Draw(const SpriteDrawRequest& request) const;
+        // 三角形メッシュを送信できたか返します(request: 画像と頂点・索引)。
+        bool DrawMesh(const SpriteMeshDrawRequest& request) const;
         // クリップ範囲を積めたか返します(rectangle: ピクセル座標の矩形)。
         bool PushScissor(
             const SpriteClipRectangle& rectangle) const;

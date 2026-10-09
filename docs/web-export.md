@@ -216,8 +216,8 @@ OSのフォント名だけに依存せず、フォントアセットをプロジ
 
 | 区分 | コンポーネント |
 | --- | --- |
-| 対応 | `NativeScript`、`Camera`、`DirectionalLight`（影を除く）、`AudioSource`／`AudioListener`、`MeshRenderer`、`ModelRenderer`、`BoxCollider3D`、`Rigidbody`の基本機能、`ParticleSystem`、`SpriteRenderer`／`SpriteMask`／`SpriteAnimator`、`TextRenderer`、`UICanvas`、`UIRectTransform`、`UIImage`（通常画像・単色）、`UIButton`（クリック状態）、`PointLight`／`SpotLight`（影を除く）、`TransformAnimator`の直接クリップ、`Rotator`、`InputMover`、`ParallaxLayer`、`RenderCulling` |
-| 拒否 | `ReflectionProbe`、影、モデル参照を使うScene設定の`MeshCollider3D`を含む高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、UI入力欄・スクロール・レイアウト・トグルなどのUIコンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
+| 対応 | `NativeScript`、`Camera`、`DirectionalLight`（影を除く）、`AudioSource`／`AudioListener`、`MeshRenderer`、`ModelRenderer`、`BoxCollider3D`、`Rigidbody`の基本機能、`ParticleSystem`、`SpriteRenderer`（メッシュ分割を含む）／`SpriteMask`／`SpriteAnimator`、`TextRenderer`、`UICanvas`、`UIRectTransform`、`UIImage`（通常画像・単色）、`UIButton`（クリック状態）、`PointLight`／`SpotLight`（影を除く）、`TransformAnimator`の直接クリップ、`Rotator`、`InputMover`、`ParallaxLayer`、`RenderCulling`、`Sway2D`／`Blink2D`／`SpriteSkin2D`／`Rig2D`／`Keyform2D` |
+| 拒否 | `ReflectionProbe`、影、モデル参照を使うScene設定の`MeshCollider3D`を含む高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、UI入力欄・スクロール・レイアウト・トグルなどの未対応UIコンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
 
 対応表にないコンポーネントも拒否します。対応を追加する場合は、ポータブル版の処理と
 互換性テストを用意してから許可リストへ登録します。
@@ -252,6 +252,12 @@ Prefab生成はScene環境設定や既定カメラを変更しません。無効
 Web／ネイティブ出力では、互換性検査がPrefabを参照するパスを文字列リテラルとして解決できる必要があります。
 変数経由の動的パスや`assets/`外の参照は拒否します。参照Prefabのcomponent・Script・追加素材も
 Sceneと同じ対応検査・アセット収録へ含めます。
+
+Web版の2DはDOM要素で描くため、メッシュ分割したSprite（`Sprite Skin 2D`や頂点を動かす`Keyform 2D`を含む）は
+三角形ごとの要素を画像の変形行列で並べて描きます。三角形の境目に隙間が出ないよう、各三角形を約0.5ピクセル外側へ広げます。
+半透明の縁では重なりがわずかに濃く見えることがあり、`Sprite Mask`はメッシュには効きません。
+`Sprite Skin 2D`と`Keyform 2D`はシーンを読み込んだ直後の姿勢を基準にするため、スクリプトの最初の更新で
+ボーンや部品を動かしても基準はずれません。
 
 ## レポート
 

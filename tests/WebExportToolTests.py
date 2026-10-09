@@ -628,8 +628,14 @@ class WebExportToolTests(unittest.TestCase):
                    - EXPORT_WEB.PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS),
         )
         portable_loader_fields = set(re.findall(
-            r'(?:component|material)\.(?:value|at|contains)\(\s*"([A-Za-z_]\w*)"',
+            r'(?:component|material)\.(?:value|at|contains|find)\(\s*"([A-Za-z_]\w*)"',
             loader_source,
+        ))
+        character_rig_loader = (TOOL_PATH.parents[1] / "src" / "LamaPon"
+                                / "Portable" / "PortableCharacterRig2D.cpp")
+        portable_loader_fields.update(re.findall(
+            r'component\.(?:value|at|contains|find)\(\s*"([A-Za-z_]\w*)"',
+            character_rig_loader.read_text(encoding="utf-8"),
         ))
         clip_value_fields = set(re.findall(
             r'clip\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
@@ -899,6 +905,10 @@ class WebExportToolTests(unittest.TestCase):
             loader_source,
         ):
             handled.update(pair)
+        if "CharacterRig2DRuntime::LoadComponent" in loader_source:
+            handled.update({
+                "Blink2D", "Keyform2D", "Rig2D", "SpriteSkin2D", "Sway2D",
+            })
 
         self.assertEqual(
             set(EXPORT_WEB.PORTABLE_SCENE_COMPONENTS) - handled,
@@ -2857,6 +2867,77 @@ class WebExportToolTests(unittest.TestCase):
                             {"type": "ParallaxLayer", "referenceId": 1},
                             {"type": "RenderCulling", "alwaysVisible": True},
                         ],
+                    },
+                ],
+            })
+            # project はWeb出力用プロジェクト設定。
+            project = self._portable_fixture(
+                root,
+                scene=scene,
+                modules=["core", "input", "renderer2d", "renderer3d"],
+            )
+
+            # findings は互換性診断結果。
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            # item は互換性診断。期待するコードやレベルを照合する。
+            self.assertFalse(
+                any(item["level"] == "reject" for item in findings),
+                findings,
+            )
+
+    # test_scene_accepts_2d_character_rig_components(self: テストケース): 2Dキャラクター部品を含むシーンを受け入れる。
+    def test_scene_accepts_2d_character_rig_components(self):
+        # directory は検証用の一時領域。処理と出力を隔離する。
+        with tempfile.TemporaryDirectory() as directory:
+            # root は一時プロジェクトのルート。
+            root = Path(directory)
+            # scene はWeb検証用シーン定義。
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [
+                    {
+                        "id": 1,
+                        "name": "Camera",
+                        "parent": None,
+                        "enabled": True,
+                        "components": [{"type": "Camera", "enabled": True}],
+                    },
+                    {
+                        "id": 2,
+                        "name": "Character",
+                        "parent": None,
+                        "enabled": True,
+                        "components": [{
+                            "type": "Rig2D",
+                            "parameters": [{"name": "AngleX", "minimum": -30, "maximum": 30}],
+                        }],
+                    },
+                    {
+                        "id": 3,
+                        "name": "Hair",
+                        "parent": 2,
+                        "enabled": True,
+                        "components": [
+                            {"type": "SpriteRenderer", "meshColumns": 1, "meshRows": 4},
+                            {"type": "SpriteSkin2D", "bones": [4]},
+                            {"type": "Keyform2D", "channels": [{
+                                "parameter": "AngleX",
+                                "keys": [{"value": 30, "position": [4, 0]}],
+                            }]},
+                            {"type": "Sway2D", "tipOffset": [0, 100]},
+                            {"type": "Blink2D", "columns": 3},
+                        ],
+                    },
+                    {
+                        "id": 4,
+                        "name": "Bone",
+                        "parent": 3,
+                        "enabled": True,
+                        "components": [],
                     },
                 ],
             })

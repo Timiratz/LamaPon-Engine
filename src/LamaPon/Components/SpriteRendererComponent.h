@@ -11,11 +11,13 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace LamaPon
 {
     class AssetManager;
     class GraphicsDevice;
+    class SpriteMeshDeformer;
     struct TextureAsset;
 }
 
@@ -112,6 +114,50 @@ namespace LamaPon
         {
             return m_sourceRect;
         }
+        // 画像を格子状に分けたメッシュの列数と行数を1〜64へ収めて設定し、合わない変形を解除します(columns: 横の分割数, rows: 縦の分割数)。
+        // 1×1で変形もなければ従来の矩形で描き、UI矩形を持つ場合は常に矩形で描きます。
+        void SetMeshGrid(int columns, int rows);
+        // メッシュの横の分割数を返します。
+        [[nodiscard]] int MeshColumns() const noexcept
+        {
+            return m_meshColumns;
+        }
+        // メッシュの縦の分割数を返します。
+        [[nodiscard]] int MeshRows() const noexcept
+        {
+            return m_meshRows;
+        }
+        // 格子の頂点数を返します。頂点は上の行から順に、各行を左から並べます。
+        [[nodiscard]] std::size_t MeshVertexCount() const noexcept
+        {
+            return static_cast<std::size_t>(m_meshColumns + 1)
+                * static_cast<std::size_t>(m_meshRows + 1);
+        }
+        // 変形前の格子頂点をローカル座標で返します(基準点が原点で拡縮前の単位)。
+        [[nodiscard]] std::vector<DirectX::XMFLOAT2>
+            MeshRestPositions() const;
+        // 変形後の格子頂点をローカル座標で設定します(positions: 格子と同数の頂点位置で、空なら解除)。
+        // 頂点数が格子と合わない場合は変形を解除してfalseを返します。
+        bool SetMeshDeformation(
+            std::vector<DirectX::XMFLOAT2> positions);
+        // 変形後の格子頂点を返し、変形がなければ空です。
+        [[nodiscard]] const std::vector<DirectX::XMFLOAT2>&
+            MeshDeformation() const noexcept
+        {
+            return m_meshDeformation;
+        }
+        // 変形を解除して静止した格子へ戻します。
+        void ClearMeshDeformation() noexcept
+        {
+            m_meshDeformation.clear();
+        }
+        // UI矩形を持たず、分割・変形・有効な変形部品のいずれかがあるためメッシュで描くか返します。
+        [[nodiscard]] bool UsesMesh() const;
+        // 描画に使う格子頂点のローカル位置を返します(skipped: 適用しない変形部品でnullptrなら全て適用)。
+        // 設定した変形か静止頂点から始め、同じGameObjectの有効なSpriteMeshDeformerを並び順に適用します。
+        [[nodiscard]] std::vector<DirectX::XMFLOAT2>
+            DeformedMeshPositions(
+                const SpriteMeshDeformer* skipped = nullptr) const;
         // 描画済みのカメラ画像を指定します(name: カメラの出力名で空は通常画像)。
         // 名前に対応する有効な画像を取得できる場合に通常画像より優先します。
         void SetRenderTexture(std::string name)
@@ -221,5 +267,15 @@ namespace LamaPon
         std::uint64_t m_shaderGeneration{};
         // 直近のシェーダーエラー
         std::string m_shaderError;
+        // メッシュの横の分割数
+        int m_meshColumns{ 1 };
+        // メッシュの縦の分割数
+        int m_meshRows{ 1 };
+        // 変形後の格子頂点のローカル位置
+        std::vector<DirectX::XMFLOAT2> m_meshDeformation;
+        // 描画ごとに再利用する画面頂点
+        std::vector<SpriteMeshVertex> m_meshVertices;
+        // 格子から作った三角形の頂点番号
+        std::vector<std::uint16_t> m_meshIndices;
     };
 }

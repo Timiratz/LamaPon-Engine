@@ -2658,6 +2658,9 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_size{};
     };
 
+    class CharacterRig2DRuntime;
+    class SpriteMeshDeformer;
+
     class SpriteRendererComponent final : public Component
     {
     public:
@@ -2698,12 +2701,68 @@ namespace LamaPon
         {
             m_texture = std::move(value);
         }
+        // スプライト寸法を返します。
+        [[nodiscard]] const DirectX::XMFLOAT2& Size() const noexcept { return m_size; }
+        // スプライト色を返します。
+        [[nodiscard]] const DirectX::XMFLOAT4& Color() const noexcept { return m_color; }
+        // スプライト基準点を返します。
+        [[nodiscard]] const DirectX::XMFLOAT2& Pivot() const noexcept { return m_pivot; }
+        // 画像から切り出すUV範囲を返します。
+        [[nodiscard]] const DirectX::XMFLOAT4& SourceRect() const noexcept
+        {
+            return m_sourceRect;
+        }
+        // スプライト画像のパスを返します。
+        [[nodiscard]] const std::filesystem::path& TexturePath() const noexcept
+        {
+            return m_texture;
+        }
+        // UI内の描画順を返します。
+        [[nodiscard]] int SortOrder() const noexcept { return m_sortOrder; }
+        // 格子メッシュの列数と行数を1〜64へ収めて設定します。
+        // SetMeshGrid(columns: 横の分割数, rows: 縦の分割数)
+        void SetMeshGrid(int columns, int rows);
+        // メッシュの横の分割数を返します。
+        [[nodiscard]] int MeshColumns() const noexcept { return m_meshColumns; }
+        // メッシュの縦の分割数を返します。
+        [[nodiscard]] int MeshRows() const noexcept { return m_meshRows; }
+        // 格子の頂点数を返します。
+        [[nodiscard]] std::size_t MeshVertexCount() const noexcept
+        {
+            return static_cast<std::size_t>(m_meshColumns + 1)
+                * static_cast<std::size_t>(m_meshRows + 1);
+        }
+        // 変形前の格子頂点をローカル座標で返します。
+        [[nodiscard]] std::vector<DirectX::XMFLOAT2> MeshRestPositions() const;
+        // 変形後の格子頂点をローカル座標で設定し、数が合わなければ解除してfalseを返します。
+        // SetMeshDeformation(positions: 格子と同数の頂点位置で空なら解除)
+        bool SetMeshDeformation(std::vector<DirectX::XMFLOAT2> positions);
+        // 変形後の格子頂点を返し、変形がなければ空です。
+        [[nodiscard]] const std::vector<DirectX::XMFLOAT2>& MeshDeformation() const noexcept
+        {
+            return m_meshDeformation;
+        }
+        // 変形を解除して静止した格子へ戻します。
+        void ClearMeshDeformation() noexcept { m_meshDeformation.clear(); }
+        // UI矩形を持たず、分割・変形・有効な変形部品のいずれかがあるか返します。
+        [[nodiscard]] bool UsesMesh() const;
+        // 描画に使う格子頂点のローカル位置を返します。
+        // DeformedMeshPositions(skipped: 適用しない変形部品でnullptrなら全て適用)
+        [[nodiscard]] std::vector<DirectX::XMFLOAT2> DeformedMeshPositions(
+            const SpriteMeshDeformer* skipped = nullptr) const;
 
         // Windowsと同じ保存用コンポーネント型名を返します。
         [[nodiscard]] std::string_view TypeName() const noexcept override
         { return "SpriteRenderer"; }
     private:
         friend class Scene;
+        friend class CharacterRig2DRuntime;
+        // メッシュの横の分割数
+        int m_meshColumns{ 1 };
+        // メッシュの縦の分割数
+        int m_meshRows{ 1 };
+        // 変形後の格子頂点のローカル位置
+        std::vector<DirectX::XMFLOAT2> m_meshDeformation;
         // スプライト幅と高さ
         DirectX::XMFLOAT2 m_size{};
         // スプライト描画色
@@ -3176,6 +3235,8 @@ namespace LamaPon
         return static_cast<const GameObject&>(Owner()).GetTransform();
     }
 }
+
+#include "LamaPon/CharacterRig2D.h"
 
 #define LAMAPON_PORTABLE_JOIN_DETAIL(left, right) left##right
 #define LAMAPON_PORTABLE_JOIN(left, right) \

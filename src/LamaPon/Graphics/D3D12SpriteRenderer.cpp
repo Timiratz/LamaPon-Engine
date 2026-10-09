@@ -3711,15 +3711,6 @@ namespace LamaPon::Detail
 
         // 予約矩形を記録するコマンド列
         auto* const commandList = m_backend->BeginFrameCommands();
-        // 画像SRVを持つGPUヒープ
-        auto* const descriptorHeap =
-            m_backend->ShaderResourceDescriptorHeap();
-        if (descriptorHeap == nullptr)
-        {
-            throw std::logic_error(
-                "The DirectX 12 sprite renderer requires a shader resource "
-                "descriptor heap.");
-        }
         // 予約した全矩形の頂点バイト数
         const std::uint64_t vertexBytes =
             static_cast<std::uint64_t>(m_sprites.size())
@@ -3729,13 +3720,6 @@ namespace LamaPon::Detail
             throw std::length_error(
                 "The DirectX 12 sprite batch is too large.");
         }
-        // 合成・クリップ・効果に対応するPSO
-        auto* const pipelineState = PipelineState(
-            m_blend,
-            !m_scissorStack.empty(),
-            m_backend->ActiveColorFormat(),
-            m_backend->ActiveDepthFormat(),
-            m_program);
 
         // フレームが保持する全頂点の領域
         const auto upload = m_backend->AllocateFrameUpload(
@@ -3753,17 +3737,6 @@ namespace LamaPon::Detail
             vertexData += sizeof(sprite.vertices);
         }
 
-        // 現在の描画先のビューポート
-        const auto& viewport = m_backend->ActiveViewport();
-        // 画素座標をNDCへ移すXY倍率
-        const std::array<float, 2> viewportScale{
-            viewport.Width > 0.0f ? 2.0f / viewport.Width : 0.0f,
-            viewport.Height > 0.0f ? 2.0f / viewport.Height : 0.0f
-        };
-        // 現在のクリップまたは全体矩形
-        const D3D12_RECT scissor = m_scissorStack.empty()
-            ? m_backend->ActiveScissorRectangle()
-            : m_scissorStack.back();
         // 予約矩形の頂点バッファビュー
         const D3D12_VERTEX_BUFFER_VIEW vertexBufferView{
             upload.gpuAddress,
@@ -3778,6 +3751,177 @@ namespace LamaPon::Detail
                 * sizeof(std::uint16_t)),
             DXGI_FORMAT_R16_UINT
         };
+
+        BindPipeline(commandList, false);
+        commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
+        commandList->IASetIndexBuffer(&indexBufferView);
+
+        // 同じ画像が続く範囲の先頭番号
+        std::size_t first{};
+        while (first < m_sprites.size())
+        {
+            // 最大2048枚で区切る範囲の末尾
+            std::size_t end = first + 1u;
+            while (end < m_sprites.size()
+                && end - first < MaximumSpritesPerDraw
+                && m_sprites[end].texture.ptr
+                    == m_sprites[first].texture.ptr)
+            {
+                ++end;
+            }
+            commandList->SetGraphicsRootDescriptorTable(
+                1,
+                m_sprites[first].texture);
+            // 16ビット索引をBaseVertexLocationでずらし、各送信範囲に再利用します。
+            commandList->DrawIndexedInstanced(
+                static_cast<UINT>((end - first) * IndicesPerSprite),
+                1,
+                0,
+                static_cast<INT>(first * VerticesPerSprite),
+                0);
+            first = end;
+        }
+        // 後続描画へ戻す全体クリップ
+        const auto& fullScissor = m_backend->ActiveScissorRectangle();
+        commandList->RSSetScissorRects(1, &fullScissor);
+        m_sprites.clear();
+    }
+
+    bool D3D12SpriteRenderer::DrawMesh(
+        const std::uint64_t token,
+        const SpriteMeshDrawRequest& request)
+    {
+        RequireOwner(token);
+        if (m_program != FullscreenProgram::None)
+        {
+            return false;
+        }
+        // 指定画像または未指定時の代替
+        const auto& view = request.texture
+            ? request.texture
+            : m_fallbackTexture;
+        // 描画画像のGPU参照
+        const auto binding = m_backend->TryResolveShaderResource(view);
+        if (!binding)
+        {
+            return false;
+        }
+
+        // 描画順を保つため、先に積んだ矩形を送信します。
+        FlushOrFail();
+        try
+        {
+            RecordMesh(binding->descriptor, request);
+        }
+        catch (...)
+        {
+            m_failed = true;
+            ClearPass();
+            throw;
+        }
+        return true;
+    }
+
+    void D3D12SpriteRenderer::RecordMesh(
+        const D3D12_GPU_DESCRIPTOR_HANDLE texture,
+        const SpriteMeshDrawRequest& request)
+    {
+        // メッシュを記録するコマンド列
+        auto* const commandList = m_backend->BeginFrameCommands();
+        // 全頂点のバイト数
+        const std::uint64_t vertexBytes =
+            static_cast<std::uint64_t>(request.vertices.size())
+            * sizeof(Vertex);
+        // 全索引のバイト数
+        const std::uint64_t indexBytes = request.indices.size_bytes();
+
+        // フレームが保持する頂点の領域
+        const auto vertexUpload = m_backend->AllocateFrameUpload(
+            vertexBytes,
+            alignof(Vertex));
+        // 頂点の転送先ポインター
+        auto* vertexData = vertexUpload.data;
+        // 変換して転送する頂点
+        for (const auto& source : request.vertices)
+        {
+            // GPU形式の頂点
+            const Vertex vertex{
+                { source.position.x, source.position.y, request.layerDepth },
+                source.color,
+                source.textureCoordinate };
+            std::memcpy(vertexData, &vertex, sizeof(vertex));
+            vertexData += sizeof(vertex);
+        }
+        // フレームが保持する索引の領域
+        const auto indexUpload = m_backend->AllocateFrameUpload(
+            indexBytes,
+            alignof(std::uint32_t));
+        std::memcpy(
+            indexUpload.data,
+            request.indices.data(),
+            static_cast<std::size_t>(indexBytes));
+
+        // メッシュの頂点バッファビュー
+        const D3D12_VERTEX_BUFFER_VIEW vertexBufferView{
+            vertexUpload.gpuAddress,
+            static_cast<UINT>(vertexBytes),
+            static_cast<UINT>(sizeof(Vertex))
+        };
+        // メッシュの16ビット索引ビュー
+        const D3D12_INDEX_BUFFER_VIEW indexBufferView{
+            indexUpload.gpuAddress,
+            static_cast<UINT>(indexBytes),
+            DXGI_FORMAT_R16_UINT
+        };
+
+        // メッシュは反転しても見えるよう両面を描きます。
+        BindPipeline(commandList, true);
+        commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
+        commandList->IASetIndexBuffer(&indexBufferView);
+        commandList->SetGraphicsRootDescriptorTable(1, texture);
+        commandList->DrawIndexedInstanced(
+            static_cast<UINT>(request.indices.size()),
+            1,
+            0,
+            0,
+            0);
+        // 後続描画へ戻す全体クリップ
+        const auto& fullScissor = m_backend->ActiveScissorRectangle();
+        commandList->RSSetScissorRects(1, &fullScissor);
+    }
+
+    void D3D12SpriteRenderer::BindPipeline(
+        ID3D12GraphicsCommandList* const commandList,
+        const bool cullNone)
+    {
+        // 画像SRVを持つGPUヒープ
+        auto* const descriptorHeap =
+            m_backend->ShaderResourceDescriptorHeap();
+        if (descriptorHeap == nullptr)
+        {
+            throw std::logic_error(
+                "The DirectX 12 sprite renderer requires a shader resource "
+                "descriptor heap.");
+        }
+        // クリップ用のPSOは両面を描くため、両面描画にも使います。
+        // 合成・クリップ・効果に対応するPSO
+        auto* const pipelineState = PipelineState(
+            m_blend,
+            cullNone || !m_scissorStack.empty(),
+            m_backend->ActiveColorFormat(),
+            m_backend->ActiveDepthFormat(),
+            m_program);
+        // 現在の描画先のビューポート
+        const auto& viewport = m_backend->ActiveViewport();
+        // 画素座標をNDCへ移すXY倍率
+        const std::array<float, 2> viewportScale{
+            viewport.Width > 0.0f ? 2.0f / viewport.Width : 0.0f,
+            viewport.Height > 0.0f ? 2.0f / viewport.Height : 0.0f
+        };
+        // 現在のクリップまたは全体矩形
+        const D3D12_RECT scissor = m_scissorStack.empty()
+            ? m_backend->ActiveScissorRectangle()
+            : m_scissorStack.back();
         // 描画に設定するSRVヒープ
         ID3D12DescriptorHeap* descriptorHeaps[]{ descriptorHeap };
 
@@ -3901,39 +4045,7 @@ namespace LamaPon::Detail
         }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
-        commandList->IASetIndexBuffer(&indexBufferView);
         commandList->RSSetScissorRects(1, &scissor);
-
-        // 同じ画像が続く範囲の先頭番号
-        std::size_t first{};
-        while (first < m_sprites.size())
-        {
-            // 最大2048枚で区切る範囲の末尾
-            std::size_t end = first + 1u;
-            while (end < m_sprites.size()
-                && end - first < MaximumSpritesPerDraw
-                && m_sprites[end].texture.ptr
-                    == m_sprites[first].texture.ptr)
-            {
-                ++end;
-            }
-            commandList->SetGraphicsRootDescriptorTable(
-                1,
-                m_sprites[first].texture);
-            // 16ビット索引をBaseVertexLocationでずらし、各送信範囲に再利用します。
-            commandList->DrawIndexedInstanced(
-                static_cast<UINT>((end - first) * IndicesPerSprite),
-                1,
-                0,
-                static_cast<INT>(first * VerticesPerSprite),
-                0);
-            first = end;
-        }
-        // 後続描画へ戻す全体クリップ
-        const auto& fullScissor = m_backend->ActiveScissorRectangle();
-        commandList->RSSetScissorRects(1, &fullScissor);
-        m_sprites.clear();
     }
 
     ID3D12PipelineState* D3D12SpriteRenderer::ScreenEffectPipelineState(
