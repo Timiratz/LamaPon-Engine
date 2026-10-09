@@ -10,6 +10,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace LamaPon::Native
 {
@@ -23,6 +25,7 @@ namespace LamaPon::Native
             float x{}, y{}, width{}, height{}, pivotX{}, pivotY{}, rotation{};
             std::array<float, 4> uv{0, 0, 1, 1};
             int order{}, mask{};
+            std::vector<float> meshVertices;
         };
         struct Mask { std::array<float, 4> rect; int shape{}; };
         std::vector<Quad> quads;
@@ -156,6 +159,44 @@ void main(){bool inside=false;
         quad.rotation = rotation; quad.order = order; quad.mask = mask; quad.uv = {sourceX, sourceY, sourceWidth, sourceHeight};
         quads.push_back(quad);
     }
+    void RenderPortableSpriteMesh(const char*, const double id, const char* path,
+        const float r, const float g, const float b, const float a, const int order,
+        const float* positions, const float* uvs, const int vertexCount,
+        const std::uint16_t* indices, const int indexCount)
+    {
+        constexpr int MaximumVertices = 65535;
+        constexpr int MaximumIndices = 64 * 64 * 6;
+        if (!positions || !uvs || !indices || vertexCount <= 0 || vertexCount > MaximumVertices
+            || indexCount <= 0 || indexCount > MaximumIndices || indexCount % 3 != 0)
+        {
+            return;
+        }
+        Quad quad;
+        quad.id = id;
+        quad.texture = AssetTexture(path);
+        quad.color = {r, g, b, a};
+        quad.order = order;
+        quad.meshVertices.reserve(static_cast<std::size_t>(indexCount) * 4);
+        for (int index = 0; index < indexCount; ++index)
+        {
+            const auto vertex = static_cast<int>(indices[index]);
+            if (vertex >= vertexCount)
+            {
+                return;
+            }
+            const auto offset = static_cast<std::size_t>(vertex) * 2;
+            const float x = positions[offset];
+            const float y = positions[offset + 1];
+            const float u = uvs[offset];
+            const float v = uvs[offset + 1];
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(u) || !std::isfinite(v))
+            {
+                return;
+            }
+            quad.meshVertices.insert(quad.meshVertices.end(), {x, y, u, v});
+        }
+        quads.push_back(std::move(quad));
+    }
     void RenderPortableText(const char*, double id, const char* text, const char*, const char* asset, float size,
         float r, float g, float b, float a, float x, float y, float width, float height, int wrap, int horizontal, int vertical, int order)
     {
@@ -211,6 +252,18 @@ void main(){bool inside=false;
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 4, reinterpret_cast<void*>(sizeof(float) * 2));
         for (const auto& quad : quads)
         {
+            if (!quad.meshVertices.empty())
+            {
+                glBufferData(GL_ARRAY_BUFFER,
+                    static_cast<GLsizeiptr>(quad.meshVertices.size() * sizeof(float)),
+                    quad.meshVertices.data(), GL_DYNAMIC_DRAW);
+                BindTexture(quad.texture);
+                glUniform1i(glGetUniformLocation(program, "textured"), quad.texture ? 1 : 0);
+                glUniform1i(glGetUniformLocation(program, "interaction"), quad.mask);
+                glUniform4fv(glGetUniformLocation(program, "color"), 1, quad.color.data());
+                glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(quad.meshVertices.size() / 4));
+                continue;
+            }
             std::array<float, 24> vertices{};
             constexpr std::array<int, 6> corners{0, 1, 2, 0, 2, 3};
             constexpr std::array<float, 4> xs{0, 1, 1, 0}, ys{0, 0, 1, 1};

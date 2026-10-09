@@ -16,6 +16,10 @@ namespace LamaPon::Native
     void EndPortableUiFrame();
     void HidePortableObjectUi(double objectId);
     void RenderPortableSprite(const char* objectName, double objectId, const char* texturePath, float r, float g, float b, float a, float x, float y, float width, float height, float pivotX, float pivotY, float rotation, int sortOrder, float sourceX, float sourceY, float sourceWidth, float sourceHeight, int maskInteraction);
+    void RenderPortableSpriteMesh(const char* objectName, double objectId, const char* texturePath,
+        float r, float g, float b, float a, int sortOrder,
+        const float* positions, const float* uvs, int vertexCount,
+        const std::uint16_t* indices, int indexCount);
     void PublishPortableNumber(const char* key, double value);
     void PublishPortableString(const char* key, const char* value);
 }

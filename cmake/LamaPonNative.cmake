@@ -65,6 +65,7 @@ function(lamapon_add_native_game target)
         "${engine_root}/src/LamaPon/Native/NativeUi.cpp"
         "${engine_root}/src/LamaPon/Portable/PortableInputState.cpp"
         "${engine_root}/src/LamaPon/Portable/PortableRuntime.cpp"
+        "${engine_root}/src/LamaPon/Portable/PortableCharacterRig2D.cpp"
         "${engine_root}/src/LamaPon/Portable/PortableLog.cpp"
         "${engine_root}/src/LamaPon/Scene/EventBus.cpp"
         "${engine_root}/src/LamaPon/Web/WebRenderer3D.cpp")
