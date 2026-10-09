@@ -80,6 +80,16 @@ def game_pid():
     return adb("shell", "pidof", PACKAGE, check=False).stdout.strip()
 
 
+def wait_for_game_pid():
+    pid = ""
+    for _ in range(30):
+        pid = game_pid()
+        if pid:
+            return pid
+        time.sleep(1)
+    return pid
+
+
 def startup_diagnostics():
     activity_result = adb("shell", "dumpsys", "activity", "activities",
                           check=False)
@@ -120,8 +130,10 @@ def main():
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
     initial_count = wait_for_start_count(1)
     assert initial_count == 1, "Fresh install did not start from a clean save"
-    initial_pid = game_pid()
-    assert initial_pid, "Game process exited after startup"
+    initial_pid = wait_for_game_pid()
+    if not initial_pid:
+        raise RuntimeError("Android game process did not remain available after startup; "
+                           + startup_diagnostics())
 
     for _ in range(30):
         screenshot, rendered = screenshot_render()
@@ -172,7 +184,12 @@ def main():
             raise RuntimeError("Android game did not keep rendering after display resize: "
                                + json.dumps({"size": [resized_width, resized_height],
                                              **resized_render}))
-        assert game_pid() == initial_pid, "Display resize restarted the Android game process"
+        resized_pid = wait_for_game_pid()
+        if resized_pid != initial_pid:
+            raise AssertionError(
+                "Display resize changed the Android game process; "
+                "pid={!r}->{!r}; {}".format(
+                    initial_pid, resized_pid, startup_diagnostics()))
         assert saved_start_count() == resumed_count, "Display resize restarted the game scene"
     finally:
         adb("shell", "wm", "size", "reset", check=False)
