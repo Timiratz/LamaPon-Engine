@@ -36,6 +36,11 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn(f"NDK_VERSION: {BUILD.native_android.ANDROID_NDK_VERSION}", workflow)
         self.assertIn(f'CMAKE_VERSION: "{BUILD.native_android.ANDROID_CMAKE_VERSION}"', workflow)
         self.assertIn('python-version: "3.12"', workflow)
+        setup_android = "android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd"
+        self.assertIn(setup_android, workflow)
+        self.assertIn("accept-android-sdk-licenses: true", workflow)
+        self.assertLess(workflow.index(setup_android),
+                        workflow.index("Install Android SDK packages required by APK export"))
         self.assertIn('sdk_root = os.environ["ANDROID_HOME"]', workflow)
         self.assertIn('input="y\\n" * 128', workflow)
         self.assertIn('run_sdkmanager("--licenses")', workflow)
@@ -60,6 +65,8 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn('tools/export_native.py --project "$game/.lamapon/project.json"', workflow)
         self.assertIn("tools/build_native.py", workflow)
         self.assertIn("reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d", workflow)
+        self.assertIn("Show Android Gradle failure context", workflow)
+        self.assertIn("tail -n 160", workflow)
         self.assertIn("target: google_apis_ps16k", workflow)
         self.assertIn("getconf', 'PAGE_SIZE", workflow)
         self.assertIn("KEYCODE_HOME", workflow)

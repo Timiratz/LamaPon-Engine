@@ -151,6 +151,17 @@ jobs:
           assert not data['androidChecks']['pageSizeRuntimeVerified']
           print(json.dumps(data['androidChecks'], indent=2))
           PY
+      - name: Show Android Gradle failure context
+        if: failure()
+        env:
+          GAME_ABI: ${{ matrix.abi }}
+        run: |
+          log="$GITHUB_WORKSPACE/test-output/platform-core/android-apk-build-$GAME_ABI/native-build.log"
+          if [ -f "$log" ]; then
+            tail -n 160 "$log"
+          else
+            echo "Android build log was not created: $log"
+          fi
       - name: Enable KVM for the Android emulator
         if: matrix.abi == 'x86_64'
         run: |
