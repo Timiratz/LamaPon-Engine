@@ -47,7 +47,8 @@ x86_64 APKは16KBページサイズのAndroid Emulatorで起動します。実�
 [Android NDKのCMake手順](https://developer.android.com/ndk/guides/cmake)
 
 `.github/workflows/platform-core-ci.yml`はWindows／Linuxの共通基盤テストに加え、arm64-v8aとx86_64の
-Portableゲームdebug APKを生成する構成です。AndroidジョブはSDK Managerのライセンスを受諾してから、API 36、Build Tools 36.0.0、
+Portableゲームdebug APKを生成する構成です。対象パスを含む`codex/**`ブランチへのpushでも、Web CIとともに起動します。
+これにより、ドラフトPRを作る前に作業ブランチ上で対象OSのCI結果を確認できます。AndroidジョブはSDK Managerのライセンスを受諾してから、API 36、Build Tools 36.0.0、
 NDK 28.2.13676358とCMake 3.31.6を導入し、APK出力ツールが使う版と揃えます。テスト用ゲームは`test-output/platform-core`へ
 用意し、SDK Manager以外の取得物であるSDLソースは公式アーカイブのSHA-256を検査して使います。
 Java 17とGradle 9.6.0も公式セットアップActionで明示し、ホストのプリインストール版に依存しません。
