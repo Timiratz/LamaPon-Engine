@@ -5,6 +5,12 @@
 エディターはWindowsを維持します。ゲームの対象はWindows、Linux／Steam Deck、Web、Androidです。
 macOSは対象外、Steam連携は保留です。
 
+## 2026-10-09の最新CI検証
+
+[Platform foundation CI](https://github.com/Timiratz/LamaPon-Engine/actions/runs/37890335574)と[Web CI](https://github.com/Timiratz/LamaPon-Engine/actions/runs/37890335506)が全ジョブ成功しました。Windowsの出力テスト、Linux UbuntuとSteam Runtime 4の静的／共有SDLゲーム、Android arm64-v8a／x86_64 debug APKを確認しています。x86_64 APKはAndroid 15・16KB EmulatorでScene描画、タッチUIButtonイベント、同一プロセスの前景復帰、画面サイズ変更、強制終了後のセーブ復元まで通過しました。
+
+Steam Deck実機／Proton、Windowsエディターから既存WSLへのLinux実ビルド（このPCにWSLディストリビューションなし）、Android実機、モバイルブラウザーは引き続き未検証です。Linux／Androidの実スピーカー出力やPortable機能の全API／意味差監査も完了扱いにはしていません。
+
 ## 今回の共通基盤
 
 トップレベルCMakeに`LAMAPON_PLATFORM_CORE_ONLY`を追加しました。
@@ -18,7 +24,7 @@ macOSは対象外、Steam連携は保留です。
 - Linuxのキャッシュキーで大文字小文字を区別し、UTF-8のバイトを符号なしで処理。
 - Linuxのキャッシュ先は絶対パスの`XDG_CACHE_HOME`、`HOME/.cache`、OS一時領域の順で解決。共通基盤テストは絶対XDG、HOMEへのfallback、相対XDG／HOMEの無視と一時領域fallbackを確認します。環境変数だけを変更し、ディレクトリは作成しません。このPOSIX分岐の実行確認はLinux CIで行う必要があり、Windowsでの共通基盤テストでは代替できません。
 - Linuxの実行ファイルの場所は`/proc/self/exe`から取得。
-- Androidは生成Activityの`getCacheDir()`を共通PathUtilsへ渡し、ゲームのセーブには`getFilesDir()`を使う（APKでの実行は未検証）。
+- Androidは生成Activityの`getCacheDir()`を共通PathUtilsへ渡し、ゲームのセーブには`getFilesDir()`を使います。両ABIのAPKをビルドし、x86_64は16KB Emulatorで保存の再起動保持まで確認済みです。
 - 既存の`JobSystem`と`VersionCompare`を共通ライブラリに含める。
 - キーボード・ポインター・ゲームパッドの状態とフレーム境界を`PortableInputState`へ分離。Web入力もこの層を使用。
 
@@ -60,17 +66,17 @@ ZIP配置・署名を検査します。x86_64 APKはAndroid 15の16KBページ�
 さらにADB画面キャプチャをPNGとして解析し、Portable Sceneの緑色UIが1,000画素以上表示されることを確認します。
 この画像判定は描画の存在を確認するもので、材質・画質や全端末での表示品質を保証しません。
 Android用SmokeゲームはUIButtonの`clickEvent`をScriptで受け、タッチ後のイベント数と送信元を専用保存領域へ記録する構成です。
-同じゲームはWindowsネイティブでコンパイル・起動しましたが、Emulatorのタッチ入力とAndroid APKはまだ未検証です。
-検査を含むAndroid APK／Emulator CIはまだ未実行です。
+同じゲームはWindowsネイティブでコンパイル・起動しました。Android 15の16KB Emulatorでは、緑色UIの描画、UIButtonのタッチイベントとsender、Activity復帰、サイズ変更後の描画、保存の再起動保持を確認しました。
+Android APK／Emulator CIは[2026-10-09の実行](https://github.com/Timiratz/LamaPon-Engine/actions/runs/37890335574)で全ジョブが成功しました。arm64-v8aはAPKのビルド・署名・配置を検査し、x86_64は同じ検査に加えてEmulator実行を確認しました。
 Androidターゲットには`GLESv3`のリンクと16KBページ指定を追加し、未解決シンボルを許可しない設定にしました。
 このゲーム用検証構成はWindowsで実際にビルド・2回起動し、日本語セーブとPE依存を確認しました。
 設定を追加した段階で、ビルド・起動成功を示すものではありません。
 タッチ・音声の実機検証と機種固有のSurface復帰は別途必要です。
 [NDKのOpenGL ESリンク](https://developer.android.com/ndk/guides/stable_apis#opengl_es)、
 [16KBページ対応](https://developer.android.com/guide/practices/page-sizes?hl=ja)
-CIを追加しただけでは実行済みとはしません。現時点のローカル検証はWindowsのみです。
+CIを追加しただけでは実行済みとはしません。2026-10-09にLinux CIで実際の生成ゲームと共有／静的SDLを検証し、Steam Runtime 4 CIでも両SDL方式を確認しました。
 LinuxにはSDL 3.4.18の公式ソースをSHA-256で検査し、実ゲームをビルドしてXvfb／Mesa上で
-描画・入力・リサイズ・保存を検査するCIも追加しています。これは未実行の構成で、Steam Deck実機検証ではありません。
+描画・入力・リサイズ・保存を検査するCIも追加しています。このUbuntu実行は2026-10-09に静的／共有SDLの両方で成功しましたが、Steam Deck実機検証ではありません。
 
 ## ネイティブ実行基盤の実装中コード
 
@@ -79,7 +85,7 @@ WindowsではSDL 3.4.18をリンクしたMSVC Releaseビルドと、実際のゲ
 SDLのキー変換・フォーカス喪失、タッチの座標・解除・キャンセル、画面サイズ変更後のUI・3D描画ピクセル、
 日本語の保存値がプロセス再起動後も残ることを確認しています。
 日本語の起動シーン名とBMP画像名も実ファイルで確認し、WindowsのANSI文字コードに依存していた読み込みを修正しました。
-共有Portableコードの修正後、ChromeでWeb版の起動検査も通っています。Linux／Androidのビルド・実機動作は未検証です。
+共有Portableコードの修正後、ChromeでWeb版の起動検査も通っています。LinuxゲームはCI上の実行環境、Androidは16KB Emulatorで検証済みです。別PC・Steam Deck・Android実機での確認は未完了です。
 WindowsエディターのLinux／Steam Deck出力には、CMake設定だけを生成するモードと、既存WSLディストリビューション内でLinuxゲームをビルドするモードがあります。
 WSLモードは指定したSDL3ソースを使い、生成したELF・選択アセット・ライセンス・共有ライブラリ依存を検査します。WSLやOSパッケージは自動インストールしません。
 AndroidはCMake／Gradle設定生成とdebug APKビルドの両方を選べます。
@@ -89,17 +95,17 @@ AndroidはCMake／Gradle設定生成とdebug APKビルドの両方を選べま�
 Linuxの「WSL内でLinuxゲームまでビルドする」を選ぶと、既存ディストリビューション・SDL3ソース・Python 3.11以降・CMake 3.25以降・C++20コンパイラーを使ってLinux ELFを生成します。
 WSLのドライブ共有を通じてプロジェクトと出力先へアクセスします。依存のインストールや取得は行いません。
 Windows側のパス変換、プロセス引数、失敗応答、出力先外のELF拒否をPythonテストとMSVCプロセス境界テストで確認しました。
-このPCにはWSLディストリビューションがないため、実WSLのLinuxビルドとAndroidの実APKビルドは未検証です。
+このPCにはWSLディストリビューションがないため、Windowsエディターから実WSLへ渡す経路は未検証です。Androidの実APK生成は両ABIでCI確認済みです。
 
 Androidには「debug APK」も選べる出力経路を追加しています。
 既存SDK・JDK・Gradle・SDL3の場所を入力し、「debug APKをビルド」を押すと診断・設定生成・ビルドを非同期で実行します。
 SDKは自動取得せず、Gradle依存の取得もチェックを入れた場合だけ許可します。
 生成物とキャッシュは出力先の`build`配下へ置き、成功したAPKのフォルダーを開けます。
 成功表示にはビルド・配布物検査の成功フラグと、予定先のAPKファイルの存在が必要です。
-変更した画面コードとジョブはMSVCでコンパイル済みです。子プロセス境界のテストでは、
+変更した画面コードとジョブはMSVCでコンパイル済みです。CIではAPKビルドツール経由の署名済みdebug APK生成を確認しましたが、エディター画面からAPKビルドを操作する実地確認は未完了です。子プロセス境界のテストでは、
 日本語・空白・`&`を含むSDKパス、APK欠落、検査未完了の拒否、他の出力形式への切り替えを確認しました。
 このプロセステストはスタブであり、Gradle・APK署名・実機動作の成功を示しません。
-実際のAPKビルドと、エディター画面からの操作確認はまだ未完了です。
+エディター画面からのAPKビルド操作確認はまだ未完了です。
 
 - SDLのウィンドウ、キー、マウス、タッチ、ゲームパッドから共通入力状態へ接続。
 - 既存Portable Scene・Script・物理と、OpenGL 3.3／Android OpenGL ES 3.0描画を接続。
@@ -123,7 +129,7 @@ NaN／無限大を含む浮動小数WAVが再生ハンドルを返す問題を�
 デコード拒否の修正後、配布SDKから音声テスト用フックを含まない共有SDL版Windowsゲームを再ビルドし、
 同梱依存検査と2回の起動、日本語セーブの継続を確認しました。
 ダミー音声デバイスとPCMの数値検査であり、実スピーカー、Linux／Android端末での音声出力は未検証です。
-Windows CIとLinuxの静的／共有SDLのCIに同じ音声テストを追加しました。CI自体の実行結果はまだ確認していません。
+Windows CIとLinuxの静的／共有SDL CIで同じ音声テストが成功しました。Linux／Windowsのテストはダミー音声デバイスとPCM検査で、実スピーカーとAndroid端末の音声出力は未検証です。
 修正後のWindowsゲームの描画・入力・GLコンテキスト交換・ライフサイクル・セーブ再起動テストも通りました。
 
 アプリの背面状態とウィンドウの最小化状態を別々に管理し、両方の解除を待って再開します。
@@ -201,7 +207,7 @@ AndroidではNDKの`NOTICE`と`NOTICE.toolchain`を使用中のNDKから取得�
 
 SDL3は3.4以上が必要です。依存ライブラリは自動取得しません。
 デスクトップでは既存のSDL3 CMake package、または`SDL_SOURCE_DIRECTORY`で既存ソースを渡します。
-AndroidではSDLActivityが使う共有ライブラリとActivity／Gradleの生成設定を実装していますが、APKのビルド・実行は未検証です。
+AndroidではSDLActivityが使う共有ライブラリとActivity／Gradleの生成設定を実装しています。実APKビルドとx86_64 Emulator実行は上記CIで確認済みです。
 Steam Deck／Android実機の入力・音声・復帰は未検証です。
 標準のProggyCleanフォントは日本語表示を保証しません。必要なグリフを含むTTFの指定が必要です。
 Portable APIの制約は残るため、既存Windowsランタイムとの全機能一致も未完了です。
@@ -256,7 +262,7 @@ Androidは「Android（debug APK）」で既存SDK・NDK・JDK・Gradle・SDL3�
 既存のWindows EXEとWeb HTMLの出力は引き続き別の選択肢です。
 SDKの同梱設定にはネイティブ実装ソース、出力ツール、フォントと依存ライセンスを追加しています。
 SDKを実際にインストールした配置から、共有SDL版WindowsゲームのReleaseビルドと2回の起動を検証しました。
-同じSDKでLinux／Androidの設定生成も通りましたが、対象OSでのビルド・実行は未検証です。
+同じSDKでLinux／Androidの設定生成に加え、Linux実ゲームと両Android ABIのAPKをCIでビルドしました。Android x86_64は16KB Emulatorでも実行済みです。
 CLIの標準出力・標準エラーはUTF-8に統一しました。WindowsのCP932／CP1252環境でも診断JSONと
 日本語・絵文字を含むエラーが読めることを確認し、エディター用コマンドの成功／失敗メッセージも検証しました。
 関連Pythonテストはネイティブ62件、Web出力45件が通っています。
@@ -359,7 +365,7 @@ Windows上で生成設定からRelease実行ファイルをビルドし、実際
 これはPortableランタイムの検証で、既存D3D版の回帰検証やLinux／Androidの実行確認ではありません。
 
 Android用設定では、さらに`--android-sdk`、`--java-home`、`--gradle-home`と`--sdl-source-directory`を指定します。
-この経路はdebug APKを対象とし、APKビルド自体はまだ未検証です。
+この経路はdebug APKを対象とし、APKビルドはAndroid SDK／NDKを使うCIで両ABIとも検証済みです。
 Gradle依存の取得は既定でオフラインです。取得が許可された環境では`--allow-downloads`を指定します。
 NDK・SDK・CMake・build-toolsは先に準備する必要があります。
 アプリの生成物はビルド先の`app`、CMakeの生成物はその隣の`native`へ分けて出力します。
@@ -393,7 +399,7 @@ SDL3とVisual C++の4 DLLがゲームの出力フォルダーからロードさ�
 `windowsChecks`には同梱DLL・システムDLL・CPU種別を記録し、`cleanMachineVerified`は`false`のままにします。
 Windowsの実ビルドで、入力設定だけの編集が反映されること、古い内容・対象外の画像が検査で拒否されることを確認しました。
 APKの検査でも、ZIPから直接読み取って同じ素材一覧とSHA-256を照合する実装を追加しました。
-メモリ上のZIPを使った欠落・対象外・古い素材の拒否テストは通っていますが、実APKのビルドと端末実行は未検証です。
+メモリ上のZIPを使った欠落・対象外・古い素材の拒否テストに加え、実APKのビルドを両ABI、x86_64実行を16KB Emulatorで検証済みです。物理端末は未検証です。
 関連Pythonテスト37件と、変更後のNativeSmokeによる描画・GLコンテキスト再作成・復帰・セーブの2回起動テストも通っています。
 APKではそれらに加え、Activity、指定ABIの共有ライブラリと署名を検査します。
 共有ライブラリのELFヘッダーを読み、arm64-v8a／x86_64の取り違え、欠けたヘッダー、
@@ -416,7 +422,7 @@ Windowsの実ファイルで、書き込み失敗時の旧データ保持、再�
 変更後のNativeSmokeも2回起動し、描画・入力・GL復旧・日本語セーブの再起動保持が通っています。
 Chrome上の実Wasmでは、空文字列／未登録の区別とlocalStorageの保存拒否を検証し、捕捉後もゲームが動くことを確認しました。
 共有SDLを使う生成済みWindowsゲームも更新後のソースで再ビルドし、2回起動して既存の日本語セーブとカウンターの継続を確認しました。
-Linux CIへ同じ保存検証を追加しましたが、Linux／Androidでの実行と電源断への耐久性はまだ未確認です。
+Linux CIとAndroid 16KB Emulatorで同じ保存検証を実行しました。突然の電源断への耐久性は未確認です。
 
 WebセーブのChrome回帰テストは、同じ一時プロファイルとオリジンでWasmゲームを二度起動し、
 一度目の値が二度目に読み込めることを検証します。ブラウザーによるサイトデータ消去・容量制限・
@@ -426,12 +432,12 @@ Portable Sceneのランタイム復元項目を、シリアライザーの出力
 
 - [x] CORE-01: 描画・エディターを必要としない共通基盤のCMakeターゲット。
 - [x] CORE-02: UTF-16／UTF-32、パス、ジョブ処理、バージョンのテスト。Windowsで実行済み。
-- [x] CORE-03: Windows／Linuxテスト、AndroidクロスコンパイルのCI構成追加（CI実行結果は未確認）。
-- [x] CORE-04: SDLウィンドウ、入力、音声、ライフサイクルの共通アダプターを実装（Linux／Android実行は未検証）。
-- [x] CORE-05: Portable描画をD3D11／HWND／DirectXMathから分離し、OpenGL／OpenGL ESバックエンドを実装（対象OS実行は未検証）。
+- [x] CORE-03: Windows／Linuxテスト、AndroidクロスコンパイルのCI構成追加（2026-10-09に全ジョブ成功）。
+- [x] CORE-04: SDLウィンドウ、入力、音声、ライフサイクルの共通アダプターを実装（Linux実ゲームCI・Android 16KB Emulatorで検証済み）。
+- [x] CORE-05: Portable描画をD3D11／HWND／DirectXMathから分離し、OpenGL／OpenGL ESバックエンドを実装（Linux実ゲームCI・Android 16KB Emulatorで描画を検証済み）。
 - [ ] CORE-06: Scene・Prefab・スクリプト・UI・物理の共通Portable契約と、未対応機能検査の網羅性確認。
-- [x] CORE-07: OS別の保存先、セーブファイルの永続化・置換、Androidアプリ専用領域を実装（Linux／Android実行は未検証）。
-- [x] CORE-08: SDK／パッケージ／アセット／Shaderの対象OSとCPU別依存解決（Linux／Androidの実ビルドは未検証）。
+- [x] CORE-07: OS別の保存先、セーブファイルの永続化・置換、Androidアプリ専用領域を実装（Linux CI・Android Emulatorの再起動テストで検証済み）。
+- [x] CORE-08: SDK／パッケージ／アセット／Shaderの対象OSとCPU別依存解決（Linux実ゲームとarm64-v8a／x86_64 APKのCIビルドで検証済み）。
 
 Portable WebとSDLネイティブ出力は同じScene／Scriptランタイムと互換性検査を使います。
 対応・近似・拒否するコンポーネントは[Portableの対応表](web-export.md)に記載し、
@@ -504,7 +510,7 @@ PortableパッケージはWindows x86-64／Linux x86-64／Android arm64-v8a・x8
 
 - [x] WIN-01: 共通基盤のReleaseビルドとCTest。
 - [x] WIN-02: 共通アダプター導入後も、既存のD3D11／D3D12とGame Module／出力が動くことを確認（Windows・WARP、下記の範囲）。
-- [x] WIN-03: エディターから外部のLinux／Androidビルド環境へ渡す設定生成・診断と、既存WSL上のLinux実ビルド経路を実装（実WSL／Android SDKでの実行は未検証）。
+- [x] WIN-03: エディターから外部のLinux／Androidビルド環境へ渡す設定生成・診断と、既存WSL上のLinux実ビルド経路を実装（Android APKのCI生成は成功。このPCにWSLディストリビューションがないため、エディターから実WSLへの転送は未検証）。
 
 既存のWindowsゲーム出力は移植中も維持します。
 
@@ -538,29 +544,29 @@ Linux／Androidについては設定の生成までで、対象OSのバイナリ
 
 ## Linux／Steam Deck
 
-- [ ] LINUX-01: Linuxで共通基盤CIの実行結果を確認。
-- [x] LINUX-02: 共通ウィンドウ・入力・音声アダプターを実装（CORE-04。Linuxでの動作は未検証）。
-- [x] LINUX-03: OpenGL描画バックエンドとShader経路を実装（CORE-05。Linuxでの動作は未検証）。
-- [x] LINUX-04: 大文字小文字を区別するアセット参照、保存データ、共有ライブラリの配置／ロードを実装（Linux生成物は未検証）。
-- [x] LINUX-05: WindowsエディターからWSLへ渡し、Linux ELF・アセット・ライセンス・共有ライブラリ依存を検査する実ビルド経路を実装（WSLでの実ビルドは未検証）。
-- [ ] LINUX-06: 実際のScene・音声・入力・セーブ・終了をLinuxゲームで検証。
+- [x] LINUX-01: Linuxで共通基盤CIの実行結果を確認（2026-10-09成功）。
+- [x] LINUX-02: 共通ウィンドウ・入力・音声アダプターを実装（Ubuntu上の実ゲームCIで検証済み）。
+- [x] LINUX-03: OpenGL描画バックエンドとShader経路を実装（Xvfb／Mesaで実ゲームを描画・検証済み）。
+- [x] LINUX-04: 大文字小文字を区別するアセット参照、保存データ、共有ライブラリの配置／ロードを実装（Linux静的／共有SDLのCIで検証済み）。
+- [x] LINUX-05: WindowsエディターからWSLへ渡し、Linux ELF・アセット・ライセンス・共有ライブラリ依存を検査する実ビルド経路を実装（Linux実ゲームはCIで検証済み。このPCにWSLがなく、Windowsエディター経由のWSL実ビルドは未検証）。
+- [x] LINUX-06: 実際のScene・音声・入力・セーブ・終了をLinuxゲームで検証（Ubuntu 24.04とSteam Runtime 4で静的／共有SDLの全ジョブ成功）。
 - [ ] LINUX-07: Windowsエディターから既存WSLへLinuxゲームをビルドし、生成物をLinux上で起動。
 - [ ] DECK-01: Windows出力のProton動作を確認。Linuxネイティブ出力とは別に記録。
 - [ ] DECK-02: コントローラーのみの操作、UI可読性、解像度、サスペンド／復帰を実機で確認。
-- [x] DECK-03: Valve公式のSteam Runtime 4 SDKコンテナーでLinuxゲームをビルド・起動するCIを追加（CI未実行、Steam Deck実機は未検証）。
+- [x] DECK-03: Valve公式のSteam Runtime 4 SDKコンテナーでLinuxゲームをビルド・起動するCIを追加（静的／共有SDLで2026-10-09成功。Steam Deck実機は未検証）。
 
 Windows上の共通基盤テストだけではLinux対応済みとしません。
 Protonの動作確認だけでもLinuxネイティブ出力対応済みとしません。
 Linuxの生成ゲームには、配布フォルダーを基準とする`$ORIGIN`の実行時検索パスを設定しました。
 共有SDLを使う場合は、SDLのELFが要求するSONAMEで実体をゲームの横へコピーする設定です。
-これらのLinux分岐は実Linuxでのビルド・移動後の起動検証が未完了です。
-Ubuntu Linux CIには静的／共有SDLのビルドと、共有版の配布フォルダー移動後のロード・描画・復帰・セーブ検証を追加しました。
+これらのLinux分岐はUbuntu CIでビルドし、配布フォルダー移動後の起動まで検証済みです。
+Ubuntu Linux CIでは静的／共有SDLのビルドと、共有版の配布フォルダー移動後のロード・描画・復帰・セーブ検証を確認しました。
 Steam Deck向けには、Valveが新規ネイティブゲームに推奨するSteam Runtime 4 SDKコンテナーでも、
 `export_native.py`と`build_native.py`を通した実際のLinuxゲーム出力と、静的／共有SDLのビルドを行うCIを追加しました。
 生成したゲームもXvfb／Mesa上で起動し、Scene・UTF-8画像・保存の再起動保持を検査します。
 別途ネイティブ実行基盤のSmokeゲームで入力・復帰・音声・共有SDL移動後のロードを検査します。
 これはSDKコンテナーのx86_64 ABI上の検証であり、Steamクライアント経由やDeck実機での互換性検証ではありません。
-CIの実行結果はまだ確認していません。[Valve Steam Runtime](https://github.com/ValveSoftware/steam-runtime)
+CIは2026-10-09に静的／共有の両ジョブが成功しました。[Valve Steam Runtime](https://github.com/ValveSoftware/steam-runtime)
 `tools/native_linux.py`はELFを実行せずに読み取り、CPU・実行時ローダー・エントリーポイント、
 通常の共有ライブラリ依存とSONAMEを検査します。依存を再帰的に確認し、OSの基本ライブラリ以外が
 同梱されていない場合や、同梱ライブラリを読む親の検索パスに`$ORIGIN`がない場合は出力を拒否します。
@@ -571,7 +577,7 @@ Linuxビルド成功時には`linuxChecks`へ結果を記録します。
 `abiCompatibilityVerified`と`cleanMachineVerified`は`false`のままです。
 特殊なaudit/filterによる追加ロードは未対応として拒否し、PIE実行ファイルのライブラリ混入も検出します。
 メモリー上のELFと依存グラフのテスト11件と、依存検査失敗時にビルド成功を記録しない検査を含むPythonテスト58件はWindowsで通りました。
-実Linuxの生成物への検査はCIへ接続しましたが、まだ実行結果を確認していません。
+実Linuxの生成物検査はUbuntu／Steam Runtime 4 CIで実行済みです。
 SDL以外の間接依存、glibc／libstdc++の最低バージョンとSteam Deck実機の互換性確認も残っています。
 
 SDL入力ではタッチの機器IDと指IDの組を使い、異なる機器の同じ指IDを混同しないようにしました。
@@ -580,13 +586,13 @@ Windows上のNativeSmokeで検証しています。Steam Deckのタッチ画面�
 
 ## Android
 
-- [ ] ANDROID-01: arm64-v8a／x86_64のdebug APK CIの結果を確認。
-- [x] ANDROID-02: Activity／ネイティブ起動、アセット読み込み、アプリ専用のdataDir／cacheDirを接続（生成設定・ソース・契約テスト済み。APK実行は未検証）。
-- [x] ANDROID-03: OpenGL ES描画、タッチ／ゲームパッド入力、SDL音声を共通ランタイムへ接続（APK実行は未検証）。
-- [x] ANDROID-04: SDLアプリの背景・復帰、GLコンテキスト再作成、画面サイズ変更を実装（Android Emulator／実機は未検証）。
-- [x] ANDROID-05: Windowsエディターからdebug APKを出力し、applicationId／minSdk／ABI／debug署名を設定（実APK生成は未検証。ストア用署名は対象外）。
+- [x] ANDROID-01: arm64-v8a／x86_64のdebug APK CIの結果を確認（両ABIの署名・16KB配置検査成功）。
+- [x] ANDROID-02: Activity／ネイティブ起動、アセット読み込み、アプリ専用のdataDir／cacheDirを接続（APK起動とアセット描画をx86_64 Emulatorで検証済み）。
+- [x] ANDROID-03: OpenGL ES描画、タッチ／ゲームパッド入力、SDL音声を共通ランタイムへ接続（OpenGL ES描画とタッチイベントをx86_64 Emulatorで検証済み。物理コントローラー／実スピーカーは未検証）。
+- [x] ANDROID-04: SDLアプリの背景・復帰、GLコンテキスト再作成、画面サイズ変更を実装（Activity復帰とリサイズを16KB Emulatorで検証済み。実機固有動作は未検証）。
+- [x] ANDROID-05: Windowsエディターからdebug APKを出力し、applicationId／minSdk／ABI／debug署名を設定（両ABIのdebug APKをCIで生成・検査。ストア用署名は対象外）。
 - [ ] ANDROID-06: 実機でScene・描画・音声・入力・保存・復帰を検証。
-- [x] ANDROID-07: x86_64 APKのAndroid 15・16KB Emulator起動、Scene描画・UIButtonタッチイベント・Activity復帰・画面サイズ変更・再起動保存を検査するCIを追加（未実行）。
+- [x] ANDROID-07: x86_64 APKのAndroid 15・16KB Emulator起動、Scene描画・UIButtonタッチイベント・Activity復帰・画面サイズ変更・再起動保存を検査するCIを追加・実行（2026-10-09成功）。
 
 NDKのライブラリがビルドできる状態と、APKを実行できる状態は別に管理します。
 
@@ -594,7 +600,7 @@ NDKのライブラリがビルドできる状態と、APKを実行できる状�
 ネイティブ側でPathUtilsへ登録します。Gradleは選択素材をAPKの`assets/`へ収録します。
 Portableの素材パスは`assets/...`に解決され、SDL 3.4.18の`SDL_IOFromFile`はAndroidパッケージ素材への
 読み込みも処理します。生成設定、SDL側の読み込み経路、PathUtilsの絶対パス検査とUTF-8変換を確認しました。
-APKビルド、Activity起動、APK内の実ファイル読み込みは未検証です。
+両ABIのAPKビルド、x86_64 Emulator上のActivity起動・実ファイル読み込み・保存をCIで検証済みです。arm64-v8aの実行、実機固有の動作、実スピーカーの出力は未検証です。
 
 SDLが配信する`SDL_SCANCODE_AC_BACK`を共通のEscape入力へ変換しました。
 NativeSmokeでは押下・反復・解除と、UIフォーカスのキャンセル時に誤クリックが発生しないことを確認しています。
@@ -664,6 +670,6 @@ Web出力83件、Android画面検査4件、EditorWebExport 7件も通過しま�
 Camera・BoxCollider・Rigidbody・AudioSourceの基本Script APIと既定値をWindows Editor Release／Nativeゲームで再ビルドしました。Release CTestは短縮`R:`パスで77件が成功し、OnlineP2PSceneだけはテスト側の実パス同一性確認が`R:`と`C:`を別表記と判定しました。同テストを元の`C:`パスから単独実行して成功を確認しています。Native出力スモークではカメラの既定値とScene JSON省略値、BoxColliderの寸法・offset・trigger・layer/mask、Rigidbodyの速度・重力・kinematic状態、AudioSourceの基本設定と制限値を検査し、出力ゲームの保存継続も確認しました。Web／Linux／Androidの実行環境による確認は別途必要です。
 Windows／Portableの同名Component型すべての公開メソッド差分を照合し、PortableにないAPIをNative／Web共通の出力前検査で拒否する一覧を拡張しました。型付き参照、`GetComponent`／`AddComponent`の取得、直接チェーン、メンバー関数参照を検査し、継承済みAPIとライフサイクルhookは除外します。テストは不足メソッドの分類漏れがないことと、分類した全メソッドがWindows・Linux・Androidのすべてで共通検査により拒否されることを確認します。Scene・Prefabの意味差、間接呼び出し、機能全体の動作一致はCORE-06に残ります。
 AudioSourceの開始時自動再生は、設定値と実行済み状態を別に保持するよう修正しました。開始時に音源を再生したあとも`PlayOnStart()`がtrueを返すことを、Windowsの生成Nativeゲームで確認しました。Native出力ツール75件、Web出力ツール83件、Native／Web出力CTest 3件が通過しています。
-Portableの同名Component型にWindows側と同じ`TypeName()`を追加し、全型の戻り値を照合するテストを追加しました。`UIRectTransform`にはWindows版と同じアンカー・pivot・位置・寸法の取得APIも追加し、範囲制限を含む読み書きをNativeスモークで検査しました。PortableSmokeにも同じケースを追加しましたが、Emscriptenが未導入のためWeb C++ターゲットの再ビルドは未実行です。最新変更を含むWindows Editor Release全体を再ビルドし、CTest 78件すべてが成功しました。Native／Web出力APIテスト75件／83件と、Native build・Linux／Windows出力・WSL境界・Android画像検査のツールテスト59件も成功しています。Linux実ビルド、Android APK／Emulator、最新PortableSmokeのWasm実行は未検証です。
+Portableの同名Component型にWindows側と同じ`TypeName()`を追加し、全型の戻り値を照合するテストを追加しました。`UIRectTransform`にはWindows版と同じアンカー・pivot・位置・寸法の取得APIも追加し、範囲制限を含む読み書きをNativeスモークで検査しました。PortableSmokeにも同じケースを追加しましたが、Emscriptenが未導入のためWeb C++ターゲットの再ビルドは未実行です。最新変更を含むWindows Editor Release全体を再ビルドし、CTest 78件すべてが成功しました。Native／Web出力APIテスト75件／83件と、Native build・Linux／Windows出力・WSL境界・Android画像検査のツールテスト59件も成功しています。Linux実ゲーム、両Android ABI APK、16KB Emulatorは2026-10-09のCIで検証済みです。最新PortableSmokeのWasm実行は未検証です。
 
-Linuxキャッシュパスの追加テストでは、絶対`XDG_CACHE_HOME`、`HOME/.cache`へのfallback、相対XDG／HOMEの無視、一時領域へのfallbackを、環境変数だけを変更して確認します。Windows PlatformCoreを再ビルドしCTest 1/1件は成功しましたが、POSIX分岐はWindowsではコンパイル・実行されません。Linux CIでの実行結果はまだありません。
+Linuxキャッシュパスの追加テストでは、絶対`XDG_CACHE_HOME`、`HOME/.cache`へのfallback、相対XDG／HOMEの無視、一時領域へのfallbackを、環境変数だけを変更して確認します。Windows PlatformCoreを再ビルドしCTest 1/1件が成功し、POSIX分岐も2026-10-09のUbuntu CIで確認しました。
