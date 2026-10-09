@@ -13,6 +13,9 @@ from check_android_screenshot import count_green_marker
 PACKAGE = "com.lamapon.game.android_game_x86_64"
 ACTIVITY = PACKAGE + "/com.lamapon.runtime.GameActivity"
 APK = ROOT / "test-output/platform-core/android-apk-build-x86_64/app/outputs/apk/debug/app-debug.apk"
+INITIAL_DISPLAY_SIZE = "720x1560"
+RESIZED_DISPLAY_SIZE = "600x1300"
+SCREENSHOT_WAIT_SECONDS = 90
 
 
 def adb(*arguments, check=True):
@@ -127,7 +130,7 @@ def prepare_headless_emulator():
 
 def screenshot_render():
     screenshot = subprocess.run(["adb", "exec-out", "screencap", "-p"],
-                                capture_output=True, timeout=30)
+                                capture_output=True, timeout=10)
     if screenshot.returncode:
         raise RuntimeError("adb screencap failed: "
                            + screenshot.stderr.decode("utf-8", errors="replace"))
@@ -138,11 +141,55 @@ def screenshot_render():
     return screenshot.stdout, rendered
 
 
-def main():
+def wait_for_scene_screenshot(stage, dimensions_different_from=None):
+    started = time.monotonic()
+    deadline = started + SCREENSHOT_WAIT_SECONDS
+    attempts = 0
+    last_capture_seconds = 0.0
+    last_capture_error = None
+    screenshot = b""
+    rendered = {"greenMarkerPixels": 0}
+    dimensions = None
+    while time.monotonic() < deadline:
+        attempts += 1
+        capture_started = time.monotonic()
+        try:
+            screenshot, rendered = screenshot_render()
+            last_capture_error = None
+        except subprocess.TimeoutExpired:
+            screenshot = b""
+            rendered = {"greenMarkerPixels": 0}
+            last_capture_error = "adb screencap exceeded 10 seconds"
+        last_capture_seconds = time.monotonic() - capture_started
+        if len(screenshot) >= 24:
+            dimensions = struct.unpack(">II", screenshot[16:24])
+            dimensions_match = (dimensions_different_from is None
+                                or dimensions != dimensions_different_from)
+            if rendered["greenMarkerPixels"] >= 1000 and dimensions_match:
+                elapsed = time.monotonic() - started
+                print("Android {} scene screenshot passed after {} capture(s) in {:.1f}s: {}".format(
+                    stage, attempts, elapsed, json.dumps(rendered)))
+                return screenshot, rendered
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(1, remaining))
+
+    elapsed = time.monotonic() - started
+    raise RuntimeError(
+        "Android screenshot did not contain the exported scene green UI marker "
+        "during {}: {}; attempts={}, elapsedSeconds={:.1f}, "
+        "lastCaptureSeconds={:.1f}, dimensions={}, lastCaptureError={!r}; {}".format(
+            stage, json.dumps(rendered), attempts, elapsed,
+            last_capture_seconds, dimensions, last_capture_error,
+            startup_diagnostics()))
+
+
+def run_smoke():
     page_size = adb("shell", "getconf", "PAGE_SIZE").stdout.strip()
     assert page_size == "16384", "Expected a 16 KB emulator, got " + page_size
     assert APK.is_file(), "The generated x86_64 APK is missing"
     prepare_headless_emulator()
+    adb("shell", "wm", "size", INITIAL_DISPLAY_SIZE)
     adb("install", "-r", str(APK))
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
     initial_count = wait_for_start_count(1)
@@ -152,15 +199,7 @@ def main():
         raise RuntimeError("Android game process did not remain available after startup; "
                            + startup_diagnostics())
 
-    for _ in range(30):
-        screenshot, rendered = screenshot_render()
-        if rendered["greenMarkerPixels"] >= 1000:
-            print("Android scene rendered the green UI marker: " + json.dumps(rendered))
-            break
-        time.sleep(1)
-    else:
-        raise RuntimeError("Android screenshot did not contain the exported scene green UI marker: "
-                           + json.dumps(rendered) + "; " + startup_diagnostics())
+    screenshot, rendered = wait_for_scene_screenshot("startup")
 
     screen_width, screen_height = struct.unpack(">II", screenshot[16:24])
     adb("shell", "input", "tap", str(screen_width // 2), str(screen_height // 2))
@@ -189,19 +228,10 @@ def main():
                 startup_diagnostics()))
 
     try:
-        adb("shell", "wm", "size", "720x1280")
-        for _ in range(30):
-            resized_screenshot, resized_render = screenshot_render()
-            resized_width, resized_height = struct.unpack(">II", resized_screenshot[16:24])
-            if ((resized_width, resized_height) != (screen_width, screen_height)
-                    and resized_render["greenMarkerPixels"] >= 1000):
-                break
-            time.sleep(1)
-        else:
-            raise RuntimeError("Android game did not keep rendering after display resize: "
-                               + json.dumps({"size": [resized_width, resized_height],
-                                             **resized_render})
-                               + "; " + startup_diagnostics())
+        adb("shell", "wm", "size", RESIZED_DISPLAY_SIZE)
+        resized_screenshot, resized_render = wait_for_scene_screenshot(
+            "display resize", (screen_width, screen_height))
+        resized_width, resized_height = struct.unpack(">II", resized_screenshot[16:24])
         resized_pid = wait_for_game_pid()
         if resized_pid != initial_pid:
             raise AssertionError(
@@ -210,7 +240,7 @@ def main():
                     initial_pid, resized_pid, startup_diagnostics()))
         assert saved_start_count() == resumed_count, "Display resize restarted the game scene"
     finally:
-        adb("shell", "wm", "size", "reset", check=False)
+        adb("shell", "wm", "size", INITIAL_DISPLAY_SIZE, check=False)
 
     adb("shell", "am", "force-stop", PACKAGE)
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
@@ -221,6 +251,13 @@ def main():
     print(f"Android game started on a {page_size}-byte page-size emulator; touchscreen UIButton event, "
           f"same-process activity resume, display resize and save restart passed "
           f"({resumed_count} -> {restarted_count}).")
+
+
+def main():
+    try:
+        run_smoke()
+    finally:
+        adb("shell", "wm", "size", "reset", check=False)
 
 
 if __name__ == "__main__":

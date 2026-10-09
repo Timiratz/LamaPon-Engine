@@ -2,7 +2,9 @@ import binascii
 import struct
 import unittest
 import zlib
+from unittest.mock import patch
 
+from tests import AndroidEmulatorSmoke
 from tools.check_android_screenshot import count_green_marker, decode_android_png
 
 
@@ -48,6 +50,13 @@ def make_png(rows: list[bytes], width: int, channels: int = 4) -> bytes:
             + png_chunk(b"IDAT", zlib.compress(scanlines)) + png_chunk(b"IEND", b""))
 
 
+def screenshot_header(width: int, height: int) -> bytes:
+    screenshot = bytearray(24)
+    screenshot[:8] = b"\x89PNG\r\n\x1a\n"
+    screenshot[16:24] = struct.pack(">II", width, height)
+    return bytes(screenshot)
+
+
 class AndroidScreenshotTests(unittest.TestCase):
     def test_decodes_all_png_filters_and_counts_rgba_green_marker(self):
         rows = []
@@ -80,6 +89,26 @@ class AndroidScreenshotTests(unittest.TestCase):
             decode_android_png(b"not a screenshot")
         with self.assertRaisesRegex(ValueError, "truncated PNG chunk"):
             decode_android_png(b"\x89PNG\r\n\x1a\n\x00")
+
+    def test_waits_for_scene_marker_in_android_screenshot(self):
+        screenshot = screenshot_header(720, 1560)
+        with patch.object(AndroidEmulatorSmoke, "screenshot_render",
+                          return_value=(screenshot, {"greenMarkerPixels": 1000})):
+            captured, rendered = AndroidEmulatorSmoke.wait_for_scene_screenshot("startup")
+        self.assertEqual(captured, screenshot)
+        self.assertEqual(rendered["greenMarkerPixels"], 1000)
+
+    def test_waits_for_new_dimensions_after_android_display_resize(self):
+        original = screenshot_header(720, 1560)
+        resized = screenshot_header(600, 1300)
+        with patch.object(AndroidEmulatorSmoke, "screenshot_render", side_effect=(
+                (original, {"greenMarkerPixels": 12000}),
+                (resized, {"greenMarkerPixels": 8000}))) as capture:
+            captured, rendered = AndroidEmulatorSmoke.wait_for_scene_screenshot(
+                "display resize", (720, 1560))
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(captured, resized)
+        self.assertEqual(rendered["greenMarkerPixels"], 8000)
 
 
 if __name__ == "__main__":
