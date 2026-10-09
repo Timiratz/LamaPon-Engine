@@ -15,6 +15,16 @@ import build_native as BUILD
 
 
 class NativeBuildToolTests(unittest.TestCase):
+    def test_android_emulator_smoke_completes_first_run_setup_before_launch(self):
+        emulator_smoke = (ROOT / "tests/AndroidEmulatorSmoke.py").read_text(encoding="utf-8")
+        self.assertIn("def prepare_headless_emulator():", emulator_smoke)
+        self.assertIn('"global", "device_provisioned", "1"', emulator_smoke)
+        self.assertIn('"secure", "user_setup_complete", "1"', emulator_smoke)
+        prepare_call = emulator_smoke.index(
+            "    prepare_headless_emulator()", emulator_smoke.index("def main():"))
+        install_call = emulator_smoke.index('    adb("install", "-r", str(APK))')
+        self.assertLess(prepare_call, install_call)
+
     def test_steam_deck_smoke_builds_and_runs_inside_the_official_runtime_sdk(self):
         workflow = (ROOT / ".github/workflows/platform-core-ci.yml").read_text(encoding="utf-8")
         self.assertIn("Install Android SDK packages required by APK export", workflow)

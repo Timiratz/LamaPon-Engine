@@ -109,6 +109,22 @@ def startup_diagnostics():
         (devices.stdout + devices.stderr).strip())
 
 
+def prepare_headless_emulator():
+    # A headless AVD can report boot completion before Android finishes its first-run setup.
+    # ActivityTaskManager then skips the game task and leaves the launcher in the foreground.
+    adb("shell", "settings", "put", "global", "device_provisioned", "1")
+    adb("shell", "settings", "put", "secure", "user_setup_complete", "1")
+    device_provisioned = adb(
+        "shell", "settings", "get", "global", "device_provisioned").stdout.strip()
+    user_setup_complete = adb(
+        "shell", "settings", "get", "secure", "user_setup_complete").stdout.strip()
+    if device_provisioned != "1" or user_setup_complete != "1":
+        raise RuntimeError(
+            "Android emulator setup did not complete: device_provisioned={!r}, "
+            "user_setup_complete={!r}; {}".format(
+                device_provisioned, user_setup_complete, startup_diagnostics()))
+
+
 def screenshot_render():
     screenshot = subprocess.run(["adb", "exec-out", "screencap", "-p"],
                                 capture_output=True, timeout=30)
@@ -126,6 +142,7 @@ def main():
     page_size = adb("shell", "getconf", "PAGE_SIZE").stdout.strip()
     assert page_size == "16384", "Expected a 16 KB emulator, got " + page_size
     assert APK.is_file(), "The generated x86_64 APK is missing"
+    prepare_headless_emulator()
     adb("install", "-r", str(APK))
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
     initial_count = wait_for_start_count(1)
