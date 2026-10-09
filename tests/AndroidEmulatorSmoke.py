@@ -65,22 +65,26 @@ def wait_for_start_count(minimum):
 
 
 def game_pid():
-    return adb("shell", "pidof", PACKAGE).stdout.strip()
+    return adb("shell", "pidof", PACKAGE, check=False).stdout.strip()
 
 
 def startup_diagnostics():
-    activity_lines = adb("shell", "dumpsys", "activity", "activities",
-                         check=False).stdout.splitlines()
+    activity_result = adb("shell", "dumpsys", "activity", "activities",
+                          check=False)
+    activity_lines = (activity_result.stdout + activity_result.stderr).splitlines()
     activity = " | ".join(line.strip() for line in activity_lines
                           if PACKAGE in line or "mResumedActivity" in line
                           or "topResumedActivity" in line)
-    log_lines = adb("logcat", "-d", "-t", "600", check=False).stdout.splitlines()
+    log_result = adb("logcat", "-d", "-t", "600", check=False)
+    log_lines = (log_result.stdout + log_result.stderr).splitlines()
     markers = ("lamapon", "sdl", "androidruntime", "fatal signal", "linker",
                "crash", "anr", "libgame")
     relevant_logs = [line.strip() for line in log_lines
                      if any(marker in line.lower() for marker in markers)]
-    return "pid={!r}, activity={!r}, logcat={!r}".format(
-        game_pid(), activity, relevant_logs[-80:])
+    devices = adb("devices", check=False)
+    return "pid={!r}, activity={!r}, logcat={!r}, adb={!r}".format(
+        game_pid(), activity, relevant_logs[-80:],
+        (devices.stdout + devices.stderr).strip())
 
 
 def screenshot_render():
