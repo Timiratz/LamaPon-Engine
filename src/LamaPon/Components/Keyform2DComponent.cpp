@@ -558,6 +558,23 @@ namespace LamaPon
         }
     }
 
+    bool Keyform2DComponent::DeformsSpriteMesh() const
+    {
+        // 頂点移動を探すチャンネル
+        for (const auto& channel : m_channels)
+        {
+            // 頂点移動を探すキー
+            for (const auto& key : channel.keys)
+            {
+                if (!key.vertexOffsets.empty())
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     void Keyform2DComponent::OnInitialize(GraphicsDevice&)
     {
         if (!m_hasRestPose)

@@ -125,11 +125,17 @@ OSのフォント名だけに依存せず、フォントアセットをプロジ
 
 | 区分 | コンポーネント |
 | --- | --- |
-| 対応 | `NativeScript`、`Camera`、`DirectionalLight`（影を除く）、`AudioSource`／`AudioListener`、`MeshRenderer`、`ModelRenderer`、`BoxCollider3D`、`Rigidbody`の基本機能、`ParticleSystem`、`SpriteRenderer`（メッシュ分割は通常の矩形で描画）／`SpriteMask`／`SpriteAnimator`、`TextRenderer`、`UIRectTransform`、`TransformAnimator`の直接クリップ、`Rotator`、`InputMover`、`ParallaxLayer`、`RenderCulling` |
-| 拒否 | `PointLight`／`SpotLight`、`ReflectionProbe`、影、高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、`Sway2D`／`Blink2D`／`SpriteSkin2D`／`Rig2D`／`Keyform2D`、`UIRectTransform`以外のUI Canvas系コンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
+| 対応 | `NativeScript`、`Camera`、`DirectionalLight`（影を除く）、`AudioSource`／`AudioListener`、`MeshRenderer`、`ModelRenderer`、`BoxCollider3D`、`Rigidbody`の基本機能、`ParticleSystem`、`SpriteRenderer`（メッシュ分割を含む）／`SpriteMask`／`SpriteAnimator`、`TextRenderer`、`UIRectTransform`、`TransformAnimator`の直接クリップ、`Rotator`、`InputMover`、`ParallaxLayer`、`RenderCulling`、`Sway2D`／`Blink2D`／`SpriteSkin2D`／`Rig2D`／`Keyform2D` |
+| 拒否 | `PointLight`／`SpotLight`、`ReflectionProbe`、影、高度なCollider／Joint／`CharacterController`、NavMesh、LOD／Billboard、Tilemap、Light2D／2D Physics、`SpriteParticles2D`、`UIRectTransform`以外のUI Canvas系コンポーネント、RenderTexture、カスタムシェーダー、Animator Controller、Root Motion |
 
 対応表にないコンポーネントも拒否します。対応を追加する場合は、ポータブル版の処理と
 互換性テストを用意してから許可リストへ登録します。
+
+Web版の2DはDOM要素で描くため、メッシュ分割したSprite（`Sprite Skin 2D`や頂点を動かす`Keyform 2D`を含む）は
+三角形ごとの要素を画像の変形行列で並べて描きます。三角形の境目に隙間が出ないよう、各三角形を約0.5ピクセル外側へ広げます。
+半透明の縁では重なりがわずかに濃く見えることがあり、`Sprite Mask`はメッシュには効きません。
+`Sprite Skin 2D`と`Keyform 2D`はシーンを読み込んだ直後の姿勢を基準にするため、スクリプトの最初の更新で
+ボーンや部品を動かしても基準はずれません。
 
 ## レポート
 

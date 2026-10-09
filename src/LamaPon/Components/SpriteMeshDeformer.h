@@ -20,5 +20,10 @@ namespace LamaPon
         virtual void DeformSpriteMesh(
             const SpriteRendererComponent& sprite,
             std::vector<DirectX::XMFLOAT2>& positions) = 0;
+        // 頂点を動かす設定を持ち、分割のないSpriteもメッシュで描く必要があるか返します。
+        [[nodiscard]] virtual bool DeformsSpriteMesh() const
+        {
+            return true;
+        }
     };
 }

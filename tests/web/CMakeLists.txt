@@ -28,3 +28,11 @@ lamapon_add_web_game(PortableSmoke
     MODULES core input renderer2d renderer3d physics3d audio particles3d
     ASSET_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets"
     SHELL_FILE "${engine_root}/src/LamaPon/Web/default-shell.html")
+
+# 2Dキャラクター部品とメッシュのDOM描画をブラウザーで検証します。
+lamapon_add_web_game(CharacterRigSmoke
+    PORTABLE_GAME SINGLE_FILE
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/CharacterRigSmoke.cpp"
+    MODULES core input renderer2d
+    ASSET_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/character-rig-assets"
+    SHELL_FILE "${engine_root}/src/LamaPon/Web/default-shell.html")

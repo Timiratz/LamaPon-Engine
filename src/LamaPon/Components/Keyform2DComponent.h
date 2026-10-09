@@ -129,6 +129,8 @@ namespace LamaPon
         void DeformSpriteMesh(
             const SpriteRendererComponent& sprite,
             std::vector<DirectX::XMFLOAT2>& positions) override;
+        // 頂点移動を持つキーがあるか返します。
+        [[nodiscard]] bool DeformsSpriteMesh() const override;
 
         // 保存用のコンポーネント型名を返します。
         [[nodiscard]] std::string_view TypeName() const noexcept override

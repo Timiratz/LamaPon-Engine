@@ -87,6 +87,7 @@ function(lamapon_add_web_game target)
     if(TWG_PORTABLE_GAME)
         list(APPEND runtime_sources
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableRuntime.cpp"
+            "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableCharacterRig2D.cpp"
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableLog.cpp"
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableWebGame.cpp"
         )

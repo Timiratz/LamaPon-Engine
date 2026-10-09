@@ -158,7 +158,8 @@ Sprite Rendererの「メッシュ分割（列×行）」を2×2以上にする�
 - 頂点はスクリプトの`SetMeshDeformation`で動かします（`MeshRestPositions()`で変形前の位置を取れます）。
 - メッシュで描くと、親の左右反転（`scale.x = -1`）や斜めの歪みも絵に反映されます。
   通常の矩形は回転と拡縮だけを反映するため、反転は180度回転として描かれます。
-- UI Rect Transformを持つSpriteと、Web書き出しでは常に通常の矩形で描きます。
+- UI Rect Transformを持つSpriteは常に通常の矩形で描きます。
+- Web書き出しでは三角形ごとのDOM要素で描きます。`Sprite Mask`はメッシュには効きません（[Web書き出し](web-export.md)）。
 
 ```cpp
 auto* sprite = GetComponent<LamaPon::SpriteRendererComponent>();
@@ -186,7 +187,7 @@ sprite->SetMeshDeformation(positions);          // 裾が右へ流れる
 - メッシュ分割を変えたときは「現在の姿勢でバインド」をやり直してください（それまでは曲がりません）。
 - ボーンを削除すると、その部分はSpriteと一緒に動くだけになります。
 - 髪のSpriteを複製すると、子のボーンも複製され、複製側のボーンへ自動で付け替えられます。
-- Web書き出しにはまだ対応していません（シーンに含まれていると書き出しを中止します）。
+- Web書き出しでも動きます。
 
 ```cpp
 auto* skin = hair->GetComponent<LamaPon::SpriteSkin2DComponent>();
@@ -220,7 +221,7 @@ Live2Dのパラメータのように、「角度X」「目の開き」「口の�
 - 部品の姿勢は基準姿勢からの差として毎フレーム書き込むため、同じ部品に`Transform Animator`を併用しないでください。
   `Sway 2D`は併用でき、キーの回転の上に揺れが足されます。
 - 「メッシュを記録」でボーンの形を保存した後は、ボーンを元の姿勢に戻してください（そのままだと二重に曲がります）。
-- Web書き出しにはまだ対応していません（シーンに含まれていると書き出しを中止します）。
+- Web書き出しでも動きます。
 
 ```cpp
 auto* rig = GetComponent<LamaPon::Rig2DComponent>();
@@ -259,7 +260,7 @@ rig->SetParameter("AngleX", (pointer.position.x - 640.0f) / 640.0f * 30.0f);
 - **瞬間移動:** 先端までの長さの10倍を超えて1フレームで移動すると、揺れを作り直します。
   スクリプトから明示的にやり直す場合は`ResetSimulation()`を呼びます。
 - 時間が止まっている間（経過時間0）は揺れの姿勢を保ちます。無効にすると足した回転を外します。
-- Web書き出しにはまだ対応していません（シーンに含まれていると書き出しを中止します）。
+- Web書き出しでも動きます。
 
 ```cpp
 LamaPon::Sway2DSettings settings{};
@@ -296,7 +297,7 @@ hair.AddComponent<LamaPon::Sway2DComponent>(settings);
 - 対象のSprite Rendererの画像領域（Source Rect）を毎フレーム書き換えるため、
   同じSpriteに`Sprite Animator`を併用しないでください。
 - 瞬きの時刻はGameObjectごとにずれるので、複数のキャラクターが一斉に瞬くことはありません。
-- Web書き出しにはまだ対応していません（シーンに含まれていると書き出しを中止します）。
+- Web書き出しでも動きます。
 
 ```cpp
 auto* blink = eyes->GetComponent<LamaPon::Blink2DComponent>();

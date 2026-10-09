@@ -191,6 +191,9 @@ namespace
             NearlyEqual(nose.GetTransform().position.x, 100.0f)
                 && NearlyEqual(lidSprite.Color().w, 0.8f),
             "Default parameters moved the parts.");
+        Require(
+            !nose.GetComponent<LamaPon::SpriteRendererComponent>()->UsesMesh(),
+            "A pose-only keyform switched its sprite to the mesh path.");
 
         rig.SetParameter("AngleX", 15.0f);
         rig.SetParameter("AngleY", -15.0f);

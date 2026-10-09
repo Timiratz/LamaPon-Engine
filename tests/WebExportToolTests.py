@@ -1414,6 +1414,77 @@ class WebExportToolTests(unittest.TestCase):
                 findings,
             )
 
+    # test_scene_accepts_2d_character_rig_components(self: テストケース): 2Dキャラクター部品を含むシーンを受け入れる。
+    def test_scene_accepts_2d_character_rig_components(self):
+        # directory は検証用の一時領域。処理と出力を隔離する。
+        with tempfile.TemporaryDirectory() as directory:
+            # root は一時プロジェクトのルート。
+            root = Path(directory)
+            # scene はWeb検証用シーン定義。
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [
+                    {
+                        "id": 1,
+                        "name": "Camera",
+                        "parent": None,
+                        "enabled": True,
+                        "components": [{"type": "Camera", "enabled": True}],
+                    },
+                    {
+                        "id": 2,
+                        "name": "Character",
+                        "parent": None,
+                        "enabled": True,
+                        "components": [{
+                            "type": "Rig2D",
+                            "parameters": [{"name": "AngleX", "minimum": -30, "maximum": 30}],
+                        }],
+                    },
+                    {
+                        "id": 3,
+                        "name": "Hair",
+                        "parent": 2,
+                        "enabled": True,
+                        "components": [
+                            {"type": "SpriteRenderer", "meshColumns": 1, "meshRows": 4},
+                            {"type": "SpriteSkin2D", "bones": [4]},
+                            {"type": "Keyform2D", "channels": [{
+                                "parameter": "AngleX",
+                                "keys": [{"value": 30, "position": [4, 0]}],
+                            }]},
+                            {"type": "Sway2D", "tipOffset": [0, 100]},
+                            {"type": "Blink2D", "columns": 3},
+                        ],
+                    },
+                    {
+                        "id": 4,
+                        "name": "Bone",
+                        "parent": 3,
+                        "enabled": True,
+                        "components": [],
+                    },
+                ],
+            })
+            # project はWeb出力用プロジェクト設定。
+            project = self._portable_fixture(
+                root,
+                scene=scene,
+                modules=["core", "input", "renderer2d", "renderer3d"],
+            )
+
+            # findings は互換性診断結果。
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            # item は互換性診断。期待するコードやレベルを照合する。
+            self.assertFalse(
+                any(item["level"] == "reject" for item in findings),
+                findings,
+            )
+
     # test_scene_rejects_renderer_state_that_would_be_silently_lost(self: テストケース): Webで失われる描画状態を診断する。
     def test_scene_rejects_renderer_state_that_would_be_silently_lost(self):
         # directory は検証用の一時領域。処理と出力を隔離する。

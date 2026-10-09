@@ -257,6 +257,31 @@ KNOWN_NATIVE_SCENE_COMPONENTS = {
     "UISlider", "UIToggle",
 }
 
+# 2Dキャラクター部品のAPI typeと必要module。
+PORTABLE_API_MODULES.update({
+    "Blink2DComponent": "renderer2d",
+    "Blink2DSettings": "renderer2d",
+    "Keyform2DChannel": "core",
+    "Keyform2DComponent": "core",
+    "Keyform2DKey": "core",
+    "Keyform2DPose": "core",
+    "Rig2DComponent": "core",
+    "Rig2DParameter": "core",
+    "SpriteMeshDeformer": "renderer2d",
+    "SpriteSkin2DComponent": "renderer2d",
+    "SpriteSkinWeight": "renderer2d",
+    "Sway2DComponent": "core",
+    "Sway2DSettings": "core",
+})
+# 2Dキャラクター部品のscene componentと必要module。
+PORTABLE_SCENE_COMPONENTS.update({
+    "Blink2D": "renderer2d",
+    "Keyform2D": "core",
+    "Rig2D": "core",
+    "SpriteSkin2D": "renderer2d",
+    "Sway2D": "core",
+})
+
 # API名の検索pattern.
 LAMAPON_API_TOKEN = re.compile(r"\bLamaPon::([A-Za-z_][A-Za-z0-9_]*)")
 # asset path検索pattern.

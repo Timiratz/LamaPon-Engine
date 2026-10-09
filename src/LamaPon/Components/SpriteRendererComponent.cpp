@@ -518,9 +518,13 @@ namespace LamaPon
         // 変形部品を探す同じGameObjectの部品
         for (const auto& component : Owner().Components())
         {
-            if (dynamic_cast<const SpriteMeshDeformer*>(
-                    component.get()) != nullptr
-                && component->IsEnabled())
+            // 頂点を変形する部品
+            const auto* deformer =
+                dynamic_cast<const SpriteMeshDeformer*>(
+                    component.get());
+            if (deformer != nullptr
+                && deformer->IsEnabled()
+                && deformer->DeformsSpriteMesh())
             {
                 return true;
             }
