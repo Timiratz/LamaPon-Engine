@@ -23,9 +23,28 @@ assert SPEC is not None and SPEC.loader is not None
 EXPORT_WEB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXPORT_WEB)
 
+# RUN_BROWSER_TESTS はブラウザー検査ツール。
+BROWSER_TEST_PATH = Path(__file__).with_name("RunBrowserTests.py")
+BROWSER_TEST_SPEC = importlib.util.spec_from_file_location("lamapon_run_browser_tests", BROWSER_TEST_PATH)
+assert BROWSER_TEST_SPEC is not None and BROWSER_TEST_SPEC.loader is not None
+RUN_BROWSER_TESTS = importlib.util.module_from_spec(BROWSER_TEST_SPEC)
+BROWSER_TEST_SPEC.loader.exec_module(RUN_BROWSER_TESTS)
+
 
 # Web出力ツールの互換性と素材変換を検証する。
 class WebExportToolTests(unittest.TestCase):
+    def test_browser_probe_can_extend_virtual_time_budget(self):
+        self.assertEqual(RUN_BROWSER_TESTS.virtual_time_budget(probe=True, webgl=True), 30000)
+        self.assertEqual(RUN_BROWSER_TESTS.virtual_time_budget(probe=True, webgl=False), 10000)
+        with mock.patch.object(
+                RUN_BROWSER_TESTS.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["chrome"], 0, "", "")) as run:
+            RUN_BROWSER_TESTS.run_browser(
+                "chrome", "http://127.0.0.1/game.html", timeout=60,
+                webgl=True, profile="browser-profile", virtual_time_budget=30000)
+        command = run.call_args.args[0]
+        self.assertIn("--virtual-time-budget=30000", command)
+
     def test_ascii_embedding_preserves_unicode_virtual_names_and_refreshes_payload(self):
         spec = importlib.util.spec_from_file_location("lamapon_embed_assets", TOOL_PATH.parent / "embed_web_assets.py")
         embed = importlib.util.module_from_spec(spec)

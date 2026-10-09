@@ -855,10 +855,16 @@ namespace
             }
             else if (m_frame == 4)
             {
+                if (++m_modelFrames % 10 != 0)
+                {
+                    if (m_modelFrames > 600)
+                        throw std::runtime_error("Embedded glTF/GLB image pixels did not recover within 600 frames.");
+                    return;
+                }
                 const bool rendered = EmbeddedModelsRendered();
                 if (!rendered)
                 {
-                    if (++m_modelFrames > 200)
+                    if (m_modelFrames > 600)
                         throw std::runtime_error("Embedded glTF/GLB images did not reach the Web model framebuffer.");
                     return;
                 }
@@ -932,12 +938,21 @@ namespace
                     throw std::runtime_error("Web graphics resource restoration failed.");
                 if (EM_ASM_INT({ return Boolean(window.__probeContextLost)
                     && document.body.dataset.lamaponGraphicsRecovery === 'restored'; }))
+                {
+                    m_modelFrames = 0;
                     m_frame = 12;
-                else if (++m_modelFrames > 200)
+                }
+                else if (++m_modelFrames > 600)
                     throw std::runtime_error("Web context did not restore.");
             }
             else if (m_frame == 12)
             {
+                if (++m_modelFrames % 10 != 0)
+                {
+                    if (m_modelFrames > 600)
+                        throw std::runtime_error("Web mesh or embedded image pixels did not recover within 600 frames.");
+                    return;
+                }
                 const bool encodedRestored = EM_ASM_INT({
                     const gl = globalThis.__lamaponWebGl;
                     const slot = globalThis.__lamaponTextures[window.__encodedImageTextureId];
@@ -957,7 +972,7 @@ namespace
                     if (++m_recoveries == 2) Finish();
                     else BeginContextProbe();
                 }
-                else if (++m_modelFrames > 200)
+                else if (m_modelFrames > 600)
                     throw std::runtime_error("Web mesh or embedded image pixels did not recover.");
             }
         }

@@ -33,11 +33,17 @@ UNFINISHED = {"data-test-status": "pending", "data-lamapon-status": "loading"}
 ATTEMPTS = 3
 
 
+def virtual_time_budget(probe: bool, webgl: bool) -> int:
+    """Allow full WebGL resource recovery probes to finish before DOM capture."""
+    return 30000 if probe and webgl else 10000
+
+
 # ブラウザーを一時プロファイルで起動し、DOM出力を返します。
 # run_browser(browser: 実行ファイル, url: 対象ページ, timeout: 制限秒数)
 def run_browser(browser: str, url: str,
                 timeout: int, webgl: bool = False, renderer: str | None = None,
-                profile: str | None = None) -> subprocess.CompletedProcess:
+                profile: str | None = None,
+                virtual_time_budget: int = 10000) -> subprocess.CompletedProcess:
     def run(profile_path: str) -> subprocess.CompletedProcess:
         return subprocess.run([
             browser, "--headless",
@@ -47,7 +53,8 @@ def run_browser(browser: str, url: str,
               ["--disable-webgl"] if renderer == "canvas2d" else []),
             "--no-first-run", "--no-default-browser-check",
             "--enable-logging=stderr",
-            f"--user-data-dir={profile_path}", "--virtual-time-budget=10000",
+            f"--user-data-dir={profile_path}",
+            f"--virtual-time-budget={virtual_time_budget}",
             "--dump-dom", url,
         ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
@@ -111,7 +118,8 @@ def main() -> None:
                 for attempt in range(1, ATTEMPTS + 1):
                     # ブラウザーの終了状態とDOM
                     result = run_browser(args.browser, step_url, timeout=60, webgl=webgl,
-                                          renderer=args.renderer, profile=profile)
+                                          renderer=args.renderer, profile=profile,
+                                          virtual_time_budget=virtual_time_budget(args.probe, webgl))
                     # body属性を取得する解析器
                     status = BodyStatus()
                     status.feed(result.stdout)

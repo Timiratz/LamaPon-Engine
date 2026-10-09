@@ -2306,12 +2306,17 @@ void main()
                     auto& renderer = *static_cast<Renderer3D*>(data);
                     const bool restored = renderer.RestoreWebGraphics();
                     EM_ASM({
-                        document.body.dataset.lamaponGraphicsRecovery = $0 ? 'restored' : 'failed';
-                        if ($0) {
-                            document.__lamaponContextLost = false;
-                            if (document.__lamaponVisibility) document.__lamaponVisibility.changed = true;
+                        if (!$0) {
+                            document.body.dataset.lamaponGraphicsRecovery = 'failed';
+                            document.body.dataset.lamaponStatus = 'failed';
+                            document.body.dataset.lamaponError = 'Graphics could not be restored.';
                             const help = document.getElementById('help');
-                            if (help) { help.textContent = 'Graphics restored.'; help.style.removeProperty('color'); }
+                            if (help) {
+                                help.textContent = document.body.dataset.lamaponError;
+                                help.style.color = '#ffd0d0';
+                            }
+                            const reload = document.getElementById('reload');
+                            if (reload) reload.hidden = false;
                         }
                     }, restored);
                     return true;
@@ -2367,8 +2372,45 @@ void main()
         }
         EM_ASM({
             const gl = GL.currentContext.GLctx;
-            for (const slot of Object.values(globalThis.__lamaponTextures || {}))
-                if (slot.gl === gl && slot.recreate) slot.recreate();
+            globalThis.__lamaponWebGl = gl;
+            const recovery = document.__lamaponRecoveryGeneration || 0;
+            const slots = Object.values(globalThis.__lamaponTextures || {})
+                .filter(slot => slot.gl === gl);
+            const restorations = slots.map(slot => slot.recreate
+                ? Promise.resolve(slot.recreate())
+                : Promise.reject(new Error('Web texture has no restoration callback')));
+            document.body.dataset.lamaponGraphicsRecovery = 'pending';
+            const publishRecovery = restored => {
+                if (recovery !== (document.__lamaponRecoveryGeneration || 0)
+                    || gl.isContextLost()) return;
+                document.body.dataset.lamaponGraphicsRecovery = restored ? 'restored' : 'failed';
+                if (restored) {
+                    document.__lamaponContextLost = false;
+                    if (document.__lamaponVisibility) document.__lamaponVisibility.changed = true;
+                    const help = document.getElementById('help');
+                    if (help) {
+                        help.textContent = 'Graphics restored.';
+                        help.style.removeProperty('color');
+                    }
+                } else {
+                    document.body.dataset.lamaponStatus = 'failed';
+                    document.body.dataset.lamaponError = 'Graphics resources could not be restored.';
+                    const help = document.getElementById('help');
+                    if (help) {
+                        help.textContent = document.body.dataset.lamaponError;
+                        help.style.color = '#ffd0d0';
+                    }
+                    const reload = document.getElementById('reload');
+                    if (reload) reload.hidden = false;
+                }
+            };
+            Promise.all(restorations).then(() => publishRecovery(
+                !gl.isContextLost() && slots.every(slot => slot.ready
+                    && Boolean(slot.texture) && gl.isTexture(slot.texture))))
+                .catch(error => {
+                    console.warn('LamaPon Web graphics resource restoration failed', error);
+                    publishRecovery(false);
+                });
         });
         Resize(m_width, m_height);
         if (glGetError() != GL_NO_ERROR) { m_initialized = false; return false; }
