@@ -5,7 +5,7 @@ from xml.sax.saxutils import escape
 
 from export_web import ExportError
 
-ANDROID_NDK_VERSION = "28.2.13676358"
+ANDROID_NDK_VERSION = "30.0.16248370"
 ANDROID_CMAKE_VERSION = "3.31.6"
 ANDROID_BUILD_TOOLS_VERSION = "36.0.0"
 ANDROID_COMPILE_SDK_VERSION = 36

@@ -32,6 +32,7 @@ class NativeBuildToolTests(unittest.TestCase):
 
     def test_android_ci_installs_every_sdk_package_required_by_apk_export(self):
         workflow = (ROOT / ".github/workflows/platform-core-ci.yml").read_text(encoding="utf-8")
+        emulator_smoke = (ROOT / "tests/AndroidEmulatorSmoke.py").read_text(encoding="utf-8")
         minimum_gradle = ".".join(map(str, BUILD.native_android.ANDROID_MIN_GRADLE_VERSION))
         self.assertIn(f"NDK_VERSION: {BUILD.native_android.ANDROID_NDK_VERSION}", workflow)
         self.assertIn(f'CMAKE_VERSION: "{BUILD.native_android.ANDROID_CMAKE_VERSION}"', workflow)
@@ -68,11 +69,12 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn("Show Android Gradle failure context", workflow)
         self.assertIn("tail -n 160", workflow)
         self.assertIn("target: google_apis_ps16k", workflow)
-        self.assertIn("getconf', 'PAGE_SIZE", workflow)
-        self.assertIn("KEYCODE_HOME", workflow)
-        self.assertIn("assert resumed_count == initial_count", workflow)
-        self.assertIn("assert resumed_pid == initial_pid", workflow)
-        self.assertIn("run-as', package, 'cat', 'files/values.json", workflow)
+        self.assertIn("script: python3 -B tests/AndroidEmulatorSmoke.py", workflow)
+        self.assertIn("getconf", emulator_smoke)
+        self.assertIn("KEYCODE_HOME", emulator_smoke)
+        self.assertIn("assert resumed_count == initial_count", emulator_smoke)
+        self.assertIn("assert resumed_pid == initial_pid", emulator_smoke)
+        self.assertIn("run-as", emulator_smoke)
 
     def description(self, platform="android"):
         return {"format": "lamapon.native-build-project", "version": 2,
@@ -332,7 +334,8 @@ class NativeBuildToolTests(unittest.TestCase):
             with self.assertRaises(BUILD.ExportError) as raised:
                 BUILD.android_command(args, self.description(), directory, ROOT, ROOT / "tests/native")
         message = str(raised.exception)
-        for package in ("platforms;android-36", "ndk;28.2.13676358", "cmake;3.31.6", "build-tools;36.0.0"):
+        for package in ("platforms;android-36", f"ndk;{BUILD.native_android.ANDROID_NDK_VERSION}",
+                        "cmake;3.31.6", "build-tools;36.0.0"):
             with self.subTest(package=package):
                 self.assertIn(package, message)
         self.assertIn("JDK javac", message)

@@ -49,7 +49,7 @@ x86_64 APKは16KBページサイズのAndroid Emulatorで起動します。実�
 `.github/workflows/platform-core-ci.yml`はWindows／Linuxの共通基盤テストに加え、arm64-v8aとx86_64の
 Portableゲームdebug APKを生成する構成です。対象パスを含む`codex/**`ブランチへのpushでも、Web CIとともに起動します。
 これにより、ドラフトPRを作る前に作業ブランチ上で対象OSのCI結果を確認できます。AndroidジョブはSDK Managerのライセンスを受諾してから、API 36、Build Tools 36.0.0、
-NDK 28.2.13676358とCMake 3.31.6を導入し、APK出力ツールが使う版と揃えます。テスト用ゲームは`test-output/platform-core`へ
+NDK 30.0.16248370（最新LTS）とCMake 3.31.6を導入し、APK出力ツールが使う版と揃えます。テスト用ゲームは`test-output/platform-core`へ
 用意し、SDK Manager以外の取得物であるSDLソースは公式アーカイブのSHA-256を検査して使います。
 Java 17とGradle 9.6.0も公式セットアップActionで明示し、ホストのプリインストール版に依存しません。
 開発PCへのAndroid SDKインストールは求めません。
@@ -307,7 +307,7 @@ Activityは`getFilesDir()`の保存先を渡し、ManifestはOpenGL ES 3.0を要
 
 設定を省略するとAPI 26以上、compile／target API 36、両ABIを使い、プロジェクトのフォルダー名からアプリIDを作ります。
 配布前には固有のアプリIDを指定してください。SDK範囲、ABI、バージョン番号、アプリIDの形式を生成前に検査します。
-生成設定はAGP 9.4.0、Gradle 9.6.0以上、JDK 17、NDK 28.2.13676358、CMake 3.31.6を使用します。
+生成設定はAGP 9.4.0、Gradle 9.6.0以上、JDK 17、NDK 30.0.16248370、CMake 3.31.6を使用します。
 AGPの互換性とNDKの16KBページ対応の仕様に基づく設定であり、APKの16KB整列や端末動作を実測したものではありません。
 [AGP 9.4の互換性](https://developer.android.com/build/releases/agp-9-4-0-release-notes)、[16KBページ対応](https://developer.android.com/guide/practices/page-sizes)
 
@@ -317,7 +317,7 @@ APKビルドツールも同じ設定を起動引数に付けます。SDK・NDK�
 SDK Managerを使う場合は、保存先を確認してから次のパッケージを導入します（初回はライセンス同意も必要です）。
 
 ```text
-sdkmanager --sdk_root=<既存SDKのルート> "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.31.6"
+sdkmanager --sdk_root=<既存SDKのルート> "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.16248370" "cmake;3.31.6"
 sdkmanager --sdk_root=<既存SDKのルート> --licenses
 ```
 
