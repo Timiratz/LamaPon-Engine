@@ -21,7 +21,7 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn('"global", "device_provisioned", "1"', emulator_smoke)
         self.assertIn('"secure", "user_setup_complete", "1"', emulator_smoke)
         prepare_call = emulator_smoke.index(
-            "    prepare_headless_emulator()", emulator_smoke.index("def main():"))
+            "    prepare_headless_emulator()", emulator_smoke.index("def run_smoke():"))
         install_call = emulator_smoke.index('    adb("install", "-r", str(APK))')
         self.assertLess(prepare_call, install_call)
 
