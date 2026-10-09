@@ -127,8 +127,8 @@ android {{
     }} }}
     sourceSets {{ main {{
         java.srcDir new File(sdlRoot, 'android-project/app/src/main/java')
-        assets.srcDir layout.buildDirectory.dir('lamaponAssets')
-        jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs')
+        assets.srcDir layout.buildDirectory.dir('lamaponAssets').get().asFile
+        jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile
     }} }}
     compileOptions {{ sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }}
     packaging {{ jniLibs {{ useLegacyPackaging = false }} }}

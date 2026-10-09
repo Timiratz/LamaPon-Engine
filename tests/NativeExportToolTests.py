@@ -1511,6 +1511,9 @@ LAMAPON_SCRIPT_NAMED(Probe, "Test.NativeStartup", "Probe");
         self.assertIn(f"ndkVersion '{NATIVE.native_android.ANDROID_NDK_VERSION}'", gradle)
         self.assertIn(f"version '{NATIVE.native_android.ANDROID_CMAKE_VERSION}'", gradle)
         self.assertIn("'SDL3-shared'", gradle)
+        self.assertIn("assets.srcDir layout.buildDirectory.dir('lamaponAssets').get().asFile", gradle)
+        self.assertIn("jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile", gradle)
+        self.assertNotIn("srcDir layout.buildDirectory.dir('lamaponAssets')\n", gradle)
         self.assertIn("into 'assets'; include 'audio/**', 'prefabs/**', 'scenes/**'", gradle)
         self.assertIn("dependsOn stageAssets", gradle)
         self.assertIn("android.builder.sdkDownload=false", files["android/gradle.properties"])
@@ -1550,7 +1553,7 @@ LAMAPON_SCRIPT_NAMED(Probe, "Test.NativeStartup", "Probe");
 
         android_report, android_context = self.inspect_fixture_with_package_manifest("android", manifest, paths)
         gradle = NATIVE.native_android.project_files(android_context, ROOT, "NativeGame", "Game")["android/app/build.gradle"]
-        self.assertIn("jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs')", gradle)
+        self.assertIn("jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile", gradle)
         self.assertIn("lamaponRuntimeLibs", gradle)
         self.assertIn("into 'licenses/packages/fixture-package/android'", gradle)
         self.assertIn("rename { 'LICENSE.txt' }", gradle)
