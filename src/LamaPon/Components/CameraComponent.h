@@ -32,8 +32,12 @@ namespace LamaPon
         void SetVerticalFieldOfView(float radians) noexcept { m_verticalFieldOfView = radians; }
         // 近平面の距離を返します。
         [[nodiscard]] float NearPlane() const noexcept { return m_nearPlane; }
+        // 近平面の距離を検証せず設定します(nearPlane: 近平面距離)。
+        void SetNearPlane(float nearPlane) noexcept { m_nearPlane = nearPlane; }
         // 遠平面の距離を返します。
         [[nodiscard]] float FarPlane() const noexcept { return m_farPlane; }
+        // 遠平面の距離を検証せず設定します(farPlane: 遠平面距離)。
+        void SetFarPlane(float farPlane) noexcept { m_farPlane = farPlane; }
 
         // 追加の描画先テクスチャ名を設定し、空名ならテクスチャ描画を解除します(name: 描画先の共有名)。
         // スプライトやUI画像に同じRender Texture名を指定すると結果を表示できます。

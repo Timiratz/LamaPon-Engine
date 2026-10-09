@@ -13,6 +13,18 @@ namespace LamaPon
         std::filesystem::path emsdk;
     };
 
+    struct AndroidExportTools final
+    {
+        std::filesystem::path sdk, javaHome, gradleHome, sdlSource;
+        bool allowDependencyDownloads{};
+    };
+
+    struct LinuxExportTools final
+    {
+        std::string distribution;
+        std::filesystem::path sdlSource;
+    };
+
     // EMSDK環境変数を初期値に保存済みツール設定を読み込む。
     [[nodiscard]] WebExportTools LoadWebExportTools();
     // ツール設定を作業ファイルへ書いて保存先を置換する(tools: 保存するツールの配置情報)。
@@ -35,6 +47,17 @@ namespace LamaPon
         void Start(const std::filesystem::path& engineRoot,
             const std::filesystem::path& projectFile,
             const std::filesystem::path& output, const WebExportTools& tools);
+        // Linux／Android向けの診断とビルド設定生成を同じprocess管理で開始する。
+        void StartNativeBuildProject(const std::filesystem::path& engineRoot,
+            const std::filesystem::path& projectFile,
+            const std::filesystem::path& output, const WebExportTools& tools,
+            const std::string& platform);
+        void StartAndroidApk(const std::filesystem::path& engineRoot,
+            const std::filesystem::path& projectFile, const std::filesystem::path& output,
+            const WebExportTools& tools, const AndroidExportTools& android);
+        void StartLinuxBuild(const std::filesystem::path& engineRoot,
+            const std::filesystem::path& projectFile, const std::filesystem::path& output,
+            const WebExportTools& tools, const LinuxExportTools& linux);
         // 待機せず終了を確認し結果の検証後に完了を一度だけ通知する。
         bool Poll();
         // 所有するPython processがあるかを返す。
@@ -47,8 +70,15 @@ namespace LamaPon
         [[nodiscard]] const std::filesystem::path& LogPath() const noexcept { return m_logPath; }
         // 検証済みHTMLのパスを次の開始まで借用する。
         [[nodiscard]] const std::filesystem::path& HtmlPath() const noexcept { return m_htmlPath; }
+        [[nodiscard]] const std::filesystem::path& BuildProjectDirectory() const noexcept { return m_buildProjectDirectory; }
+        [[nodiscard]] const std::filesystem::path& NativeArtifactPath() const noexcept { return m_nativeArtifactPath; }
 
     private:
+        void StartProcess(const std::filesystem::path& engineRoot,
+            const std::filesystem::path& projectFile,
+            const std::filesystem::path& output, const WebExportTools& tools,
+            const std::string& platform, const AndroidExportTools* android = nullptr,
+            const LinuxExportTools* linux = nullptr);
         // jobを閉じて子孫ごと終了させprocess handleを解放する。
         void Close() noexcept;
         // 終了確認するPython process handle
@@ -65,5 +95,9 @@ namespace LamaPon
         std::filesystem::path m_resultPath;
         // 成功時に確認済みのHTMLパス
         std::filesystem::path m_htmlPath;
+        std::filesystem::path m_buildProjectDirectory;
+        std::string m_nativePlatform;
+        std::filesystem::path m_nativeArtifactPath, m_expectedApk, m_expectedLinuxOutput;
+        bool m_androidApk{}, m_linuxBuild{};
     };
 }

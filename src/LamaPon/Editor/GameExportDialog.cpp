@@ -5,6 +5,28 @@
 #include <shellapi.h>
 #include <imgui.h>
 #include <stdexcept>
+#include <utility>
+
+namespace
+{
+    const wchar_t* OutputName(const LamaPon::GameExportTarget target)
+    {
+        switch (target)
+        {
+        case LamaPon::GameExportTarget::Windows: return L"LamaPonGame";
+        case LamaPon::GameExportTarget::Web: return L"LamaPonWeb";
+        case LamaPon::GameExportTarget::LinuxBuildProject: return L"LamaPonLinuxBuild";
+        case LamaPon::GameExportTarget::AndroidBuildProject: return L"LamaPonAndroidBuild";
+        case LamaPon::GameExportTarget::AndroidApk: return L"LamaPonAndroidApk";
+        }
+        throw std::invalid_argument("Unknown game export target");
+    }
+    bool IsNativeBuildProject(const LamaPon::GameExportTarget target)
+    {
+        return target == LamaPon::GameExportTarget::LinuxBuildProject
+            || target == LamaPon::GameExportTarget::AndroidBuildProject;
+    }
+}
 
 namespace LamaPon
 {
@@ -25,12 +47,12 @@ namespace LamaPon
         if (m_web.Running() || target == m_target) return;
         // 切替前の形式の既定出力先
         const auto oldDefault = m_projectRoot / L"dist"
-            / (m_target == GameExportTarget::Windows ? L"LamaPonGame" : L"LamaPonWeb");
+            / OutputName(m_target);
         m_target = target;
         // 手で選んだ出力先を上書きせず、既定の出力先だけを形式に合わせます。
         if (OutputDirectory() == oldDefault)
             SetPath(m_projectRoot / L"dist"
-                / (target == GameExportTarget::Windows ? L"LamaPonGame" : L"LamaPonWeb"));
+                / OutputName(target));
         m_error.clear();
         m_success.clear();
         m_completedOutput.clear();
@@ -42,7 +64,7 @@ namespace LamaPon
         {
             m_projectRoot = projectRoot;
             SetPath(projectRoot / L"dist"
-                / (m_target == GameExportTarget::Windows ? L"LamaPonGame" : L"LamaPonWeb"));
+                / OutputName(m_target));
             m_error.clear();
             m_success.clear();
             m_completedOutput.clear();
@@ -79,6 +101,29 @@ namespace LamaPon
                 SaveWebExportTools(tools);
                 m_web.Start(context.engineRoot, context.projectFile, OutputDirectory(), tools);
                 context.setStatus("Web（HTML）のエクスポートを開始しました。", false);
+            }
+            else if (m_target == GameExportTarget::AndroidApk)
+            {
+                const WebExportTools tools{PathFromUtf8(m_python.data()), {}};
+                const AndroidExportTools android{PathFromUtf8(m_androidSdk.data()), PathFromUtf8(m_javaHome.data()),
+                    PathFromUtf8(m_gradleHome.data()), PathFromUtf8(m_sdlSource.data()), m_androidDownloads};
+                m_web.StartAndroidApk(context.engineRoot, context.projectFile, OutputDirectory(), tools, android);
+                context.setStatus("Android debug APKのビルドを開始しました。", false);
+            }
+            else if (m_target == GameExportTarget::LinuxBuildProject && m_buildLinuxWithWsl)
+            {
+                const WebExportTools tools{PathFromUtf8(m_python.data()), {}};
+                const LinuxExportTools linux{m_wslDistribution.data(), PathFromUtf8(m_sdlSource.data())};
+                m_web.StartLinuxBuild(context.engineRoot, context.projectFile, OutputDirectory(), tools, linux);
+                context.setStatus("WSLでLinuxゲームのビルドを開始しました。", false);
+            }
+            else if (IsNativeBuildProject(m_target))
+            {
+                const WebExportTools tools{PathFromUtf8(m_python.data()), {}};
+                m_web.StartNativeBuildProject(context.engineRoot, context.projectFile,
+                    OutputDirectory(), tools,
+                    m_target == GameExportTarget::LinuxBuildProject ? "linux" : "android");
+                context.setStatus("ネイティブ出力の診断とビルド設定生成を開始しました。", false);
             }
             else
             {
@@ -120,14 +165,18 @@ namespace LamaPon
         {
             if (m_web.Succeeded())
             {
-                m_completedOutput = m_web.HtmlPath().parent_path();
-                m_success = m_web.Message() + "\n" + PathToUtf8(m_web.HtmlPath());
+                m_completedOutput = !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath().parent_path()
+                    : IsNativeBuildProject(m_target)
+                    ? m_web.BuildProjectDirectory() : m_web.HtmlPath().parent_path();
+                m_success = m_web.Message() + "\n" + PathToUtf8(m_target == GameExportTarget::AndroidApk
+                    || !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath() : IsNativeBuildProject(m_target)
+                    ? m_web.BuildProjectDirectory() : m_web.HtmlPath());
                 context.setStatus(m_success, false);
             }
             else
             {
                 m_error = m_web.Message();
-                context.setStatus("Web出力に失敗しました: " + m_error, true);
+                context.setStatus("ゲーム出力に失敗しました: " + m_error, true);
             }
         }
         // 出力ダイアログのImGui ID
@@ -145,6 +194,13 @@ namespace LamaPon
         ImGui::SameLine();
         if (ImGui::RadioButton("Web（HTML）", m_target == GameExportTarget::Web))
             SelectTarget(GameExportTarget::Web);
+        if (ImGui::RadioButton("Linux／Steam Deck（ビルド設定）", m_target == GameExportTarget::LinuxBuildProject))
+            SelectTarget(GameExportTarget::LinuxBuildProject);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Android（ビルド設定）", m_target == GameExportTarget::AndroidBuildProject))
+            SelectTarget(GameExportTarget::AndroidBuildProject);
+        if (ImGui::RadioButton("Android（debug APK）", m_target == GameExportTarget::AndroidApk))
+            SelectTarget(GameExportTarget::AndroidApk);
         ImGui::Spacing();
         ImGui::SetNextItemWidth(550.0f);
         ImGui::InputText("出力先", m_path.data(), m_path.size());
@@ -190,6 +246,51 @@ namespace LamaPon
                 ImGui::TextWrapped("SDKを指定すると、同梱Pythonも検索します。設定変更後はエクスポートで再確認できます。");
             }
         }
+        else if (m_target == GameExportTarget::AndroidApk)
+        {
+            ImGui::TextWrapped("既存のAndroidビルド環境を使い、端末で確認するためのdebug APKを作成します。ストア配布用の署名は別途必要です。");
+            ImGui::TextWrapped("SDKは自動取得しません。新しいフォルダーまたは空のフォルダーを指定してください。ビルド生成物・キャッシュは出力先のbuildに置きます。");
+            ImGui::TextWrapped("SDK Platform・NDK・CMake・Build Toolsは事前に用意してください。不足パッケージ名は出力ログに表示します。");
+            for (const auto& item : {std::pair{"Android SDK", &m_androidSdk}, {"JDK", &m_javaHome},
+                {"Gradle", &m_gradleHome}, {"SDL3ソース", &m_sdlSource}, {"Python実行ファイル", &m_python}})
+            {
+                ImGui::SetNextItemWidth(510.0f);
+                ImGui::InputText(item.first, item.second->data(), item.second->size());
+            }
+            ImGui::Checkbox("Gradleのビルド依存を取得する（キャッシュに保存）", &m_androidDownloads);
+            ImGui::TextWrapped("オフの場合は取得済みの依存だけを使います。出力後に端末で動作を確認してください。");
+        }
+        else if (IsNativeBuildProject(m_target))
+        {
+            ImGui::TextWrapped("Portable対応を検査し、CMake／Gradleのビルド設定を出力します。エンジンとゲームの既存ソースを参照します。");
+            ImGui::TextWrapped("LinuxはLinux環境とSDL3、AndroidはSDK・NDK・JDK・GradleとSDL3が必要です。");
+            ImGui::TextWrapped("新しいフォルダーまたは空のフォルダーを指定してください。詳細設定はプロジェクトのexport.nativeに保存します。");
+            ImGui::SetNextItemWidth(510.0f);
+            ImGui::InputText("Python実行ファイル", m_python.data(), m_python.size());
+            if (m_target == GameExportTarget::LinuxBuildProject)
+            {
+                ImGui::Spacing();
+                ImGui::Checkbox("既存のWSL内でLinuxゲームまでビルドする", &m_buildLinuxWithWsl);
+                if (m_buildLinuxWithWsl)
+                {
+                    ImGui::TextWrapped("WSLディストリビューションにPython 3.11以降、CMake 3.25以降、C++20コンパイラーとLinux用SDL3依存が必要です。インストールやダウンロードは行いません。");
+                    ImGui::SetNextItemWidth(510.0f);
+                    ImGui::InputText("WSLディストリビューション（空欄は既定）", m_wslDistribution.data(), m_wslDistribution.size());
+                    ImGui::SetNextItemWidth(510.0f);
+                    ImGui::InputText("SDL3ソース（Windowsから参照可能なパス）", m_sdlSource.data(), m_sdlSource.size());
+                    if (ImGui::Button("SDL3ソースを選択..."))
+                    {
+                        try
+                        {
+                            if (const auto selected = context.browse(PathFromUtf8(m_sdlSource.data())))
+                                strncpy_s(m_sdlSource.data(), m_sdlSource.size(), PathToUtf8(*selected).c_str(), _TRUNCATE);
+                        }
+                        catch (const std::exception& error) { m_error = error.what(); }
+                    }
+                    ImGui::TextWrapped("WSLからWindowsドライブへアクセスできる必要があります。ビルド後のゲームはLinux／Steam Deck上で別途確認してください。");
+                }
+            }
+        }
         else
         {
             ImGui::Text("ゲームアイコン: %s", context.settings.gameIcon.empty()
@@ -210,7 +311,8 @@ namespace LamaPon
                 ImGui::InputText("RFC 3161タイムスタンプURL（HTTPS）", m_timestampUrl.data(), m_timestampUrl.size());
             }
         }
-        ImGui::TextWrapped("既存のパッケージは、出力が成功してから置き換えます。");
+        if (!IsNativeBuildProject(m_target) && m_target != GameExportTarget::AndroidApk)
+            ImGui::TextWrapped("既存のパッケージは、出力が成功してから置き換えます。");
         ImGui::EndDisabled();
         if (busy) ImGui::TextWrapped("%s", m_web.Message().c_str());
         if (!m_error.empty())
@@ -222,14 +324,16 @@ namespace LamaPon
             ImGui::EndChild();
         }
         if (!m_success.empty()) ImGui::TextWrapped("%s", m_success.c_str());
-        if (m_target == GameExportTarget::Web && !m_web.LogPath().empty()
+        if (m_target != GameExportTarget::Windows && !m_web.LogPath().empty()
             && ImGui::Button("ビルドログを開く"))
             ShellExecuteW(nullptr, L"open", m_web.LogPath().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (!m_completedOutput.empty() && ImGui::Button("出力フォルダーを開く"))
             ShellExecuteW(nullptr, L"open", m_completedOutput.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         ImGui::Spacing();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("エクスポート", ImVec2{140.0f, 0.0f})) Start(context);
+        if (ImGui::Button(m_target == GameExportTarget::AndroidApk ? "debug APKをビルド"
+            : m_target == GameExportTarget::LinuxBuildProject && m_buildLinuxWithWsl ? "Linuxゲームをビルド"
+            : IsNativeBuildProject(m_target) ? "ビルド設定を生成" : "エクスポート", ImVec2{160.0f, 0.0f})) Start(context);
         ImGui::EndDisabled();
         ImGui::SameLine();
         // 閉じてもジョブはDialogが所有し、毎フレーム結果を回収します。

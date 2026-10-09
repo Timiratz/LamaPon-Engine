@@ -356,6 +356,11 @@ void OnTriggerEnter(
 }
 ```
 
+PortableのWeb／SDLネイティブ出力でもPrefabを実行時に生成できます。
+出力互換性検査は参照先を事前に解析するため、`assets/`内の`.prefab.json`への
+文字列リテラルを指定してください。生成時はScene内でIDを振り直し、任意の同一Scene親へ接続します。
+`Awake`／`OnEnable`は生成直後、`Start`は次の通常更新開始時に呼ばれます。
+
 ---
 
 ### LoadDataAsset
@@ -1282,6 +1287,13 @@ const std::string& LastError() const noexcept;
 切り替えは**次のフレームの先頭**で実行されます（更新中にオブジェクトを壊さないため）。
 大きなシーンは`Async`版を使うと、読み込み中も現在のシーンが動き続け、標準のローディング画面が出ます。
 引数なしの`Async`版は既定の遷移（`DefaultTransition()`、最初はすぐ切り替える遷移）で切り替えます。
+
+PortableのWeb／SDLネイティブ出力では、同期の`RequestLoad`／`RequestReload`、
+`CancelPending`、`HasPendingLoad`、`CurrentScenePath`、`PendingScenePath`、
+`LastError`、`LoadRevision`を利用できます。切り替え要求は次の`Scene::Update`先頭で処理し、
+読み込み成功後に旧SceneのObjectを破棄します。失敗時は現在のSceneを維持し、
+`LastError`に理由を記録します。`Scenes().State()`は切り替えをまたいで保持します。
+Portable出力では非同期読み込み、遷移演出、追加Sceneの読み込み／破棄はまだ利用できません。
 
 **サンプル**
 
@@ -2589,12 +2601,15 @@ explicit UIButtonComponent(
 | `SetInteractable` | `enabled` : true/false | falseで押せなくなります（灰色表示） |
 | `SetClickEventName` | `name` : イベント名 | クリック時にそのイベントを発行します |
 | `SetTargetScene` | `path` : シーンのパス | 押すとそのシーンへ移動します |
+| `SetReloadCurrentScene` | `reload` : true/false | trueなら押したときに現在のシーンを再読込します |
 
 **解説**
 
-クリックの受け取り方は2通りです。
+Windowsランタイムでのクリック受け取り方は2通りです。
 `ConsumeClick()`でポーリングするか、`SetClickEventName("StartGame")`としておいて別のスクリプトで`On("StartGame", ...)`で受け取るか。
 後者はボタン側にコードが不要です。
+Portable Web／SDLゲームでは`WasClicked()`／`ConsumeClick()`、`SetTargetScene`、`SetReloadCurrentScene`と、
+Sceneイベントの`On`／`Off`／`Emit`を使えます。追加Scene読み込みはサポートせず、互換性検査で出力前に拒否します。
 
 **サンプル**
 

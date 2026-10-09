@@ -64,6 +64,7 @@ function(lamapon_add_web_game target)
 
     # runtime_sources: 選択moduleに必要なruntime source一覧.
     set(runtime_sources
+        "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableInputState.cpp"
         "${LAMAPON_WEB_ROOT}/src/LamaPon/Web/WebApplication.cpp"
         "${LAMAPON_WEB_ROOT}/src/LamaPon/Web/WebInput.cpp"
     )
@@ -89,6 +90,7 @@ function(lamapon_add_web_game target)
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableRuntime.cpp"
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableLog.cpp"
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableWebGame.cpp"
+            "${LAMAPON_WEB_ROOT}/src/LamaPon/Scene/EventBus.cpp"
         )
     endif()
 
@@ -150,8 +152,12 @@ function(lamapon_add_web_game target)
         -fexceptions
         "-sALLOW_MEMORY_GROWTH=1"
         "-sNO_EXIT_RUNTIME=1"
-        "-sASSERTIONS=1"
+        "$<$<CONFIG:Debug>:-sASSERTIONS=1>"
+        "$<$<NOT:$<CONFIG:Debug>>:-sASSERTIONS=0>"
     )
+    # 配布時はWasmとJavaScriptのサイズを優先し、Debugは診断情報を保持します。
+    target_compile_options(${target} PRIVATE "$<$<CONFIG:Release>:-Oz>")
+    target_link_options(${target} PRIVATE "$<$<CONFIG:Release>:-Oz>")
     # renderer moduleにWebGLを設定します。
     if("renderer2d" IN_LIST TWG_MODULES
        OR "renderer3d" IN_LIST TWG_MODULES)
@@ -190,9 +196,29 @@ function(lamapon_add_web_game target)
             message(FATAL_ERROR
                 "Web asset directory was not found: ${asset_directory}")
         endif()
+        set(LAMAPON_WEB_PYTHON_EXECUTABLE "$ENV{EMSDK_PYTHON}" CACHE FILEPATH "Python for Web asset embedding")
+        if(NOT LAMAPON_WEB_PYTHON_EXECUTABLE)
+            find_package(Python3 REQUIRED COMPONENTS Interpreter)
+            set(LAMAPON_WEB_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+        endif()
+        set(embed_tool "${LAMAPON_WEB_ROOT}/tools/embed_web_assets.py")
+        set(embed_directory "${CMAKE_CURRENT_BINARY_DIR}/${target}-embedded-assets")
+        execute_process(COMMAND "${LAMAPON_WEB_PYTHON_EXECUTABLE}" -B "${embed_tool}"
+            --source "${asset_directory}" --output "${embed_directory}"
+            RESULT_VARIABLE embed_result)
+        if(NOT embed_result EQUAL 0)
+            message(FATAL_ERROR "Could not prepare Web embedded assets")
+        endif()
+        add_custom_target(${target}_embedded_assets
+            COMMAND "${LAMAPON_WEB_PYTHON_EXECUTABLE}" -B "${embed_tool}"
+                --source "${asset_directory}" --output "${embed_directory}"
+            VERBATIM)
+        add_dependencies(${target} ${target}_embedded_assets)
         target_link_options(${target} PRIVATE
-            "--embed-file=${asset_directory}@/assets"
-        )
+            "--embed-file=${embed_directory}/payload@/__lamapon_embedded__"
+            "--pre-js=${embed_directory}/aliases.js")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+            "${embed_tool}" "${embed_directory}/aliases.js")
         # lamapon_web_asset_files: embed対象asset file一覧。
         file(GLOB_RECURSE lamapon_web_asset_files
             CONFIGURE_DEPENDS

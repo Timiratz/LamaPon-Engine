@@ -1,0 +1,559 @@
+name: Platform foundation CI
+on:
+  push:
+    branches: [main, master, community/main]
+    paths: ["CMakeLists.txt", "cmake/LamaPonPlatformCore.cmake", "src/LamaPon/Portable/PortableInputState.*", "src/LamaPon/Core/JobSystem.*", "src/LamaPon/Core/VersionCompare.*", "src/LamaPon/Core/Unicode.h", "src/LamaPon/Core/PathUtils.h", "tests/PlatformCoreTests.cpp", "tools/export_native.py", "tools/build_native.py", "tests/NativeBuildToolTests.py", "tests/AndroidScreenshotTests.py", "tools/check_android_screenshot.py", "tools/editor_native_export.py", "tools/editor_linux_export.py", "tools/editor_linux_build.py", "tests/NativeEditorLinuxToolTests.py", "cmake/LamaPonDistribution.cmake", "src/LamaPon/Editor/GameExportDialog.*", "src/LamaPon/Editor/WebExportJob.*", "src/LamaPon/Portable/**", "src/LamaPon/Web/WebRenderer3D.*", "src/LamaPon/Web/WebMath.h", "tests/RunNativeTests.py", "tests/NativeExportJobTests.cpp", "tools/native_android.py", "tools/native_windows.py", "tests/NativeWindowsToolTests.py", "tools/native_linux.py", "tests/NativeLinuxToolTests.py", "tools/export_web.py", "tests/NativeExportToolTests.py", "tests/native/**", "tests/EncodedImageFixture.h", "tests/fixtures/audio/**", "tests/fixtures/models/**", "src/LamaPon/Native/**", "cmake/LamaPonNative.cmake", ".github/workflows/platform-core-ci.yml"]
+  pull_request:
+    paths: ["CMakeLists.txt", "cmake/LamaPonPlatformCore.cmake", "src/LamaPon/Portable/PortableInputState.*", "src/LamaPon/Core/JobSystem.*", "src/LamaPon/Core/VersionCompare.*", "src/LamaPon/Core/Unicode.h", "src/LamaPon/Core/PathUtils.h", "tests/PlatformCoreTests.cpp", "tools/export_native.py", "tools/build_native.py", "tests/NativeBuildToolTests.py", "tests/AndroidScreenshotTests.py", "tools/check_android_screenshot.py", "tools/editor_native_export.py", "tools/editor_linux_export.py", "tools/editor_linux_build.py", "tests/NativeEditorLinuxToolTests.py", "cmake/LamaPonDistribution.cmake", "src/LamaPon/Editor/GameExportDialog.*", "src/LamaPon/Editor/WebExportJob.*", "src/LamaPon/Portable/**", "src/LamaPon/Web/WebRenderer3D.*", "src/LamaPon/Web/WebMath.h", "tests/RunNativeTests.py", "tests/NativeExportJobTests.cpp", "tools/native_android.py", "tools/native_windows.py", "tests/NativeWindowsToolTests.py", "tools/native_linux.py", "tests/NativeLinuxToolTests.py", "tools/export_web.py", "tests/NativeExportToolTests.py", "tests/native/**", "tests/EncodedImageFixture.h", "tests/fixtures/audio/**", "tests/fixtures/models/**", "src/LamaPon/Native/**", "cmake/LamaPonNative.cmake", ".github/workflows/platform-core-ci.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure platform foundation
+        run: cmake -S . -B build-platform-core -DLAMAPON_PLATFORM_CORE_ONLY=ON -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-platform-core --config Release --parallel 2
+      - name: Run native regressions
+        run: ctest --test-dir build-platform-core -C Release --output-on-failure --no-tests=error
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Inspect native build metadata without creating fixture projects
+        run: |
+          python -B -m unittest discover -s tests -p "Native*ToolTests.py"
+          python -B -m unittest tests.AndroidScreenshotTests
+  android-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    env:
+      NDK_VERSION: 28.2.13676358
+      CMAKE_VERSION: "3.31.6"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install Android SDK packages required by APK export
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+
+          sdk_root = os.environ["ANDROID_HOME"]
+          sdkmanager = ["sdkmanager", f"--sdk_root={sdk_root}"]
+
+          def run_sdkmanager(*arguments):
+              subprocess.run(sdkmanager + list(arguments), input="y\n" * 128,
+                             text=True, check=True)
+
+          run_sdkmanager("--licenses")
+          run_sdkmanager(
+              "--install",
+              "platforms;android-36",
+              "build-tools;36.0.0",
+              "ndk;" + os.environ["NDK_VERSION"],
+              "cmake;" + os.environ["CMAKE_VERSION"],
+          )
+          run_sdkmanager("--licenses")
+          PY
+          test -d "$ANDROID_HOME/platforms/android-36"
+          test -d "$ANDROID_HOME/build-tools/36.0.0"
+          test -f "$ANDROID_HOME/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake"
+          test -f "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin/cmake"
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          gradle-version: "9.6.0"
+          cache-provider: basic
+      - name: Download and verify SDL for the Android game runtime
+        shell: bash
+        run: |
+          mkdir -p build-native-dependencies
+          curl --fail --location --retry 3 --output build-native-dependencies/SDL3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+          echo "9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3  build-native-dependencies/SDL3.tar.gz" | sha256sum --check
+          tar -xzf build-native-dependencies/SDL3.tar.gz -C build-native-dependencies
+      - name: Prepare the Portable Android APK smoke project
+        shell: bash
+        env:
+          GAME_ABI: ${{ matrix.abi }}
+        run: |
+          game="$GITHUB_WORKSPACE/test-output/platform-core/android-game-$GAME_ABI"
+          project="$GITHUB_WORKSPACE/test-output/platform-core/android-build-project-$GAME_ABI"
+          mkdir -p "$game/.lamapon"
+          cp tests/native/ExportSmoke.cpp "$game/ExportSmoke.cpp"
+          cp -a tests/native/assets "$game/assets"
+          python -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']) / ('test-output/platform-core/android-game-' + os.environ['GAME_ABI'])
+          document = {
+              'format': 'LamaPonProject',
+              'name': 'LamaPon Android APK CI Smoke',
+              'startupScene': 'scenes/Main.scene.json',
+              'export': {'native': {
+                  'sources': ['ExportSmoke.cpp'],
+                  'assetDirectory': 'assets',
+                  'assetIncludePaths': ['audio', 'scenes'],
+                  'android': {'abis': [os.environ['GAME_ABI']]},
+              }},
+          }
+          (root / '.lamapon/project.json').write_text(json.dumps(document, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python -B tools/export_native.py --project "$game/.lamapon/project.json" \
+            --platform android --generate-build-project "$project"
+      - name: Build and inspect the signed Android debug APK
+        shell: bash
+        env:
+          GAME_ABI: ${{ matrix.abi }}
+        run: |
+          gradle_bin="$(readlink -f "$(command -v gradle)")"
+          gradle_home="$(dirname "$(dirname "$gradle_bin")")"
+          test -n "$JAVA_HOME" && test -x "$JAVA_HOME/bin/java"
+          python -B tools/build_native.py \
+            --project-directory "$GITHUB_WORKSPACE/test-output/platform-core/android-build-project-$GAME_ABI" \
+            --build-directory "$GITHUB_WORKSPACE/test-output/platform-core/android-apk-build-$GAME_ABI" \
+            --android-sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" \
+            --gradle-home "$gradle_home" \
+            --sdl-source-directory "$GITHUB_WORKSPACE/build-native-dependencies/SDL3-3.4.18" \
+            --allow-downloads
+          python -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = Path('test-output/platform-core/android-apk-build-' + os.environ['GAME_ABI']) / 'native-build-result.json'
+          data = json.loads(result.read_text(encoding='utf-8'))
+          assert data['built'] and data['artifactChecksPassed']
+          assert data['androidChecks']['signatureVerified']
+          assert data['androidChecks']['zipPageAlignment'] == 16384
+          assert not data['androidChecks']['pageSizeRuntimeVerified']
+          print(json.dumps(data['androidChecks'], indent=2))
+          PY
+      - name: Enable KVM for the Android emulator
+        if: matrix.abi == 'x86_64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run the x86_64 APK on a 16 KB Android emulator
+        if: matrix.abi == 'x86_64'
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          target: google_apis_ps16k
+          arch: x86_64
+          profile: pixel_7_pro
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            python3 -B - <<'PY'
+            import json
+            import struct
+            import subprocess
+            import sys
+            import time
+            from pathlib import Path
+
+            sys.path.insert(0, 'tools')
+            from check_android_screenshot import count_green_marker
+
+            package = 'com.lamapon.game.android_game_x86_64'
+            activity = package + '/com.lamapon.runtime.GameActivity'
+            apk = Path('test-output/platform-core/android-apk-build-x86_64/app/outputs/apk/debug/app-debug.apk')
+
+            def adb(*arguments, check=True):
+                result = subprocess.run(['adb', *arguments], capture_output=True, text=True,
+                                        encoding='utf-8', errors='replace', timeout=30)
+                if check and result.returncode:
+                    raise RuntimeError('adb failed: ' + result.stdout + result.stderr)
+                return result
+
+            def saved_start_count():
+                result = adb('shell', 'run-as', package, 'cat', 'files/values.json', check=False)
+                if result.returncode:
+                    return None
+                try:
+                    return int(json.loads(result.stdout).get('native-probe-starts', '0'))
+                except (ValueError, TypeError):
+                    return None
+
+            def saved_button_clicks():
+                result = adb('shell', 'run-as', package, 'cat', 'files/values.json', check=False)
+                if result.returncode:
+                    return None, None
+                try:
+                    values = json.loads(result.stdout)
+                    return (int(values.get('native-button-clicks', '0')),
+                            values.get('native-button-sender'))
+                except (ValueError, TypeError):
+                    return None, None
+
+            def wait_for_start_count(minimum):
+                for _ in range(45):
+                    count = saved_start_count()
+                    if count is not None and count >= minimum:
+                        return count
+                    time.sleep(1)
+                raise RuntimeError('Android game did not persist its startup count')
+
+            def game_pid():
+                return adb('shell', 'pidof', package).stdout.strip()
+
+            page_size = adb('shell', 'getconf', 'PAGE_SIZE').stdout.strip()
+            assert page_size == '16384', 'Expected a 16 KB emulator, got ' + page_size
+            assert apk.is_file(), 'The generated x86_64 APK is missing'
+            adb('install', '-r', str(apk))
+            adb('shell', 'am', 'start', '-W', '-n', activity)
+            initial_count = wait_for_start_count(1)
+            assert initial_count == 1, 'Fresh install did not start from a clean save'
+            initial_pid = game_pid()
+            assert initial_pid, 'Game process exited after startup'
+
+            for _ in range(30):
+                screenshot = subprocess.run(['adb', 'exec-out', 'screencap', '-p'],
+                                            capture_output=True, timeout=30)
+                if screenshot.returncode:
+                    raise RuntimeError('adb screencap failed: ' + screenshot.stderr.decode('utf-8', errors='replace'))
+                try:
+                    rendered = count_green_marker(screenshot.stdout)
+                except ValueError:
+                    rendered = {'greenMarkerPixels': 0}
+                if rendered['greenMarkerPixels'] >= 1000:
+                    print('Android scene rendered the green UI marker: ' + json.dumps(rendered))
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError('Android screenshot did not contain the exported scene green UI marker: '
+                                   + json.dumps(rendered))
+
+            screen_width, screen_height = struct.unpack('>II', screenshot.stdout[16:24])
+            adb('shell', 'input', 'tap', str(screen_width // 2), str(screen_height // 2))
+            for _ in range(45):
+                click_count, click_sender = saved_button_clicks()
+                if click_count == 1:
+                    break
+                time.sleep(1)
+            assert click_count == 1 and click_sender == 'Button', (
+                'Android touchscreen did not dispatch one UIButton clickEvent with its sender')
+
+            adb('shell', 'input', 'keyevent', 'KEYCODE_HOME')
+            time.sleep(2)
+            adb('shell', 'am', 'start', '-W', '-n', activity)
+            resumed_count = wait_for_start_count(initial_count)
+            resumed_pid = game_pid()
+            assert resumed_count == initial_count, 'The game restarted during foreground resume'
+            assert resumed_pid == initial_pid, 'Android replaced the game process during foreground resume'
+
+            try:
+                adb('shell', 'wm', 'size', '720x1280')
+                for _ in range(30):
+                    resized_screenshot = subprocess.run(
+                        ['adb', 'exec-out', 'screencap', '-p'],
+                        capture_output=True, timeout=30)
+                    if resized_screenshot.returncode:
+                        raise RuntimeError('adb screencap failed after display resize: '
+                                           + resized_screenshot.stderr.decode('utf-8', errors='replace'))
+                    resized_width, resized_height = struct.unpack(
+                        '>II', resized_screenshot.stdout[16:24])
+                    try:
+                        resized_render = count_green_marker(resized_screenshot.stdout)
+                    except ValueError:
+                        resized_render = {'greenMarkerPixels': 0}
+                    if ((resized_width, resized_height) != (screen_width, screen_height)
+                            and resized_render['greenMarkerPixels'] >= 1000):
+                        break
+                    time.sleep(1)
+                else:
+                    raise RuntimeError('Android game did not keep rendering after display resize: '
+                                       + json.dumps({'size': [resized_width, resized_height],
+                                                     **resized_render}))
+                assert game_pid() == initial_pid, 'Display resize restarted the Android game process'
+                assert saved_start_count() == resumed_count, 'Display resize restarted the game scene'
+            finally:
+                adb('shell', 'wm', 'size', 'reset', check=False)
+
+            adb('shell', 'am', 'force-stop', package)
+            adb('shell', 'am', 'start', '-W', '-n', activity)
+            restarted_count = wait_for_start_count(resumed_count + 1)
+            assert saved_start_count() == restarted_count
+            assert saved_button_clicks() == (1, 'Button'), 'Touch click event did not persist across game restart'
+            print(f'Android game started on a {page_size}-byte page-size emulator; touchscreen UIButton event, same-process activity resume, display resize and save restart passed ({resumed_count} -> {restarted_count}).')
+            PY
+      # APK build and emulator checks are configured but not yet run; device and Steam Deck behavior remain unverified.
+  linux-game-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sdl: [static, shared]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install Linux window, GL and audio development dependencies
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libgl1-mesa-dev libegl1-mesa-dev libasound2-dev xvfb xauth
+      - name: Download and verify official SDL sources
+        shell: bash
+        run: |
+          mkdir -p build-native-dependencies
+          curl --fail --location --retry 3 --output build-native-dependencies/SDL3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+          echo "9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3  build-native-dependencies/SDL3.tar.gz" | sha256sum --check
+          tar -xzf build-native-dependencies/SDL3.tar.gz -C build-native-dependencies
+      - name: Configure and build the real SDL game
+        shell: bash
+        run: |
+          sdl_root="$GITHUB_WORKSPACE/build-native-dependencies/SDL3-3.4.18"
+          if [ "${{ matrix.sdl }}" = shared ]; then
+            cmake -S "$sdl_root" -B build-native-shared-sdl -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+            cmake --build build-native-shared-sdl --target SDL3-shared --parallel 2
+            sdl_options=(-DSDL3_DIR="$GITHUB_WORKSPACE/build-native-shared-sdl" -DLAMAPON_SDL_LICENSE_FILE="$sdl_root/LICENSE.txt")
+          else
+            sdl_options=(-DLAMAPON_SDL_SOURCE_DIRECTORY="$sdl_root")
+          fi
+          cmake -S tests/native -B build-native-game -G Ninja -DCMAKE_BUILD_TYPE=Release "${sdl_options[@]}"
+          cmake --build build-native-game --parallel 2
+          python -B -c "import sys,json; from pathlib import Path; sys.path.insert(0,'tools'); import native_linux; print(json.dumps(native_linux.check_package(Path('build-native-game/NativeSmoke')),indent=2))"
+      - name: Verify scene rendering, SDL input, resize and save across restarts
+        env:
+          SDL_AUDIODRIVER: dummy
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir build-native-game/probe-saves
+          xvfb-run -a python -B tests/RunNativeTests.py --game build-native-game/NativeSmoke --data-dir build-native-game/probe-saves
+      - name: Verify save write failure, retry and corrupt-load protection
+        run: |
+          mkdir build-native-game/save-failure-probe
+          build-native-game/NativeSaveTests build-native-game/save-failure-probe
+      - name: Verify native audio PCM, spatial controls and device pause
+        run: |
+          mkdir build-native-game/audio-probe
+          build-native-game/NativeAudioTests "$GITHUB_WORKSPACE/tests/native/assets" "$GITHUB_WORKSPACE/build-native-game/audio-probe" "$GITHUB_WORKSPACE/tests/fixtures/audio"
+      - name: Verify relocated shared SDL distribution
+        if: matrix.sdl == 'shared'
+        shell: bash
+        env:
+          SDL_AUDIODRIVER: dummy
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir build-native-game/relocated-game
+          cp build-native-game/NativeSmoke build-native-game/relocated-game/
+          cp -a build-native-game/assets build-native-game/licenses build-native-game/relocated-game/
+          cp build-native-game/libSDL3.so.0 build-native-game/relocated-game/
+          relocated="$GITHUB_WORKSPACE/build-native-game/relocated-game"
+          python -B -c "import sys,json; from pathlib import Path; sys.path.insert(0,'tools'); import native_linux; print(json.dumps(native_linux.check_package(Path(sys.argv[1])),indent=2))" "$relocated/NativeSmoke"
+          env -u LD_LIBRARY_PATH ldd "$relocated/NativeSmoke" > "$relocated/dependencies.txt"
+          grep -F "libSDL3.so.0 => $relocated/libSDL3.so.0" "$relocated/dependencies.txt"
+          mkdir "$relocated/probe-saves"
+          env -u LD_LIBRARY_PATH xvfb-run -a python -B tests/RunNativeTests.py --game "$relocated/NativeSmoke" --data-dir "$relocated/probe-saves"
+      # Software GL and injected input do not verify Steam Deck hardware or audible playback.
+  steamrt4-game-smoke:
+    runs-on: ubuntu-24.04
+    container:
+      image: registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk:latest
+      options: --user root
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sdl: [static, shared]
+    steps:
+      - name: Install Git for source checkout
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install headless Linux game test dependencies
+        run: |
+          apt-get install -y cmake ninja-build python3 git curl ca-certificates pkg-config libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev libgl1-mesa-dev libegl1-mesa-dev libasound2-dev xvfb xauth
+      - name: Download and verify official SDL sources
+        shell: bash
+        run: |
+          mkdir -p build-native-dependencies
+          curl --fail --location --retry 3 --output build-native-dependencies/SDL3.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+          echo "9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3  build-native-dependencies/SDL3.tar.gz" | sha256sum --check
+          tar -xzf build-native-dependencies/SDL3.tar.gz -C build-native-dependencies
+      - name: Generate a real Linux game output project
+        shell: bash
+        run: |
+          game="$GITHUB_WORKSPACE/test-output/platform-core/steamrt4-export-game"
+          project="$GITHUB_WORKSPACE/test-output/platform-core/steamrt4-export-project"
+          mkdir -p "$game/.lamapon"
+          cp tests/native/ExportSmoke.cpp "$game/ExportSmoke.cpp"
+          cp -a tests/native/assets "$game/assets"
+          GAME_ROOT="$game" python3 -B - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['GAME_ROOT'])
+          document = {
+              'format': 'LamaPonProject',
+              'name': 'LamaPon Steam Runtime 4 Export Smoke',
+              'startupScene': 'scenes/Main.scene.json',
+              'export': {'native': {
+                  'sources': ['ExportSmoke.cpp'],
+                  'assetDirectory': 'assets',
+                  'assetIncludePaths': ['audio', 'scenes'],
+              }},
+          }
+          (root / '.lamapon/project.json').write_text(json.dumps(document, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 -B tools/export_native.py --project "$game/.lamapon/project.json" \
+            --platform linux --generate-build-project "$project"
+      - name: Configure and build the real game inside Steam Runtime 4
+        shell: bash
+        run: |
+          sdl_root="$GITHUB_WORKSPACE/build-native-dependencies/SDL3-3.4.18"
+          if [ "${{ matrix.sdl }}" = shared ]; then
+            cmake -S "$sdl_root" -B build-steamrt4-shared-sdl -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+            cmake --build build-steamrt4-shared-sdl --target SDL3-shared --parallel 2
+            sdl_options=(-DSDL3_DIR="$GITHUB_WORKSPACE/build-steamrt4-shared-sdl" -DLAMAPON_SDL_LICENSE_FILE="$sdl_root/LICENSE.txt")
+          else
+            sdl_options=(-DLAMAPON_SDL_SOURCE_DIRECTORY="$sdl_root")
+          fi
+          cmake -S tests/native -B build-steamrt4-game -G Ninja -DCMAKE_BUILD_TYPE=Release "${sdl_options[@]}"
+          cmake --build build-steamrt4-game --parallel 2
+          python3 -B -c "import sys,json; from pathlib import Path; sys.path.insert(0,'tools'); import native_linux; print(json.dumps(native_linux.check_package(Path('build-steamrt4-game/NativeSmoke')),indent=2))"
+      - name: Build and inspect generated Linux game package in Steam Runtime 4
+        shell: bash
+        env:
+          SDL_KIND: ${{ matrix.sdl }}
+        run: |
+          sdl_root="$GITHUB_WORKSPACE/build-native-dependencies/SDL3-3.4.18"
+          if [ "$SDL_KIND" = shared ]; then
+            sdl_options=(--sdl-cmake-package "$GITHUB_WORKSPACE/build-steamrt4-shared-sdl" --sdl-license-file "$sdl_root/LICENSE.txt")
+          else
+            sdl_options=(--sdl-source-directory "$sdl_root")
+          fi
+          python3 -B tools/build_native.py \
+            --project-directory "$GITHUB_WORKSPACE/test-output/platform-core/steamrt4-export-project" \
+            --build-directory "$GITHUB_WORKSPACE/test-output/platform-core/steamrt4-export-build-$SDL_KIND" \
+            --generator Ninja "${sdl_options[@]}"
+      - name: Launch the generated Linux game and verify persistent saves
+        env:
+          SDL_AUDIODRIVER: dummy
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          SDL_KIND: ${{ matrix.sdl }}
+        run: |
+          python3 -B - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          variant = os.environ['SDL_KIND']
+          build = Path(os.environ['GITHUB_WORKSPACE']) / 'test-output/platform-core' / ('steamrt4-export-build-' + variant)
+          result = json.loads((build / 'native-build-result.json').read_text(encoding='utf-8'))
+          assert result['built'] and result['artifactChecksPassed'] and result['platform'] == 'linux'
+          game = Path(result['artifactPath'])
+          saves = build / 'exported-game-saves'
+          saves.mkdir()
+          environment = dict(os.environ)
+          for expected in (1, 2):
+              run = subprocess.run(['xvfb-run', '-a', str(game), '--frames', '3', '--data-dir', str(saves)],
+                                   env=environment, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=45)
+              if run.returncode:
+                  raise RuntimeError('Exported Linux game failed:\n' + run.stdout + run.stderr)
+              values = json.loads((saves / 'values.json').read_text(encoding='utf-8'))
+              assert values.get('native-probe-starts') == str(expected)
+              assert values.get('native-probe-text') == '保存テスト / Linux Android'
+          print('Generated Linux package launched twice; Scene, UTF-8 BMP asset and save persistence passed.')
+          PY
+      - name: Verify game rendering, SDL input, resume and save in Steam Runtime 4
+        env:
+          SDL_AUDIODRIVER: dummy
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir build-steamrt4-game/probe-saves
+          xvfb-run -a python3 -B tests/RunNativeTests.py --game build-steamrt4-game/NativeSmoke --data-dir build-steamrt4-game/probe-saves
+      - name: Verify save failure recovery in Steam Runtime 4
+        run: |
+          mkdir build-steamrt4-game/save-failure-probe
+          build-steamrt4-game/NativeSaveTests build-steamrt4-game/save-failure-probe
+      - name: Verify native audio PCM and device pause in Steam Runtime 4
+        run: |
+          mkdir build-steamrt4-game/audio-probe
+          build-steamrt4-game/NativeAudioTests "$GITHUB_WORKSPACE/tests/native/assets" "$GITHUB_WORKSPACE/build-steamrt4-game/audio-probe" "$GITHUB_WORKSPACE/tests/fixtures/audio"
+      - name: Verify relocated shared SDL distribution in Steam Runtime 4
+        if: matrix.sdl == 'shared'
+        shell: bash
+        env:
+          SDL_AUDIODRIVER: dummy
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          mkdir build-steamrt4-game/relocated-game
+          cp build-steamrt4-game/NativeSmoke build-steamrt4-game/relocated-game/
+          cp -a build-steamrt4-game/assets build-steamrt4-game/licenses build-steamrt4-game/relocated-game/
+          cp build-steamrt4-game/libSDL3.so.0 build-steamrt4-game/relocated-game/
+          relocated="$GITHUB_WORKSPACE/build-steamrt4-game/relocated-game"
+          python3 -B -c "import sys,json; from pathlib import Path; sys.path.insert(0,'tools'); import native_linux; print(json.dumps(native_linux.check_package(Path(sys.argv[1])),indent=2))" "$relocated/NativeSmoke"
+          env -u LD_LIBRARY_PATH ldd "$relocated/NativeSmoke" > "$relocated/dependencies.txt"
+          grep -F "libSDL3.so.0 => $relocated/libSDL3.so.0" "$relocated/dependencies.txt"
+          mkdir "$relocated/probe-saves"
+          env -u LD_LIBRARY_PATH xvfb-run -a python3 -B tests/RunNativeTests.py --game "$relocated/NativeSmoke" --data-dir "$relocated/probe-saves"
+      # The Steam Runtime SDK tests match the container ABI; Steam Deck hardware and controls remain unverified.
+  windows-editor-export:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Fetch verified SDL source for CMake configuration
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-native-dependencies | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz' -OutFile build-native-dependencies/SDL3.tar.gz
+          if ((Get-FileHash build-native-dependencies/SDL3.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant() -ne '9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3') { throw 'SDL checksum mismatch' }
+          tar -xzf build-native-dependencies/SDL3.tar.gz -C build-native-dependencies
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile editor export changes and process tests
+        shell: pwsh
+        run: |
+          cmake -S tests/native -B build-editor-export -G 'Visual Studio 17 2022' -A x64 -DLAMAPON_CHECK_EDITOR_EXPORT=ON -DLAMAPON_SDL_SOURCE_DIRECTORY="$PWD/build-native-dependencies/SDL3-3.4.18"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-editor-export --config Release --parallel 2 --target NativeExportJobTests EditorExportCompileCheck NativeSaveTests NativeAudioTests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native and Web process switching with Unicode paths
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-editor-export/probe | Out-Null
+          & ./build-editor-export/Release/NativeExportJobTests.exe (Get-Command python).Source "$PWD/build-editor-export/probe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native save failure and recovery
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-editor-export/save-failure-probe | Out-Null
+          & ./build-editor-export/Release/NativeSaveTests.exe "$PWD/build-editor-export/save-failure-probe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native audio PCM, spatial controls and device pause
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-editor-export/audio-probe | Out-Null
+          & ./build-editor-export/Release/NativeAudioTests.exe "$PWD/tests/native/assets" "$PWD/build-editor-export/audio-probe" "$PWD/tests/fixtures/audio"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # This checks the Windows editor boundary; it does not build or launch the full editor.
