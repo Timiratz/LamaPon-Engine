@@ -14,6 +14,32 @@ namespace
     class ExportStartupProbe final : public LamaPon::Script
     {
     public:
+        void Update(float) override
+        {
+            const auto& pointer = Graphics().Input().Pointer();
+            const auto& left = pointer.Button(LamaPon::PointerButton::Left);
+            if (!left.pressed && !left.released && !left.down)
+                return;
+
+            const auto* buttonObject = Find("Button");
+            const auto* button = buttonObject
+                ? buttonObject->GetComponent<LamaPon::UIButtonComponent>()
+                : nullptr;
+            SaveText("native-pointer-diagnostic",
+                "valid=" + std::to_string(pointer.valid)
+                + ",position=" + std::to_string(pointer.position.x)
+                + ":" + std::to_string(pointer.position.y)
+                + ",viewport=" + std::to_string(Graphics().UIWidth())
+                + ":" + std::to_string(Graphics().UIHeight())
+                + ",left=" + std::to_string(left.pressed)
+                + ":" + std::to_string(left.down)
+                + ":" + std::to_string(left.released)
+                + ",button=" + std::to_string(button != nullptr)
+                + ":" + std::to_string(button && button->IsHovered())
+                + ":" + std::to_string(button && button->IsPressed())
+                + ":" + std::to_string(button && button->WasClicked()));
+        }
+
         void Start() override
         {
             const auto buttonClickSubscription = On(

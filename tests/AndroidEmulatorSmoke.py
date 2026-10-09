@@ -108,8 +108,13 @@ def main():
         if click_count == 1:
             break
         time.sleep(1)
-    assert click_count == 1 and click_sender == "Button", (
-        "Android touchscreen did not dispatch one UIButton clickEvent with its sender")
+    if click_count != 1 or click_sender != "Button":
+        values = saved_values() or {}
+        raise AssertionError(
+            "Android touchscreen did not dispatch one UIButton clickEvent with its sender; "
+            "clicks={!r}, sender={!r}, pointer={!r}".format(
+                click_count, click_sender,
+                values.get("native-pointer-diagnostic")))
 
     adb("shell", "input", "keyevent", "KEYCODE_HOME")
     time.sleep(2)
