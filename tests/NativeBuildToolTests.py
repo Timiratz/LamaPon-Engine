@@ -79,6 +79,8 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn("Show Android Gradle failure context", workflow)
         self.assertIn("tail -n 160", workflow)
         self.assertIn("target: google_apis_ps16k", workflow)
+        self.assertIn("emulator-options: -no-window -gpu software -no-snapshot", workflow)
+        self.assertNotIn("-gpu swiftshader_indirect", workflow)
         self.assertIn("script: python3 -B tests/AndroidEmulatorSmoke.py", workflow)
         self.assertIn("tests/AndroidEmulatorSmoke.py", workflow)
         self.assertIn("getconf", emulator_smoke)

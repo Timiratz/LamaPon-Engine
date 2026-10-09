@@ -177,7 +177,7 @@ jobs:
           arch: x86_64
           profile: pixel_7_pro
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu software -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: python3 -B tests/AndroidEmulatorSmoke.py
       # The APK runs in a 16 KB Android emulator; device-specific behavior still needs hardware validation.
