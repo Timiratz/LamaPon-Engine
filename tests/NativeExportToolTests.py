@@ -1511,6 +1511,7 @@ LAMAPON_SCRIPT_NAMED(Probe, "Test.NativeStartup", "Probe");
         self.assertIn(f"ndkVersion '{NATIVE.native_android.ANDROID_NDK_VERSION}'", gradle)
         self.assertIn(f"version '{NATIVE.native_android.ANDROID_CMAKE_VERSION}'", gradle)
         self.assertIn("'SDL3-shared'", gradle)
+        self.assertIn("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384", gradle)
         self.assertIn("assets.srcDir layout.buildDirectory.dir('lamaponAssets').get().asFile", gradle)
         self.assertIn("jniLibs.srcDir layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile", gradle)
         self.assertNotIn("srcDir layout.buildDirectory.dir('lamaponAssets')\n", gradle)

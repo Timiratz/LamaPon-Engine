@@ -114,10 +114,11 @@ android {{
         ndk {{ abiFilters {abis} }}
         externalNativeBuild {{ cmake {{
             arguments '-DANDROID_STL=c++_shared', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
-                '-DLAMAPON_ENGINE_ROOT=' + engineRoot.absolutePath,
-                '-DLAMAPON_PROJECT_ROOT=' + gameRoot.absolutePath,
-                '-DLAMAPON_SDL_SOURCE_DIRECTORY=' + sdlRoot.absolutePath,
-                '-DLAMAPON_ANDROID_PACKAGE_LIBS_DIRECTORY=' + layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile.absolutePath
+            '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384',
+            '-DLAMAPON_ENGINE_ROOT=' + engineRoot.absolutePath,
+            '-DLAMAPON_PROJECT_ROOT=' + gameRoot.absolutePath,
+            '-DLAMAPON_SDL_SOURCE_DIRECTORY=' + sdlRoot.absolutePath,
+            '-DLAMAPON_ANDROID_PACKAGE_LIBS_DIRECTORY=' + layout.buildDirectory.dir('lamaponRuntimeLibs').get().asFile.absolutePath
             targets {q(target)}, 'SDL3-shared'
         }} }}
     }}
