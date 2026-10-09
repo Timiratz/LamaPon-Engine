@@ -70,10 +70,13 @@ class NativeBuildToolTests(unittest.TestCase):
         self.assertIn("tail -n 160", workflow)
         self.assertIn("target: google_apis_ps16k", workflow)
         self.assertIn("script: python3 -B tests/AndroidEmulatorSmoke.py", workflow)
+        self.assertIn("tests/AndroidEmulatorSmoke.py", workflow)
         self.assertIn("getconf", emulator_smoke)
         self.assertIn("KEYCODE_HOME", emulator_smoke)
-        self.assertIn("assert resumed_count == initial_count", emulator_smoke)
-        self.assertIn("assert resumed_pid == initial_pid", emulator_smoke)
+        self.assertIn("def wait_for_resume(initial_count, initial_pid):", emulator_smoke)
+        self.assertIn(
+            "if resumed_count != initial_count or resumed_pid != initial_pid:",
+            emulator_smoke)
         self.assertIn("run-as", emulator_smoke)
 
     def description(self, platform="android"):
