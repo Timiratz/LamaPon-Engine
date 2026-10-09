@@ -223,6 +223,14 @@ class NativeBuildToolTests(unittest.TestCase):
                     with self.assertRaises(BUILD.ExportError):
                         BUILD.check_apk(Path("unused.apk"), self.description(), selected)
 
+    def test_apk_asset_name_matches_unflagged_utf8_from_android_packager(self):
+        expected = "assets/assets/scenes/白画像.bmp"
+        legacy_name = expected.encode("utf-8").decode("cp437")
+        entry = zipfile.ZipInfo(legacy_name)
+        self.assertEqual(BUILD.apk_asset_name(entry, {expected}), expected)
+        ascii_name = "assets/assets/scenes/Main.scene.json"
+        self.assertEqual(BUILD.apk_asset_name(zipfile.ZipInfo(ascii_name), {expected}), ascii_name)
+
     def test_apk_rejects_library_of_wrong_architecture(self):
         name = "lib/arm64-v8a/libmain.so"
         with mock.patch.object(BUILD.zipfile, "ZipFile", return_value=self.apk(overrides={name: self.elf("x86_64")})):

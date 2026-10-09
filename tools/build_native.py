@@ -297,6 +297,18 @@ def check_android_elf(stream, size: int, abi: str, name: str) -> dict:
     return {"path": name, "abi": abi, "loadAlignments": load_alignments, "relroSegments": relro_count}
 
 
+def apk_asset_name(entry: zipfile.ZipInfo, expected_names: set[str]) -> str:
+    """Resolve unflagged UTF-8 asset names emitted by Android's APK packager."""
+    name = entry.filename
+    if entry.flag_bits & 0x800:
+        return name
+    try:
+        utf8_name = name.encode("cp437").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    return utf8_name if utf8_name in expected_names else name
+
+
 def check_apk(artifact: Path, description: dict, asset_sources: dict[str, Path] | None = None) -> list[dict]:
     with zipfile.ZipFile(artifact) as archive:
         entries = archive.infolist()
@@ -330,17 +342,24 @@ def check_apk(artifact: Path, description: dict, asset_sources: dict[str, Path] 
             raise ExportError("APK contains an empty required game file")
         if asset_sources is not None:
             expected = {"assets/assets/" + name: source for name, source in asset_sources.items()}
-            actual = {entry.filename for entry in entries
-                      if entry.filename.startswith("assets/assets/") and not entry.is_dir()}
-            if actual != expected.keys():
-                missing = sorted(expected.keys() - actual)
-                unexpected = sorted(actual - expected.keys())
+            expected_names = set(expected)
+            actual = {}
+            for entry in entries:
+                if not entry.filename.startswith("assets/assets/") or entry.is_dir():
+                    continue
+                name = apk_asset_name(entry, expected_names)
+                if name in actual:
+                    raise ExportError("APK contains duplicate game asset paths: " + name)
+                actual[name] = entry
+            if actual.keys() != expected.keys():
+                missing = sorted(expected.keys() - actual.keys())
+                unexpected = sorted(actual.keys() - expected.keys())
                 raise ExportError(
                     "APK game assets differ from the current selection"
                     + " (missing: " + ", ".join(missing)
                     + "; unexpected: " + ", ".join(unexpected) + ")")
             for name, source in expected.items():
-                with source.open("rb") as original, archive.open(name) as packaged:
+                with source.open("rb") as original, archive.open(actual[name]) as packaged:
                     if hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(packaged, "sha256").digest():
                         raise ExportError("APK game asset content is outdated: " + name)
         libraries = []
