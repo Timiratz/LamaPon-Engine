@@ -32,7 +32,9 @@ namespace
     constexpr std::size_t IndicesPerSprite = 6u;
 
     // 標準スプライトと全画面効果のHLSL
-    constexpr char SpriteShaderSource[] = R"(
+    constexpr char SpriteShaderSource[] =
+        // MSVCの単一リテラルの長さ制限を避け、同じHLSLを連結します。
+        R"(
 // VSのb0へ渡す画素変換倍率
 cbuffer SpriteViewport : register(b0)
 {
@@ -263,7 +265,8 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
     const float lumaCenter = Luminance(center);
     // 上隣の輝度
     const float lumaNorth = Luminance(
-        SpriteTexture.Sample(
+)"
+        R"(        SpriteTexture.Sample(
             SpriteSampler,
             uv + float2(0.0f, -texel.y)).rgb);
     // 下隣の輝度
@@ -495,7 +498,8 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
     }
     // 前フレームへ再投影したUV
     const float2 previousUv = float2(
-        previousClip.x / previousClip.w * 0.5f + 0.5f,
+)"
+        R"(        previousClip.x / previousClip.w * 0.5f + 0.5f,
         0.5f - previousClip.y / previousClip.w * 0.5f);
 
     // 入力画像1画素のUV幅
@@ -717,7 +721,8 @@ float3 OutlineViewPosition(int2 pixel)
         distance);
 }
 
-// 中心との深度差が小さい側を選んで輪郭用の法線を復元します(pixel: 法線を求める画素座標)。
+)"
+        R"(// 中心との深度差が小さい側を選んで輪郭用の法線を復元します(pixel: 法線を求める画素座標)。
 float3 OutlineNormal(int2 pixel)
 {
     // 参照範囲を制限する画像寸法
@@ -925,7 +930,8 @@ float AmbientOcclusionNoise(float2 pixel)
 }
 
 // 近傍の深度を探索し、残る明るさをRへ出力します(input: 色・半解像度UV・射影位置)。
-float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
+)"
+        R"(float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
 {
     // 遮蔽画像の画面UV
     const float2 uv = input.textureCoordinate;
@@ -1139,7 +1145,8 @@ float4 VolumetricLightPixelShader(PixelInput input) : SV_Target
         input.textureCoordinate);
     // 画素のデバイス深度
     const float depth = DepthTexture.Sample(
-        SpriteSampler,
+)"
+        R"(        SpriteSampler,
         input.textureCoordinate).r;
     // 画面UVから得るNDCのXY
     const float2 clip = float2(
@@ -1343,7 +1350,8 @@ float4 LensFlareCompositePixelShader(PixelInput input) : SV_Target
     // ハロー円周のUV半径
     const float haloRadius = clamp(PassSecondary.y, 0.05f, 1.5f);
     // ハロー円周からのUV距離
-    const float haloDistance = abs(radius - haloRadius);
+)"
+        R"(    const float haloDistance = abs(radius - haloRadius);
     // ハロー円周近傍の混合率
     const float halo = 1.0f - smoothstep(
         0.015f,

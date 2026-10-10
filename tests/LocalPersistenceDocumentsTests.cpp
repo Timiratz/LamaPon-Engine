@@ -339,6 +339,19 @@ namespace
                 && ReadText(path) == baseline,
             "A pre-publish failure changed the published PlayerPrefs.");
 
+        LamaPon::Detail::SetLocalPersistenceTestFailPoint(
+            LamaPon::Detail::LocalPersistenceTestFailPoint::
+                BeforePublishSharingViolation);
+        first.Save();
+        // 1回だけの一時共有違反後も、完全な文書だけが公開されます。
+        const auto retried = Documents::ReadPlayerPrefs(first);
+        Require(
+            !first.IsDirty()
+                && first.GetString("writer") == "P1"
+                && retried.state == State::Loaded
+                && AsText(retried.bytes).find("P1") != std::string::npos,
+            "A transient publish sharing violation was not retried safely.");
+
         // 後続writer
         LamaPon::PlayerPrefs second(path);
         second.Load();

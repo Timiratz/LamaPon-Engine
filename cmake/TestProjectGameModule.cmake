@@ -15,6 +15,12 @@ foreach(requiredVariable
     endif()
 endforeach()
 
+# Visual Studio等では親ビルドと同じCPUと構成を使います。
+set(generatorPlatformArguments "")
+if(DEFINED TEST_GENERATOR_PLATFORM AND NOT "${TEST_GENERATOR_PLATFORM}" STREQUAL "")
+    list(APPEND generatorPlatformArguments -A "${TEST_GENERATOR_PLATFORM}")
+endif()
+
 # seen_ON/seen_OFF: 今回検証したモード。
 set(seen_ON FALSE)
 set(seen_OFF FALSE)
@@ -25,6 +31,9 @@ foreach(fastBuild ON OFF ON OFF)
     set(modeOutputDir "${TEST_OUTPUT_DIR}/${fastBuild}")
     # modulePath: キャッシュに保持するDLL。
     set(modulePath "${modeOutputDir}/LamaPonGameModule.dll")
+    if(TEST_MULTI_CONFIG)
+        set(modulePath "${modeOutputDir}/${TEST_BUILD_TYPE}/LamaPonGameModule.dll")
+    endif()
     # previousModeTime: 他モードのビルド前に保持した時刻。
     if(seen_${fastBuild})
         file(TIMESTAMP "${modulePath}" previousModeTime "%s.%f")
@@ -35,6 +44,7 @@ foreach(fastBuild ON OFF ON OFF)
             -S "${ENGINE_ROOT}/tools/ProjectGameModule"
             -B "${modeBuildDir}"
             -G "${TEST_GENERATOR}"
+            ${generatorPlatformArguments}
             "-DCMAKE_BUILD_TYPE=${TEST_BUILD_TYPE}"
             "-DLAMAPON_MODULE_FAST_BUILD:BOOL=${fastBuild}"
             "-DLAMAPON_ENGINE_ROOT:PATH=${ENGINE_ROOT}"
@@ -57,6 +67,7 @@ foreach(fastBuild ON OFF ON OFF)
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
             --build "${modeBuildDir}"
+            --config "${TEST_BUILD_TYPE}"
             --target LamaPonGameModule --parallel 2
         RESULT_VARIABLE buildResult
         OUTPUT_VARIABLE buildOutput
@@ -115,6 +126,7 @@ foreach(fastBuild ON OFF ON OFF)
     file(TIMESTAMP "${modulePath}" moduleTimeBefore "%s.%f")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" --build "${modeBuildDir}"
+            --config "${TEST_BUILD_TYPE}"
             --target LamaPonGameModule --parallel 2
         RESULT_VARIABLE buildResult
         OUTPUT_VARIABLE buildOutput
@@ -127,6 +139,11 @@ foreach(fastBuild ON OFF ON OFF)
     # moduleTimeAfter: 再ビルド後のDLL時刻。
     file(TIMESTAMP "${modulePath}" moduleTimeAfter "%s.%f")
     if(NOT moduleTimeBefore STREQUAL moduleTimeAfter)
-        message(FATAL_ERROR "An unchanged Game Module was relinked.")
+        message(FATAL_ERROR
+            "An unchanged Game Module was relinked "
+            "(fastBuild=${fastBuild}, "
+            "before=${moduleTimeBefore}, after=${moduleTimeAfter}).\n"
+            "Build output:\n${buildOutput}\n${buildError}"
+        )
     endif()
 endforeach()

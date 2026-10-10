@@ -1,0 +1,40 @@
+{
+  "format": "LamaPonPrefab",
+  "version": 1,
+  "root": 5001,
+  "name": "Runtime prefab root",
+  "objects": [
+    {
+      "id": 5001,
+      "name": "Runtime prefab root",
+      "tag": "runtime-prefab",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [1.0, 2.0, 3.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": []
+    },
+    {
+      "id": 5002,
+      "name": "Runtime prefab child",
+      "enabled": true,
+      "parent": 5001,
+      "transform": {
+        "position": [0.0, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "NativeScript",
+          "script": "Test.PortablePrefabProbe",
+          "enabled": true,
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}

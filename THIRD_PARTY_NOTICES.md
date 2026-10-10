@@ -3,7 +3,7 @@
 Engine SDKs and exported Windows games include the complete license texts in
 `licenses/`: `LamaPon.txt`, `DirectXTK.txt`, `imgui.txt`, `ImGuizmo.txt`,
 `nlohmann-json.txt`, `XAudio2Redist.txt`, `cgltf.txt`, `ufbx.txt`, and
-`stb-vorbis.txt`. The source paths below identify the original copies in this
+`stb-vorbis.txt`, and `ProggyClean.txt`. The source paths below identify the original copies in this
 repository. Keep this notice and the license directory with redistributions.
 
 ## DirectX Tool Kit for DirectX 11
@@ -41,6 +41,16 @@ Project: https://github.com/ocornut/imgui
 Version: 1.92.7-docking
 
 Dear ImGui is licensed under the MIT License.
+
+## ProggyClean font
+
+Copyright (c) 2004, 2005 Tristan Grimmer.
+
+The Portable runtime's default font is licensed under the MIT License.
+Its complete license is included at
+`third_party/imgui/misc/fonts/ProggyClean.LICENSE.txt`.
+The default font does not provide Japanese glyph coverage; games can supply
+their own licensed TTF font.
 
 ## Microsoft XAudio2 Redistributable
 
@@ -124,3 +134,16 @@ LamaPon's MIT license does not relicense them. Check those terms and include
 any required notices when distributing an EOS-enabled game.
 
 Official SDK and documentation: https://dev.epicgames.com/docs/epic-online-services
+
+## Microsoft Visual C++ runtime (Windows native output)
+
+MSVC builds of native Portable games stage release runtime DLLs from the
+installed Visual Studio redistribution directory. These Microsoft components
+remain subject to the applicable Microsoft Software License Terms; LamaPon's
+MIT license does not relicense them. Debug runtimes are not staged.
+The output includes `licenses/WindowsRuntime.txt` describing this deployment.
+App-local DLL updates are part of updating the game distribution.
+
+Official documentation:
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
+https://learn.microsoft.com/en-us/cpp/windows/choosing-a-deployment-method

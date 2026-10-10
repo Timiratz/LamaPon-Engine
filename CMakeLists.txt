@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.25)
 
 project(LamaPon VERSION 0.1.0 LANGUAGES CXX)
 
+# 移植中の共通基盤だけを、描画・エディター・Windows SDKなしで構成する。
+option(LAMAPON_PLATFORM_CORE_ONLY "Build platform foundation only (no game export or editor)" OFF)
+if(LAMAPON_PLATFORM_CORE_ONLY)
+    include(CTest)
+    include(cmake/LamaPonPlatformCore.cmake)
+    lamapon_add_platform_core()
+    return()
+endif()
+
 include(cmake/LamaPonMsvcDependencies.cmake)
 lamapon_configure_msvc_dependencies()
 
@@ -903,9 +912,22 @@ add_library(LamaPonGameModule SHARED
     ${LAMAPON_GAME_SCRIPT_SOURCES}
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
-# Runtime更新後にGame Moduleを再linkし、互換性確認と同期します。
-set_property(TARGET LamaPonGameModule APPEND PROPERTY LINK_DEPENDS
-    "$<TARGET_FILE:LamaPonRuntime>")
+# Visual Studioを含む全GeneratorでRuntime更新時にGame Moduleを再linkします。
+set(LAMAPON_GAME_MODULE_RUNTIME_DEPENDENCY_SOURCE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/LamaPonGameModuleRuntimeDependency.cpp")
+add_custom_command(
+    OUTPUT "${LAMAPON_GAME_MODULE_RUNTIME_DEPENDENCY_SOURCE}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND ${CMAKE_COMMAND} -E touch
+        "${LAMAPON_GAME_MODULE_RUNTIME_DEPENDENCY_SOURCE}"
+    DEPENDS LamaPonRuntime
+    COMMENT "Refreshing Game Module dependency on LamaPonRuntime"
+    VERBATIM
+)
+target_sources(LamaPonGameModule PRIVATE
+    "${LAMAPON_GAME_MODULE_RUNTIME_DEPENDENCY_SOURCE}"
+)
 target_include_directories(LamaPonGameModule PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ProjectGameModule
 )
@@ -1109,6 +1131,9 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
     add_test(NAME EditorWebExport
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
+    add_test(NAME NativeOutputTools
+        COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "Native*ToolTests.py")
     # 配布一覧とZip内容を検査します。
     add_test(NAME PackageIndex
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
@@ -1138,7 +1163,9 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_dependencies(LamaPonExportedStartupTests LamaPonGame LamaPonGameModule)
     add_test(NAME ExportedGameStartup COMMAND LamaPonExportedStartupTests)
-    set_tests_properties(ExportedGameStartup PROPERTIES TIMEOUT 90)
+    # 配布元のゲームとDLLがある構成別フォルダーを使います。
+    set_tests_properties(ExportedGameStartup PROPERTIES TIMEOUT 90
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonGame>")
     add_executable(LamaPonBgmLoopPanelTests tests/BgmLoopPanelTests.cpp)
     target_link_libraries(LamaPonBgmLoopPanelTests PRIVATE LamaPonEditor DearImGui)
     target_compile_options(LamaPonBgmLoopPanelTests PRIVATE
@@ -1147,6 +1174,8 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_dependencies(LamaPonBgmLoopPanelTests LamaPonGame)
     add_test(NAME BgmLoopPanelIsolation COMMAND LamaPonBgmLoopPanelTests)
+    set_tests_properties(BgmLoopPanelIsolation PROPERTIES
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonGame>")
     add_executable(LamaPonUIComponentInspectorTests tests/UIComponentInspectorTests.cpp)
     target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE
         LamaPonEditor DearImGui d3dcompiler)
@@ -1154,7 +1183,10 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(LamaPonUIComponentInspectorTests LamaPonGame)
     add_test(NAME UIComponentInspectorIsolation COMMAND LamaPonUIComponentInspectorTests)
+    set_tests_properties(UIComponentInspectorIsolation PROPERTIES
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonGame>")
     add_executable(LamaPonEditorExtensionRegistryTests
         tests/EditorExtensionRegistryTests.cpp)
     target_link_libraries(LamaPonEditorExtensionRegistryTests PRIVATE LamaPonEditor)
@@ -1190,6 +1222,9 @@ if(BUILD_TESTING)
             $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
         add_test(NAME ${test_name}Isolation COMMAND LamaPon${test_name}Tests)
     endforeach()
+    add_dependencies(LamaPonRuntimeServicesTests LamaPonGame)
+    set_tests_properties(RuntimeServicesIsolation PROPERTIES
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonGame>")
     set_tests_properties(GraphicsBackendSelectionIsolation PROPERTIES
         LABELS "graphics"
         TIMEOUT 60)
@@ -1835,7 +1870,9 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
         CloudSaveSynchronization
-        PROPERTIES LABELS "online;cloud-save;synchronization"
+        PROPERTIES
+            LABELS "online;cloud-save;synchronization"
+            WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonCloudSaveSynchronizerTests>"
     )
 
     add_executable(LamaPonOnlineServicesTests
@@ -2092,6 +2129,8 @@ if(BUILD_TESTING)
         NAME GameModuleRegistration
         COMMAND LamaPonGameModuleTests
     )
+    set_tests_properties(GameModuleRegistration PROPERTIES
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:LamaPonGameModule>")
 
     add_executable(LamaPonAssetDatabaseTests
         tests/AssetDatabaseTests.cpp
@@ -2401,7 +2440,9 @@ if(BUILD_TESTING)
             "-DTEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/test-output/project-game-module-output"
             "-DTEST_LOADER=$<TARGET_FILE:LamaPonProjectGameModuleLoadTests>"
             "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
-            "-DTEST_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+            "-DTEST_BUILD_TYPE=$<CONFIG>"
+            "-DTEST_MULTI_CONFIG=$<BOOL:${CMAKE_CONFIGURATION_TYPES}>"
+            "-DTEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
             "-DGENERATED_INCLUDE_DIR=${CMAKE_BINARY_DIR}/generated"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestProjectGameModule.cmake"
     )

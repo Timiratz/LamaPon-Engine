@@ -1,6 +1,10 @@
 #include "LamaPon/Portable/PortableCharacterRig2D.h"
 
+#if defined(LAMAPON_NATIVE_RUNTIME)
+#include "LamaPon/Native/NativeBridge.h"
+#else
 #include <emscripten.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -589,8 +593,11 @@ namespace
         }
     }
 
-    // 三角形ごとのDOM要素で2Dメッシュを描きます(objectName/objectId: 対象, texturePath: 画像の仮想パス, r/g/b/a: 色, sortOrder: 描画順, positions: 画面XY列, uvs: UV列, vertexCount: 頂点数, indices: 頂点番号列, indexCount: 頂点番号数)。
+    // 三角形ごとのDOM要素またはネイティブUIメッシュで2Dメッシュを描きます(objectName/objectId: 対象, texturePath: 画像の仮想パス, r/g/b/a: 色, sortOrder: 描画順, positions: 画面XY列, uvs: UV列, vertexCount: 頂点数, indices: 頂点番号列, indexCount: 頂点番号数)。
     // 各三角形は画像全体を1024四方へ広げた要素を三角形で切り抜き、CSSのアフィン行列で画面へ写します。
+#if defined(LAMAPON_NATIVE_RUNTIME)
+    using LamaPon::Native::RenderPortableSpriteMesh;
+#else
     EM_JS(void, RenderPortableSpriteMesh,
           (const char* objectName, double objectId, const char* texturePath,
            float r, float g, float b, float a, int sortOrder,
@@ -752,6 +759,7 @@ namespace
             }
         }
     });
+#endif
 }
 
 namespace LamaPon

@@ -5,7 +5,11 @@
 #include "LamaPon/Web/WebMath.h"
 #include "LamaPon/Web/WebRenderer3D.h"
 
+#if defined(LAMAPON_NATIVE_RUNTIME)
+#include "LamaPon/Native/NativeBridge.h"
+#else
 #include <emscripten.h>
+#endif
 
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
@@ -35,6 +39,22 @@ namespace
     using LamaPon::ProceduralMeshVertex;
     using LamaPon::Web::Mat4;
     using LamaPon::Web::Vec3;
+
+    // Serialized assets and SDL/browser bridges always use UTF-8. A narrow
+    // filesystem constructor would instead use the Windows ANSI code page.
+    [[nodiscard]] std::filesystem::path PortablePathFromUtf8(const std::string_view text)
+    {
+        std::u8string utf8;
+        utf8.reserve(text.size());
+        for (const unsigned char byte : text) utf8.push_back(static_cast<char8_t>(byte));
+        return std::filesystem::path(utf8);
+    }
+
+    [[nodiscard]] std::string PortablePathToUtf8(const std::filesystem::path& path)
+    {
+        const auto utf8 = path.generic_u8string();
+        return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+    }
 
     struct PortableInputBinding final
     {
@@ -107,12 +127,12 @@ namespace
     }
 
     // 親を含むworld行列を返します(object: 対象object)。
-    [[nodiscard]] Mat4 WorldMatrix(const GameObject& object)
+    [[nodiscard]] Mat4 ComputeWorldMatrix(const GameObject& object)
     {
         // 親を含まないlocal行列
         const Mat4 local = LocalMatrix(object.GetTransform());
         return object.Parent() != nullptr
-            ? LamaPon::Web::Multiply(WorldMatrix(*object.Parent()), local)
+            ? LamaPon::Web::Multiply(ComputeWorldMatrix(*object.Parent()), local)
             : local;
     }
 
@@ -463,7 +483,7 @@ namespace
         {
             return {};
         }
-        return "/assets/" + path.generic_string();
+        return "/assets/" + PortablePathToUtf8(path);
     }
 
     // glTF primitiveのattributeを探します(primitive: mesh primitive, type: attribute種別, index: attribute番号)。
@@ -742,47 +762,107 @@ namespace
         };
     }
 
-    // glTF imageのfile pathを返します(modelPath: model file, view: texture参照)。
+    using EncodedModelImages = std::unordered_map<const cgltf_image*,
+        std::shared_ptr<const std::vector<unsigned char>>>;
+
     [[nodiscard]] std::filesystem::path ModelTexturePath(
         const std::filesystem::path& modelPath,
-        const cgltf_texture_view& view)
+        const cgltf_texture_view& view,
+        std::shared_ptr<const std::vector<unsigned char>>& encoded,
+        EncodedModelImages& cache)
     {
-        // 外部image URIがないtextureは読み込みません。
-        if (view.texture == nullptr || view.texture->image == nullptr
-            || view.texture->image->uri == nullptr)
+        encoded.reset();
+        if (!view.texture || !view.texture->image) return {};
+        const auto* image = view.texture->image;
+        if (const auto found = cache.find(image); found != cache.end())
+        { encoded = found->second; return {}; }
+        std::vector<unsigned char> bytes;
+        if (image->buffer_view)
         {
-            return {};
+            const auto& bufferView = *image->buffer_view;
+            if (!image->mime_type || (std::string_view(image->mime_type) != "image/png"
+                && std::string_view(image->mime_type) != "image/jpeg")
+                || !bufferView.buffer || bufferView.offset > bufferView.buffer->size
+                || bufferView.size > bufferView.buffer->size - bufferView.offset)
+                throw std::runtime_error("Invalid embedded model image");
+            const auto* data = cgltf_buffer_view_data(&bufferView);
+            if (!data || !bufferView.size) throw std::runtime_error("Empty embedded model image");
+            bytes.assign(data, data + bufferView.size);
         }
-        // URI decode対象のimage path
-        std::string uri(view.texture->image->uri);
-        uri.resize(cgltf_decode_uri(uri.data()));
-        return modelPath.parent_path() / std::filesystem::path(uri);
+        else if (image->uri && std::string_view(image->uri).starts_with("data:"))
+        {
+            const std::string_view uri(image->uri);
+            const auto comma = uri.find(',');
+            if (comma == std::string_view::npos || (uri.substr(0, comma) != "data:image/png;base64"
+                && uri.substr(0, comma) != "data:image/jpeg;base64"))
+                throw std::runtime_error("Model image data URI must contain base64 PNG or JPEG");
+            const auto payload = uri.substr(comma + 1);
+            if (payload.empty() || payload.size() % 4)
+                throw std::runtime_error("Invalid model image base64 length");
+            std::size_t padding{};
+            if (payload.back() == '=') ++padding;
+            if (payload.size() > 1 && payload[payload.size() - 2] == '=') ++padding;
+            for (std::size_t index = 0; index < payload.size() - padding; ++index)
+            {
+                const auto c = payload[index];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '+' || c == '/'))
+                    throw std::runtime_error("Invalid model image base64 character");
+            }
+            const auto size = payload.size() / 4 * 3 - padding;
+            cgltf_options options{}; void* memory{};
+            if (!size || cgltf_load_buffer_base64(&options, size, payload.data(), &memory) != cgltf_result_success)
+                throw std::runtime_error("Cannot decode model image base64");
+            struct Release { void* value; ~Release() { std::free(value); } } release{memory};
+            const auto* first = static_cast<const unsigned char*>(memory);
+            bytes.assign(first, first + size);
+        }
+        else
+        {
+            if (!image->uri) return {};
+            std::string uri(image->uri);
+            uri.resize(cgltf_decode_uri(uri.data()));
+            return modelPath.parent_path() / PortablePathFromUtf8(uri);
+        }
+        encoded = std::make_shared<const std::vector<unsigned char>>(std::move(bytes));
+        cache.emplace(image, encoded);
+        return {};
     }
 
     // Web storageへtextを保存します(key: 項目名, value: 保存内容)。
-    EM_JS(void, SavePortableText,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::SavePortableText;
+#else
+        EM_JS(int, SavePortableText,
           (const char* key, const char* value), {
         // DOM属性用のkey文字列
         const keyText = UTF8ToString(key);
         // DOM属性用の保存文字列
         const valueText = UTF8ToString(value);
-        // Storage拒否時も後続のDOM通知を続けます。
         try {
             localStorage.setItem(
                 "lamapon.portable." + keyText,
                 valueText);
         }
-        // Storage拒否時は保存を諦めます(error: browser例外)。
-        catch (error) {}
+        catch (error) {
+            if (document.body) document.body.dataset.lamaponSaveError = String(error);
+            return 0;
+        }
         // DOMがある場合は保存結果を公開します。
         if (document.body) {
             document.body.dataset.lamaponSavedKey = keyText;
             document.body.dataset.lamaponSavedValue = valueText;
+            delete document.body.dataset.lamaponSaveError;
         }
+        return 1;
     });
+#endif
 
     // Web storageのtextをmalloc領域で返します(key: 項目名)。
-    EM_JS(char*, LoadPortableText, (const char* key), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::LoadPortableText;
+#else
+        EM_JS(char*, LoadPortableText, (const char* key), {
         // UTF8文字列をmalloc領域へ変換します(value: 入力文字列)。
         const allocateUtf8 = value => {
             // UTF8 buffer長と終端文字
@@ -794,19 +874,23 @@ namespace
         };
         // Web storageから対象textを読みます。
         try {
-            // storage内の値。未登録時は空文字
+            // nullは未登録、空文字列は保存済みの値です。
             const value = localStorage.getItem(
-                "lamapon.portable." + UTF8ToString(key)) || "";
-            return allocateUtf8(value);
+                "lamapon.portable." + UTF8ToString(key));
+            return value === null ? 0 : allocateUtf8(value);
         }
         // Storage拒否時は空textを返します(error: browser例外)。
         catch (error) {
-            return allocateUtf8("");
+            return 0;
         }
     });
+#endif
 
     // Asset textをmalloc領域で返します(path: 仮想path)。返却領域は呼び出し側がfreeします。
-    EM_JS(char*, LoadPortableAssetText, (const char* path), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::LoadPortableAssetText;
+#else
+        EM_JS(char*, LoadPortableAssetText, (const char* path), {
         // Virtual filesystemからasset textを読みます。
         try {
             // UTF8形式のasset text
@@ -829,9 +913,13 @@ namespace
             return 0;
         }
     });
+#endif
 
     // Asset byte列をmalloc領域で返します(path: 仮想path, byteCount: byte数出力)。返却領域は呼び出し側がfreeします。
-    EM_JS(unsigned char*, LoadPortableAssetBytes,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::LoadPortableAssetBytes;
+#else
+        EM_JS(unsigned char*, LoadPortableAssetBytes,
           (const char* path, std::uint32_t* byteCount), {
         // Virtual filesystemからasset byte列を読みます。
         try {
@@ -854,9 +942,13 @@ namespace
             return 0;
         }
     });
+#endif
 
     // Model load状態をDOMへ公開します(path: asset path, status: 状態, parts: part数)。
-    EM_JS(void, PublishPortableModelStatus,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::PublishPortableModelStatus;
+#else
+        EM_JS(void, PublishPortableModelStatus,
           (const char* path, const char* status, int parts), {
         // bodyがない場合は診断値を記録できません。
         if (!document.body) return;
@@ -872,9 +964,13 @@ namespace
             delete document.body.dataset.lamaponModelError;
         }
     });
+#endif
 
     // Model animation状態をDOMへ公開します(name: 名称, index: 番号, count: 総数, time: 秒, playing: 再生状態)。
-    EM_JS(void, PublishPortableModelAnimation,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::PublishPortableModelAnimation;
+#else
+        EM_JS(void, PublishPortableModelAnimation,
           (const char* name, int index, int count, float time, int playing), {
         // bodyがない場合は状態を公開できません。
         if (!document.body) return;
@@ -884,6 +980,7 @@ namespace
         document.body.dataset.lamaponModelAnimationTime = time.toFixed(4);
         document.body.dataset.lamaponModelAnimationPlaying = playing ? "1" : "0";
     });
+#endif
 
     // Virtual asset JSONを読みます(assetPath: source上のpath, document: JSON出力先)。
     [[nodiscard]] bool LoadPortableJsonDocument(
@@ -915,12 +1012,16 @@ namespace
     }
 
     // 登録済みaction数をDOMへ公開します(count: action数)。
-    EM_JS(void, PublishPortableInputActionCount, (int count), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::PublishPortableInputActionCount;
+#else
+        EM_JS(void, PublishPortableInputActionCount, (int count), {
         // bodyがない場合は件数を公開できません。
         if (document.body) {
             document.body.dataset.lamaponInputActions = String(count);
         }
     });
+#endif
 
     // Projectのinput action定義をScript bindingへ読み込みます。
     void LoadPortableInputBindings()
@@ -991,7 +1092,10 @@ namespace
     }
 
     // Portable UI textをDOM描画します(objectName: object名, objectId: object ID, text: 本文, font: font名, fontAsset: font path, size: 文字高, r: 赤, g: 緑, b: 青, a: 不透明度, x: 左位置, y: 上位置, width: 幅, height: 高さ, wordWrap: 折返し, horizontal: 横揃え, vertical: 縦揃え, sortOrder: 描画順)。
-    EM_JS(void, RenderPortableText,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::RenderPortableText;
+#else
+        EM_JS(void, RenderPortableText,
           (const char* objectName, double objectId,
            const char* text, const char* font, const char* fontAsset,
            float size, float r, float g, float b, float a,
@@ -1110,9 +1214,13 @@ namespace
         // 空HUD messageを隠します。
         if (name === "HUD Message") element.style.opacity = text ? "1" : "0";
     });
+#endif
 
     // Portable sprite maskをDOM stateへ記録します(objectId: object ID, x/y: 位置, width/height: 範囲, shape: 形状)。
-    EM_JS(void, RenderPortableMask,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::RenderPortableMask;
+#else
+        EM_JS(void, RenderPortableMask,
           (double objectId, float x, float y, float width, float height,
            int shape), {
         // bodyがない場合はmaskを記録できません。
@@ -1123,18 +1231,26 @@ namespace
             x, y, width, height, shape
         };
     });
+#endif
 
     // Portable UI frameを開始します。
-    EM_JS(void, BeginPortableUiFrame, (), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::BeginPortableUiFrame;
+#else
+        EM_JS(void, BeginPortableUiFrame, (), {
         // bodyがない場合はframe stateを更新できません。
         if (!document.body) return;
         document.body.__lamaponPortableFrame =
             (document.body.__lamaponPortableFrame || 0) + 1;
         document.body.__lamaponPortableMasks = {};
     });
+#endif
 
     // 未更新のPortable UI要素を隠してframeを終了します。
-    EM_JS(void, EndPortableUiFrame, (), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::EndPortableUiFrame;
+#else
+        EM_JS(void, EndPortableUiFrame, (), {
         // bodyがない場合はframeを終了できません。
         if (!document.body) return;
         // 現在のPortable UI frame番号
@@ -1149,9 +1265,13 @@ namespace
             }
         }
     });
+#endif
 
     // ObjectのPortable UI表示を隠します(objectId: 対象ID)。
-    EM_JS(void, HidePortableObjectUi, (double objectId), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::HidePortableObjectUi;
+#else
+        EM_JS(void, HidePortableObjectUi, (double objectId), {
         // DOM検索に使うobject ID
         const id = String(Math.floor(objectId));
         // 対象objectのUI prefixを調べます(prefix: UI種別prefix)。
@@ -1167,9 +1287,13 @@ namespace
             }
         }
     });
+#endif
 
     // Portable UI spriteをDOM描画します(objectName/objectId: 対象, texturePath: texture, r/g/b/a: 色, x/y: 中心位置, width/height: 寸法, pivotX/pivotY: 基準点, rotation: radian, sortOrder: 描画順, sourceX/sourceY/sourceWidth/sourceHeight: UV範囲, maskInteraction: mask設定)。
-    EM_JS(void, RenderPortableSprite,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::RenderPortableSprite;
+#else
+        EM_JS(void, RenderPortableSprite,
           (const char* objectName, double objectId, const char* texturePath,
            float r, float g, float b, float a, float x, float y,
            float width, float height, float pivotX, float pivotY,
@@ -1245,6 +1369,41 @@ namespace
             transform: "rotate(" + rotation + "rad)", zIndex: String(sortOrder),
             display: "block"
         });
+        // TextureのRGBへ指定色を乗算し、alphaはopacityで適用します。
+        // filterはspriteの子として保持し、同じobjectの描画で再利用します。
+        if (!nativeElement) {
+            if (path && (r !== 1 || g !== 1 || b !== 1)) {
+                if (!element.__lamaponTint) {
+                    const ns = "http://www.w3.org/2000/svg";
+                    const svg = document.createElementNS(ns, "svg");
+                    svg.setAttribute("width", "0");
+                    svg.setAttribute("height", "0");
+                    svg.style.position = "absolute";
+                    const filter = document.createElementNS(ns, "filter");
+                    filter.id = element.id + "-tint";
+                    filter.setAttribute("color-interpolation-filters", "sRGB");
+                    const transfer = document.createElementNS(ns, "feComponentTransfer");
+                    const channels = ["R", "G", "B"].map(channel => {
+                        const node = document.createElementNS(ns, "feFunc" + channel);
+                        node.setAttribute("type", "linear");
+                        transfer.appendChild(node);
+                        return node;
+                    });
+                    filter.appendChild(transfer);
+                    svg.appendChild(filter);
+                    element.appendChild(svg);
+                    element.__lamaponTint = { filter, channels };
+                }
+                const tint = element.__lamaponTint;
+                [r, g, b].forEach((value, index) =>
+                    tint.channels[index].setAttribute("slope", String(value)));
+                element.style.filter = "url(#" + tint.filter.id + ")";
+            } else element.style.filter = "";
+            if (!path) {
+                element.style.backgroundImage = "";
+                delete element.dataset.lamaponTextureLoaded;
+            }
+        }
         element.style.clipPath = "";
         element.style.maskImage = "";
         element.style.webkitMaskImage = "";
@@ -1299,7 +1458,7 @@ namespace
             }
         }
         // Textureが未読込ならvirtual filesystemから取得します。
-        if (path && globalThis.FS && !element.dataset.lamaponTextureLoaded) {
+        if (path && globalThis.FS && element.dataset.lamaponTextureLoaded !== path) {
             // Asset読込・Data URL変換の失敗を握り潰します。
             try {
                 // Virtual filesystem上のtexture byte列
@@ -1327,15 +1486,19 @@ namespace
                 if (element.tagName === "IMG") element.src = url;
                 // その他はbackground imageとして設定します。
                 else element.style.backgroundImage = "url(" + url + ")";
-                element.dataset.lamaponTextureLoaded = "1";
+                element.dataset.lamaponTextureLoaded = path;
             }
             // texture不在時は無地spriteを表示します(error: browser例外)。
             catch (error) {}
         }
     });
+#endif
 
     // 数値stateをDOMとJS mapへ公開します(key: state名, value: 数値)。
-    EM_JS(void, PublishPortableNumber, (const char* key, double value), {
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::PublishPortableNumber;
+#else
+        EM_JS(void, PublishPortableNumber, (const char* key, double value), {
         // bodyがない場合はstateを公開できません。
         if (!document.body) return;
         // HTML attribute用のstate名
@@ -1346,9 +1509,13 @@ namespace
         document.body.__lamaponPortableState ||= {};
         document.body.__lamaponPortableState[UTF8ToString(key)] = value;
     });
+#endif
 
     // 文字列stateをDOMとJS mapへ公開します(key: state名, value: 文字列)。
-    EM_JS(void, PublishPortableString,
+    #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::PublishPortableString;
+#else
+        EM_JS(void, PublishPortableString,
           (const char* key, const char* value), {
         // bodyがない場合はstateを公開できません。
         if (!document.body) return;
@@ -1360,6 +1527,7 @@ namespace
         document.body.__lamaponPortableState ||= {};
         document.body.__lamaponPortableState[UTF8ToString(key)] = text;
     });
+#endif
 }
 
 namespace LamaPon
@@ -1393,8 +1561,10 @@ namespace LamaPon
         DirectX::XMFLOAT4 clearColor{ 0.72f, 0.62f, 0.52f, 1.0f };
         // Main camera object
         GameObject* mainCamera{};
-        // 現frameのcollision contact一覧
-        std::unordered_set<ContactKey, ContactHash> contacts;
+        // 現frameのcontactとtrigger種別
+        std::unordered_map<ContactKey, bool, ContactHash> contacts;
+        GameObjectId focusedButtonOwner{};
+        UIButtonComponent* focusedButton{};
     };
 
     // 数値stateを更新します(key: state名, value: 数値)。
@@ -1597,6 +1767,16 @@ namespace LamaPon
                     return m_input->ControlWasPressed(binding.control);
                 });
         }
+        // UI方向は十字キー、左スティックまたは矢印キー。明示設定を優先します。
+        if (action == "UIUp") return m_input->WasPressed("ArrowUp") || m_input->WasGamepadPressed(12) || m_input->WasGamepadNavigationPressed(0);
+        if (action == "UIDown") return m_input->WasPressed("ArrowDown") || m_input->WasGamepadPressed(13) || m_input->WasGamepadNavigationPressed(1);
+        if (action == "UILeft") return m_input->WasPressed("ArrowLeft") || m_input->WasGamepadPressed(14) || m_input->WasGamepadNavigationPressed(2);
+        if (action == "UIRight") return m_input->WasPressed("ArrowRight") || m_input->WasGamepadPressed(15) || m_input->WasGamepadNavigationPressed(3);
+        if (action == "UINext" || action == "UIPrevious")
+        {
+            const bool shift = m_input->IsDown("ShiftLeft") || m_input->IsDown("ShiftRight");
+            return m_input->WasPressed("Tab") && shift == (action == "UIPrevious");
+        }
         // 再起動の既定キーを確認します。
         if (action == "Restart")
         {
@@ -1772,6 +1952,57 @@ namespace LamaPon
         return m_owner->GetScene();
     }
 
+    std::uint64_t Script::On(
+        const std::string_view eventName,
+        std::function<void(const EventArgs&)> handler)
+    {
+        auto& events = GetScene().Events();
+        const auto handle = events.Subscribe(eventName, std::move(handler));
+        if (handle != 0) m_eventSubscriptions.emplace_back(&events, handle);
+        return handle;
+    }
+
+    std::uint64_t Script::On(
+        const std::string_view eventName,
+        std::function<void()> handler)
+    {
+        return On(eventName, [callback = std::move(handler)](const EventArgs&)
+        {
+            if (callback) callback();
+        });
+    }
+
+    void Script::Off(const std::uint64_t handle)
+    {
+        for (const auto& subscription : m_eventSubscriptions)
+        {
+            if (subscription.second == handle)
+            {
+                subscription.first->Unsubscribe(handle);
+                break;
+            }
+        }
+        std::erase_if(m_eventSubscriptions, [handle](const auto& subscription)
+        {
+            return subscription.second == handle;
+        });
+    }
+
+    void Script::Emit(const std::string_view eventName)
+    {
+        EventArgs eventArgs;
+        eventArgs.sender = &Owner();
+        GetScene().Events().Publish(eventName, eventArgs);
+    }
+
+    void Script::Emit(
+        const std::string_view eventName,
+        EventArgs eventArgs)
+    {
+        if (eventArgs.sender == nullptr) eventArgs.sender = &Owner();
+        GetScene().Events().Publish(eventName, eventArgs);
+    }
+
     // 所属シーンの描画デバイスを返します。
     GraphicsDevice& Script::Graphics() const noexcept
     {
@@ -1790,10 +2021,31 @@ namespace LamaPon
         return GetScene().FindGameObjectByName(name);
     }
 
+    // タグからGameObjectを探します(tag: 検索するタグ)
+    GameObject* Script::FindWithTag(const std::string_view tag) const noexcept
+    {
+        return GetScene().FindGameObjectByTag(tag);
+    }
+
+    // タグから全GameObjectを探します(tag: 検索するタグ)
+    std::vector<GameObject*> Script::FindObjectsWithTag(
+        const std::string_view tag) const
+    {
+        return GetScene().FindGameObjectsByTag(tag);
+    }
+
     // 所属シーンからGameObjectを削除します(gameObject: 削除対象)
     bool Script::Destroy(GameObject& gameObject)
     {
         return GetScene().DestroyGameObject(gameObject);
+    }
+
+    // ScriptからPrefabを生成します(prefabPath: アセットpath, parent: 任意の親)
+    GameObject& Script::Instantiate(
+        const std::filesystem::path& prefabPath,
+        GameObject* parent)
+    {
+        return GetScene().InstantiatePrefab(prefabPath, parent);
     }
 
     // 保存文字列を読み込みます(key: 保存キー, fallback: 既定値)
@@ -1813,7 +2065,7 @@ namespace LamaPon
         // 解放前に標準文字列へ複製します。
         std::string value(loaded);
         std::free(loaded);
-        return value.empty() ? std::move(fallback) : value;
+        return value;
     }
 
     // 文字列を保存します(key: 保存キー, value: 保存値)
@@ -1825,7 +2077,8 @@ namespace LamaPon
         const std::string keyText(key);
         // 保存APIへ渡す値文字列です。
         const std::string valueText(value);
-        SavePortableText(keyText.c_str(), valueText.c_str());
+        if (!SavePortableText(keyText.c_str(), valueText.c_str()))
+            throw std::runtime_error("Cannot persist game save data");
     }
 
     // 保存整数を読み込みます(key: 保存キー, fallback: 既定値)
@@ -1882,8 +2135,36 @@ namespace LamaPon
         m_transform.m_owner = this;
     }
 
+    // componentの有効状態を更新し、所有Scriptへ有効状態を反映します(enabled: 新しい状態)
+    void Component::SetEnabled(const bool enabled)
+    {
+        if (m_enabled == enabled)
+        {
+            return;
+        }
+        m_enabled = enabled;
+        if (m_owner != nullptr)
+        {
+            m_owner->RefreshScriptActiveState();
+        }
+    }
+
+    // 所有GameObjectのTransformを返します。
+    Transform& Component::GetTransform() const noexcept
+    {
+        return m_owner->GetTransform();
+    }
+
+    // 自身と所有GameObjectの有効状態を返します。
+    bool Component::IsActiveAndEnabled() const noexcept
+    {
+        return m_owner != nullptr
+            && m_enabled
+            && m_owner->IsActiveInHierarchy();
+    }
+
     // 有効状態を更新します(enabled: 新しい有効状態)
-    void GameObject::SetEnabled(const bool enabled) noexcept
+    void GameObject::SetEnabled(const bool enabled)
     {
         // 状態が変わらなければ副作用を起こしません。
         if (m_enabled == enabled)
@@ -1899,13 +2180,124 @@ namespace LamaPon
             // RetryやHot Reloadで前フレームのUIが残ることを防ぎます。
             HidePortableObjectUi(static_cast<double>(m_id));
         }
+        RefreshScriptActiveState();
+    }
+
+    // 自身と子孫のScript有効状態遷移を通知します。
+    void GameObject::RefreshScriptActiveState()
+    {
+        const bool activeInHierarchy = IsActiveInHierarchy();
+        for (const auto& component : m_components)
+        {
+            auto* native = dynamic_cast<NativeScriptComponent*>(
+                component.get());
+            auto* script = native != nullptr
+                ? native->Instance()
+                : nullptr;
+            if (script == nullptr || !script->m_awake)
+            {
+                continue;
+            }
+            const bool active = activeInHierarchy && native->IsEnabled();
+            if (script->m_active == active)
+            {
+                continue;
+            }
+            script->m_active = active;
+            if (active)
+            {
+                script->OnEnable();
+            }
+            else
+            {
+                script->OnDisable();
+            }
+        }
+        for (auto* child : m_children)
+        {
+            child->RefreshScriptActiveState();
+        }
+    }
+
+    // 名前をたどって子孫を検索します(path: slash区切りの名前)
+    GameObject* GameObject::FindChild(const std::string_view path) const noexcept
+    {
+        if (path.empty())
+        {
+            return nullptr;
+        }
+
+        const std::vector<GameObject*>* children = &m_children;
+        std::size_t start{};
+        for (;;)
+        {
+            const auto separator = path.find('/', start);
+            const auto name = separator == std::string_view::npos
+                ? path.substr(start)
+                : path.substr(start, separator - start);
+            if (name.empty())
+            {
+                return nullptr;
+            }
+
+            GameObject* found{};
+            for (auto* child : *children)
+            {
+                if (child != nullptr && child->Name() == name)
+                {
+                    found = child;
+                    break;
+                }
+            }
+            if (found == nullptr || separator == std::string_view::npos)
+            {
+                return found;
+            }
+            children = &found->m_children;
+            start = separator + 1;
+        }
+    }
+
+    // 所有コンポーネントの順序を変更します(moved: 移動対象, reference: 基準)
+    bool GameObject::ReorderComponent(
+        const Component& moved,
+        const Component& reference,
+        const bool insertAfter)
+    {
+        if (&moved == &reference)
+        {
+            return false;
+        }
+        const auto owns = [this](const Component& component)
+        {
+            return std::find_if(m_components.begin(), m_components.end(),
+                [&component](const auto& candidate)
+                {
+                    return candidate.get() == &component;
+                });
+        };
+        const auto movedPosition = owns(moved);
+        if (movedPosition == m_components.end() || owns(reference) == m_components.end())
+        {
+            return false;
+        }
+
+        auto moving = std::move(*movedPosition);
+        m_components.erase(movedPosition);
+        auto referencePosition = owns(reference);
+        if (insertAfter)
+        {
+            ++referencePosition;
+        }
+        m_components.insert(referencePosition, std::move(moving));
+        return true;
     }
 
     // ワールド行列をDirectX形式へ変換します。
     DirectX::XMMATRIX GameObject::InterpolatedWorldMatrix(float) const
     {
         // Portable形式のワールド行列です。
-        const Mat4 world = WorldMatrix(*this);
+        const Mat4 world = ComputeWorldMatrix(*this);
         // DirectX APIへ返す行列です。
         DirectX::XMMATRIX result;
         result._11 = world.values[0]; result._12 = world.values[1];
@@ -1917,6 +2309,28 @@ namespace LamaPon
         result._41 = world.values[12]; result._42 = world.values[13];
         result._43 = world.values[14]; result._44 = world.values[15];
         return result;
+    }
+
+    // 現在のワールド行列をDirectX形式へ変換します。
+    DirectX::XMMATRIX GameObject::WorldMatrix() const noexcept
+    {
+        return InterpolatedWorldMatrix(0.0f);
+    }
+
+    // 有効なカリング設定から常時表示状態を返します。
+    bool GameObject::IsAlwaysVisible() const noexcept
+    {
+        const auto* culling = GetComponent<RenderCullingComponent>();
+        return culling != nullptr && culling->IsEnabled()
+            && culling->AlwaysVisible();
+    }
+
+    // 有効なカリング設定から境界余白を返します。
+    float GameObject::CullingMargin() const noexcept
+    {
+        const auto* culling = GetComponent<RenderCullingComponent>();
+        return culling != nullptr && culling->IsEnabled()
+            ? culling->CullingMargin() : 0.0f;
     }
 
     // プリミティブ描画要素を生成します(shape: 形状, color: 色, albedo: 画像)
@@ -2087,6 +2501,22 @@ namespace LamaPon
             bytes(loadedBytes, &std::free);
         // cgltfのparse設定です。
         cgltf_options options{};
+#if defined(LAMAPON_NATIVE_RUNTIME)
+        // 外部glTF bufferも、APKを含む同じアセット読み込み経路を通す。
+        options.file.read = [](const cgltf_memory_options*, const cgltf_file_options*,
+            const char* path, cgltf_size* size, void** data) -> cgltf_result
+        {
+            std::uint32_t count{};
+            auto* bytes = LamaPon::Native::LoadPortableAssetBytes(path, &count);
+            if (!bytes) return cgltf_result_file_not_found;
+            if (*size != 0 && count < *size) { std::free(bytes); return cgltf_result_io_error; }
+            *size = count;
+            *data = bytes;
+            return cgltf_result_success;
+        };
+        options.file.release = [](const cgltf_memory_options*, const cgltf_file_options*, void* data, cgltf_size)
+        { std::free(data); };
+#endif
         // cgltfから受け取る未所有documentです。
         cgltf_data* raw{};
         // 不正なglTF documentを拒否します。
@@ -2112,6 +2542,7 @@ namespace LamaPon
             PublishPortableModelStatus(hostPath.c_str(), "validate", 0);
             return false;
         }
+        EncodedModelImages encodedImages;
         m_nodes.resize(document->nodes_count);
         // glTF nodeをPortable形式へ変換します。
         for (cgltf_size nodeIndex{}; nodeIndex < document->nodes_count; ++nodeIndex)
@@ -2604,22 +3035,22 @@ namespace LamaPon
                         part.metallic = pbr.metallic_factor;
                         part.albedoTexture = ModelTexturePath(
                             m_modelPath,
-                            pbr.base_color_texture);
+                            pbr.base_color_texture, part.albedoImage, encodedImages);
                         part.metallicRoughnessTexture = ModelTexturePath(
                             m_modelPath,
-                            pbr.metallic_roughness_texture);
+                            pbr.metallic_roughness_texture, part.metallicRoughnessImage, encodedImages);
                     }
                     part.normalTexture = ModelTexturePath(
                         m_modelPath,
-                        material.normal_texture);
+                        material.normal_texture, part.normalImage, encodedImages);
                     part.normalStrength = material.normal_texture.scale;
                     part.occlusionTexture = ModelTexturePath(
                         m_modelPath,
-                        material.occlusion_texture);
+                        material.occlusion_texture, part.occlusionImage, encodedImages);
                     part.occlusionStrength = material.occlusion_texture.scale;
                     part.emissiveTexture = ModelTexturePath(
                         m_modelPath,
-                        material.emissive_texture);
+                        material.emissive_texture, part.emissiveImage, encodedImages);
                     // emissive intensityの既定値です。
                     const float emissiveStrength = material.has_emissive_strength
                         ? material.emissive_strength.emissive_strength
@@ -2679,11 +3110,13 @@ namespace LamaPon
                     if (!m_albedoTexture.empty())
                     {
                         part.albedoTexture = m_albedoTexture;
+                        part.albedoImage.reset();
                     }
                     // override法線画像が指定されている場合だけ差し替えます。
                     if (!m_normalTexture.empty())
                     {
                         part.normalTexture = m_normalTexture;
+                        part.normalImage.reset();
                     }
                 }
                 m_parts.emplace_back(std::move(part));
@@ -3037,7 +3470,7 @@ namespace LamaPon
     void ParticleSystemComponent::Emit(int count)
     {
         // ownerのworld行列です。
-        const Mat4 world = WorldMatrix(Owner());
+        const Mat4 world = ComputeWorldMatrix(Owner());
         // 発生器のworld位置です。
         const DirectX::XMFLOAT3 origin{
             world.values[12], world.values[13], world.values[14] };
@@ -3164,12 +3597,12 @@ namespace LamaPon
     // 再生pitchを設定します(value: pitch倍率)
     void AudioSourceComponent::SetPitch(float value)
     {
-        m_pitch = value;
+        m_pitch = std::clamp(value, -1.0f, 1.0f);
 #if LAMAPON_WEB_AUDIO_ENABLED
         // Web audio handleがあるとき再生中音源へ反映します。
         if (m_handle != 0)
         {
-            Owner().GetScene().WebAudio().SetPitch(m_handle, value);
+            Owner().GetScene().WebAudio().SetPitch(m_handle, m_pitch);
         }
 #endif
     }
@@ -3177,12 +3610,12 @@ namespace LamaPon
     // 再生音量を設定します(value: 音量)
     void AudioSourceComponent::SetVolume(float value)
     {
-        m_volume = value;
+        m_volume = std::clamp(value, 0.0f, 1.0f);
 #if LAMAPON_WEB_AUDIO_ENABLED
         // Web audio handleがあるとき再生中音源へ反映します。
         if (m_handle != 0)
         {
-            Owner().GetScene().WebAudio().SetVolume(m_handle, value);
+            Owner().GetScene().WebAudio().SetVolume(m_handle, m_volume);
         }
 #endif
     }
@@ -3198,6 +3631,27 @@ namespace LamaPon
             Owner().GetScene().WebAudio().SetPan(m_handle, m_pan);
         }
 #endif
+    }
+
+    // 空間音声の距離をWindows runtimeと同じ下限で整えます。
+    void AudioSourceComponent::SetMinimumDistance(const float value)
+    {
+        const bool wasPlaying = m_handle != 0;
+        if (wasPlaying) Stop();
+        m_minimumDistance = std::max(value, 0.01f);
+        m_maximumDistance = std::max(
+            m_maximumDistance, m_minimumDistance + 0.01f);
+        if (wasPlaying) Play();
+    }
+
+    // 最大距離を最小距離より0.01以上離します。
+    void AudioSourceComponent::SetMaximumDistance(const float value)
+    {
+        const bool wasPlaying = m_handle != 0;
+        if (wasPlaying) Stop();
+        m_maximumDistance = std::max(
+            value, m_minimumDistance + 0.01f);
+        if (wasPlaying) Play();
     }
 
     // loop音源を開始しone-shot音源を委譲再生します。
@@ -3452,6 +3906,21 @@ namespace LamaPon
     }
 
     // UIアンカーと配置値を初期化します(anchorMin: 最小anchor, anchorMax: 最大anchor, pivot: 基準点, anchoredPosition: 相対位置, sizeDelta: サイズ差)
+    DirectX::XMFLOAT3 PortableLocalLightComponent::WorldPosition() const noexcept
+    {
+        const auto world = ComputeWorldMatrix(Owner());
+        return { world.values[12], world.values[13], world.values[14] };
+    }
+
+    DirectX::XMFLOAT3 SpotLightComponent::WorldDirection() const noexcept
+    {
+        const auto world = ComputeWorldMatrix(Owner());
+        const Web::Vec3 forward{-world.values[8], -world.values[9], -world.values[10]};
+        const auto direction = Web::Length(forward) > 0.0001f
+            ? Web::Normalize(forward) : Web::Vec3{0,-1,0};
+        return { direction.x, direction.y, direction.z };
+    }
+
     UIRectTransformComponent::UIRectTransformComponent(
         const DirectX::XMFLOAT2 anchorMin,
         const DirectX::XMFLOAT2 anchorMax,
@@ -3521,6 +3990,10 @@ namespace LamaPon
                 break;
             }
         }
+        float canvasScale = 1.0f;
+        for (const GameObject* ancestor = &Owner(); ancestor; ancestor = ancestor->Parent())
+            if (const auto* canvas = ancestor->GetComponent<UICanvasComponent>())
+            { canvasScale = canvas->ScaleFactor(viewportWidth, viewportHeight); break; }
         // 親矩形の幅と高さです。
         const auto parentSize = parentRect.Size();
         // 最小anchorのpixel位置です。
@@ -3535,19 +4008,19 @@ namespace LamaPon
         };
         // anchor範囲とsizeDeltaから算出したサイズです。
         const DirectX::XMFLOAT2 size{
-            std::max(anchorPixelsMax.x - anchorPixelsMin.x + m_sizeDelta.x,
+            std::max(anchorPixelsMax.x - anchorPixelsMin.x + m_sizeDelta.x * canvasScale,
                      0.0f),
-            std::max(anchorPixelsMax.y - anchorPixelsMin.y + m_sizeDelta.y,
+            std::max(anchorPixelsMax.y - anchorPixelsMin.y + m_sizeDelta.y * canvasScale,
                      0.0f)
         };
         // anchor範囲とanchoredPositionから算出したpivot位置です。
         const DirectX::XMFLOAT2 pivotPosition{
             anchorPixelsMin.x
                 + (anchorPixelsMax.x - anchorPixelsMin.x) * m_pivot.x
-                + m_anchoredPosition.x,
+                + m_anchoredPosition.x * canvasScale,
             anchorPixelsMin.y
                 + (anchorPixelsMax.y - anchorPixelsMin.y) * m_pivot.y
-                + m_anchoredPosition.y
+                + m_anchoredPosition.y * canvasScale
         };
         return {
             {
@@ -3572,7 +4045,11 @@ namespace LamaPon
         TextHorizontalAlignment horizontal,
         TextVerticalAlignment vertical)
         : m_text(std::move(text)), m_fontFamily(std::move(fontFamily)),
-          m_fontSize(fontSize), m_color(color), m_bounds(bounds),
+          m_fontSize(std::max(fontSize, 1.0f)), m_color(color),
+          m_bounds{
+              std::clamp(bounds.x, 0.0f, 4096.0f),
+              std::clamp(bounds.y, 0.0f, 4096.0f)
+          },
           m_wordWrap(wordWrap), m_horizontal(horizontal), m_vertical(vertical)
     {
     }
@@ -3809,8 +4286,19 @@ namespace LamaPon
         m_graphics.Input().Bind(&input);
     }
 
-    // scene所有objectと実装状態を破棄します。
-    Scene::~Scene() = default;
+    // scene所有scriptへ終了通知を送り、objectと実装状態を破棄します。
+    Scene::~Scene()
+    {
+        for (auto object = m_objects.rbegin();
+             object != m_objects.rend();
+             ++object)
+        {
+            if (*object != nullptr)
+            {
+                DestroyScripts(**object);
+            }
+        }
+    }
 
     // scene所有のGameObjectを追加します(name: 表示名)
     GameObject& Scene::CreateGameObject(std::string name)
@@ -3837,6 +4325,35 @@ namespace LamaPon
             }
         }
         return nullptr;
+    }
+
+    // タグからscene内のGameObjectを探します(tag: 検索タグ)
+    GameObject* Scene::FindGameObjectByTag(
+        const std::string_view tag) noexcept
+    {
+        for (const auto& object : m_objects)
+        {
+            if (object != nullptr && object->CompareTag(tag))
+            {
+                return object.get();
+            }
+        }
+        return nullptr;
+    }
+
+    // タグが一致するscene内のGameObjectを登録順に収集します(tag: 検索タグ)
+    std::vector<GameObject*> Scene::FindGameObjectsByTag(
+        const std::string_view tag) const
+    {
+        std::vector<GameObject*> results;
+        for (const auto& object : m_objects)
+        {
+            if (object != nullptr && object->CompareTag(tag))
+            {
+                results.push_back(object.get());
+            }
+        }
+        return results;
     }
 
     // scene所有vectorからGameObjectを削除します(gameObject: 削除対象)
@@ -3899,12 +4416,25 @@ namespace LamaPon
         const std::unordered_set<GameObjectId> destroyed{
             m_pendingDestroy.begin(), m_pendingDestroy.end()
         };
+        for (const auto& object : m_objects)
+        {
+            if (destroyed.contains(object->Id()))
+            {
+                if (m_impl->mainCamera == object.get())
+                {
+                    m_impl->mainCamera = nullptr;
+                }
+                DestroyScripts(*object);
+            }
+        }
         // 削除対象を親に持つobjectをrootへ切り離します。
         for (const auto& object : m_objects)
         {
-            // 削除される親への参照を解除します。
-            if (object->Parent() != nullptr
-                && destroyed.contains(object->Parent()->Id()))
+            const auto* parent = object->Parent();
+            // 親の子一覧から削除対象を外し、残る子も削除済みの親から切り離します。
+            if (destroyed.contains(object->Id())
+                || (parent != nullptr
+                    && destroyed.contains(parent->Id())))
             {
                 object->SetParent(nullptr);
             }
@@ -3920,33 +4450,302 @@ namespace LamaPon
         m_pendingDestroy.clear();
     }
 
+    // 予約された主Sceneを読み込み、成功時だけ旧object群を破棄します。
+    void Scene::ProcessPendingSceneLoad()
+    {
+        if (!m_scenes.HasPendingLoad())
+        {
+            return;
+        }
+        const auto path = m_scenes.TakePendingPath();
+        std::vector<GameObjectId> previousIds;
+        previousIds.reserve(m_objects.size());
+        for (const auto& object : m_objects)
+        {
+            previousIds.push_back(object->Id());
+        }
+        GameObject* const previousMainCamera = m_impl->mainCamera;
+        m_impl->mainCamera = nullptr;
+        bool loaded{};
+        try
+        {
+            loaded = Load(path);
+        }
+        catch (const std::exception& error)
+        {
+            m_scenes.RecordLoadFailure(error.what());
+        }
+        if (!loaded)
+        {
+            m_impl->mainCamera = previousMainCamera;
+            return;
+        }
+        for (const auto id : previousIds)
+        {
+            const auto object = std::find_if(
+                m_objects.begin(), m_objects.end(),
+                [id](const auto& candidate)
+                {
+                    return candidate->Id() == id;
+                });
+            if (object != m_objects.end())
+            {
+                static_cast<void>(DestroyGameObject(**object));
+            }
+        }
+        FlushDestroyedObjects();
+    }
+
     // 仮想pathのscene JSONを読み込みます(virtualPath: scene asset)
     bool Scene::Load(const std::filesystem::path& virtualPath)
     {
-        // asset APIへ渡す汎用区切りpathです。
-        const std::string path = virtualPath.generic_string();
+        // asset APIへ渡すUTF-8 pathです。
+        std::string path = PortablePathToUtf8(virtualPath);
+        if (path.empty())
+        {
+            m_scenes.RecordLoadFailure("Scene asset path is empty.");
+            return false;
+        }
+        if (path.starts_with("/assets/"))
+        {
+        }
+        else if (path.starts_with("assets/"))
+        {
+            path.insert(path.begin(), '/');
+        }
+        else if (path.front() == '/')
+        {
+            m_scenes.RecordLoadFailure(
+                "Scene path must be relative to assets or start with /assets/.");
+            return false;
+        }
+        else
+        {
+            path.insert(0, "/assets/");
+        }
+        for (const auto& part : PortablePathFromUtf8(path))
+        {
+            if (part == "..")
+            {
+                m_scenes.RecordLoadFailure(
+                    "Scene path cannot escape the assets directory.");
+                return false;
+            }
+        }
         // JavaScript側から確保されたJSON bufferです。
         char* loaded = LoadPortableAssetText(path.c_str());
         // assetが取得できなければ読み込みを中断します。
         if (loaded == nullptr)
         {
+            m_scenes.RecordLoadFailure("Could not open scene: " + path);
             return false;
         }
-        // scene JSONのparse先です。
-        Json document;
-        // JSON parse失敗をscene読み込み失敗として扱います。
-        try
+        // JSON bufferの所有権を自動で解放します。
+        const std::unique_ptr<char, decltype(&std::free)> loadedOwner(
+            loaded, &std::free);
+        // Scene JSONはportable runtimeが読む間だけ所有します。
+        const std::string document(loaded);
+        if (!LoadDocument(document, nullptr, nullptr, true))
         {
-            document = Json::parse(loaded);
-        }
-        // JSON parse exceptionを読み込み失敗へ変換します。
-        catch (const Json::exception&)
-        {
-            std::free(loaded);
+            m_scenes.RecordLoadFailure("Could not load scene: " + path);
             return false;
         }
-        std::free(loaded);
-        LoadPortableInputBindings();
+        m_scenes.RecordLoadSuccess(PortablePathFromUtf8(path));
+        return true;
+    }
+
+    // 仮想Prefab pathからPrefabを読み込みます(prefabPath: assets相対path)
+    GameObject& Scene::InstantiatePrefab(
+        const std::filesystem::path& prefabPath,
+        GameObject* parent)
+    {
+        // VFSから読み込むUTF-8 pathです。
+        std::string assetPath = PortablePathToUtf8(prefabPath);
+        if (assetPath.empty())
+        {
+            throw std::invalid_argument("Prefab asset path is empty.");
+        }
+        if (assetPath.starts_with("/assets/"))
+        {
+        }
+        else if (assetPath.starts_with("assets/"))
+        {
+            assetPath.insert(assetPath.begin(), '/');
+        }
+        else if (assetPath.front() == '/')
+        {
+            throw std::invalid_argument(
+                "Prefab path must be relative to assets or start with /assets/.");
+        }
+        else
+        {
+            assetPath.insert(0, "/assets/");
+        }
+        for (const auto& part : PortablePathFromUtf8(assetPath))
+        {
+            if (part == "..")
+            {
+                throw std::invalid_argument(
+                    "Prefab path cannot escape the assets directory.");
+            }
+        }
+        // VFSのPrefab文書を読み込みます。
+        char* loaded = LoadPortableAssetText(assetPath.c_str());
+        if (loaded == nullptr)
+        {
+            throw std::runtime_error("Could not open prefab: " + assetPath);
+        }
+        const std::unique_ptr<char, decltype(&std::free)> loadedOwner(
+            loaded, &std::free);
+        GameObject* root{};
+        if (!LoadDocument(std::string_view(loaded), parent, &root, false)
+            || root == nullptr)
+        {
+            throw std::runtime_error("Could not instantiate portable prefab.");
+        }
+        return *root;
+    }
+
+    // JSON文書をSceneへトランザクション復元します。
+    bool Scene::LoadDocument(
+        const std::string_view json,
+        GameObject* prefabParent,
+        GameObject** prefabRoot,
+        const bool restoreEnvironment) try
+    {
+        if (prefabRoot != nullptr)
+        {
+            *prefabRoot = nullptr;
+        }
+        // 指定parentが同じSceneに属することを確認します。
+        if (prefabParent != nullptr
+            && std::none_of(
+                m_objects.begin(), m_objects.end(),
+                [prefabParent](const auto& object)
+                {
+                    return object.get() == prefabParent;
+                }))
+        {
+            return false;
+        }
+        // SceneまたはPrefab JSONをparseします。
+        const Json document = Json::parse(json.begin(), json.end());
+        std::int64_t prefabRootId{};
+        if (prefabRoot != nullptr)
+        {
+            const auto objects = document.find("objects");
+            if (!document.is_object()
+                || document.value("format", std::string{}) != "LamaPonPrefab"
+                || document.value("version", 0) != 1
+                || objects == document.end()
+                || !objects->is_array()
+                || objects->empty()
+                || objects->size() > 4096)
+            {
+                return false;
+            }
+            prefabRootId = document.value("root", std::int64_t{});
+            std::unordered_set<std::int64_t> sourceIds;
+            std::unordered_set<std::int64_t> parentIds;
+            std::unordered_map<std::int64_t, std::int64_t> parentById;
+            std::size_t rootCount{};
+            bool declaredRootIsTopLevel{};
+            for (const auto& object : *objects)
+            {
+                if (!object.is_object())
+                {
+                    return false;
+                }
+                const auto idValue = object.find("id");
+                if (idValue == object.end() || !idValue->is_number_integer())
+                {
+                    return false;
+                }
+                const auto sourceId = idValue->get<std::int64_t>();
+                if (sourceId <= 0 || !sourceIds.insert(sourceId).second)
+                {
+                    return false;
+                }
+                const auto parentValue = object.find("parent");
+                if (parentValue == object.end() || parentValue->is_null())
+                {
+                    ++rootCount;
+                    declaredRootIsTopLevel = declaredRootIsTopLevel
+                        || sourceId == prefabRootId;
+                }
+                else if (parentValue->is_number_integer())
+                {
+                    const auto parentId = parentValue->get<std::int64_t>();
+                    parentIds.insert(parentId);
+                    parentById.emplace(sourceId, parentId);
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            if (!sourceIds.contains(prefabRootId) || rootCount != 1
+                || !declaredRootIsTopLevel)
+            {
+                return false;
+            }
+            for (const auto parentId : parentIds)
+            {
+                if (!sourceIds.contains(parentId))
+                {
+                    return false;
+                }
+            }
+            for (const auto& [sourceId, parentId] : parentById)
+            {
+                (void)parentId;
+                std::unordered_set<std::int64_t> visited;
+                auto cursor = sourceId;
+                while (true)
+                {
+                    const auto parent = parentById.find(cursor);
+                    if (parent == parentById.end())
+                    {
+                        break;
+                    }
+                    if (!visited.insert(cursor).second)
+                    {
+                        return false;
+                    }
+                    cursor = parent->second;
+                }
+            }
+        }
+
+        // Scene restoration is transactional so a malformed value does not
+        // leave half of its objects in the running game.
+        const auto objectCountBeforeLoad = m_objects.size();
+        const auto nextIdBeforeLoad = m_nextId;
+        GameObject* const mainCameraBeforeLoad = m_impl->mainCamera;
+        const auto rollback = [
+            this, objectCountBeforeLoad, nextIdBeforeLoad,
+            mainCameraBeforeLoad](Scene*) noexcept
+        {
+            for (std::size_t index = objectCountBeforeLoad;
+                 index < m_objects.size(); ++index)
+            {
+                auto& object = *m_objects[index];
+                object.SetParent(nullptr);
+                if (auto* parallax = object.GetComponent<ParallaxLayerComponent>())
+                {
+                    parallax->m_reference = nullptr;
+                }
+            }
+            m_objects.resize(objectCountBeforeLoad);
+            m_nextId = nextIdBeforeLoad;
+            m_impl->mainCamera = mainCameraBeforeLoad;
+        };
+        std::unique_ptr<Scene, decltype(rollback)> loadTransaction(this, rollback);
+
+        if (restoreEnvironment)
+        {
+            LoadPortableInputBindings();
+        }
         // 読み込み中に使うsource IDとobjectの対応表です。
         std::unordered_map<std::int64_t, GameObject*> bySourceId;
         // parent参照をobject生成後に解決する一時情報です。
@@ -3973,6 +4772,8 @@ namespace LamaPon
         std::vector<PendingParent> pendingParents;
         // object生成後に追加するdirectional light一覧です。
         std::vector<PendingDirectionalLight> directionalLights;
+        // Prefab rootの復元先を保持します。
+        GameObject* loadedPrefabRoot{};
         // JSON配列から2成分値を読みます(value: JSON値, fallback: 既定値)
         const auto float2 = [](const Json& value, DirectX::XMFLOAT2 fallback)
         {
@@ -4007,6 +4808,7 @@ namespace LamaPon
         {
             // object名は省略時に既定名を使います。
             auto& object = CreateGameObject(objectJson.value("name", "GameObject"));
+            object.SetTag(objectJson.value("tag", std::string{}));
             // scene JSON内のsource IDです。
             const std::int64_t sourceId = objectJson.value("id", 0ll);
             bySourceId[sourceId] = &object;
@@ -4036,6 +4838,17 @@ namespace LamaPon
             if (scale.size() >= 3)
                 object.GetTransform().scale = { scale[0], scale[1], scale[2] };
             object.SetEnabled(objectJson.value("enabled", true));
+            // 旧形式で物体直下に保存された可視設定を互換コンポーネントへ移します。
+            const bool legacyAlwaysVisible =
+                objectJson.value("alwaysVisible", false);
+            const float legacyCullingMargin =
+                objectJson.value("cullingMargin", 0.0f);
+            if (legacyAlwaysVisible || legacyCullingMargin > 0.0f)
+            {
+                object.AddComponent<RenderCullingComponent>(
+                    legacyAlwaysVisible,
+                    legacyCullingMargin);
+            }
             // object componentをtypeごとに復元します。
             for (const auto& component : objectJson.value("components", Json::array()))
             {
@@ -4048,6 +4861,10 @@ namespace LamaPon
                     auto& script = object.AddComponent<NativeScriptComponent>(
                         component.value("script", ""));
                     script.SetEnabled(component.value("enabled", true));
+                    if (prefabRoot != nullptr && script.Instance() == nullptr)
+                    {
+                        return false;
+                    }
                     // script生成に成功した場合だけpropertiesを読み込みます。
                     if (script.Instance() != nullptr)
                     {
@@ -4060,12 +4877,12 @@ namespace LamaPon
                 // Camera componentを復元します。
                 else if (type == "Camera")
                 {
-                    // objectへ追加したcameraです。
-                    auto& camera = object.AddComponent<CameraComponent>();
-                    camera.SetVerticalFieldOfView(
-                        component.value("verticalFieldOfView", 1.0471976f));
-                    camera.SetNearPlane(component.value("nearPlane", 0.1f));
-                    camera.SetFarPlane(component.value("farPlane", 1500.0f));
+                    // Windowsランタイムと同じ既定値でcameraを追加します。
+                    auto& camera = object.AddComponent<CameraComponent>(
+                        component.value(
+                            "verticalFieldOfView", DirectX::XM_PI / 4.0f),
+                        component.value("nearPlane", 0.1f),
+                        component.value("farPlane", 1000.0f));
                     camera.SetEnabled(component.value("enabled", true));
                 }
                 // directional light設定を後段へ保存します。
@@ -4080,6 +4897,22 @@ namespace LamaPon
                         component.value("intensity", 1.0f),
                         component.value("enabled", true),
                     });
+                }
+                else if (type == "PointLight" || type == "SpotLight")
+                {
+                    const auto color = component.contains("color")
+                        ? float3(component.at("color"), {1.0f, 1.0f, 1.0f})
+                        : type == "SpotLight" ? DirectX::XMFLOAT3{1.0f, 0.88f, 0.68f}
+                                              : DirectX::XMFLOAT3{1.0f, 0.72f, 0.42f};
+                    PortableLocalLightComponent* light{};
+                    if (type == "SpotLight")
+                        light = &object.AddComponent<SpotLightComponent>(color,
+                            component.value("intensity", 5.0f), component.value("range", 12.0f),
+                            component.value("innerConeAngle", 0.3926991f), component.value("outerConeAngle", 0.6108652f));
+                    else
+                        light = &object.AddComponent<PointLightComponent>(color,
+                            component.value("intensity", 3.0f), component.value("range", 8.0f));
+                    light->SetEnabled(component.value("enabled", true));
                 }
                 // primitive mesh componentを復元します。
                 else if (type == "MeshRenderer")
@@ -4132,23 +4965,23 @@ namespace LamaPon
                     auto& mesh = object.AddComponent<MeshRendererComponent>(
                         shape,
                         color,
-                        std::filesystem::path(
+                        PortablePathFromUtf8(
                             material.value("albedoTexture", "")));
-                    mesh.SetNormalTexturePath(std::filesystem::path(
+                    mesh.SetNormalTexturePath(PortablePathFromUtf8(
                         material.value("normalTexture", "")));
                     mesh.SetRoughness(material.value("roughness", 0.65f));
                     mesh.SetMetallic(material.value("metallic", 0.0f));
                     mesh.SetNormalStrength(material.value(
                         "normalStrength", 1.0f));
-                    mesh.SetRoughnessTexturePath(std::filesystem::path(
+                    mesh.SetRoughnessTexturePath(PortablePathFromUtf8(
                         material.value("roughnessTexture", "")));
-                    mesh.SetMetallicTexturePath(std::filesystem::path(
+                    mesh.SetMetallicTexturePath(PortablePathFromUtf8(
                         material.value("metallicTexture", "")));
-                    mesh.SetOcclusionTexturePath(std::filesystem::path(
+                    mesh.SetOcclusionTexturePath(PortablePathFromUtf8(
                         material.value("occlusionTexture", "")));
                     mesh.SetOcclusionStrength(material.value(
                         "occlusionStrength", 1.0f));
-                    mesh.SetEmissiveTexturePath(std::filesystem::path(
+                    mesh.SetEmissiveTexturePath(PortablePathFromUtf8(
                         material.value("emissiveTexture", "")));
                     // emissive colorが指定された場合だけ反映します。
                     if (material.contains("emissiveColor"))
@@ -4198,7 +5031,7 @@ namespace LamaPon
                             std::vector<float>{ 1.0f, 1.0f, 1.0f, 1.0f }));
                     // scene設定からmodel componentを生成します。
                     auto& model = object.AddComponent<ModelRendererComponent>(
-                        std::filesystem::path(component.value("model", "")),
+                        PortablePathFromUtf8(component.value("model", "")),
                         component.value("wireframe", false),
                         !materialAsset.empty()
                             || component.value("materialOverride", false),
@@ -4208,9 +5041,9 @@ namespace LamaPon
                             color.size() > 2 ? color[2] : 1.0f,
                             color.size() > 3 ? color[3] : 1.0f,
                         },
-                        std::filesystem::path(
+                        PortablePathFromUtf8(
                             material.value("albedoTexture", "")),
-                        std::filesystem::path(
+                        PortablePathFromUtf8(
                             material.value("normalTexture", "")),
                         material.value("roughness", 0.5f),
                         material.value("normalStrength", 1.0f));
@@ -4223,15 +5056,15 @@ namespace LamaPon
                     model.SetAnimationPlayOnStart(component.value(
                         "animationPlayOnStart", true));
                     model.SetMetallic(material.value("metallic", 0.0f));
-                    model.SetRoughnessTexturePath(std::filesystem::path(
+                    model.SetRoughnessTexturePath(PortablePathFromUtf8(
                         material.value("roughnessTexture", "")));
-                    model.SetMetallicTexturePath(std::filesystem::path(
+                    model.SetMetallicTexturePath(PortablePathFromUtf8(
                         material.value("metallicTexture", "")));
-                    model.SetOcclusionTexturePath(std::filesystem::path(
+                    model.SetOcclusionTexturePath(PortablePathFromUtf8(
                         material.value("occlusionTexture", "")));
                     model.SetOcclusionStrength(material.value(
                         "occlusionStrength", 1.0f));
-                    model.SetEmissiveTexturePath(std::filesystem::path(
+                    model.SetEmissiveTexturePath(PortablePathFromUtf8(
                         material.value("emissiveTexture", "")));
                     // emissive color指定がある場合だけ上書きします。
                     if (material.contains("emissiveColor"))
@@ -4306,7 +5139,7 @@ namespace LamaPon
                                 { 1.0f, 1.0f, 1.0f, 0.0f })
                             : DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 0.0f },
                         shape,
-                        std::filesystem::path(component.value("texture", "")));
+                        PortablePathFromUtf8(component.value("texture", "")));
                     // gravity指定がある場合だけ反映します。
                     if (component.contains("gravity"))
                     {
@@ -4346,11 +5179,20 @@ namespace LamaPon
                 {
                     // scene設定からaudio sourceを生成します。
                     auto& audio = object.AddComponent<AudioSourceComponent>(
-                        std::filesystem::path(component.value("audio", "")),
+                        PortablePathFromUtf8(component.value("audio", "")),
                         component.value("volume", 1.0f));
                     audio.SetLoop(component.value("loop", false));
                     audio.SetPitch(component.value("pitch", 0.0f));
                     audio.SetPan(component.value("pan", 0.0f));
+                    // 保存した音声バスをcomponentへ保持します。
+                    const int audioBus = component.value(
+                        "bus", static_cast<int>(AudioBus::Effects));
+                    if (audioBus < 0
+                        || audioBus >= static_cast<int>(AudioBus::Count))
+                    {
+                        return false;
+                    }
+                    audio.SetBus(static_cast<AudioBus>(audioBus));
                     audio.SetSpatial(component.value("spatial", false));
                     audio.SetMinimumDistance(component.value(
                         "minimumDistance", 1.0f));
@@ -4373,7 +5215,7 @@ namespace LamaPon
                     // scene設定からtransform animatorを生成します。
                     auto& animator =
                         object.AddComponent<TransformAnimatorComponent>(
-                            std::filesystem::path(
+                            PortablePathFromUtf8(
                                 component.value("clip", "")),
                             component.value("speed", 1.0f),
                             component.value("loop", true),
@@ -4433,6 +5275,43 @@ namespace LamaPon
                             : DirectX::XMFLOAT2{ 220.0f, 56.0f });
                     rect.SetEnabled(component.value("enabled", true));
                 }
+                else if (type == "UICanvas")
+                {
+                    auto& canvas = object.AddComponent<UICanvasComponent>(
+                        component.contains("referenceResolution") ? float2(component.at("referenceResolution"), {1280,720}) : DirectX::XMFLOAT2{1280,720},
+                        component.value("matchWidthOrHeight", 0.5f));
+                    canvas.SetEnabled(component.value("enabled", true));
+                }
+                else if (type == "UIImage" || type == "UIButton")
+                {
+                    PortableUIVisualComponent* image{};
+                    if (type == "UIButton")
+                    {
+                        auto& button = object.AddComponent<UIButtonComponent>(component.value("label", std::string{"ボタン"}));
+                        button.SetFontFamily(component.value("fontFamily", std::string{"Yu Gothic UI"}));
+                        button.SetFontSize(component.value("fontSize", 24.0f));
+                        button.SetInteractable(component.value("interactable", true));
+                        button.SetNavigationEnabled(component.value("navigationEnabled", true));
+                        button.SetCircularHitArea(component.value("circularHitArea", false));
+                        button.SetReloadCurrentScene(component.value("reloadCurrentScene", false));
+                        button.SetClickEventName(
+                            component.value("clickEvent", std::string{}));
+                        button.SetTargetScene(PortablePathFromUtf8(
+                            component.value("targetScene", std::string{})));
+                        if (component.contains("normalColor")) button.SetNormalColor(float4(component.at("normalColor"), {1,1,1,1}));
+                        if (component.contains("hoveredColor")) button.SetHoveredColor(float4(component.at("hoveredColor"), {1,1,1,1}));
+                        if (component.contains("pressedColor")) button.SetPressedColor(float4(component.at("pressedColor"), {1,1,1,1}));
+                        if (component.contains("disabledColor")) button.SetDisabledColor(float4(component.at("disabledColor"), {1,1,1,1}));
+                        if (component.contains("textColor")) button.SetTextColor(float4(component.at("textColor"), {1,1,1,1}));
+                        image = &button;
+                    }
+                    else image = &object.AddComponent<UIImageComponent>();
+                    image->SetTexturePath(PortablePathFromUtf8(component.value("texture", "")));
+                    image->SetSortOrder(component.value("sortOrder", 0));
+                    image->SetEnabled(component.value("enabled", true));
+                    if (component.contains("fallbackSize")) image->SetFallbackSize(float2(component.at("fallbackSize"), {220,56}));
+                    if (component.contains("color")) image->SetColor(float4(component.at("color"), {1,1,1,1}));
+                }
                 // TextRenderer componentを復元します。
                 else if (type == "TextRenderer")
                 {
@@ -4466,7 +5345,7 @@ namespace LamaPon
                             ? TextVerticalAlignment::Bottom
                             : TextVerticalAlignment::Top);
                     text.SetSortOrder(component.value("sortOrder", 0));
-                    text.SetFontAsset(std::filesystem::path(
+                    text.SetFontAsset(PortablePathFromUtf8(
                         component.value("fontAsset", "")));
                     text.SetEnabled(component.value("enabled", true));
                 }
@@ -4482,7 +5361,7 @@ namespace LamaPon
                             ? float4(component.at("color"),
                                 { 1.0f, 1.0f, 1.0f, 1.0f })
                             : DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f },
-                        std::filesystem::path(component.value("texture", "")));
+                        PortablePathFromUtf8(component.value("texture", "")));
                     // pivot指定がある場合だけ反映します。
                     if (component.contains("pivot"))
                     {
@@ -4585,34 +5464,57 @@ namespace LamaPon
                 pending.object->SetParent(found->second);
             }
         }
+        // source IDから2Dキャラクター部品間の参照を解決します。
         CharacterRig2DRuntime::ResolveReferences(bySourceId);
-
-        // scene JSONに指定されたmain camera source IDです。
-        const auto mainCameraId = document.value("mainCamera", 0ll);
-        // 指定IDがcamera componentを持つ場合に採用します。
-        if (const auto camera = bySourceId.find(mainCameraId);
-            camera != bySourceId.end()
-            && camera->second->GetComponent<CameraComponent>() != nullptr)
+        if (prefabRoot != nullptr)
         {
-            m_impl->mainCamera = camera->second;
-        }
-        // main camera未指定なら最初のcamera componentを選びます。
-        if (m_impl->mainCamera == nullptr)
-        {
-            // scene所有objectからcameraを探します。
-            for (const auto& object : m_objects)
+            const auto found = bySourceId.find(prefabRootId);
+            if (found == bySourceId.end())
             {
-                // 最初に見つかったcameraをmain cameraにします。
-                if (object->GetComponent<CameraComponent>() != nullptr)
+                return false;
+            }
+            loadedPrefabRoot = found->second;
+            if (prefabParent != nullptr)
+            {
+                loadedPrefabRoot->SetParent(prefabParent);
+            }
+        }
+
+        if (restoreEnvironment)
+        {
+            // scene JSONに指定されたmain camera source IDです。
+            const auto mainCameraId = document.value("mainCamera", 0ll);
+            // 指定IDがcamera componentを持つ場合に採用します。
+            if (const auto camera = bySourceId.find(mainCameraId);
+                camera != bySourceId.end()
+                && camera->second->GetComponent<CameraComponent>() != nullptr)
+            {
+                m_impl->mainCamera = camera->second;
+            }
+            // main camera未指定なら最初のcamera componentを選びます。
+            if (m_impl->mainCamera == nullptr)
+            {
+                // この文書で新しく読んだobjectからcameraを探します。
+                for (std::size_t objectIndex = objectCountBeforeLoad;
+                     objectIndex < m_objects.size();
+                     ++objectIndex)
                 {
-                    m_impl->mainCamera = object.get();
-                    break;
+                    // 最初に見つかったcameraをmain cameraにします。
+                    if (m_objects[objectIndex]->GetComponent<CameraComponent>()
+                        != nullptr)
+                    {
+                        m_impl->mainCamera = m_objects[objectIndex].get();
+                        break;
+                    }
                 }
             }
         }
         // parallaxの参照source IDをobject pointerへ解決します。
-        for (const auto& object : m_objects)
+        for (std::size_t objectIndex = objectCountBeforeLoad;
+             objectIndex < m_objects.size();
+             ++objectIndex)
         {
+            const auto& object = m_objects[objectIndex];
             // 外部参照を持つparallax componentだけ解決します。
             if (auto* parallax = object->GetComponent<ParallaxLayerComponent>();
                 parallax != nullptr && parallax->m_referenceSourceId != 0)
@@ -4626,6 +5528,8 @@ namespace LamaPon
             }
         }
 
+        if (restoreEnvironment)
+        {
         // scene環境設定のJSON objectです。
         const auto environment = document.value("environment", Json::object());
         // ambient color成分の配列です。
@@ -4634,13 +5538,25 @@ namespace LamaPon
         const auto fog = environment.value("fog", Json::object());
         // fog color成分の配列です。
         const auto fogColor = fog.value("color", std::vector<float>{});
+        // 環境値をすべて読み終えてからrenderer stateを変更します。
+        const bool fogEnabled = fog.value("enabled", false);
+        const float fogStartDistance = fog.value("startDistance", 110.0f);
+        const float fogEndDistance = fog.value("endDistance", 520.0f);
+        const float ambientIntensity = environment.value("ambientIntensity", 0.52f);
+        // sky設定のJSON objectです。
+        const auto sky = environment.value("sky", Json::object());
+        // sky top color成分の配列です。
+        const auto top = sky.value("topColor", std::vector<float>{});
+        // sky horizon color成分の配列です。
+        const auto horizon = sky.value("horizonColor", std::vector<float>{});
+        const bool skyEnabled = sky.value("enabled", false);
         m_renderer->SetFog({
-            fog.value("enabled", false),
+            fogEnabled,
             fogColor.size() >= 3
                 ? Web::Color{ fogColor[0], fogColor[1], fogColor[2], 1.0f }
                 : Web::Color{},
-            fog.value("startDistance", 110.0f),
-            fog.value("endDistance", 520.0f),
+            fogStartDistance,
+            fogEndDistance,
         });
         // scene directional lightの既定方向です。
         Web::Vec3 lightDirection{ 0.6808f, -0.4078f, 0.6083f };
@@ -4657,7 +5573,7 @@ namespace LamaPon
                 continue;
             }
             // light objectのworld transformです。
-            const Mat4 world = WorldMatrix(*light.object);
+            const Mat4 world = ComputeWorldMatrix(*light.object);
             lightDirection = LamaPon::Web::Normalize({
                 -world.values[8], -world.values[9], -world.values[10] });
             lightColor = {
@@ -4673,19 +5589,13 @@ namespace LamaPon
             ambient.size() >= 3
                 ? Web::Color{ ambient[0], ambient[1], ambient[2], 1.0f }
                 : Web::Color{ 1.0f, 1.0f, 1.0f, 1.0f },
-            environment.value("ambientIntensity", 0.52f),
+            ambientIntensity,
             lightDirection,
             lightColor,
             lightIntensity,
         });
-        // sky設定のJSON objectです。
-        const auto sky = environment.value("sky", Json::object());
-        // sky top color成分の配列です。
-        const auto top = sky.value("topColor", std::vector<float>{});
-        // sky horizon color成分の配列です。
-        const auto horizon = sky.value("horizonColor", std::vector<float>{});
         m_renderer->SetSky({
-            sky.value("enabled", false),
+            skyEnabled,
             top.size() >= 3
                 ? Web::Color{ top[0], top[1], top[2], 1.0f }
                 : Web::Color{},
@@ -4698,56 +5608,144 @@ namespace LamaPon
         {
             m_impl->clearColor = { horizon[0], horizon[1], horizon[2], 1.0f };
         }
+        }
+        loadTransaction.release();
+        if (prefabRoot != nullptr)
+        {
+            *prefabRoot = loadedPrefabRoot;
+            PrepareScripts(false, false);
+        }
         return true;
     }
-
-    // enabled object上のscriptとplay-on-start音声を開始します。
-    void Scene::StartScripts()
+    catch (const Json::exception&)
     {
-        FlushDestroyedObjects();
-        // object生成・削除で変わるvectorをindexで反復します。
-        for (std::size_t objectIndex{}; objectIndex < m_objects.size(); ++objectIndex)
+        return false;
+    }
+
+    // Awake・有効状態通知・必要なStartをScene内Scriptへ適用します。
+    void Scene::PrepareScripts(
+        const bool startActiveScripts,
+        const bool flushDestroyedObjects)
+    {
+        if (flushDestroyedObjects)
         {
-            // 無効objectのcomponentは開始しません。
-            if (!m_objects[objectIndex]->IsEnabled())
+            FlushDestroyedObjects();
+        }
+        for (std::size_t objectIndex{};
+             objectIndex < m_objects.size();
+             ++objectIndex)
+        {
+            GameObject& object = *m_objects[objectIndex];
+            for (std::size_t componentIndex{};
+                 componentIndex < object.Components().size();
+                 ++componentIndex)
             {
-                continue;
-            }
-            // object componentの開始処理を行います。
-            for (const auto& component : m_objects[objectIndex]->Components())
-            {
-                // 無効componentは開始しません。
-                if (!component->IsEnabled())
+                Component* component =
+                    object.Components()[componentIndex].get();
+                auto* native = dynamic_cast<NativeScriptComponent*>(component);
+                Script* script = native != nullptr
+                    ? native->Instance()
+                    : nullptr;
+                if (script != nullptr)
                 {
-                    continue;
+                    if (!script->m_awake)
+                    {
+                        script->m_awake = true;
+                        script->Awake();
+                    }
+                    const bool active = object.IsActiveInHierarchy()
+                        && native->IsEnabled();
+                    if (script->m_active != active)
+                    {
+                        script->m_active = active;
+                        if (active)
+                        {
+                            script->OnEnable();
+                        }
+                        else
+                        {
+                            script->OnDisable();
+                        }
+                    }
+                    const bool activeAfterNotification =
+                        object.IsActiveInHierarchy() && native->IsEnabled();
+                    if (startActiveScripts && activeAfterNotification
+                        && !script->m_started)
+                    {
+                        script->m_started = true;
+                        script->Start();
+                    }
                 }
-                // native script componentへのdowncastです。
-                auto* native = dynamic_cast<NativeScriptComponent*>(component.get());
-                // scriptがないcomponentではnullになります。
-                Script* script = native != nullptr ? native->Instance() : nullptr;
-                // 未開始scriptだけStartを一度呼びます。
-                if (script != nullptr && !script->m_started)
+                if (startActiveScripts
+                    && object.IsActiveInHierarchy())
                 {
-                    script->m_started = true;
-                    script->Start();
-                }
-                // audio source componentへのdowncastです。
-                auto* audio = dynamic_cast<AudioSourceComponent*>(component.get());
-                // 有効なplay-on-start音源を一度だけ再生します。
-                if (audio != nullptr && audio->IsEnabled()
-                    && audio->m_playOnStart)
-                {
-                    audio->m_playOnStart = false;
-                    audio->Play();
+                    if (auto* audio = dynamic_cast<AudioSourceComponent*>(
+                        component);
+                    audio != nullptr && audio->IsEnabled()
+                            && audio->m_playOnStart
+                            && !audio->m_playOnStartConsumed)
+                    {
+                        audio->m_playOnStartConsumed = true;
+                        audio->Play();
+                    }
                 }
             }
         }
     }
 
+    // Script instanceへ有効解除と破棄を通知します。
+    void Scene::DestroyScripts(GameObject& gameObject) noexcept
+    {
+        for (const auto& component : gameObject.Components())
+        {
+            auto* native = dynamic_cast<NativeScriptComponent*>(
+                component.get());
+            auto* script = native != nullptr
+                ? native->Instance()
+                : nullptr;
+            if (script == nullptr)
+            {
+                continue;
+            }
+            if (script->m_active)
+            {
+                script->m_active = false;
+                try
+                {
+                    script->OnDisable();
+                }
+                catch (...)
+                {
+                    Logger::Instance().Error(
+                        "Portable Script OnDisable threw during destruction.");
+                }
+            }
+            if (script->m_awake)
+            {
+                script->m_awake = false;
+                try
+                {
+                    script->OnDestroy();
+                }
+                catch (...)
+                {
+                    Logger::Instance().Error(
+                        "Portable Script OnDestroy threw during destruction.");
+                }
+            }
+        }
+    }
+
+    // enabled object上のscriptとplay-on-start音声を開始します。
+    void Scene::StartScripts()
+    {
+        PrepareScripts(true);
+    }
+
     // script fixed update、rigidbodyと3D接触を処理します(deltaTime: 固定step秒)
     void Scene::FixedUpdate(float deltaTime)
     {
-        FlushDestroyedObjects();
+        PrepareScripts(false);
         // enabled objectのnative script fixed updateを呼びます。
         for (const auto& object : m_objects)
         {
@@ -4805,7 +5803,7 @@ namespace LamaPon
                                   const BoxCollider3DComponent& collider)
         {
             // 所有者のworld transformです。
-            const Mat4 world = WorldMatrix(object);
+            const Mat4 world = ComputeWorldMatrix(object);
             // collider sizeのローカル半径です。
             const Vec3 localHalf{
                 std::abs(collider.m_size.x) * 0.5f,
@@ -4827,11 +5825,28 @@ namespace LamaPon
                 },
             };
         };
-        // 接触イベントを有効なnative scriptへ通知します(object: 所有者, event: 接触情報, entered: 初回接触)
-        const auto dispatchCollision = [](GameObject& object,
-                                          const CollisionEvent& event,
-                                          const bool entered)
+        enum class ContactPhase
         {
+            Enter,
+            Stay,
+            Exit,
+        };
+        // 接触イベントを有効なnative scriptへ通知します(object: 所有者, other: 相手, 接触情報)
+        const auto dispatchContact = [](GameObject& object,
+                                        GameObject& other,
+                                        const DirectX::XMFLOAT3& normal,
+                                        const DirectX::XMFLOAT3& point,
+                                        const float penetration,
+                                        const bool isTrigger,
+                                        const ContactPhase phase)
+        {
+            const CollisionEvent event{
+                other,
+                normal,
+                point,
+                penetration,
+                isTrigger,
+            };
             // owner componentへcollision callbackを通知します。
             for (const auto& component : object.Components())
             {
@@ -4844,21 +5859,41 @@ namespace LamaPon
                 {
                     continue;
                 }
-                // 新規接触ならenter callbackを呼びます。
-                if (entered)
+                if (isTrigger)
                 {
-                    native->Instance()->OnCollisionEnter(event);
+                    if (phase == ContactPhase::Enter)
+                    {
+                        native->Instance()->OnTriggerEnter(event);
+                    }
+                    else if (phase == ContactPhase::Stay)
+                    {
+                        native->Instance()->OnTriggerStay(event);
+                    }
+                    else
+                    {
+                        native->Instance()->OnTriggerExit(event);
+                    }
                 }
-                // 継続接触ならstay callbackを呼びます。
                 else
                 {
-                    native->Instance()->OnCollisionStay(event);
+                    if (phase == ContactPhase::Enter)
+                    {
+                        native->Instance()->OnCollisionEnter(event);
+                    }
+                    else if (phase == ContactPhase::Stay)
+                    {
+                        native->Instance()->OnCollisionStay(event);
+                    }
+                    else
+                    {
+                        native->Instance()->OnCollisionExit(event);
+                    }
                 }
             }
         };
 
         // このfixed stepで検出した接触pair集合です。
-        std::unordered_set<Impl::ContactKey, Impl::ContactHash> contacts;
+        std::unordered_map<Impl::ContactKey, bool, Impl::ContactHash> contacts;
         // 1つ目のcollider候補を走査します。
         for (std::size_t firstIndex{}; firstIndex < m_objects.size(); ++firstIndex)
         {
@@ -4939,25 +5974,36 @@ namespace LamaPon
                     std::min(first.Id(), second.Id()),
                     std::max(first.Id(), second.Id()),
                 };
-                contacts.insert(key);
-                // 直前stepの接触集合からenter/stayを判定します。
-                const bool entered = !m_impl->contacts.contains(key);
                 // いずれかがtriggerなら物理補正しません。
                 const bool trigger = firstCollider->m_trigger
                     || secondCollider->m_trigger;
+                contacts.insert_or_assign(key, trigger);
+                // 直前stepの接触集合からenter/stayを判定します。
+                const auto previous = m_impl->contacts.find(key);
+                const auto phase = previous == m_impl->contacts.end()
+                    ? ContactPhase::Enter
+                    : ContactPhase::Stay;
                 // 2つのbox中心の中間点です。
                 const Vec3 point = (firstBounds.center + secondBounds.center)
                     * 0.5f;
                 // 1つ目objectへ接触法線向きのeventを送ります。
-                dispatchCollision(first, {
-                    DirectXVector(normal), DirectXVector(point),
-                    penetration, trigger,
-                }, entered);
+                dispatchContact(
+                    first,
+                    second,
+                    DirectXVector(normal),
+                    DirectXVector(point),
+                    penetration,
+                    trigger,
+                    phase);
                 // 2つ目objectへ反対向きのeventを送ります。
-                dispatchCollision(second, {
-                    DirectXVector(normal * -1.0f), DirectXVector(point),
-                    penetration, trigger,
-                }, entered);
+                dispatchContact(
+                    second,
+                    first,
+                    DirectXVector(normal * -1.0f),
+                    DirectXVector(point),
+                    penetration,
+                    trigger,
+                    phase);
 
                 // 接触解決対象のrigidbodyです。
                 auto* firstBody = first.GetComponent<RigidbodyComponent>();
@@ -5026,13 +6072,185 @@ namespace LamaPon
                 }
             }
         }
+        // 前stepにはあった接触が終わった場合、現存objectへexitを通知します。
+        for (const auto& [previous, wasTrigger] : m_impl->contacts)
+        {
+            if (contacts.contains(previous))
+            {
+                continue;
+            }
+            GameObject* first{};
+            GameObject* second{};
+            for (const auto& object : m_objects)
+            {
+                if (object->Id() == previous.first)
+                {
+                    first = object.get();
+                }
+                else if (object->Id() == previous.second)
+                {
+                    second = object.get();
+                }
+            }
+            if (first == nullptr || second == nullptr)
+            {
+                continue;
+            }
+            const DirectX::XMFLOAT3 zero{};
+            dispatchContact(
+                *first,
+                *second,
+                zero,
+                zero,
+                0.0f,
+                wasTrigger,
+                ContactPhase::Exit);
+            dispatchContact(
+                *second,
+                *first,
+                zero,
+                zero,
+                0.0f,
+                wasTrigger,
+                ContactPhase::Exit);
+        }
         m_impl->contacts = std::move(contacts);
     }
 
     // script・particle・animation・入力componentを更新します(deltaTime: frame秒)
     void Scene::Update(float deltaTime)
     {
-        FlushDestroyedObjects();
+        ProcessPendingSceneLoad();
+        PrepareScripts(true);
+        struct ButtonCandidate final
+        {
+            UIButtonComponent* button;
+            GameObjectId owner;
+            DirectX::XMFLOAT2 center;
+        };
+        std::vector<ButtonCandidate> navigation;
+        // Script::Updateから同じフレームのクリックを参照できるよう先に更新します。
+        for (const auto& object : m_objects)
+            for (const auto& component : object->Components())
+                if (auto* button = dynamic_cast<UIButtonComponent*>(component.get()))
+                {
+                    button->m_clicked = false;
+                    button->m_focused = false;
+                    if (!object->IsEnabled() || !button->IsEnabled() || !button->m_interactable)
+                    { button->m_pressed = button->m_hovered = false; continue; }
+                    const auto& pointer = m_graphics.Input().Pointer();
+                    UIRect area;
+                    if (const auto* rect = object->GetComponent<UIRectTransformComponent>())
+                        area = rect->Resolve(m_graphics.UIWidth(), m_graphics.UIHeight());
+                    else
+                    {
+                        const auto world = ComputeWorldMatrix(*object);
+                        const auto size = button->FallbackSize();
+                        area = {{world.values[12]-size.x*0.5f, world.values[13]-size.y*0.5f},
+                                {world.values[12]+size.x*0.5f, world.values[13]+size.y*0.5f}};
+                    }
+                    const auto size = area.Size();
+                    if (button->m_navigationEnabled && size.x > 0 && size.y > 0
+                        && std::isfinite(area.minimum.x) && std::isfinite(area.minimum.y)
+                        && std::isfinite(area.maximum.x) && std::isfinite(area.maximum.y))
+                        navigation.push_back({button, object->Id(),
+                            {area.minimum.x + size.x * 0.5f, area.minimum.y + size.y * 0.5f}});
+                    const float x = pointer.position.x, y = pointer.position.y;
+                    button->m_hovered = pointer.valid && size.x > 0 && size.y > 0
+                        && x >= area.minimum.x && x <= area.maximum.x && y >= area.minimum.y && y <= area.maximum.y;
+                    if (button->m_hovered && button->m_circular)
+                    {
+                        const float dx = (x - (area.minimum.x+size.x*0.5f)) / (size.x*0.5f);
+                        const float dy = (y - (area.minimum.y+size.y*0.5f)) / (size.y*0.5f);
+                        button->m_hovered = dx*dx + dy*dy <= 1.0f;
+                    }
+                    const auto& left = pointer.Button(PointerButton::Left);
+                    if (left.pressed) button->m_pressed = button->m_hovered;
+                    if (left.released) { button->m_clicked = button->m_pressed && button->m_hovered; button->m_pressed = false; }
+                    if (!left.down && !left.released) button->m_pressed = false;
+                }
+        auto focused = std::find_if(navigation.begin(), navigation.end(), [&](const ButtonCandidate& candidate) {
+            return candidate.owner == m_impl->focusedButtonOwner && candidate.button == m_impl->focusedButton;
+        });
+        const auto& input = m_graphics.Input();
+        const auto& pointer = input.Pointer();
+        if (pointer.pressed || std::abs(pointer.delta.x) > 1 || std::abs(pointer.delta.y) > 1
+            || input.WasPressed("Cancel"))
+            focused = navigation.end();
+        else if (!navigation.empty())
+        {
+            const bool next = input.WasPressed("UINext"), previous = input.WasPressed("UIPrevious");
+            const float dx = static_cast<float>(input.WasPressed("UIRight")) - static_cast<float>(input.WasPressed("UILeft"));
+            const float dy = static_cast<float>(input.WasPressed("UIDown")) - static_cast<float>(input.WasPressed("UIUp"));
+            if (next || previous)
+            {
+                if (focused == navigation.end()) focused = previous ? navigation.end() - 1 : navigation.begin();
+                else
+                {
+                    const auto index = focused - navigation.begin();
+                    const auto count = static_cast<std::ptrdiff_t>(navigation.size());
+                    focused = navigation.begin() + (index + count + (previous ? -1 : 1)) % count;
+                }
+            }
+            else if (dx != 0 || dy != 0)
+            {
+                if (focused == navigation.end()) focused = navigation.begin();
+                else
+                {
+                    auto nearest = focused;
+                    float best = std::numeric_limits<float>::infinity();
+                    for (auto candidate = navigation.begin(); candidate != navigation.end(); ++candidate)
+                    {
+                        const float x = candidate->center.x - focused->center.x;
+                        const float y = candidate->center.y - focused->center.y;
+                        if (x * dx + y * dy <= 0.01f) continue;
+                        const float lateral = x * dy - y * dx;
+                        const float score = x*x + y*y + 3*lateral*lateral;
+                        if (score < best) { best = score; nearest = candidate; }
+                    }
+                    focused = nearest;
+                }
+            }
+            if (input.WasPressed("Submit") && focused != navigation.end())
+            {
+                focused->button->m_clicked = true;
+            }
+        }
+        m_impl->focusedButton = focused != navigation.end() ? focused->button : nullptr;
+        m_impl->focusedButtonOwner = focused != navigation.end() ? focused->owner : 0;
+        if (focused != navigation.end()) focused->button->m_focused = true;
+        // Pointer・keyboard・gamepadで確定したクリックを共通イベントとScene要求へ反映します。
+        for (const auto& object : m_objects)
+        {
+            for (const auto& component : object->Components())
+            {
+                auto* button = dynamic_cast<UIButtonComponent*>(component.get());
+                if (button == nullptr || !button->m_clicked) continue;
+                if (!button->m_clickEventName.empty())
+                {
+                    EventArgs eventArgs;
+                    eventArgs.sender = object.get();
+                    m_events.Publish(button->m_clickEventName, eventArgs);
+                }
+                if (button->m_reloadCurrentScene)
+                {
+                    if (!m_scenes.RequestReload())
+                    {
+                        Logger::Instance().Error(
+                            "UI Button scene reload failed: "
+                            + m_scenes.LastError());
+                    }
+                }
+                else if (!button->m_targetScene.empty()
+                    && !m_scenes.RequestLoad(button->m_targetScene))
+                {
+                    Logger::Instance().Error(
+                        "UI Button scene transition failed: "
+                        + PortablePathToUtf8(button->m_targetScene)
+                        + " | " + m_scenes.LastError());
+                }
+            }
+        }
         // enabled scene objectだけを更新します。
         for (const auto& object : m_objects)
         {
@@ -5182,7 +6400,7 @@ namespace LamaPon
                         && audio->m_handle != 0)
                 {
                     // ownerのworld位置を取得します。
-                    const Mat4 world = WorldMatrix(*object);
+                    const Mat4 world = ComputeWorldMatrix(*object);
                     m_audio->SetPosition(
                         audio->m_handle,
                         world.values[12],
@@ -5192,13 +6410,63 @@ namespace LamaPon
 #endif
             }
         }
-        // 通常の更新の後に2Dキャラクター部品を進めます。
+        // 2Dキャラクター部品の変形を進めます。
         CharacterRig2DRuntime::Update(m_objects, deltaTime);
+        // 通常更新とフレーム内コンポーネント処理をすべて終えてからLateUpdateを呼びます。
+        for (const auto& object : m_objects)
+        {
+            if (!object->IsEnabled())
+            {
+                continue;
+            }
+            for (const auto& component : object->Components())
+            {
+                if (!component->IsEnabled())
+                {
+                    continue;
+                }
+                auto* native = dynamic_cast<NativeScriptComponent*>(
+                    component.get());
+                auto* script = native != nullptr
+                    ? native->Instance()
+                    : nullptr;
+                if (script != nullptr && script->m_started)
+                {
+                    script->LateUpdate(deltaTime);
+                }
+            }
+        }
     }
 
     // scene objectをworld描画しPortable UIを同期します。
     void Scene::Render()
     {
+        std::vector<Web::LocalLight3D> localLights;
+        localLights.reserve(8);
+        for (const auto& object : m_objects)
+        {
+            if (!object->IsEnabled()) continue;
+            for (const auto& component : object->Components())
+            {
+                auto* light = dynamic_cast<PortableLocalLightComponent*>(component.get());
+                if (!light || !light->IsEnabled() || localLights.size() >= 8) continue;
+                Web::LocalLight3D value;
+                value.position = WebVector(light->WorldPosition());
+                const auto color = light->Color();
+                value.color = {color.x, color.y, color.z, 1.0f};
+                value.intensity = light->Intensity();
+                value.range = light->Range();
+                if (auto* spot = dynamic_cast<SpotLightComponent*>(light))
+                {
+                    value.spot = true;
+                    value.direction = WebVector(spot->WorldDirection());
+                    value.innerConeAngle = spot->InnerConeAngle();
+                    value.outerConeAngle = spot->OuterConeAngle();
+                }
+                localLights.push_back(value);
+            }
+        }
+        m_renderer->SetLocalLights(localLights);
         BeginPortableUiFrame();
         // camera未指定時の右方向です。
         Vec3 cameraRight{ 1.0f, 0.0f, 0.0f };
@@ -5210,7 +6478,7 @@ namespace LamaPon
                 : FindComponentOfType<CameraComponent>())
         {
             // camera ownerのworld transformです。
-            const Mat4 world = WorldMatrix(camera->Owner());
+            const Mat4 world = ComputeWorldMatrix(camera->Owner());
             // camera world位置です。
             const Vec3 position{
                 world.values[12], world.values[13], world.values[14] };
@@ -5248,7 +6516,7 @@ namespace LamaPon
                 continue;
             }
             // objectのworld model matrixです。
-            const Mat4 model = WorldMatrix(*object);
+            const Mat4 model = ComputeWorldMatrix(*object);
             // 各componentの描画処理を行います。
             for (const auto& component : object->Components())
             {
@@ -5385,55 +6653,26 @@ namespace LamaPon
                                 WebIndices(part.indices));
                             part.dirty = false;
                             }
-                            // albedo textureが未作成なら読み込みます。
-                            if (part.webTexture == 0 && !part.albedoTexture.empty())
-                            {
-                                // Web rendererへ渡すvirtual asset pathです。
-                                const std::string path = VirtualAssetPath(
-                                part.albedoTexture);
-                            part.webTexture = m_renderer->CreateTexture(path.c_str());
-                            }
-                            // normal textureが未作成なら読み込みます。
-                            if (part.webNormalTexture == 0
-                                && !part.normalTexture.empty())
-                            {
-                                // Web rendererへ渡すvirtual asset pathです。
-                                const std::string path = VirtualAssetPath(
-                                part.normalTexture);
-                            part.webNormalTexture = m_renderer->CreateTexture(
-                                path.c_str());
-                            }
-                            // metallic-roughness textureを初回だけ読み込みます。
-                            if (part.webMetallicRoughnessTexture == 0
-                                && !part.metallicRoughnessTexture.empty())
-                            {
-                                // Web rendererへ渡すvirtual asset pathです。
-                                const std::string path = VirtualAssetPath(
-                                part.metallicRoughnessTexture);
-                            part.webMetallicRoughnessTexture =
-                                m_renderer->CreateTexture(path.c_str());
-                            }
-                            // 任意material textureを初回だけ生成します(id: GPU texture, asset: source path)
                             const auto loadMaterialTexture = [this](
-                            std::uint32_t& id,
-                            const std::filesystem::path& asset)
+                                std::uint32_t& id, const std::filesystem::path& asset,
+                                const std::shared_ptr<const std::vector<unsigned char>>& encoded = {})
                             {
-                                // handle未作成でasset指定がある場合だけ読み込みます。
-                                if (id == 0 && !asset.empty())
+                                if (id != 0) return;
+                                if (encoded) id = m_renderer->CreateTextureEncoded(*encoded);
+                                else if (!asset.empty())
                                 {
-                                    // Web rendererへ渡すvirtual asset pathです。
                                     const std::string path = VirtualAssetPath(asset);
-                                id = m_renderer->CreateTexture(path.c_str());
-                            }
+                                    id = m_renderer->CreateTexture(path.c_str());
+                                }
                             };
-                            loadMaterialTexture(
-                            part.webRoughnessTexture, part.roughnessTexture);
-                            loadMaterialTexture(
-                            part.webMetallicTexture, part.metallicTexture);
-                            loadMaterialTexture(
-                            part.webOcclusionTexture, part.occlusionTexture);
-                            loadMaterialTexture(
-                            part.webEmissiveTexture, part.emissiveTexture);
+                            loadMaterialTexture(part.webTexture, part.albedoTexture, part.albedoImage);
+                            loadMaterialTexture(part.webNormalTexture, part.normalTexture, part.normalImage);
+                            loadMaterialTexture(part.webMetallicRoughnessTexture,
+                                part.metallicRoughnessTexture, part.metallicRoughnessImage);
+                            loadMaterialTexture(part.webRoughnessTexture, part.roughnessTexture);
+                            loadMaterialTexture(part.webMetallicTexture, part.metallicTexture);
+                            loadMaterialTexture(part.webOcclusionTexture, part.occlusionTexture, part.occlusionImage);
+                            loadMaterialTexture(part.webEmissiveTexture, part.emissiveTexture, part.emissiveImage);
                             m_renderer->DrawMesh(
                             part.webMesh,
                             model,
@@ -5604,6 +6843,27 @@ namespace LamaPon
                         { 0.04f, 0.04f, 0.04f, 1.0f },
                         particles->m_additive);
                 }
+                else if (auto* image = dynamic_cast<PortableUIVisualComponent*>(component.get()))
+                {
+                    UIRect area;
+                    if (const auto* rect = object->GetComponent<UIRectTransformComponent>())
+                        area = rect->Resolve(m_graphics.UIWidth(), m_graphics.UIHeight());
+                    else area = {{model.values[12]-image->m_size.x*0.5f, model.values[13]-image->m_size.y*0.5f},
+                                 {model.values[12]+image->m_size.x*0.5f, model.values[13]+image->m_size.y*0.5f}};
+                    const auto size = area.Size();
+                    auto color = image->m_color;
+                    auto* button = dynamic_cast<UIButtonComponent*>(image);
+                    if (button) color = !button->m_interactable ? button->m_disabled
+                        : button->m_pressed ? button->m_press : (button->m_hovered || button->m_focused) ? button->m_hover : button->m_normal;
+                    RenderPortableSprite(object->Name().c_str(), static_cast<double>(object->Id()),
+                        VirtualAssetPath(image->m_texture).c_str(), color.x,color.y,color.z,color.w,
+                        area.minimum.x,area.minimum.y,size.x,size.y,0,0,0,image->m_sortOrder,0,0,1,1,0);
+                    if (button)
+                        RenderPortableText(object->Name().c_str(), static_cast<double>(object->Id()),
+                            button->m_label.c_str(),button->m_fontFamily.c_str(),"",button->m_fontSize,
+                            button->m_textColor.x,button->m_textColor.y,button->m_textColor.z,button->m_textColor.w,
+                            area.minimum.x,area.minimum.y,size.x,size.y,0,1,1,image->m_sortOrder);
+                }
                 // TextRenderer componentをDOMへ反映します。
                 else if (auto* text = dynamic_cast<TextRendererComponent*>(component.get()))
                 {
@@ -5753,7 +7013,7 @@ namespace LamaPon
                 continue;
             }
             // collider交差で使うobject world matrixです。
-            const Mat4 world = WorldMatrix(*object);
+            const Mat4 world = ComputeWorldMatrix(*object);
             // 有効なlayerのbox colliderと交差判定します。
             if (const auto* box = object->GetComponent<BoxCollider3DComponent>();
                 box != nullptr && box->IsEnabled()

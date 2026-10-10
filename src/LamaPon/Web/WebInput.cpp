@@ -1,6 +1,7 @@
 #include "LamaPon/Web/WebInput.h"
 
 #include <emscripten/html5.h>
+#include <emscripten.h>
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,27 @@ namespace LamaPon::Web
     {
         // windowイベントを占有する入力の所有者
         WebInput* activeInput{};
+
+        EM_JS(bool, BrowserOwnsKeyboard, (), {
+            const element = document.activeElement;
+            return Boolean(element && (element.isContentEditable
+                || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(element.tagName)));
+        });
+        EM_JS(bool, UsesSharedGameStage, (const char* target), {
+            const canvas = document.querySelector(UTF8ToString(target));
+            const stage = canvas && canvas.parentElement;
+            return Boolean(stage && stage.id === 'stage' && stage.querySelector('#software-canvas'));
+        });
+
+        // CSSの拡縮とwindow側で受けた解放イベントをCanvas座標へ戻す。
+        EM_JS(double, CanvasCoordinate, (const char* target, double client, int axis), {
+            const canvas = document.querySelector(UTF8ToString(target));
+            if (!canvas) return 0;
+            const rect = canvas.getBoundingClientRect();
+            const size = axis ? rect.height : rect.width;
+            const logical = axis ? canvas.clientHeight : canvas.clientWidth;
+            return (client - (axis ? rect.top : rect.left)) * logical / Math.max(size, 1);
+        });
     }
 
     WebInput::~WebInput()
@@ -27,7 +49,8 @@ namespace LamaPon::Web
             EMSCRIPTEN_EVENT_TOUCHSTART, EMSCRIPTEN_EVENT_TOUCHMOVE,
             EMSCRIPTEN_EVENT_TOUCHEND, EMSCRIPTEN_EVENT_TOUCHCANCEL,
             EMSCRIPTEN_EVENT_MOUSEMOVE, EMSCRIPTEN_EVENT_MOUSEDOWN,
-            EMSCRIPTEN_EVENT_MOUSEUP, EMSCRIPTEN_EVENT_WHEEL };
+            EMSCRIPTEN_EVENT_MOUSEUP, EMSCRIPTEN_EVENT_WHEEL,
+            EMSCRIPTEN_EVENT_BLUR, EMSCRIPTEN_EVENT_VISIBILITYCHANGE };
 
         // イベント・入力配列の要素番号
         for (std::size_t index = 0; index < m_registered.size(); ++index)
@@ -35,7 +58,9 @@ namespace LamaPon::Web
             if (m_registered[index])
             {
                 emscripten_html5_remove_event_listener(
-                    index < 2 ? EMSCRIPTEN_EVENT_TARGET_WINDOW : m_target.c_str(),
+                    index == 11 ? EMSCRIPTEN_EVENT_TARGET_DOCUMENT
+                        : (index < 2 || index == 8 || index == 10)
+                            ? EMSCRIPTEN_EVENT_TARGET_WINDOW : m_target.c_str(),
                     // 登録順に対応するイベント種別
                     this, eventTypes[index], m_callbacks[index]);
             }
@@ -61,11 +86,20 @@ namespace LamaPon::Web
             return false;
         }
         m_target = target;
+        // The default shell switches between sibling WebGL, Canvas2D and SVG surfaces.
+        // Their common stage retains its geometry and listeners during that switch.
+        if (UsesSharedGameStage(target)) m_target = "#stage";
+        target = m_target.c_str();
         activeInput = this;
         // キーイベントを転送する(type: イベント種別, event: キー状態, owner: 入力の所有者)。
         const auto key = +[](int type, const EmscriptenKeyboardEvent* event,
                             void* owner) -> EM_BOOL
         {
+            if (BrowserOwnsKeyboard())
+            {
+                static_cast<WebInput*>(owner)->Reset();
+                return EM_FALSE;
+            }
             return HandleKeyEvent(type, event ? event->code : "", owner);
         };
         // タッチイベントを転送する(type: イベント種別, event: タッチ状態, owner: 入力の所有者)。
@@ -87,13 +121,25 @@ namespace LamaPon::Web
         {
             return HandleWheelEvent(event, owner);
         };
+        const auto blur = +[](int, const EmscriptenFocusEvent*, void* owner) -> EM_BOOL
+        {
+            static_cast<WebInput*>(owner)->Reset();
+            return EM_FALSE;
+        };
+        const auto visibility = +[](int, const EmscriptenVisibilityChangeEvent* event,
+                                    void* owner) -> EM_BOOL
+        {
+            if (event && event->hidden) static_cast<WebInput*>(owner)->Reset();
+            return EM_FALSE;
+        };
 
         m_callbacks = {
             reinterpret_cast<void*>(key), reinterpret_cast<void*>(key),
             reinterpret_cast<void*>(touch), reinterpret_cast<void*>(touch),
             reinterpret_cast<void*>(touch), reinterpret_cast<void*>(touch),
             reinterpret_cast<void*>(mouse), reinterpret_cast<void*>(mouse),
-            reinterpret_cast<void*>(mouse), reinterpret_cast<void*>(wheel) };
+            reinterpret_cast<void*>(mouse), reinterpret_cast<void*>(wheel),
+            reinterpret_cast<void*>(blur), reinterpret_cast<void*>(visibility) };
 
         // キーイベントのwindow登録先
         const char* window = EMSCRIPTEN_EVENT_TARGET_WINDOW;
@@ -106,8 +152,10 @@ namespace LamaPon::Web
             emscripten_set_touchcancel_callback(target, this, EM_TRUE, touch) == EMSCRIPTEN_RESULT_SUCCESS,
             emscripten_set_mousemove_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
             emscripten_set_mousedown_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
-            emscripten_set_mouseup_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
-            emscripten_set_wheel_callback(target, this, EM_TRUE, wheel) == EMSCRIPTEN_RESULT_SUCCESS };
+            emscripten_set_mouseup_callback(window, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_wheel_callback(target, this, EM_TRUE, wheel) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_blur_callback(window, this, EM_TRUE, blur) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_visibilitychange_callback(this, EM_TRUE, visibility) == EMSCRIPTEN_RESULT_SUCCESS };
         // 全登録の成功を確認する(registered: イベントの登録成功状態)。
         m_initialized = std::all_of(
             m_registered.begin(), m_registered.end(),
@@ -124,248 +172,6 @@ namespace LamaPon::Web
     {
         // 押下・解放はフレーム処理後のEndFrameで消すため、ここでは消去しない。
         SampleGamepads();
-    }
-
-    void WebInput::EndFrame() noexcept
-    {
-        m_pressed.clear();
-        m_released.clear();
-        m_pointerButtonsPressed.fill(false);
-        m_pointerButtonsReleased.fill(false);
-        m_pointerDeltaX = 0.0f;
-        m_pointerDeltaY = 0.0f;
-        m_pointerWheel = 0.0f;
-        m_touchToggleViewPressed = false;
-    }
-
-    bool WebInput::IsDown(const char* code) const
-    {
-        return code != nullptr && m_down.contains(code);
-    }
-
-    bool WebInput::WasPressed(const char* code) const
-    {
-        return code != nullptr && m_pressed.contains(code);
-    }
-
-    bool WebInput::WasReleased(const char* code) const
-    {
-        return code != nullptr && m_released.contains(code);
-    }
-
-    float WebInput::HorizontalAxis() const noexcept
-    {
-        return std::abs(m_touchHorizontal) > std::abs(m_gamepadHorizontal)
-            ? m_touchHorizontal : m_gamepadHorizontal;
-    }
-
-    float WebInput::VerticalAxis() const noexcept
-    {
-        return std::abs(m_touchVertical) > std::abs(m_gamepadVertical)
-            ? m_touchVertical : m_gamepadVertical;
-    }
-
-    float WebInput::AccelerateAxis() const noexcept
-    {
-        return std::max(m_touchAccelerate, m_gamepadAccelerate);
-    }
-
-    float WebInput::BrakeAxis() const noexcept
-    {
-        return std::max(m_touchBrake, m_gamepadBrake);
-    }
-
-    bool WebInput::WasGamepadPressed(int button) const noexcept
-    {
-        return button >= 0
-            && static_cast<std::size_t>(button) < m_gamepadPressed.size()
-            && m_gamepadPressed[static_cast<std::size_t>(button)];
-    }
-
-    float WebInput::ControlValue(const std::string_view control) const
-    {
-        // 入力名をDOMキーへ変換する(value: 名前付き入力)。
-        const auto keyboardCode = [](const std::string_view value)
-        {
-            if (value.size() == 9 && value.starts_with("Keyboard"))
-            {
-                // 入力名末尾の英数字
-                const char symbol = value.back();
-                if (symbol >= 'A' && symbol <= 'Z')
-                {
-                    return std::string("Key") + symbol;
-                }
-                if (symbol >= '0' && symbol <= '9')
-                {
-                    return std::string("Digit") + symbol;
-                }
-            }
-            // 入力名とDOMキーの対応表
-            static const std::pair<std::string_view, std::string_view> keys[] = {
-                { "KeyboardLeft", "ArrowLeft" },
-                { "KeyboardRight", "ArrowRight" },
-                { "KeyboardUp", "ArrowUp" },
-                { "KeyboardDown", "ArrowDown" },
-                { "KeyboardSpace", "Space" },
-                { "KeyboardEnter", "Enter" },
-                { "KeyboardEscape", "Escape" },
-                { "KeyboardTab", "Tab" },
-                { "KeyboardLeftShift", "ShiftLeft" },
-                { "KeyboardRightShift", "ShiftRight" },
-                { "KeyboardLeftControl", "ControlLeft" },
-                { "KeyboardRightControl", "ControlRight" },
-            };
-            // name: 入力名、code: DOMキーコード
-            for (const auto& [name, code] : keys)
-            {
-                if (value == name)
-                {
-                    return std::string(code);
-                }
-            }
-            return std::string{};
-        };
-        // 対応するDOMキーコード
-        const std::string key = keyboardCode(control);
-        if (!key.empty())
-        {
-            return IsDown(key.c_str()) ? 1.0f : 0.0f;
-        }
-        if (control == "MouseLeft") return PointerButtonDown(0) ? 1.0f : 0.0f;
-        if (control == "MouseRight") return PointerButtonDown(1) ? 1.0f : 0.0f;
-        if (control == "MouseMiddle") return PointerButtonDown(2) ? 1.0f : 0.0f;
-        if (control == "MouseX") return m_pointerDeltaX;
-        if (control == "MouseY") return m_pointerDeltaY;
-        if (control == "MouseWheel") return m_pointerWheel;
-        if (control == "GamePadLeftX") return m_gamepadHorizontal;
-        if (control == "GamePadLeftY") return m_gamepadVertical;
-        if (control == "GamePadRightX") return m_gamepadRightHorizontal;
-        if (control == "GamePadRightY") return m_gamepadRightVertical;
-        if (control == "GamePadLeftTrigger") return m_gamepadBrake;
-        if (control == "GamePadRightTrigger") return m_gamepadAccelerate;
-        // 入力名とGamepad番号の対応表
-        static const std::pair<std::string_view, std::size_t> buttons[] = {
-            { "GamePadA", 0 }, { "GamePadB", 1 },
-            { "GamePadX", 2 }, { "GamePadY", 3 },
-            { "GamePadLeftShoulder", 4 }, { "GamePadRightShoulder", 5 },
-            { "GamePadBack", 8 }, { "GamePadStart", 9 },
-            { "GamePadLeftStick", 10 }, { "GamePadRightStick", 11 },
-            { "GamePadDPadUp", 12 }, { "GamePadDPadDown", 13 },
-            { "GamePadDPadLeft", 14 }, { "GamePadDPadRight", 15 },
-        };
-        // name: 入力名、button: Gamepad番号
-        for (const auto& [name, button] : buttons)
-        {
-            if (control == name)
-            {
-                return m_gamepadDown[button] ? 1.0f : 0.0f;
-            }
-        }
-        return 0.0f;
-    }
-
-    bool WebInput::ControlWasPressed(const std::string_view control) const
-    {
-        if (control.starts_with("Keyboard"))
-        {
-            if (control.size() == 9)
-            {
-                // 入力名末尾の英数字
-                const char symbol = control.back();
-                // 対応するDOMキーコード
-                const std::string code = (symbol >= '0' && symbol <= '9'
-                    ? std::string("Digit") : std::string("Key")) + symbol;
-                return WasPressed(code.c_str());
-            }
-            // 入力名とDOMキーの対応表
-            static const std::pair<std::string_view, const char*> keys[] = {
-                { "KeyboardLeft", "ArrowLeft" },
-                { "KeyboardRight", "ArrowRight" },
-                { "KeyboardUp", "ArrowUp" }, { "KeyboardDown", "ArrowDown" },
-                { "KeyboardSpace", "Space" }, { "KeyboardEnter", "Enter" },
-                { "KeyboardEscape", "Escape" }, { "KeyboardTab", "Tab" },
-                { "KeyboardLeftShift", "ShiftLeft" },
-                { "KeyboardRightShift", "ShiftRight" },
-                { "KeyboardLeftControl", "ControlLeft" },
-                { "KeyboardRightControl", "ControlRight" },
-            };
-            // name: 入力名、code: DOMキーコード
-            for (const auto& [name, code] : keys)
-            {
-                if (control == name) return WasPressed(code);
-            }
-        }
-        if (control == "MouseLeft") return PointerButtonPressed(0);
-        if (control == "MouseRight") return PointerButtonPressed(1);
-        if (control == "MouseMiddle") return PointerButtonPressed(2);
-        if (control == "GamePadLeftTrigger") return m_gamepadPressed[6];
-        if (control == "GamePadRightTrigger") return m_gamepadPressed[7];
-        // Gamepadボタン番号順の入力名
-        static const std::string_view buttonNames[] = {
-            "GamePadA", "GamePadB", "GamePadX", "GamePadY",
-            "GamePadLeftShoulder", "GamePadRightShoulder", "", "",
-            "GamePadBack", "GamePadStart", "GamePadLeftStick",
-            "GamePadRightStick", "GamePadDPadUp", "GamePadDPadDown",
-            "GamePadDPadLeft", "GamePadDPadRight",
-        };
-        // イベント・入力配列の要素番号
-        for (std::size_t index{}; index < std::size(buttonNames); ++index)
-        {
-            if (control == buttonNames[index]) return m_gamepadPressed[index];
-        }
-        return false;
-    }
-
-    bool WebInput::ControlWasReleased(const std::string_view control) const
-    {
-        if (control.starts_with("Keyboard"))
-        {
-            if (control.size() == 9)
-            {
-                // 入力名末尾の英数字
-                const char symbol = control.back();
-                // 対応するDOMキーコード
-                const std::string code = (symbol >= '0' && symbol <= '9'
-                    ? std::string("Digit") : std::string("Key")) + symbol;
-                return WasReleased(code.c_str());
-            }
-            // 入力名とDOMキーの対応表
-            static const std::pair<std::string_view, const char*> keys[] = {
-                { "KeyboardLeft", "ArrowLeft" },
-                { "KeyboardRight", "ArrowRight" },
-                { "KeyboardUp", "ArrowUp" }, { "KeyboardDown", "ArrowDown" },
-                { "KeyboardSpace", "Space" }, { "KeyboardEnter", "Enter" },
-                { "KeyboardEscape", "Escape" }, { "KeyboardTab", "Tab" },
-                { "KeyboardLeftShift", "ShiftLeft" },
-                { "KeyboardRightShift", "ShiftRight" },
-                { "KeyboardLeftControl", "ControlLeft" },
-                { "KeyboardRightControl", "ControlRight" },
-            };
-            // name: 入力名、code: DOMキーコード
-            for (const auto& [name, code] : keys)
-            {
-                if (control == name) return WasReleased(code);
-            }
-        }
-        if (control == "MouseLeft") return PointerButtonReleased(0);
-        if (control == "MouseRight") return PointerButtonReleased(1);
-        if (control == "MouseMiddle") return PointerButtonReleased(2);
-        if (control == "GamePadLeftTrigger") return m_gamepadReleased[6];
-        if (control == "GamePadRightTrigger") return m_gamepadReleased[7];
-        // Gamepadボタン番号順の入力名
-        static const std::string_view buttonNames[] = {
-            "GamePadA", "GamePadB", "GamePadX", "GamePadY",
-            "GamePadLeftShoulder", "GamePadRightShoulder", "", "",
-            "GamePadBack", "GamePadStart", "GamePadLeftStick",
-            "GamePadRightStick", "GamePadDPadUp", "GamePadDPadDown",
-            "GamePadDPadLeft", "GamePadDPadRight",
-        };
-        // イベント・入力配列の要素番号
-        for (std::size_t index{}; index < std::size(buttonNames); ++index)
-        {
-            if (control == buttonNames[index]) return m_gamepadReleased[index];
-        }
-        return false;
     }
 
     bool WebInput::HandleKeyEvent(
@@ -416,11 +222,12 @@ namespace LamaPon::Web
         input->m_touchBrake = 0.0f;
         if (eventType == EMSCRIPTEN_EVENT_TOUCHCANCEL)
         {
-            if (input->m_pointerButtonsDown[0])
-            {
-                input->m_pointerButtonsReleased[0] = true;
-            }
+            // 取消をクリック用の解放に変換しない。
+            input->m_pointerButtonsPressed[0] = false;
+            input->m_pointerButtonsReleased[0] = false;
             input->m_pointerButtonsDown[0] = false;
+            input->m_pointerValid = false;
+            input->m_touchToggleViewPressed = false;
             return true;
         }
         // 終了・取消以外のタッチがあるか
@@ -440,6 +247,13 @@ namespace LamaPon::Web
             const auto& touch = event->touches[index];
             if ((eventType == EMSCRIPTEN_EVENT_TOUCHEND) && touch.isChanged)
             {
+                if (index == 0)
+                {
+                    input->m_pointerX = static_cast<float>(CanvasCoordinate(
+                        input->m_target.c_str(), touch.clientX, 0));
+                    input->m_pointerY = static_cast<float>(CanvasCoordinate(
+                        input->m_target.c_str(), touch.clientY, 1));
+                }
                 continue;
             }
             activeTouch = true;
@@ -451,12 +265,17 @@ namespace LamaPon::Web
                 static_cast<float>(touch.targetY / height), 0.0f, 1.0f);
             if (!input->m_pointerValid || index == 0)
             {
-                input->m_pointerDeltaX += static_cast<float>(
-                    touch.targetX) - input->m_pointerX;
-                input->m_pointerDeltaY += static_cast<float>(
-                    touch.targetY) - input->m_pointerY;
-                input->m_pointerX = static_cast<float>(touch.targetX);
-                input->m_pointerY = static_cast<float>(touch.targetY);
+                const float x = static_cast<float>(CanvasCoordinate(
+                    input->m_target.c_str(), touch.clientX, 0));
+                const float y = static_cast<float>(CanvasCoordinate(
+                    input->m_target.c_str(), touch.clientY, 1));
+                if (input->m_pointerValid)
+                {
+                    input->m_pointerDeltaX += x - input->m_pointerX;
+                    input->m_pointerDeltaY += y - input->m_pointerY;
+                }
+                input->m_pointerX = x;
+                input->m_pointerY = y;
                 input->m_pointerValid = true;
             }
             if (eventType == EMSCRIPTEN_EVENT_TOUCHSTART
@@ -514,10 +333,17 @@ namespace LamaPon::Web
         {
             return false;
         }
-        input->m_pointerX = static_cast<float>(event->targetX);
-        input->m_pointerY = static_cast<float>(event->targetY);
-        input->m_pointerDeltaX += static_cast<float>(event->movementX);
-        input->m_pointerDeltaY += static_cast<float>(event->movementY);
+        const float x = static_cast<float>(CanvasCoordinate(
+            input->m_target.c_str(), event->clientX, 0));
+        const float y = static_cast<float>(CanvasCoordinate(
+            input->m_target.c_str(), event->clientY, 1));
+        if (input->m_pointerValid)
+        {
+            input->m_pointerDeltaX += x - input->m_pointerX;
+            input->m_pointerDeltaY += y - input->m_pointerY;
+        }
+        input->m_pointerX = x;
+        input->m_pointerY = y;
         input->m_pointerValid = true;
         // DOM番号を左・右・中・戻る・進むの順へ変換する(button: DOMボタン番号)。
         const auto mapButton = [](unsigned short button)
@@ -563,117 +389,36 @@ namespace LamaPon::Web
         return true;
     }
 
-    bool WebInput::PointerButtonDown(int button) const noexcept
-    {
-        return button >= 0
-            && static_cast<std::size_t>(button) < m_pointerButtonsDown.size()
-            && m_pointerButtonsDown[static_cast<std::size_t>(button)];
-    }
-
-    bool WebInput::PointerButtonPressed(int button) const noexcept
-    {
-        return button >= 0
-            && static_cast<std::size_t>(button) < m_pointerButtonsPressed.size()
-            && m_pointerButtonsPressed[static_cast<std::size_t>(button)];
-    }
-
-    bool WebInput::PointerButtonReleased(int button) const noexcept
-    {
-        return button >= 0
-            && static_cast<std::size_t>(button) < m_pointerButtonsReleased.size()
-            && m_pointerButtonsReleased[static_cast<std::size_t>(button)];
-    }
-
     void WebInput::SampleGamepads() noexcept
     {
-        m_gamepadPressed.fill(false);
-        m_gamepadReleased.fill(false);
-        m_gamepadHorizontal = 0.0f;
-        m_gamepadVertical = 0.0f;
-        m_gamepadRightHorizontal = 0.0f;
-        m_gamepadRightVertical = 0.0f;
-        m_gamepadAccelerate = 0.0f;
-        m_gamepadBrake = 0.0f;
-        if (emscripten_sample_gamepad_data() != EMSCRIPTEN_RESULT_SUCCESS)
+        std::array<bool, 32> buttons{};
+        std::array<float, 6> axes{};
+        if (emscripten_sample_gamepad_data() == EMSCRIPTEN_RESULT_SUCCESS)
         {
-            return;
+            const int count = emscripten_get_num_gamepads();
+            EmscriptenGamepadEvent state{};
+            for (int gamepad = 0; gamepad < count; ++gamepad)
+            {
+                if (emscripten_get_gamepad_status(gamepad, &state) != EMSCRIPTEN_RESULT_SUCCESS
+                    || !state.connected) continue;
+                for (int index = 0; index < 4 && index < state.numAxes; ++index)
+                {
+                    float value = static_cast<float>(state.axis[index]);
+                    if (index == 1 || index == 3) value = -value;
+                    axes[static_cast<std::size_t>(index)] = std::abs(value) < 0.12f ? 0.0f : value;
+                }
+                if (state.numButtons > 7)
+                {
+                    axes[4] = static_cast<float>(state.analogButton[6]);
+                    axes[5] = static_cast<float>(state.analogButton[7]);
+                }
+                for (std::size_t button = 0; button < buttons.size()
+                    && button < static_cast<std::size_t>(std::max(state.numButtons, 0)); ++button)
+                    buttons[button] = state.digitalButton[button] != 0;
+                break;
+            }
         }
-        // ブラウザーが返したGamepad数
-        const int count = emscripten_get_num_gamepads();
-        // 取得したGamepadの状態
-        EmscriptenGamepadEvent state{};
-        // 接続中のGamepadを取得できたか
-        bool sampled{};
-        // 取得するGamepadの番号
-        for (int gamepad = 0; gamepad < count; ++gamepad)
-        {
-            if (emscripten_get_gamepad_status(gamepad, &state)
-                    != EMSCRIPTEN_RESULT_SUCCESS
-                || !state.connected)
-            {
-                continue;
-            }
-            if (state.numAxes > 0)
-            {
-                m_gamepadHorizontal = std::clamp(
-                    static_cast<float>(state.axis[0]), -1.0f, 1.0f);
-                if (std::abs(m_gamepadHorizontal) < 0.12f)
-                {
-                    m_gamepadHorizontal = 0.0f;
-                }
-            }
-            if (state.numAxes > 1)
-            {
-                m_gamepadVertical = std::clamp(
-                    -static_cast<float>(state.axis[1]), -1.0f, 1.0f);
-                if (std::abs(m_gamepadVertical) < 0.12f)
-                {
-                    m_gamepadVertical = 0.0f;
-                }
-            }
-            if (state.numAxes > 2)
-            {
-                m_gamepadRightHorizontal = std::clamp(
-                    static_cast<float>(state.axis[2]), -1.0f, 1.0f);
-                if (std::abs(m_gamepadRightHorizontal) < 0.12f)
-                {
-                    m_gamepadRightHorizontal = 0.0f;
-                }
-            }
-            if (state.numAxes > 3)
-            {
-                m_gamepadRightVertical = std::clamp(
-                    -static_cast<float>(state.axis[3]), -1.0f, 1.0f);
-                if (std::abs(m_gamepadRightVertical) < 0.12f)
-                {
-                    m_gamepadRightVertical = 0.0f;
-                }
-            }
-            if (state.numButtons > 7)
-            {
-                m_gamepadBrake = std::clamp(
-                    static_cast<float>(state.analogButton[6]), 0.0f, 1.0f);
-                m_gamepadAccelerate = std::clamp(
-                    static_cast<float>(state.analogButton[7]), 0.0f, 1.0f);
-            }
-            // 変換・走査するボタン番号
-            for (std::size_t button{};
-                 button < m_gamepadDown.size()
-                    && button < static_cast<std::size_t>(state.numButtons);
-                 ++button)
-            {
-                // 現在のボタン保持状態
-                const bool down = state.digitalButton[button] != 0;
-                m_gamepadPressed[button] = down && !m_gamepadDown[button];
-                m_gamepadReleased[button] = !down && m_gamepadDown[button];
-                m_gamepadDown[button] = down;
-            }
-            sampled = true;
-            break;
-        }
-        if (!sampled)
-        {
-            m_gamepadDown.fill(false);
-        }
+        // SDLと同じ方向エッジ・有限値検査・切断時の解除を使う。
+        GamepadSnapshot(buttons, axes);
     }
 }

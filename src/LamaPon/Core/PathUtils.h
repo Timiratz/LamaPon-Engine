@@ -1,11 +1,21 @@
 #pragma once
 
-#include <Windows.h>
+#include "LamaPon/Core/Unicode.h"
 
+#if defined(_WIN32)
+#include <Windows.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
+
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 namespace LamaPon
 {
@@ -62,6 +72,7 @@ namespace LamaPon
     // 拡張長ローカルパス（\\?\C:\...）やデバイスパス（\\.\...）は先頭が2区切りでもネットワークではありません。
     inline bool IsUncPath(const std::filesystem::path& path) noexcept
     {
+#if defined(_WIN32)
         // 区切りを統一するパス文字列
         auto value = path.native();
         // パス内の各文字
@@ -83,6 +94,11 @@ namespace LamaPon
             return false;
         }
         return value.starts_with(L"\\\\");
+#else
+        // POSIXの二重スラッシュをWindows UNCとして扱わない。
+        static_cast<void>(path);
+        return false;
+#endif
     }
 
     // ネットワーク上のパスかを返します(path: 判定対象のパス)。
@@ -90,6 +106,7 @@ namespace LamaPon
     inline bool UsesNetworkDrive(
         const std::filesystem::path& path) noexcept
     {
+#if defined(_WIN32)
         try
         {
             // 判定対象の絶対パス
@@ -107,10 +124,49 @@ namespace LamaPon
         {
             return false;
         }
+#else
+        // POSIX mount種別の検出は別途必要。ここではWindowsのdrive分類を使用しない。
+        static_cast<void>(path);
+        return false;
+#endif
+    }
+
+    // ApplicationのcacheDirをLamaPonのユーザーキャッシュ用ベースへ変換します。
+    // AndroidのcacheDirはActivityから注入し、ファイルシステムには触れません。
+    inline std::filesystem::path AndroidApplicationCachePath(
+        const std::filesystem::path& cacheDirectory,
+        const wchar_t* subfolder)
+    {
+        if (cacheDirectory.empty() || !cacheDirectory.is_absolute())
+        {
+            throw std::invalid_argument("Android cache directory must be absolute");
+        }
+        const auto name = Detail::CodeUnitsToUtf8<wchar_t>(subfolder);
+        const std::u8string utf8Name(name.begin(), name.end());
+        return cacheDirectory / "LamaPon" / std::filesystem::path(utf8Name);
+    }
+
+    namespace PathUtilsDetail
+    {
+        inline std::filesystem::path& AndroidApplicationCacheDirectory() noexcept
+        {
+            static std::filesystem::path directory;
+            return directory;
+        }
+    }
+
+    // Androidランタイムの起動時にActivityから得たcacheDirを登録します。
+    inline void SetAndroidApplicationCacheDirectory(std::filesystem::path directory)
+    {
+        if (directory.empty() || !directory.is_absolute())
+        {
+            throw std::invalid_argument("Android cache directory must be absolute");
+        }
+        PathUtilsDetail::AndroidApplicationCacheDirectory() = std::move(directory);
     }
 
     // パスに対応するキャッシュキーを返します(path: キャッシュ元のパス)。
-    // 絶対パスを正規化し、ASCIIの大文字小文字を同一視するFNV-1aで16桁のキーを作ります。
+    // 絶対パスを正規化したFNV-1aの16桁キー。WindowsだけASCIIの大文字小文字を同一視します。
     inline std::wstring PathCacheKey(const std::filesystem::path& path)
     {
         // パス正規化時のエラー
@@ -121,20 +177,31 @@ namespace LamaPon
         // パスのFNV-1aハッシュ値
         std::uint64_t hash = 14695981039346656037ull;
         // ハッシュに加える各文字
-        for (const wchar_t character : normalized)
+        for (const auto character : normalized)
         {
+#if defined(_WIN32)
             // ASCII大文字を小文字にした値
             const auto folded = static_cast<std::uint64_t>(
                 character >= L'A' && character <= L'Z'
                     ? character - L'A' + L'a'
                     : character);
+#else
+            // Linuxのファイル名は大文字小文字を区別し、UTF-8のバイトを符号なしで扱う。
+            const auto folded = static_cast<std::uint64_t>(
+                static_cast<unsigned char>(character));
+#endif
             hash ^= folded;
             hash *= 1099511628211ull;
         }
         // 16進表記のキーと終端文字
-        wchar_t buffer[17];
-        swprintf_s(buffer, L"%016llx", hash);
-        return buffer;
+        std::wstring result(16, L'0');
+        constexpr std::wstring_view digits = L"0123456789abcdef";
+        for (std::size_t index = result.size(); index > 0; --index)
+        {
+            result[index - 1] = digits[hash & 0xf];
+            hash >>= 4;
+        }
+        return result;
     }
 
     // ユーザー用キャッシュのパスを返します(subfolder: LamaPon配下のサブフォルダー名)。
@@ -142,6 +209,7 @@ namespace LamaPon
     inline std::filesystem::path LocalEngineCachePath(
         const wchar_t* subfolder)
     {
+#if defined(_WIN32)
         // ユーザー用データ領域のパス
         std::wstring localAppData(32768, L'\0');
         // 環境変数から読み取った文字数
@@ -166,11 +234,41 @@ namespace LamaPon
             temporary = L"C:\\Windows\\Temp";
         }
         return temporary / L"LamaPon" / subfolder;
+#elif defined(__ANDROID__)
+        // HOMEや/tmpを流用せず、実行中Activityのアプリ専用cacheDirを使います。
+        const auto& directory = PathUtilsDetail::AndroidApplicationCacheDirectory();
+        if (directory.empty())
+        {
+            throw std::logic_error("Android cache directory must be supplied by the application");
+        }
+        return AndroidApplicationCachePath(directory, subfolder);
+#else
+        std::filesystem::path root;
+        if (const char* cache = std::getenv("XDG_CACHE_HOME"); cache && *cache)
+        {
+            const std::filesystem::path candidate(cache);
+            if (candidate.is_absolute()) root = candidate;
+        }
+        if (root.empty())
+        {
+            if (const char* home = std::getenv("HOME"); home && *home)
+            {
+                const std::filesystem::path candidate(home);
+                if (candidate.is_absolute()) root = candidate / ".cache";
+            }
+        }
+        if (root.empty()) root = std::filesystem::temp_directory_path();
+        // POSIXではpath(wstring)の変換をlocaleに依存させない。
+        const auto name = Detail::CodeUnitsToUtf8<wchar_t>(subfolder);
+        const std::u8string utf8Name(name.begin(), name.end());
+        return root / "LamaPon" / std::filesystem::path(utf8Name);
+#endif
     }
 
     // 実行ファイルの親ディレクトリを返し、パス取得に失敗した場合は空を返します。
     inline std::filesystem::path ExecutableDirectory()
     {
+#if defined(_WIN32)
         // 実行ファイルの絶対パス
         std::wstring path(32768, L'\0');
         // 取得したパスの文字数
@@ -184,83 +282,43 @@ namespace LamaPon
         }
         path.resize(length);
         return std::filesystem::path(path).parent_path();
+#elif defined(__linux__)
+        // Androidではホストプロセスの場所を返す。ゲームのasset rootとして使用しない。
+        std::string path(256, '\0');
+        while (path.size() <= 1024 * 1024)
+        {
+            const auto length = readlink("/proc/self/exe", path.data(), path.size());
+            if (length < 0) return {};
+            if (static_cast<std::size_t>(length) < path.size())
+            {
+                path.resize(static_cast<std::size_t>(length));
+                return std::filesystem::path(path).parent_path();
+            }
+            path.resize(path.size() * 2);
+        }
+        return {};
+#else
+        return {};
+#endif
     }
 
-    // UTF-8をUTF-16へ変換します(value: 変換する文字列)。
-    // 空文字列または不正なUTF-8には空を返します。
+    // UTF-8をWindowsではUTF-16、Linux/AndroidではUTF-32へ変換する(value: UTF-8文字列)。
+    // 空文字列または不正な入力には空を返す。
     inline std::wstring Utf8ToWide(const std::string_view value)
     {
-        if (value.empty())
-        {
-            return {};
-        }
-
-        // 変換後のUTF-16コード単位数
-        const int length = MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            nullptr,
-            0);
-        if (length <= 0)
-        {
-            return {};
-        }
-
-        // 変換後のUTF-16文字列
-        std::wstring result(static_cast<std::size_t>(length), L'\0');
-        MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            result.data(),
-            length);
-        return result;
+        return Detail::Utf8ToCodeUnits<wchar_t>(value);
     }
 
-    // UTF-16をUTF-8へ変換します(value: 変換する文字列)。
-    // 空文字列または不正なUTF-16には空を返します。
+    // wchar_t文字列をUTF-8へ変換し、不正な入力には空を返す(value: UTF-16またはUTF-32文字列)。
     inline std::string WideToUtf8(const std::wstring_view value)
     {
-        if (value.empty())
-        {
-            return {};
-        }
-
-        // 変換後のUTF-8バイト数
-        const int length = WideCharToMultiByte(
-            CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            nullptr,
-            0,
-            nullptr,
-            nullptr);
-        if (length <= 0)
-        {
-            return {};
-        }
-
-        // 変換後のUTF-8文字列
-        std::string result(static_cast<std::size_t>(length), '\0');
-        WideCharToMultiByte(
-            CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            result.data(),
-            length,
-            nullptr,
-            nullptr);
-        return result;
+        return Detail::CodeUnitsToUtf8<wchar_t>(value);
     }
 
     // UTF-8文字列をパスへ変換します(value: UTF-8のパス文字列)。
     inline std::filesystem::path PathFromUtf8(const std::string_view value)
     {
+        if (value.empty()) return {};
         // パス構築用のUTF-8文字列
         const std::u8string utf8{
             reinterpret_cast<const char8_t*>(value.data()),

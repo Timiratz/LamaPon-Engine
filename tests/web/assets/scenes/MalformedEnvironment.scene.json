@@ -1,0 +1,17 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": 9901,
+  "objects": [
+    {
+      "id": 9901,
+      "name": "Malformed environment camera",
+      "components": [
+        { "type": "Camera", "enabled": true }
+      ]
+    }
+  ],
+  "environment": {
+    "ambientIntensity": "not-a-number"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": 1,
+  "objects": [
+    {
+      "id": 1,
+      "name": "UIButton final camera",
+      "components": [{ "type": "Camera", "enabled": true }]
+    },
+    {
+      "id": 2,
+      "name": "UIButton final marker",
+      "components": []
+    }
+  ]
+}

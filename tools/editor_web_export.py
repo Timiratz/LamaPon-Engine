@@ -243,6 +243,8 @@ def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -
 
 # main()はWeb出力を実行して結果ファイルを作成する。
 def main() -> int:
+    from export_web import configure_cli_output
+    configure_cli_output()
     # CLI引数の定義
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True)

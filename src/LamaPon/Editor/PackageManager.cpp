@@ -841,12 +841,16 @@ namespace LamaPon
                 + PathToUtf8(source));
         }
 
-        // 手で書いたnativeの宣言は、作り直しても残します（作者がSDKの置き場所を書き込む唯一の場所です）。
+        // 手で書いたOS別ネイティブ宣言は、作り直しても残します。
         // package.jsonのパス
         const auto manifestPath =
             source / L"package.json";
         // 保持するnative設定
         nlohmann::json nativeSection;
+        // Portable出力用の対象OS／ABI別設定
+        nlohmann::json nativeVariantsSection;
+        // nativeVariantsが明示されているか（不正な値も黙って消さない）
+        bool hasNativeVariants = false;
         // 保持する描画バックエンド設定
         nlohmann::json graphicsBackendSection;
         // 作者指定を優先する反映時期
@@ -878,6 +882,12 @@ namespace LamaPon
                     && previous.contains("native"))
                 {
                     nativeSection = previous.at("native");
+                }
+                if (previous.is_object()
+                    && previous.contains("nativeVariants"))
+                {
+                    nativeVariantsSection = previous.at("nativeVariants");
+                    hasNativeVariants = true;
                 }
                 if (previous.is_object()
                     && previous.contains("activation"))
@@ -936,6 +946,10 @@ namespace LamaPon
         {
             manifest["native"] = std::move(nativeSection);
         }
+        if (hasNativeVariants)
+        {
+            manifest["nativeVariants"] = std::move(nativeVariantsSection);
+        }
         if (!graphicsBackendSection.is_null())
         {
             manifest["graphicsBackend"] =
@@ -984,8 +998,9 @@ namespace LamaPon
 
         // 一覧用の項目JSON
         nlohmann::json indexEntry = manifest;
-        // nativeとgraphicsBackendの正本はZIP内のpackage.jsonとし、一覧から除外します。
+        // ネイティブ依存と描画バックエンドの正本はZIP内のpackage.jsonとし、一覧から除外します。
         indexEntry.erase("native");
+        indexEntry.erase("nativeVariants");
         indexEntry.erase("graphicsBackend");
         indexEntry["downloadUrl"] =
             "https://example.com/packages/"

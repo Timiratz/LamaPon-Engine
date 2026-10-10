@@ -16,6 +16,7 @@ lamapon_bundle_license(XAudio2Redist third_party/XAudio2Redist/LICENSE.txt)
 lamapon_bundle_license(cgltf third_party/cgltf/LICENSE.txt)
 lamapon_bundle_license(ufbx third_party/ufbx/LICENSE.txt)
 lamapon_bundle_license(stb-vorbis third_party/stb/LICENSE.txt)
+lamapon_bundle_license(ProggyClean third_party/imgui/misc/fonts/ProggyClean.LICENSE.txt)
 configure_file(THIRD_PARTY_NOTICES.md
     "${LAMAPON_DISTRIBUTION_DIR}/THIRD_PARTY_NOTICES.md" COPYONLY)
 
@@ -35,8 +36,16 @@ install(FILES "${LAMAPON_DISTRIBUTION_DIR}/THIRD_PARTY_NOTICES.md"
     DESTINATION ".")
 
 # WebソースをSDKへ同梱し、Emscriptenは利用者のSDKを使います。
-install(FILES tools/export_web.py tools/editor_web_export.py DESTINATION tools)
-install(FILES cmake/LamaPonWeb.cmake DESTINATION cmake)
-install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable
+install(FILES tools/export_web.py tools/editor_web_export.py tools/embed_web_assets.py
+    tools/export_native.py tools/build_native.py tools/editor_native_export.py
+    tools/editor_linux_export.py tools/editor_linux_build.py tools/native_android.py
+    tools/native_windows.py tools/native_linux.py DESTINATION tools)
+install(FILES cmake/LamaPonWeb.cmake cmake/LamaPonNative.cmake DESTINATION cmake)
+install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable src/LamaPon/Native
     DESTINATION src/LamaPon)
-install(FILES third_party/cgltf/cgltf.h DESTINATION third_party/cgltf)
+install(FILES third_party/cgltf/cgltf.h third_party/cgltf/LICENSE.txt DESTINATION third_party/cgltf)
+install(FILES third_party/nlohmann/LICENSE.MIT DESTINATION third_party/nlohmann)
+install(FILES third_party/stb/stb_vorbis.c third_party/stb/LICENSE.txt DESTINATION third_party/stb)
+install(FILES third_party/imgui/imstb_truetype.h third_party/imgui/LICENSE.txt DESTINATION third_party/imgui)
+install(FILES third_party/imgui/misc/fonts/ProggyClean.ttf
+    third_party/imgui/misc/fonts/ProggyClean.LICENSE.txt DESTINATION third_party/imgui/misc/fonts)
