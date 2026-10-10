@@ -70,19 +70,40 @@ def build_tpak(key: bytes, files: dict[str, bytes]) -> bytes:
     )
 
 
-# build_runtime_with_key(key: 埋め込む鍵, marker: 鍵スロットの目印, size: DLLの総バイト数): 鍵スロットを1個埋めたダミーDLLを作る。
-def build_runtime_with_key(key: bytes, marker: bytes, size: int = 4096) -> bytes:
-    # pad はXORパッド。
-    pad = os.urandom(SIM.AES_KEY_SIZE)
-    # stored は鍵をパッドでXORした領域。
-    stored = bytes(a ^ b for a, b in zip(key, pad))
-    # slot は80バイトの鍵スロット。
-    slot = marker + pad + stored
+# split_key(key: 分割する鍵): 鍵をKEY_SLOT_COUNT個のデータ片へXOR分割する。
+def split_key(key: bytes) -> list[bytes]:
+    # parts は各スロットのデータ片。
+    parts = [os.urandom(SIM.AES_KEY_SIZE) for _ in range(SIM.KEY_SLOT_COUNT - 1)]
+    # last は残りのXORで決まる最終データ片。
+    last = bytearray(key)
+    for part in parts:
+        for index in range(len(last)):
+            last[index] ^= part[index]
+    parts.append(bytes(last))
+    return parts
+
+
+# build_runtime_with_key(key: 埋め込む鍵, markers: 各スロットの目印, adjacent: 連続配置か, size: DLLの総バイト数): 分割鍵スロットを埋めたダミーDLLを作る。
+def build_runtime_with_key(
+    key: bytes,
+    markers: list[bytes],
+    adjacent: bool = False,
+    size: int = 4096,
+) -> bytes:
+    # parts は分割した各スロットのデータ片。
+    parts = split_key(key)
+    # slots は目印とデータを連結したスロット群。
+    slots = [markers[i] + parts[i] for i in range(SIM.KEY_SLOT_COUNT)]
     # blob は乱数で埋めたDLL本体。
     blob = bytearray(os.urandom(size))
-    # position はスロットを置く位置。
-    position = 1234
-    blob[position:position + len(slot)] = slot
+    if adjacent:
+        # offsets は隣接配置(本物のセクション分離前の最悪形)の位置。
+        offsets = [1234 + i * SIM.KEY_SLOT_SIZE for i in range(SIM.KEY_SLOT_COUNT)]
+    else:
+        # offsets は離して配置した位置(本物のセクション分離を模す)。
+        offsets = [200, 1600, 3200]
+    for slot, offset in zip(slots, offsets):
+        blob[offset:offset + len(slot)] = slot
     return bytes(blob)
 
 
@@ -115,20 +136,40 @@ class ExportSecurityAttackTests(unittest.TestCase):
         SIM.inspect_tpak(report, SIM.LEGACY_ARCHIVE_MAGICS[0] + os.urandom(128))
         self.assertEqual(status_of(report, "tpak-legacy-format"), "FAIL")
 
-    # test_static_key_extraction_currently_succeeds(self: テストケース): 現状は静的鍵抽出が成立する残リスクを固定化する。
-    def test_static_key_extraction_currently_succeeds(self):
+    # random_markers(self: テストケース): スロット数ぶんの乱数目印を作る。
+    def random_markers(self):
+        return [os.urandom(SIM.KEY_SLOT_MARKER_SIZE) for _ in range(SIM.KEY_SLOT_COUNT)]
+
+    # test_split_key_slot_resists_static_extraction(self: テストケース): 分割スロットを離して置けば静的鍵抽出が成立しないことを固定化する。
+    def test_split_key_slot_resists_static_extraction(self):
         # key はこの配布物の鍵。
         key = os.urandom(32)
         # header は解析済みtpakヘッダー。
         header = SIM.parse_tpak(build_tpak(key, {"a.bin": os.urandom(64)}))
-        # dll は乱数目印で鍵スロットを埋めたDLL。
-        dll = build_runtime_with_key(key, os.urandom(16))
+        # dll は分割スロットを離して埋めたDLL。
+        dll = build_runtime_with_key(key, self.random_markers(), adjacent=False)
+        # report は鍵抽出攻撃の結果。
+        report = SIM.Report()
+        # recovered は静的抽出で得た鍵(分離済みならNone)。
+        recovered = SIM.bruteforce_key(report, dll, header)
+        self.assertIsNone(recovered)
+        # スロットが別領域へ離れていれば単一の連続窓から鍵を再構成できない。
+        self.assertEqual(status_of(report, "runtime-static-key"), "PASS")
+
+    # test_adjacent_split_slots_are_still_extractable(self: テストケース): スロットを隣接配置すると走査が鍵を再構成でき、分離不十分を検出できることを固定化する。
+    def test_adjacent_split_slots_are_still_extractable(self):
+        # key はこの配布物の鍵。
+        key = os.urandom(32)
+        # header は解析済みtpakヘッダー。
+        header = SIM.parse_tpak(build_tpak(key, {"a.bin": os.urandom(64)}))
+        # dll は分割スロットを隣接させて埋めたDLL。
+        dll = build_runtime_with_key(key, self.random_markers(), adjacent=True)
         # report は鍵抽出攻撃の結果。
         report = SIM.Report()
         # recovered は静的抽出で得た鍵。
         recovered = SIM.bruteforce_key(report, dll, header)
         self.assertEqual(recovered, key)
-        # 鍵スロットが連続80バイトで配布バイナリに残る限り、静的抽出は成立する。
+        # 分割していても隣接していれば1窓で再構成でき、走査はそれを検出する。
         self.assertEqual(status_of(report, "runtime-static-key"), "FAIL")
 
     # test_wrong_key_does_not_authenticate(self: テストケース): 別配布物の鍵では索引MACが通らないことを確認する。
@@ -152,10 +193,10 @@ class ExportSecurityAttackTests(unittest.TestCase):
     def test_default_marker_detection(self):
         # key はこの配布物の鍵。
         key = os.urandom(32)
-        # unpatched は既定目印を残したDLL。
-        unpatched = build_runtime_with_key(key, SIM.DEFAULT_KEY_SLOT_MARKER)
+        # unpatched は全スロットの既定目印を残したDLL。
+        unpatched = build_runtime_with_key(key, list(SIM.DEFAULT_KEY_SLOT_MARKERS))
         # patched は乱数目印へ置換したDLL。
-        patched = build_runtime_with_key(key, os.urandom(16))
+        patched = build_runtime_with_key(key, self.random_markers())
         # report_unpatched は未書き出しDLLの検査結果。
         report_unpatched = SIM.Report()
         SIM.scan_default_marker(report_unpatched, unpatched)

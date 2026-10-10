@@ -85,6 +85,46 @@ namespace LamaPon
         return value.starts_with(L"\\\\");
     }
 
+    // MAX_PATH(260)制限を外す拡張長パスへ変換します(path: 変換するパス)。
+    // 絶対化して区切りを統一し\\?\を付けます。空・変換失敗・既に拡張長はそのまま返します。
+    inline std::filesystem::path ExtendedLengthPath(
+        const std::filesystem::path& path)
+    {
+        if (path.empty())
+        {
+            return path;
+        }
+        // 絶対化の失敗状態
+        std::error_code error;
+        // 正規化した絶対パス
+        auto absolute = std::filesystem::absolute(path, error);
+        if (error)
+        {
+            return path;
+        }
+        absolute = absolute.lexically_normal();
+        // 区切りを\に統一したパス文字列
+        std::wstring value = absolute.native();
+        for (wchar_t& character : value)
+        {
+            if (character == L'/')
+            {
+                character = L'\\';
+            }
+        }
+        if (value.starts_with(L"\\\\?\\")
+            || value.starts_with(L"\\\\.\\"))
+        {
+            return std::filesystem::path(value);
+        }
+        if (value.starts_with(L"\\\\"))
+        {
+            // UNCは\\?\UNC\server\share形式にします。
+            return std::filesystem::path(L"\\\\?\\UNC" + value.substr(1));
+        }
+        return std::filesystem::path(L"\\\\?\\" + value);
+    }
+
     // ネットワーク上のパスかを返します(path: 判定対象のパス)。
     // UNCとリモートドライブを検出し、パスを解決できない場合はfalseを返します。
     inline bool UsesNetworkDrive(

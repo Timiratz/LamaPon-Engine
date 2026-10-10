@@ -522,26 +522,41 @@ namespace
         WriteBytes(path, bytes);
     }
 
-    // FakeRuntimeKeySlotOffset: fake DLL内のkey marker先頭位置。
-    constexpr std::size_t FakeRuntimeKeySlotOffset = 64;
+    // FakeRuntimeKeySlotOffsets: fake DLL内で各分割スロットを離して置く先頭位置。
+    constexpr std::size_t FakeRuntimeKeySlotOffsets[
+        LamaPon::Crypto::KeySlotCount] = { 64, 512, 1024 };
 
-    // WriteFakeRuntimeLibrary(path: DLL path): export鍵の置換対象となるkey slot付きDLLを作ります。
+    // WriteFakeRuntimeLibrary(path: DLL path): export鍵の置換対象となる分割key slot付きDLLを作ります。
     void WriteFakeRuntimeLibrary(
         const std::filesystem::path& path)
     {
-        // bytes: fileまたはarchiveのbinary内容。
-        std::vector<std::uint8_t> bytes(
-            FakeRuntimeKeySlotOffset,
-            0x2a);
-        // marker: export処理が認識するkey slot先頭marker。
-        const auto marker =
-            LamaPon::Crypto::ExpectedKeySlotMarker();
-        bytes.insert(bytes.end(), marker.begin(), marker.end());
-        bytes.insert(
-            bytes.end(),
-            LamaPon::Crypto::KeySlotSize - marker.size(),
-            0x71);
-        bytes.insert(bytes.end(), 32, 0x5c);
+        // bytes: 乱数的な既定値で満たすfake DLL内容。
+        std::vector<std::uint8_t> bytes(4096, 0x2a);
+        // 分割スロットごとに既定markerとdataを離して書き込みます。
+        for (std::size_t index = 0;
+            index < LamaPon::Crypto::KeySlotCount;
+            ++index)
+        {
+            // marker: export処理が認識するこのスロットの既定marker。
+            const auto marker =
+                LamaPon::Crypto::ExpectedKeySlotMarker(index);
+            // offset: このスロットの配置位置。
+            const auto offset = FakeRuntimeKeySlotOffsets[index];
+            std::copy(
+                marker.begin(),
+                marker.end(),
+                bytes.begin() + offset);
+            // data部はスロットごとに異なる既定値で埋めます。
+            for (std::size_t i = 0;
+                i < LamaPon::Crypto::AesKeySize;
+                ++i)
+            {
+                bytes[offset
+                    + LamaPon::Crypto::KeySlotMarkerSize
+                    + i] =
+                    static_cast<std::uint8_t>(0x71 + index);
+            }
+        }
         WriteBytes(path, bytes);
     }
 
@@ -551,28 +566,35 @@ namespace
     {
         // bytes: fileまたはarchiveのbinary内容。
         const auto bytes = ReadBytes(runtimeLibrary);
-        Require(
-            bytes.size()
-                >= FakeRuntimeKeySlotOffset
-                    + LamaPon::Crypto::KeySlotSize,
-            "Exported runtime is too small to hold a key slot.");
+        // 各分割スロットが収まる大きさを確認します。
+        for (std::size_t index = 0;
+            index < LamaPon::Crypto::KeySlotCount;
+            ++index)
+        {
+            Require(
+                bytes.size()
+                    >= FakeRuntimeKeySlotOffsets[index]
+                        + LamaPon::Crypto::KeySlotSize,
+                "Exported runtime is too small to hold a key slot.");
+        }
         // key: archive暗号化key。
         LamaPon::Crypto::AesKey key{};
-        // key slot内の全key byteを復元します。
+        // 全スロットのdata部をXORしてkey byteを合成します。
         for (std::size_t index = 0; index < key.size(); ++index)
         {
-            // pad: 鍵slotのXOR pad byte。
-            const auto pad = bytes[
-                FakeRuntimeKeySlotOffset
-                + LamaPon::Crypto::KeySlotMarkerSize
-                + index];
-            // stored: runtime内に保存されたkey bytes。
-            const auto stored = bytes[
-                FakeRuntimeKeySlotOffset
-                + LamaPon::Crypto::KeySlotMarkerSize
-                + LamaPon::Crypto::AesKeySize
-                + index];
-            key[index] = static_cast<std::uint8_t>(stored ^ pad);
+            // 合成途中のkey byte。
+            std::uint8_t value = 0;
+            // スロット番号。
+            for (std::size_t slot = 0;
+                slot < LamaPon::Crypto::KeySlotCount;
+                ++slot)
+            {
+                value ^= bytes[
+                    FakeRuntimeKeySlotOffsets[slot]
+                    + LamaPon::Crypto::KeySlotMarkerSize
+                    + index];
+            }
+            key[index] = value;
         }
         // 復号したruntime archive keyを返します。
         return key;
@@ -606,21 +628,30 @@ namespace
         return std::string(plain->begin(), plain->end());
     }
 
-    // ContainsKeySlotMarker(path: binary path): embedded key markerの有無を返します。
+    // ContainsKeySlotMarker(path: binary path): いずれかの既定key slot markerの残存を返します。
     bool ContainsKeySlotMarker(
         const std::filesystem::path& path)
     {
         // bytes: fileまたはarchiveのbinary内容。
         const auto bytes = ReadBytes(path);
-        // marker: key slot識別marker。
-        const auto marker =
-            LamaPon::Crypto::ExpectedKeySlotMarker();
-        // binary内にkey slot markerがあるか返します。
-        return std::search(
-            bytes.begin(),
-            bytes.end(),
-            marker.begin(),
-            marker.end()) != bytes.end();
+        // いずれかの分割スロットの既定markerが残っていないか調べます。
+        for (std::size_t index = 0;
+            index < LamaPon::Crypto::KeySlotCount;
+            ++index)
+        {
+            // marker: このスロットの既定marker。
+            const auto marker =
+                LamaPon::Crypto::ExpectedKeySlotMarker(index);
+            if (std::search(
+                    bytes.begin(),
+                    bytes.end(),
+                    marker.begin(),
+                    marker.end()) != bytes.end())
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // WriteFile(path: 保存先, contents: file本文): 親folderを作って書き込みます。

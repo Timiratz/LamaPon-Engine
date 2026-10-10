@@ -40,16 +40,34 @@ TPAK_HEADER_SIZE = len(ARCHIVE_MAGIC) + 8 + 16 + 32
 KEY_SLOT_MARKER_SIZE = 16
 # AES_KEY_SIZE はAES-256鍵のバイト数。
 AES_KEY_SIZE = 32
-# KEY_SLOT_SIZE は目印・パッド・隠した鍵を合わせた鍵スロット全長。
-KEY_SLOT_SIZE = KEY_SLOT_MARKER_SIZE + AES_KEY_SIZE + AES_KEY_SIZE
+# KEY_SLOT_SIZE は1スロットの全長(目印16とデータ32)。
+KEY_SLOT_SIZE = KEY_SLOT_MARKER_SIZE + AES_KEY_SIZE
+# KEY_SLOT_COUNT は鍵を分割して埋め込むスロット数(Crypto.hと一致)。
+KEY_SLOT_COUNT = 3
+# COMBINED_SLOT_SIZE は全スロットが隣接した場合の合計長。
+COMBINED_SLOT_SIZE = KEY_SLOT_SIZE * KEY_SLOT_COUNT
 
-# DEFAULT_KEY_SLOT_MARKER は未書き出しRuntimeに残る既定の目印(Crypto.cppの初期値)。
+# DEFAULT_KEY_SLOT_MARKERS は未書き出しRuntimeに残る各スロットの既定目印(Crypto.cppの初期値)。
 # 配布物では書き出し時に乱数へ置換されるため、残っていれば鍵未埋込を疑う。
-DEFAULT_KEY_SLOT_MARKER = bytes(
-    (
-        0x36, 0x62, 0x28, 0xA5, 0xAF, 0x19, 0x1B, 0x85,
-        0x58, 0x03, 0xD6, 0xA1, 0xBB, 0xE9, 0x72, 0x54,
-    )
+DEFAULT_KEY_SLOT_MARKERS = (
+    bytes(
+        (
+            0x0B, 0xB9, 0xA7, 0x11, 0xA6, 0x0F, 0x98, 0x97,
+            0x2D, 0x5A, 0xB5, 0x8B, 0xA2, 0xEE, 0xCB, 0xEC,
+        )
+    ),
+    bytes(
+        (
+            0x73, 0x4F, 0x0A, 0xAB, 0x3B, 0x42, 0x21, 0xAE,
+            0xCA, 0x1C, 0xAD, 0xA0, 0xCB, 0x87, 0xBE, 0x5F,
+        )
+    ),
+    bytes(
+        (
+            0x87, 0xE9, 0xA9, 0x4D, 0xA9, 0xDB, 0xDE, 0x47,
+            0x01, 0x7D, 0xC3, 0xFE, 0x17, 0x35, 0x85, 0xDF,
+        )
+    ),
 )
 
 
@@ -273,15 +291,19 @@ def mac_for_ciphertext(mac_key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
     return hmac.new(mac_key, iv + ciphertext, hashlib.sha256).digest()
 
 
-# recover_key_from_slot(window: 80バイトの鍵スロット候補): スロット配置に従い鍵を復元する。
-def recover_key_from_slot(window: bytes) -> bytes:
-    if len(window) != KEY_SLOT_SIZE:
-        raise ValueError("Key slot window must be 80 bytes.")
-    # pad はXORパッド領域。
-    pad = window[KEY_SLOT_MARKER_SIZE:KEY_SLOT_MARKER_SIZE + AES_KEY_SIZE]
-    # stored は鍵をパッドでXORした領域。
-    stored = window[KEY_SLOT_MARKER_SIZE + AES_KEY_SIZE:KEY_SLOT_SIZE]
-    return bytes(a ^ b for a, b in zip(stored, pad))
+# recover_key_from_window(window: 連続スロット候補): 各スロットのデータ部をXORして鍵を復元する。
+def recover_key_from_window(window: bytes) -> bytes:
+    if len(window) != COMBINED_SLOT_SIZE:
+        raise ValueError("Combined key slot window has the wrong size.")
+    # key は合成中の鍵バイト列。
+    key = bytearray(AES_KEY_SIZE)
+    # 連続スロットのデータ部をXORして鍵を再構成する。
+    for slot in range(KEY_SLOT_COUNT):
+        # base はこのスロットのデータ先頭。
+        base = slot * KEY_SLOT_SIZE + KEY_SLOT_MARKER_SIZE
+        for index in range(AES_KEY_SIZE):
+            key[index] ^= window[base + index]
+    return bytes(key)
 
 
 # TpakHeader はtpak先頭から読み取った索引領域の情報。
@@ -420,32 +442,42 @@ def inspect_tpak(report: Report, data: bytes) -> Optional[TpakHeader]:
 
 # scan_default_marker(report: 集計先, dll: Runtimeバイト列): 既定の鍵スロット目印の残存を調べる。
 def scan_default_marker(report: Report, dll: bytes) -> None:
-    if DEFAULT_KEY_SLOT_MARKER in dll:
+    # remaining は残存した既定目印の番号一覧。
+    remaining = [
+        index
+        for index, marker in enumerate(DEFAULT_KEY_SLOT_MARKERS)
+        if marker in dll
+    ]
+    if remaining:
         report.add(
             "runtime-default-marker",
             "既定の鍵スロット目印",
             "FAIL",
-            "未書き出しの既定目印が残っている。鍵が埋め込まれていない可能性が高い。配布前に確認。",
+            f"未書き出しの既定目印が残っている(スロット{remaining})。"
+            "鍵が埋め込まれていない可能性が高い。配布前に確認。",
         )
     else:
         report.add(
             "runtime-default-marker",
             "既定の鍵スロット目印",
             "PASS",
-            "既定目印は残っていない。書き出し時に乱数へ置換済み。",
+            "全スロットの既定目印は残っていない。書き出し時に乱数へ置換済み。",
         )
 
 
-# bruteforce_key(report: 集計先, dll: Runtimeバイト列, header: tpakヘッダー): 全80バイト窓から鍵を静的抽出できるか試す。
+# bruteforce_key(report: 集計先, dll: Runtimeバイト列, header: tpakヘッダー): 連続窓から鍵を静的抽出できるか試す。
+# 鍵は複数スロットのデータXORへ分割済み。スロットが隣接していれば1窓で再構成でき、
+# 別セクションへ離れていれば再構成できない。索引MACで正解を判定する。
 def bruteforce_key(report: Report, dll: bytes, header: TpakHeader) -> Optional[bytes]:
     # start は所要時間計測の開始時刻。
     start = time.monotonic()
     # tries は検証した窓の数。
     tries = 0
-    for offset in range(0, len(dll) - KEY_SLOT_SIZE + 1):
+    for offset in range(0, len(dll) - COMBINED_SLOT_SIZE + 1):
         tries += 1
         # candidate は窓から復元した鍵候補。
-        candidate = recover_key_from_slot(dll[offset:offset + KEY_SLOT_SIZE])
+        candidate = recover_key_from_window(
+            dll[offset:offset + COMBINED_SLOT_SIZE])
         if index_mac_valid(candidate, header):
             # elapsed は鍵特定までの秒数。
             elapsed = time.monotonic() - start
@@ -454,8 +486,9 @@ def bruteforce_key(report: Report, dll: bytes, header: TpakHeader) -> Optional[b
                 "配布バイナリからの静的鍵抽出",
                 "FAIL",
                 (
-                    f"位置{offset}の80バイト窓から鍵を復元し、索引MACが一致した。"
-                    f"デバッガ不要の静的解析で鍵が取り出せる(試行{tries}回/{elapsed:.2f}秒)。"
+                    f"位置{offset}の{COMBINED_SLOT_SIZE}バイト窓から鍵を再構成し、索引MACが一致した。"
+                    f"分割スロットが隣接しており、デバッガ不要の静的解析で鍵が取り出せる"
+                    f"(試行{tries}回/{elapsed:.2f}秒)。"
                 ),
             )
             return candidate
@@ -465,7 +498,10 @@ def bruteforce_key(report: Report, dll: bytes, header: TpakHeader) -> Optional[b
         "runtime-static-key",
         "配布バイナリからの静的鍵抽出",
         "PASS",
-        f"全{tries}窓を試しても索引MACの通る鍵は見つからなかった({elapsed:.2f}秒)。",
+        (
+            f"連続する全{tries}窓を試しても索引MACの通る鍵は見つからなかった({elapsed:.2f}秒)。"
+            "分割スロットが離れており、単一の連続領域からは鍵を再構成できない。"
+        ),
     )
     return None
 

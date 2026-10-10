@@ -107,7 +107,7 @@ namespace
     {
         // サイズを測定するバイナリー入力
         std::ifstream input(
-            path,
+            LamaPon::ExtendedLengthPath(path),
             std::ios::binary | std::ios::ate);
         if (!input)
         {
@@ -385,7 +385,7 @@ namespace LamaPon
         // 出力先フォルダーの生成結果
         std::error_code directoryError;
         if (!EnsureDirectoryExists(
-                archiveOutputPath.parent_path(),
+                ExtendedLengthPath(archiveOutputPath.parent_path()),
                 directoryError))
         {
             throw std::filesystem::filesystem_error(
@@ -395,7 +395,7 @@ namespace LamaPon
         }
         // 既存内容を置き換える出力先
         std::ofstream output(
-            archiveOutputPath,
+            ExtendedLengthPath(archiveOutputPath),
             std::ios::binary | std::ios::trunc);
         if (!output)
         {
