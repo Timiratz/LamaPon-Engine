@@ -1280,16 +1280,16 @@ namespace
     void TestRefreshSignOutRace()
     {
         // oldAccess: 古いaccess token.
-        constexpr std::string_view oldAccess =
+        const std::string oldAccess =
             "refresh-race-old-access";
         // restoredRefresh: 復元後のrefresh token.
-        constexpr std::string_view restoredRefresh =
+        const std::string restoredRefresh =
             "refresh-race-restored-refresh";
         // newAccess: 新しいaccess token.
-        constexpr std::string_view newAccess =
+        const std::string newAccess =
             "refresh-race-new-access";
         // newRefresh: 新しいrefresh token.
-        constexpr std::string_view newRefresh =
+        const std::string newRefresh =
             "refresh-race-new-refresh";
 
         // runCase(refreshSucceeds: 成功応答を選ぶ条件): sign-outとrefreshの競合を1ケース実行する。
@@ -1300,9 +1300,9 @@ namespace
             // refresh成功と失敗の応答を分ける。
             if (refreshSucceeds)
             {
-                refreshResponse = JsonResponse(
-                    200,
-                    SessionJson(newAccess, newRefresh));
+                const auto refreshJson =
+                    SessionJson(newAccess, newRefresh);
+                refreshResponse = JsonResponse(200, refreshJson);
             }
             // refreshが失敗した場合はnetwork errorを返す。
             else

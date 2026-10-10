@@ -584,7 +584,10 @@ namespace
             R"("includeDirectories":["sdk/include"],)"
             R"("libraries":["sdk/lib/my_sdk.lib"],)"
             R"("runtimeFiles":["sdk/bin/my_sdk.dll"],)"
-            R"("defines":["MY_SDK_ENABLED"]}})",
+            R"("defines":["MY_SDK_ENABLED"]},)"
+            R"("nativeVariants":{"linux-x86_64":{"sources":["linux/MySdkAdapter.cpp"],)"
+            R"("libraries":["linux/lib/libmy_sdk.so"],)"
+            R"("licenseFiles":["linux/LICENSE.txt"]}}})",
             "valid");
         // 有効なSDKパッケージの導入先
         const auto installed =
@@ -624,9 +627,16 @@ namespace
                 && manifest.at("native").at("libraries")
                     .at(0).get<std::string>()
                     == "sdk/lib/my_sdk.lib"
+                && manifest.at("nativeVariants").at("linux-x86_64")
+                    .at("sources").at(0).get<std::string>()
+                    == "linux/MySdkAdapter.cpp"
                 && manifest.at("version").get<std::string>()
                     == package.version,
-            "rebuilding a package must keep its native block");
+            "rebuilding a package must keep its native and target variants");
+        Require(
+            !nlohmann::json::parse(built.indexEntryJson)
+                .contains("nativeVariants"),
+            "a package index entry must not duplicate build-specific variants");
 
         // 導入済みnative依存の走査結果
         const auto scan =

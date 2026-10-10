@@ -165,7 +165,9 @@ namespace LamaPon::Detail
         // 書き込み確定前の失敗
         BeforeFlush,
         // 書き込み確定後の公開前失敗
-        AfterFlushBeforePublish
+        AfterFlushBeforePublish,
+        // 公開時の一時的な共有違反
+        BeforePublishSharingViolation
     };
 
     // 次に一致する保存段階へ一度だけ失敗を注入します(failPoint: 失敗段階)。

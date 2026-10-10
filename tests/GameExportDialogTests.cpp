@@ -138,15 +138,21 @@ raise SystemExit(0 if ok else 2)
             const LamaPon::GameExportDialogContext context{engine, engine, projectRoot / L"assets", project,
                 {}, [] {}, [](std::string, bool) {}, [](const std::filesystem::path&)
                     -> std::optional<std::filesystem::path> { return std::nullopt; }};
-            // Windows既定とWeb切替後の4フレームを描画
-            for (int frame = 0; frame < 4; ++frame)
+            // 全出力形式を切り替え、各形式の入力欄を実際に描画します。
+            const LamaPon::GameExportTarget targets[]{
+                LamaPon::GameExportTarget::Windows, LamaPon::GameExportTarget::Web,
+                LamaPon::GameExportTarget::LinuxBuildProject,
+                LamaPon::GameExportTarget::AndroidBuildProject,
+                LamaPon::GameExportTarget::AndroidApk };
+            const wchar_t* const outputNames[]{ L"LamaPonGame", L"LamaPonWeb",
+                L"LamaPonLinuxBuild", L"LamaPonAndroidBuild", L"LamaPonAndroidApk" };
+            for (int frame = 0; frame < 10; ++frame)
             {
-                // 2フレーム目でWeb出力へ切り替える
-                if (frame == 2)
+                if (frame % 2 == 0)
                 {
-                    dialog.SelectTarget(LamaPon::GameExportTarget::Web);
-                    Require(dialog.OutputDirectory() == projectRoot / L"dist" / L"LamaPonWeb",
-                        "Selecting Web must choose a separate default output directory.");
+                    dialog.SelectTarget(targets[frame / 2]);
+                    Require(dialog.OutputDirectory() == projectRoot / L"dist" / outputNames[frame / 2],
+                        "Each export target must choose its own default output directory.");
                 }
                 ImGui::NewFrame();
                 dialog.Draw(context);
@@ -159,9 +165,9 @@ raise SystemExit(0 if ok else 2)
                     { texture->SetTexID(1); texture->SetStatus(ImTextureStatus_OK); }
                 }
                 // Modalの初回フレームはImGuiが寸法を計測するため描画を保留します。
-                // 計測完了後は両ターゲットの描画を確認
+                // 計測完了後は各ターゲットの描画を確認
                 if (frame % 2 == 1)
-                    Require(ImGui::GetDrawData()->TotalVtxCount > 0, "Both export targets must render independently of EditorLayer.");
+                    Require(ImGui::GetDrawData()->TotalVtxCount > 0, "All export targets must render independently of EditorLayer.");
             }
         }
         ImGui::DestroyContext();

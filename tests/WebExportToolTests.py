@@ -23,9 +23,95 @@ assert SPEC is not None and SPEC.loader is not None
 EXPORT_WEB = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXPORT_WEB)
 
+# RUN_BROWSER_TESTS はブラウザー検査ツール。
+BROWSER_TEST_PATH = Path(__file__).with_name("RunBrowserTests.py")
+BROWSER_TEST_SPEC = importlib.util.spec_from_file_location("lamapon_run_browser_tests", BROWSER_TEST_PATH)
+assert BROWSER_TEST_SPEC is not None and BROWSER_TEST_SPEC.loader is not None
+RUN_BROWSER_TESTS = importlib.util.module_from_spec(BROWSER_TEST_SPEC)
+BROWSER_TEST_SPEC.loader.exec_module(RUN_BROWSER_TESTS)
+
 
 # Web出力ツールの互換性と素材変換を検証する。
 class WebExportToolTests(unittest.TestCase):
+    def test_browser_probe_can_extend_virtual_time_budget(self):
+        self.assertEqual(RUN_BROWSER_TESTS.virtual_time_budget(probe=True, webgl=True), 30000)
+        self.assertEqual(RUN_BROWSER_TESTS.virtual_time_budget(probe=True, webgl=False), 10000)
+        with mock.patch.object(
+                RUN_BROWSER_TESTS.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["chrome"], 0, "", "")) as run:
+            RUN_BROWSER_TESTS.run_browser(
+                "chrome", "http://127.0.0.1/game.html", timeout=60,
+                webgl=True, profile="browser-profile", virtual_time_budget=30000)
+        command = run.call_args.args[0]
+        self.assertIn("--virtual-time-budget=30000", command)
+
+    def test_ascii_embedding_preserves_unicode_virtual_names_and_refreshes_payload(self):
+        spec = importlib.util.spec_from_file_location("lamapon_embed_assets", TOOL_PATH.parent / "embed_web_assets.py")
+        embed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(embed)
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-embed-") as directory:
+            root = Path(directory)
+            source, output = root / "assets", root / "embedded"
+            source.mkdir()
+            name = "白画像 🚀 &.png"
+            (source / name).write_bytes(b"original bytes")
+            (source / "old.txt").write_bytes(b"old")
+            embed.prepare(source, output)
+            script = (output / "aliases.js").read_text(encoding="ascii")
+            entries = json.loads(script.split("var entries = ", 1)[1].split(";\n", 1)[0])
+            mapping = {destination: origin.rsplit("/", 1)[1] for origin, destination in entries}
+            self.assertEqual((output / "payload" / mapping["/assets/" + name]).read_bytes(), b"original bytes")
+            self.assertTrue(all(path.name.isascii() for path in (output / "payload").iterdir()))
+            (source / "old.txt").unlink()
+            (source / name).write_bytes(b"changed bytes")
+            embed.prepare(source, output)
+            self.assertEqual((output / "payload" / mapping["/assets/" + name]).read_bytes(), b"changed bytes")
+            self.assertFalse((output / "payload" / mapping["/assets/old.txt"]).exists())
+            foreign = root / "foreign"
+            foreign.mkdir()
+            marker = foreign / "keep.txt"
+            marker.write_text("keep", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                embed.prepare(source, foreign)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+            with self.assertRaises(ValueError):
+                embed.prepare(source, source / "overlap")
+            self.assertFalse((source / "overlap").exists())
+
+    def test_default_and_explicit_startup_scene_infer_3d_modules(self):
+        source = TOOL_PATH.parents[1] / "tests/native"
+        for web in ({}, {"scenePath": "/assets/scenes/Main.scene.json"}):
+            with self.subTest(web=web), mock.patch.object(Path, "rglob", return_value=[]):
+                modules = EXPORT_WEB.infer_lamapon_modules(source, {"export": {"web": web}})
+            self.assertIn("renderer3d", modules)
+
+    def test_portable_gltf_and_glb_are_staged_without_model_conversion(self):
+        fixtures = TOOL_PATH.parents[1] / "tests/fixtures/models"
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-model-") as directory:
+            root = Path(directory)
+            models = root / "assets/models"
+            models.mkdir(parents=True)
+            originals = {}
+            for name in ("embedded-data.gltf", "embedded-buffer.glb"):
+                originals[name] = (fixtures / name).read_bytes()
+                (models / name).write_bytes(originals[name])
+            web = {"portableGame": True, "assetDirectory": "assets", "assetIncludePaths": ["models"]}
+            with mock.patch.object(EXPORT_WEB, "run_asset_conversion", side_effect=AssertionError("Unexpected conversion")):
+                staged = EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", root / "build/generated")
+            for name, original in originals.items():
+                self.assertEqual((staged / "models" / name).read_bytes(), original)
+            model = models / "embedded-data.gltf"
+            document = json.loads(model.read_text(encoding="utf-8"))
+            document["images"][0]["uri"] = "Missing.png"
+            model.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(EXPORT_WEB.ExportError, "missing or not packaged"):
+                EXPORT_WEB.validate_direct_portable_model(model, root / "assets", [models])
+            document["images"][0]["uri"] = "White.png"
+            model.write_text(json.dumps(document), encoding="utf-8")
+            (models / "white.png").write_bytes(b"placeholder")
+            with self.assertRaises(EXPORT_WEB.ExportError):
+                EXPORT_WEB.validate_direct_portable_model(model, root / "assets", [models])
+
     # setUp(self: テストケース): Windowsでも擬似変換器を起動できるよう実行を差し替える。
     def setUp(self):
         # run は元のサブプロセス実行関数。
@@ -113,6 +199,135 @@ class WebExportToolTests(unittest.TestCase):
             },
         }
 
+    def test_web_ui_and_local_lights_accept_supported_settings(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            objects = [{"id": i + 1, "name": kind, "components": [{"type": kind}]} for i, kind in enumerate(
+                ["Camera", "UICanvas", "UIImage", "UIButton", "PointLight", "SpotLight"])]
+            scene = json.dumps({"format": "LamaPonScene", "mainCamera": 1, "objects": objects})
+            project = self._portable_fixture(root, scene=scene, modules=["core", "input", "renderer2d", "renderer3d"])
+            findings = EXPORT_WEB.validate_web_compatibility(root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertFalse(any(item["level"] == "reject" for item in findings), findings)
+            extra = [{"id": i + 7, "name": "Extra light", "components": [{"type": "PointLight"}]} for i in range(7)]
+            (root / "assets/scenes/Main.scene.json").write_text(json.dumps(
+                {"format": "LamaPonScene", "mainCamera": 1, "objects": objects + extra}), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertTrue(any(item["code"] == "portable-local-light-limit" for item in findings))
+            objects[2]["components"][0]["border"] = [1, 1, 1, 1]
+            objects[3]["components"][0]["loadTargetAdditive"] = True
+            (root / "assets/scenes/Main.scene.json").write_text(json.dumps(
+                {"format": "LamaPonScene", "mainCamera": 1, "objects": objects}), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(root, project, "webgl2-basic-3d", "lamapon-web-target")
+            codes = {item["code"] for item in findings if item["level"] == "reject"}
+            self.assertIn("unsupported-ui-image-feature", codes)
+            self.assertIn("unsupported-ui-button-action", codes)
+
+    def test_serialized_ui_button_scene_targets_are_checked_recursively(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-ui-scenes-") as directory:
+            root = Path(directory)
+            scenes = root / "assets" / "scenes"
+            main_scene = {
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [
+                    {"id": 1, "name": "Camera",
+                     "components": [{"type": "Camera"}]},
+                    {"id": 2, "name": "Next button",
+                     "components": [{"type": "UIButton",
+                                     "clickEvent": "GoToNextScene",
+                                     "targetScene": "scenes/Next.scene.json"}]},
+                    {"id": 3, "name": "Reload button",
+                     "components": [{"type": "UIButton",
+                                     "reloadCurrentScene": True}]},
+                ],
+            }
+            next_scene = {
+                "format": "LamaPonScene",
+                "mainCamera": 10,
+                "objects": [
+                    {"id": 10, "name": "Next camera",
+                     "components": [{"type": "Camera"}]},
+                    {"id": 11, "name": "Final button",
+                     "components": [{"type": "UIButton",
+                                     "targetScene": "scenes/Final.scene.json"}]},
+                ],
+            }
+            final_scene = {
+                "format": "LamaPonScene",
+                "mainCamera": 20,
+                "objects": [
+                    {"id": 20, "name": "Final camera",
+                     "components": [{"type": "Camera"}]},
+                    {"id": 21, "name": "Unsupported shape",
+                     "components": [{"type": "MeshRenderer", "shape": "Torus"}]},
+                ],
+            }
+            project = self._portable_fixture(
+                root,
+                scene=json.dumps(main_scene),
+                modules=["core", "input", "renderer2d", "renderer3d"],
+            )
+            (scenes / "Next.scene.json").write_text(json.dumps(next_scene), encoding="utf-8")
+            (scenes / "Final.scene.json").write_text(json.dumps(final_scene), encoding="utf-8")
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            codes = {item["code"] for item in findings}
+            self.assertIn("unsupported-primitive-shape", codes)
+            self.assertNotIn("unsupported-ui-button-action", codes)
+            self.assertNotIn("invalid-ui-button-scene", codes)
+
+            main_scene["objects"][1]["components"][0]["targetScene"] = "../outside.scene.json"
+            (scenes / "Main.scene.json").write_text(json.dumps(main_scene), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertIn("invalid-ui-button-scene", {item["code"] for item in findings})
+
+            main_scene["objects"][1]["components"][0]["targetScene"] = "scenes/Missing.scene.json"
+            (scenes / "Main.scene.json").write_text(json.dumps(main_scene), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertIn("missing-scene-asset", {item["code"] for item in findings})
+
+    def test_conversion_cache_invalidates_inputs_tools_and_corrupt_output(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            assets.mkdir()
+            original = assets / "image.png"
+            original.write_bytes(b"original")
+            spare = assets / "spare.json"
+            spare.write_text("{}", encoding="utf-8")
+            converter = root / "fake-magick"
+            converter.write_bytes(b"converter-v1")
+            web = {"assetDirectory": "assets", "converterTools": {"imageMagick": str(converter)}}
+            generated = root / ".lamapon/generated"
+            def convert(source, destination, *args):
+                destination.write_bytes(b"RIFFconverted-webp")
+            with mock.patch.object(EXPORT_WEB, "run_asset_conversion", side_effect=convert) as conversion:
+                staged = EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                output = staged / "image.png"
+                original_time = output.stat().st_mtime_ns
+                EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                self.assertEqual(conversion.call_count, 1)
+                self.assertEqual(output.stat().st_mtime_ns, original_time)
+                original.write_bytes(b"changed-source")
+                (staged / "lamapon-asset-conversions.json").write_bytes(b"\xff")
+                EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                self.assertEqual(conversion.call_count, 2)
+                converter.write_bytes(b"converter-v2")
+                EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                self.assertEqual(conversion.call_count, 3)
+                output.write_bytes(b"corrupt")
+                EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                self.assertEqual(conversion.call_count, 4)
+                original.unlink()
+                EXPORT_WEB.stage_portable_web_assets(root, web, "webgl2-basic-3d", generated)
+                self.assertFalse(output.exists())
+                self.assertFalse((staged / "lamapon-asset-conversions.json").exists())
+                cache = json.loads((generated.parent / "web-asset-cache.json").read_text(encoding="utf-8"))
+                self.assertEqual(cache, {})
+
     # test_web_asset_conversion_catalog_is_complete(self: テストケース): Web変換対象の画像・音声・モデル形式を照合する。
     def test_web_asset_conversion_catalog_is_complete(self):
         # expected_images は対応画像形式一覧。
@@ -198,6 +413,555 @@ class WebExportToolTests(unittest.TestCase):
             set(EXPORT_WEB.PORTABLE_SCENE_COMPONENTS),
             native_components,
         )
+
+    def test_portable_scene_reports_environment_effects_it_does_not_render(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            environment = {
+                key: {"enabled": True}
+                for key in EXPORT_WEB.PORTABLE_UNSUPPORTED_ENVIRONMENT_EFFECTS
+            }
+            environment["fog"] = {"enabled": True, "density": 0.4}
+            environment["sky"] = {
+                "enabled": True,
+                "cubemap": "textures/Sky.dds",
+                "groundColor": [0.2, 0.3, 0.4],
+                "intensity": 2.0,
+                "iblIntensity": 0.5,
+                "sunDriven": True,
+            }
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "environment": environment,
+                "objects": [{
+                    "id": 1,
+                    "name": "Camera",
+                    "components": [{"type": "Camera"}],
+                }],
+            })
+            project = self._portable_fixture(root, scene=scene)
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+
+            effect_warnings = [
+                item for item in findings
+                if item["code"] == "unsupported-environment-effect"
+            ]
+            self.assertEqual(len(effect_warnings), len(
+                EXPORT_WEB.PORTABLE_UNSUPPORTED_ENVIRONMENT_EFFECTS), findings)
+            self.assertTrue(all("Portable" in item["message"] for item in effect_warnings))
+            self.assertTrue(any(item["code"] == "unsupported-fog-density" for item in findings))
+            self.assertTrue(any(item["code"] == "unsupported-sky-settings" for item in findings))
+
+            environment = {key: {"enabled": False} for key in environment}
+            environment["fog"] = {"enabled": False, "density": 0.0}
+            environment["sky"] = {"enabled": False}
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "environment": environment,
+                "objects": [{
+                    "id": 1,
+                    "name": "Camera",
+                    "components": [{"type": "Camera"}],
+                }],
+            })
+            (root / "assets/scenes/Main.scene.json").write_text(scene, encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertFalse(any(item["code"] in {
+                "unsupported-environment-effect", "unsupported-fog-density",
+                "unsupported-sky-settings",
+            } for item in findings), findings)
+
+    def test_every_serialized_scene_environment_setting_is_classified(self):
+        serializer = (TOOL_PATH.parents[1] / "src" / "LamaPon" / "Scene"
+                      / "SceneSerialization.cpp").read_text(encoding="utf-8")
+        environment_start = serializer.index('{ "environment", {')
+        physics_start = serializer.index('{ "physics", {', environment_start)
+        environment_block = serializer[environment_start:physics_start]
+        serialized_settings = set(re.findall(
+            r'(?m)^ {16}\{\s*"([A-Za-z_]\w*)"\s*,', environment_block))
+        classified_settings = (
+            EXPORT_WEB.PORTABLE_HANDLED_ENVIRONMENT_SETTINGS
+            | set(EXPORT_WEB.PORTABLE_UNSUPPORTED_ENVIRONMENT_EFFECTS)
+        )
+        self.assertEqual(serialized_settings, classified_settings,
+                         sorted(serialized_settings ^ classified_settings))
+
+    def test_portable_scene_rejects_malformed_environment_json_before_runtime(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            malformed_environments = [
+                "invalid",
+                {"fog": False},
+                {"sky": {"topColor": [1.0, "blue", 0.5]}},
+                {"sky": {"enabled": 1}},
+                {"ambientIntensity": "high"},
+                {"sky": {"intensity": 10 ** 1000}},
+            ]
+            for environment in malformed_environments:
+                with self.subTest(environment=environment):
+                    scene = json.dumps({
+                        "format": "LamaPonScene",
+                        "mainCamera": 1,
+                        "environment": environment,
+                        "objects": [{
+                            "id": 1,
+                            "name": "Camera",
+                            "components": [{"type": "Camera"}],
+                        }],
+                    })
+                    (root / "assets/scenes/Main.scene.json").write_text(
+                        scene, encoding="utf-8")
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        root, project, "webgl2-basic-3d", "lamapon-web-target")
+                    self.assertTrue(any(
+                        item["level"] == "reject"
+                        and item["code"] == "invalid-scene-environment-setting"
+                        for item in findings
+                    ), findings)
+
+    def test_portable_scene_rejects_malformed_runtime_component_values(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            malformed_components = [
+                ({"type": "Camera", "nearPlane": "close"}, "nearPlane"),
+                ({"type": "Camera", "enabled": 1}, "enabled"),
+                ({"type": "Camera", "verticalFieldOfView": 10 ** 1000},
+                 "verticalFieldOfView"),
+                ({"type": "Camera", "targetTextureWidth": 1 << 31},
+                 "targetTextureWidth"),
+                ({"type": "BoxCollider3D", "layer": 1 << 32}, "layer"),
+                ({"type": "SpriteRenderer", "sortOrder": 1 << 31}, "sortOrder"),
+                ({"type": "ParallaxLayer", "referenceId": -1}, "referenceId"),
+                ({"type": "UIImage", "border": 5}, "border"),
+                ({"type": "Rigidbody", "constraints": {"positionX": "yes"}},
+                 "constraints"),
+                ({"type": "AudioSource", "streaming": "false"}, "streaming"),
+                ({"type": "MeshRenderer", "customParameters": ["bad"]},
+                 "customParameters"),
+                ({"type": "SpriteRenderer", "shaderKeywords": "keyword"},
+                 "shaderKeywords"),
+                ({"type": "InputMover", "horizontalAction": []},
+                 "horizontalAction"),
+                ({"type": "ModelRenderer", "baseColor": [1, "blue", 1, 1]},
+                 "baseColor"),
+                ({"type": "SpriteAnimator", "clips": [{"name": "Idle",
+                  "startFrame": "zero"}]}, "startFrame"),
+            ]
+            for component, field in malformed_components:
+                with self.subTest(component=component):
+                    scene = json.dumps({
+                        "format": "LamaPonScene",
+                        "mainCamera": 1,
+                        "objects": [{
+                            "id": 1,
+                            "name": "Camera",
+                            "transform": {"position": [0, "bad", 0]},
+                            "components": [{"type": "Camera"}, component],
+                        }],
+                    })
+                    (root / "assets/scenes/Main.scene.json").write_text(
+                        scene, encoding="utf-8")
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        root, project, "webgl2-basic-3d", "lamapon-web-target")
+                    invalid_settings = [item for item in findings
+                                        if item["code"] == "invalid-scene-setting"]
+                    self.assertTrue(any(
+                        f".{field}" in item["message"]
+                        for item in invalid_settings
+                    ), findings)
+                    self.assertTrue(any(
+                        "transform.position" in item["message"]
+                        for item in invalid_settings
+                    ), findings)
+
+    def test_portable_scene_rejects_unrepresentable_ids_without_crashing(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            malformed_scenes = [
+                {"format": "LamaPonScene", "mainCamera": [], "objects": [{
+                    "id": 1, "components": [{"type": "Camera"}],
+                }]},
+                {"format": "LamaPonScene", "mainCamera": 1, "objects": [{
+                    "id": True, "parent": [], "components": [{"type": "Camera"}],
+                }]},
+                {"format": "LamaPonScene", "mainCamera": 1, "objects": [{
+                    "id": 1 << 63, "components": [{"type": "Camera"}],
+                }]},
+            ]
+            for scene in malformed_scenes:
+                with self.subTest(scene=scene):
+                    (root / "assets/scenes/Main.scene.json").write_text(
+                        json.dumps(scene), encoding="utf-8")
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        root, project, "webgl2-basic-3d", "lamapon-web-target")
+                    codes = {item["code"] for item in findings}
+                    self.assertTrue(
+                        "invalid-scene-setting" in codes
+                        or "invalid-scene-object-id" in codes,
+                        findings,
+                    )
+
+    def test_portable_component_type_schema_matches_runtime_loader(self):
+        loader_source = (TOOL_PATH.parents[1] / "src" / "LamaPon" / "Portable"
+                         / "PortableRuntime.cpp").read_text(encoding="utf-8")
+        loader_source = loader_source[loader_source.index("bool Scene::Load("):]
+        document_fields = set(re.findall(
+            r'document\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertEqual(document_fields, {
+            "environment", "format", "mainCamera", "objects", "root", "version",
+        })
+        object_fields = set(re.findall(
+            r'objectJson\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertEqual(object_fields, {
+            "alwaysVisible", "components", "cullingMargin", "enabled",
+            "id", "name", "parent", "tag", "transform",
+        })
+        transform_fields = set(re.findall(
+            r'transform\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertEqual(transform_fields, {"position", "rotation", "scale"})
+        component_value_fields = set(re.findall(
+            r'component\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        component_field_types = (
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_FIELDS
+            - EXPORT_WEB.PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS
+        )
+        self.assertLessEqual(
+            component_value_fields,
+            component_field_types,
+            sorted(component_value_fields - component_field_types),
+        )
+        component_array_fields = set(re.findall(
+            r'component\.at\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertLessEqual(
+            component_array_fields,
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS,
+            sorted(component_array_fields
+                   - EXPORT_WEB.PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS),
+        )
+        portable_loader_fields = set(re.findall(
+            r'(?:component|material)\.(?:value|at|contains|find)\(\s*"([A-Za-z_]\w*)"',
+            loader_source,
+        ))
+        character_rig_loader = (TOOL_PATH.parents[1] / "src" / "LamaPon"
+                                / "Portable" / "PortableCharacterRig2D.cpp")
+        portable_loader_fields.update(re.findall(
+            r'component\.(?:value|at|contains|find)\(\s*"([A-Za-z_]\w*)"',
+            character_rig_loader.read_text(encoding="utf-8"),
+        ))
+        clip_value_fields = set(re.findall(
+            r'clip\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertEqual(
+            clip_value_fields,
+            EXPORT_WEB.PORTABLE_SCENE_CLIP_FIELDS,
+            sorted(clip_value_fields ^ EXPORT_WEB.PORTABLE_SCENE_CLIP_FIELDS),
+        )
+        self.assertEqual(
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_INTEGER_FIELD_TYPES.keys(),
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_INTEGER_FIELDS,
+        )
+        self.assertTrue({"clickEvent", "targetScene", "reloadCurrentScene"} <=
+                        EXPORT_WEB.PORTABLE_SCENE_COMPONENT_RUNTIME_FIELDS)
+        self.assertEqual(
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_UNSUPPORTED_FIELDS["UIButton"],
+            {"loadTargetAdditive"},
+        )
+        self.assertEqual(
+            EXPORT_WEB.PORTABLE_SCENE_CLIP_INTEGER_FIELD_TYPES.keys(),
+            EXPORT_WEB.PORTABLE_SCENE_CLIP_INTEGER_FIELDS,
+        )
+        material_value_fields = set(re.findall(
+            r'material\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertLessEqual(
+            material_value_fields,
+            (EXPORT_WEB.PORTABLE_MATERIAL_STRING_FIELDS
+             | EXPORT_WEB.PORTABLE_MATERIAL_NUMBER_FIELDS
+             | EXPORT_WEB.PORTABLE_MATERIAL_ARRAY_FIELDS),
+            sorted(material_value_fields - (
+                EXPORT_WEB.PORTABLE_MATERIAL_STRING_FIELDS
+                | EXPORT_WEB.PORTABLE_MATERIAL_NUMBER_FIELDS
+                | EXPORT_WEB.PORTABLE_MATERIAL_ARRAY_FIELDS
+            )),
+        )
+        material_array_fields = set(re.findall(
+            r'material\.at\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertLessEqual(
+            material_array_fields,
+            EXPORT_WEB.PORTABLE_MATERIAL_ARRAY_FIELDS,
+            sorted(material_array_fields
+                   - EXPORT_WEB.PORTABLE_MATERIAL_ARRAY_FIELDS),
+        )
+        loaded_material_fields = set(re.findall(
+            r'loadedMaterial\.value\(\s*"([A-Za-z_]\w*)"', loader_source))
+        self.assertEqual(loaded_material_fields, {"type"})
+
+        serializer_source = (TOOL_PATH.parents[1] / "src" / "LamaPon" / "Scene"
+                             / "SceneSerialization.cpp").read_text(encoding="utf-8")
+        serializer_source = serializer_source[
+            serializer_source.index("Json SerializeComponent("):
+        ]
+        serializer_branches = list(re.finditer(
+            r'dynamic_cast\s*<\s*const\s+LamaPon::\s*(\w+)\s*\s*\*>',
+            serializer_source,
+        ))
+        serialized_runtime_fields = set()
+        for branch_index, branch in enumerate(serializer_branches):
+            component_type = branch.group(1).removesuffix("Component")
+            if component_type not in EXPORT_WEB.PORTABLE_SCENE_COMPONENTS:
+                continue
+            branch_end = (serializer_branches[branch_index + 1].start()
+                          if branch_index + 1 < len(serializer_branches)
+                          else serializer_source.find("\n    }", branch.start()))
+            branch_source = serializer_source[branch.start():branch_end]
+            serialized_fields = set(re.findall(
+                r'result\["([A-Za-z_]\w*)"\]', branch_source))
+            serialized_fields.update(re.findall(
+                r'SerializeAssetReference\(\s*result\s*,\s*"([A-Za-z_]\w*)"',
+                branch_source,
+                re.S,
+            ))
+            serialized_runtime_fields.update(
+                serialized_fields
+                & EXPORT_WEB.PORTABLE_SCENE_COMPONENT_RUNTIME_FIELDS
+            )
+            if component_type in EXPORT_WEB.PORTABLE_SCENE_ALWAYS_REJECT_COMPONENTS:
+                continue
+            classified_fields = (
+                EXPORT_WEB.PORTABLE_SCENE_COMPONENT_RUNTIME_FIELDS
+                | EXPORT_WEB.PORTABLE_SCENE_COMPONENT_UNSUPPORTED_FIELDS.get(
+                    component_type, set())
+                | EXPORT_WEB.PORTABLE_SCENE_COMPONENT_EDITOR_ONLY_FIELDS.get(
+                    component_type, set())
+                | {"type", "enabled"}
+            )
+            self.assertLessEqual(
+                serialized_fields,
+                classified_fields,
+                f"{component_type}: "
+                f"{sorted(serialized_fields - classified_fields)}",
+            )
+        self.assertLessEqual(
+            serialized_runtime_fields,
+            portable_loader_fields,
+            sorted(serialized_runtime_fields - portable_loader_fields),
+        )
+        self.assertTrue(
+            EXPORT_WEB.PORTABLE_SCENE_ALWAYS_REJECT_COMPONENTS
+            <= EXPORT_WEB.PORTABLE_SCENE_COMPONENTS.keys()
+        )
+        for component_type, fields in EXPORT_WEB.PORTABLE_SCENE_COMPONENT_UNSUPPORTED_FIELDS.items():
+            self.assertTrue(
+                fields <= EXPORT_WEB.PORTABLE_SCENE_COMPONENT_FIELDS,
+                (component_type, sorted(fields - EXPORT_WEB.PORTABLE_SCENE_COMPONENT_FIELDS)),
+            )
+        self.assertEqual(
+            EXPORT_WEB.PORTABLE_SCENE_COMPONENT_EDITOR_ONLY_FIELDS,
+            {"ParticleSystem": {"previewInEditor"}},
+        )
+        self.assertTrue(
+            set().union(*EXPORT_WEB.PORTABLE_SCENE_COMPONENT_EDITOR_ONLY_FIELDS.values())
+            <= EXPORT_WEB.PORTABLE_SCENE_COMPONENT_FIELDS
+        )
+        self.assertTrue(
+            EXPORT_WEB.PORTABLE_MATERIAL_UNSUPPORTED_FIELDS
+            <= (EXPORT_WEB.PORTABLE_MATERIAL_STRING_FIELDS
+                | set(EXPORT_WEB.PORTABLE_MATERIAL_LIST_FIELD_TYPES))
+        )
+
+    def test_portable_scene_object_field_differences_are_diagnosed(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            scene = {
+                "format": "LamaPonScene", "mainCamera": 1,
+                "objects": [{
+                    "id": 1, "name": "Camera", "tag": "probe",
+                    "persistent": True, "persistenceKey": "camera",
+                    "alwaysVisible": True, "cullingMargin": 4.0,
+                    "prefabAsset": "prefabs/Camera.prefab.json",
+                    "prefabAssetGuid": "asset-camera",
+                    "components": [{"type": "Camera"}],
+                }],
+            }
+            (root / "assets/scenes/Main.scene.json").write_text(
+                json.dumps(scene), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            codes = {item["code"] for item in findings}
+            self.assertIn("portable-object-persistence-ignored", codes)
+            self.assertIn("portable-legacy-render-culling-ignored", codes)
+            self.assertNotIn("invalid-scene-setting", codes)
+
+            malformed_fields = [
+                ("tag", 7), ("persistent", "true"),
+                ("persistenceKey", []), ("alwaysVisible", 1),
+                ("cullingMargin", 10 ** 1000),
+                ("prefabAsset", {}), ("prefabAssetGuid", False),
+            ]
+            for field, value in malformed_fields:
+                with self.subTest(field=field):
+                    malformed = {
+                        "format": "LamaPonScene", "mainCamera": 1,
+                        "objects": [{
+                            "id": 1, "name": "Camera", field: value,
+                            "components": [{"type": "Camera"}],
+                        }],
+                    }
+                    (root / "assets/scenes/Main.scene.json").write_text(
+                        json.dumps(malformed), encoding="utf-8")
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        root, project, "webgl2-basic-3d", "lamapon-web-target")
+                    self.assertTrue(any(
+                        item["code"] == "invalid-scene-setting"
+                        and f".{field}" in item["message"]
+                        for item in findings
+                    ), findings)
+
+    def test_portable_project_warns_when_global_physics_settings_are_ignored(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertFalse(any(
+                item["code"] == "portable-project-physics-approximation"
+                for item in findings), findings)
+
+            project["physics"] = {
+                "gravity": {"x": 2.0, "y": -3.0, "z": 1.0},
+                "fixedTimeStep": 1.0 / 120.0,
+                "collisionOff": [[0, 1]],
+                "clampDiscreteSpeed": True,
+            }
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            warning = next(item for item in findings
+                           if item["code"] == "portable-project-physics-approximation")
+            self.assertEqual(warning["level"], "warning")
+            for setting in ("gravity", "fixedTimeStep", "collision layer matrix",
+                            "speed clamp"):
+                self.assertIn(setting, warning["message"])
+
+    def test_every_top_level_portable_header_type_has_a_module(self):
+        # header はゲームスクリプトがincludeするPortable公開ヘッダー。
+        header = (TOOL_PATH.parents[1] / "src" / "LamaPon" / "Portable"
+                  / "include" / "LamaPon" / "LamaPon.h").read_text(
+                      encoding="utf-8")
+        namespace_start = header.index("namespace LamaPon\n{")
+        # C++ tokenはコメント・文字列中の型名を無視するための検査用テキスト。
+        code = EXPORT_WEB.mask_cpp_non_code(header[namespace_start:])
+        declaration = re.compile(
+            r"\{|\}|\b(?:class|struct|enum\s+class|enum)\s+([A-Za-z_]\w*)"
+        )
+        # top_level_types はLamaPon namespace直下に宣言された公開型。
+        top_level_types: set[str] = set()
+        depth = 0
+        for match in declaration.finditer(code):
+            if match.group(1) and depth == 1:
+                top_level_types.add(match.group(1))
+            if match.group() == "{":
+                depth += 1
+            elif match.group() == "}":
+                depth -= 1
+
+        self.assertTrue(top_level_types)
+        self.assertLessEqual(
+            top_level_types,
+            set(EXPORT_WEB.PORTABLE_API_MODULES),
+            sorted(top_level_types - set(EXPORT_WEB.PORTABLE_API_MODULES)),
+        )
+
+    def test_reactive_event_types_are_recognized_as_core_portable_apis(self):
+        source = (
+            '#include "LamaPon/LamaPon.h"\n'
+            'using namespace LamaPon;\n'
+            'void ObserveEvents(Scene& scene) {\n'
+            '    Observable<EventArgs> stream = scene.Events().Observe("Game.Test");\n'
+            '    Subscription subscription = stream.Subscribe([](const EventArgs&) {});\n'
+            '    CompositeSubscription subscriptions;\n'
+            '    subscriptions.Add(std::move(subscription));\n'
+            '}\n'
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-reactive-api-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+                modules=["core", "input", "renderer2d"],
+            )
+
+            inferred = EXPORT_WEB.infer_lamapon_modules(root, project)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-2d", "lamapon-web-target"
+            )
+
+        self.assertEqual(inferred, ["core", "input", "renderer2d"])
+        self.assertFalse(any(
+            item["code"] in {"unsupported-portable-api", "missing-required-module"}
+            for item in findings
+        ), findings)
+
+    def test_portable_scene_loader_gaps_are_explicitly_rejected(self):
+        # loader_source はPortable Sceneのcomponent読込実装。
+        runtime = (TOOL_PATH.parents[1] / "src" / "LamaPon" / "Portable"
+                   / "PortableRuntime.cpp").read_text(encoding="utf-8")
+        load_start = runtime.index("bool Scene::Load(")
+        parent_resolution = runtime.index("for (const PendingParent& pending", load_start)
+        loader_source = runtime[load_start:parent_resolution]
+        # handled はScene::Loadに実際の復元分岐があるcomponent名。
+        handled = set(re.findall(r'type\s*==\s*"([A-Za-z0-9_]+)"', loader_source))
+        # 複数型を共有する復元分岐も列挙します。
+        for pair in re.findall(
+            r'type\s*==\s*"([A-Za-z0-9_]+)"\s*\|\|\s*type\s*==\s*"([A-Za-z0-9_]+)"',
+            loader_source,
+        ):
+            handled.update(pair)
+        if "CharacterRig2DRuntime::LoadComponent" in loader_source:
+            handled.update({
+                "Blink2D", "Keyform2D", "Rig2D", "SpriteSkin2D", "Sway2D",
+            })
+
+        self.assertEqual(
+            set(EXPORT_WEB.PORTABLE_SCENE_COMPONENTS) - handled,
+            {"MeshCollider3D"},
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [{
+                    "id": 1,
+                    "name": "Camera",
+                    "components": [{"type": "Camera"}],
+                }, {
+                    "id": 2,
+                    "name": "Terrain",
+                    "components": [{"type": "MeshCollider3D"}],
+                }],
+            })
+            project = self._portable_fixture(
+                root,
+                scene=scene,
+                modules=["core", "input", "renderer3d", "physics3d"],
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            mesh_collider = next(
+                item for item in findings
+                if item["code"] == "unsupported-scene-mesh-collider"
+            )
+            self.assertEqual(mesh_collider["level"], "reject")
 
     # test_package_verification_rejects_unexpanded_shell(self: テストケース): 未展開テンプレートを含むHTMLを拒否する。
     def test_package_verification_rejects_unexpanded_shell(self):
@@ -711,6 +1475,611 @@ class WebExportToolTests(unittest.TestCase):
             self.assertIn("missing-required-module", codes)
             self.assertIn("unsupported-portable-api", codes)
 
+    def test_namespace_import_does_not_hide_portable_api_module_requirements(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = ('#include "LamaPon/LamaPon.h"\n'
+                      'using namespace LamaPon;\n'
+                      'MeshRendererComponent* mesh{};\n')
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+                modules=["core", "input", "renderer2d"],
+            )
+
+            inferred = EXPORT_WEB.infer_lamapon_modules(root, project)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertIn("renderer3d", inferred)
+            self.assertTrue(any(
+                item["code"] == "missing-required-module"
+                and "LamaPon::MeshRendererComponent" in item["message"]
+                and "renderer3d" in item["message"]
+                for item in findings
+            ), findings)
+
+    def test_single_symbol_import_tracks_portable_api_module_requirements(self):
+        cases = (
+            'using LamaPon::MeshRendererComponent;\n',
+            'using ::LamaPon :: MeshRendererComponent;\n',
+            'namespace LP = :: LamaPon; using LP :: MeshRendererComponent;\n',
+            'using namespace :: LamaPon;\n',
+        )
+        for import_line in cases:
+            with self.subTest(import_line=import_line), \
+                    tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+                root = Path(directory)
+                source = ('#include "LamaPon/LamaPon.h"\n' + import_line
+                          + 'MeshRendererComponent* mesh{};\n')
+                project = self._portable_fixture(
+                    root,
+                    source_text=source,
+                    scene='{"format":"LamaPonScene","objects":[]}',
+                    modules=["core", "input", "renderer2d"],
+                )
+                inferred = EXPORT_WEB.infer_lamapon_modules(root, project)
+                findings = EXPORT_WEB.validate_web_compatibility(
+                    root, project, "webgl2-basic-3d", "lamapon-web-target"
+                )
+                self.assertIn("renderer3d", inferred)
+                self.assertTrue(any(
+                    item["code"] == "missing-required-module"
+                    and "LamaPon::MeshRendererComponent" in item["message"]
+                    and "renderer3d" in item["message"]
+                    for item in findings
+                ), findings)
+
+    def test_single_symbol_import_rejects_unknown_portable_api(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = ('#include "LamaPon/LamaPon.h"\n'
+                      'using LamaPon::FutureRendererComponent;\n'
+                      'FutureRendererComponent* future{};\n')
+            project = self._portable_fixture(root, source_text=source)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            self.assertTrue(any(
+                item["code"] == "unsupported-portable-api"
+                and "LamaPon::FutureRendererComponent" in item["message"]
+                for item in findings
+            ), findings)
+
+    def test_namespace_alias_unknown_portable_type_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = ('#include "LamaPon/LamaPon.h"\n'
+                      'namespace LP = LamaPon;\n'
+                      'LP::FutureRendererComponent* future{};\n')
+            project = self._portable_fixture(root, source_text=source)
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertTrue(any(
+                item["code"] == "unsupported-portable-api"
+                and "LamaPon::FutureRendererComponent" in item["message"]
+                for item in findings
+            ), findings)
+
+    def test_imported_namespace_alias_tracks_unqualified_portable_types(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = ('#include "LamaPon/LamaPon.h"\n'
+                      'namespace LP = LamaPon;\n'
+                      'using namespace LP;\n'
+                      'MeshRendererComponent* mesh{};\n')
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+                modules=["core", "input", "renderer2d"],
+            )
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertTrue(any(
+                item["code"] == "missing-required-module"
+                and "LamaPon::MeshRendererComponent" in item["message"]
+                and "renderer3d" in item["message"]
+                for item in findings
+            ), findings)
+
+    def test_scene_methods_infer_and_require_their_runtime_modules(self):
+        cases = (
+            ("WebAudio", "audio", 'void Use(LamaPon::Scene& scene) { scene.WebAudio(); }'),
+            ("Raycast", "physics3d", 'auto use = &LamaPon::Scene::Raycast;'),
+            ("Raycast", "physics3d", 'auto use = &LamaPon :: Scene :: Raycast;'),
+            ("WebAudio", "audio", 'auto use = &:: LamaPon :: Scene :: WebAudio;'),
+        )
+        for method, module, source_line in cases:
+            with self.subTest(method=method), \
+                    tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+                root = Path(directory)
+                source = '#include "LamaPon/LamaPon.h"\n' + source_line + "\n"
+                project = self._portable_fixture(
+                    root,
+                    source_text=source,
+                    scene='{"format":"LamaPonScene","objects":[]}',
+                    modules=["core", "input", "renderer2d"],
+                )
+
+                inferred = EXPORT_WEB.infer_lamapon_modules(root, project)
+                findings = EXPORT_WEB.validate_web_compatibility(
+                    root, project, "webgl2-basic-3d", "lamapon-web-target"
+                )
+
+                self.assertIn(module, inferred)
+                self.assertTrue(any(
+                    item["code"] == "missing-required-module"
+                    and f"LamaPon::Scene::{method}" in item["message"]
+                    and module in item["message"]
+                    for item in findings
+                ), findings)
+
+    def test_portable_contract_rejects_unimplemented_scene_physics_queries(self):
+        methods = (
+            "RaycastAll", "SphereCast", "BoxCast", "CapsuleCast",
+            "OverlapBox", "OverlapSphere", "OverlapCapsule",
+        )
+        source = (
+            '#include "LamaPon/LamaPon.h"\n'
+            'void Query(LamaPon::Scene& scene) {\n'
+            + "\n".join(f"    scene.{method}();" for method in methods)
+            + "\n}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-physics-api-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        unsupported = [item for item in findings
+                       if item["code"] == "unsupported-portable-scene-api"]
+        self.assertEqual(len(unsupported), len(methods), findings)
+        self.assertEqual(
+            {method for method in methods
+             if any(f"{method}はPortable" in item["message"] for item in unsupported)},
+            set(methods), findings,
+        )
+
+    def test_portable_contract_rejects_unimplemented_scene_configuration_apis(self):
+        methods = (
+            "SetMainCamera", "SetSkySettings", "LoadDataAsset",
+            "SaveToFile", "PhysicsStats",
+        )
+        source = (
+            '#include "LamaPon/LamaPon.h"\n'
+            'void Configure(LamaPon::Scene& scene) {\n'
+            + "\n".join(f"    (void)scene.{method}();" for method in methods)
+            + "\n}\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-scene-api-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        unsupported = [item for item in findings
+                       if item["code"] == "unsupported-portable-scene-api"]
+        self.assertEqual(len(unsupported), len(methods), findings)
+        self.assertEqual(
+            {method for method in methods
+             if any(f"{method}はPortable" in item["message"] for item in unsupported)},
+            set(methods), findings,
+        )
+
+    def test_portable_scene_clear_is_rejected_without_rejecting_event_bus_clear(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-scene-clear-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    '#include "LamaPon/LamaPon.h"\n'
+                    'void ClearScene(LamaPon::Scene& scene, LamaPon::EventBus& events) {\n'
+                    '    scene.Clear();\n'
+                    '    events.Clear();\n'
+                    '}\n'
+                ),
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        unsupported = [item for item in findings
+                       if item["code"] == "unsupported-portable-scene-api"]
+        self.assertEqual(len(unsupported), 1, findings)
+        self.assertIn("ClearはPortable", unsupported[0]["message"])
+
+    def test_portable_contract_rejects_qualified_unimplemented_scene_query(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-physics-qualified-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    '#include "LamaPon/LamaPon.h"\n'
+                    'auto query = &LamaPon::Scene::RaycastAll;\n'
+                ),
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        self.assertTrue(any(
+            item["code"] == "unsupported-portable-scene-api"
+            and "RaycastAllはPortable" in item["message"]
+            for item in findings
+        ), findings)
+
+    def test_portable_contract_rejects_windows_only_script_methods(self):
+        methods = (
+            "StartCoroutine", "SetWindowSize", "LoadDataAsset",
+            "SignInWithDiscord", "Network", "SaveNumber", "CreateGameObject",
+        )
+        source = (
+            '#include "LamaPon/LamaPon.h"\n'
+            'namespace LP = LamaPon;\n'
+            'class Probe final : public LP::Script {\n'
+            '    void Update(float) override {\n'
+            + "\n".join(f"        (void)this->{method}();" for method in methods)
+            + "\n    }\n};\n"
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-script-api-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root, source_text=source)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        unsupported = [item for item in findings
+                       if item["code"] == "unsupported-portable-script-api"]
+        self.assertEqual(len(unsupported), len(methods), findings)
+        self.assertEqual(
+            {method for method in methods
+             if any(f"Script::{method}はPortable" in item["message"] for item in unsupported)},
+            set(methods), findings,
+        )
+
+    def test_portable_script_api_scan_ignores_non_script_calls_and_local_helpers(self):
+        source = (
+            '#include "LamaPon/LamaPon.h"\n'
+            'class Probe final : public LamaPon::Script {\n'
+            '    void StartCoroutine() {}\n'
+            '    void Update(float) override { StartCoroutine(); }\n'
+            '};\n'
+            'class Worker { void Update() { StartCoroutine(); } };\n'
+            '// class Fake : public LamaPon::Script { void Update(){ Network(); } };\n'
+            'const char* note = "StartCoroutine() Network()";\n'
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-script-api-safe-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root, source_text=source)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        self.assertFalse(any(
+            item["code"] == "unsupported-portable-script-api"
+            for item in findings
+        ), findings)
+
+    def test_cpp_comments_and_literals_do_not_require_portable_modules(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = (
+                '#include "LamaPon/LamaPon.h"\n'
+                'using namespace LamaPon;\n'
+                'const char* label = "MeshRendererComponent Scene::WebAudio LamaPon::FutureType";\n'
+                'const char* raw = R"quoted(MeshRendererComponent)quoted";\n'
+                'const char* raw8 = u8R"json(Scene::WebAudio LamaPon::FutureType)json";\n'
+                '// MeshRendererComponent and scene.WebAudio() are examples only.\n'
+                '/* LamaPon::FutureType scene.Raycast(ray, 2, hit); */\n'
+                '// object.AddComponent<NativeScriptComponent>("Game.Missing");\n'
+            )
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                scene='{"format":"LamaPonScene","objects":[]}',
+                modules=["core", "input", "renderer2d"],
+            )
+
+            inferred = EXPORT_WEB.infer_lamapon_modules(root, project)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-2d", "lamapon-web-target"
+            )
+
+            self.assertNotIn("renderer3d", inferred)
+            self.assertNotIn("audio", inferred)
+            self.assertNotIn("physics3d", inferred)
+            self.assertFalse(any(
+                item["code"] in {
+                    "missing-required-module", "unsupported-portable-api",
+                    "unregistered-dynamic-script",
+                }
+                for item in findings
+            ), findings)
+
+    def test_dynamic_prefab_instantiation_is_checked_and_packaged(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = (
+                '#include "LamaPon/LamaPon.h"\n'
+                "class Spawner : public LamaPon::Script {\n"
+                "    void Update(float) override {\n"
+                '        Instantiate("prefabs/Enemy.prefab.json");\n'
+                '        GetScene().InstantiatePrefab("prefabs/Enemy.prefab.json");\n'
+                "    }\n"
+                "};\n"
+            )
+            project = self._portable_fixture(
+                root,
+                source_text=source,
+                modules=["core", "input", "renderer2d", "renderer3d"],
+                asset_include_paths=["scenes", "prefabs"],
+            )
+            prefabs = root / "assets" / "prefabs"
+            prefabs.mkdir()
+            (prefabs / "Enemy.prefab.json").write_text(json.dumps({
+                "format": "LamaPonPrefab", "version": 1, "root": 7,
+                "objects": [{"id": 7, "name": "Enemy", "parent": None,
+                             "components": [{"type": "SpriteRenderer"}]}],
+            }), encoding="utf-8")
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            self.assertFalse(any(item["level"] == "reject" for item in findings), findings)
+            self.assertTrue(any(item["code"] == "portable-contract-complete"
+                                for item in findings), findings)
+
+    def test_dynamic_prefab_instantiation_requires_a_static_packaged_asset(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    "class Spawner : public LamaPon::Script {\n"
+                    "    void Update(float) override { Instantiate(prefabPath); }\n"
+                    "};\n"
+                ),
+                asset_include_paths=["scenes"],
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            self.assertTrue(any(item["code"] == "invalid-portable-prefab-reference"
+                                for item in findings), findings)
+
+    def test_namespace_alias_script_prefab_instantiation_requires_static_path(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-prefab-alias-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    'namespace LP = LamaPon;\n'
+                    'class Spawner : public LP::Script {\n'
+                    '    void Update(float) override { this->Instantiate(prefabPath); }\n'
+                    '};\n'
+                ),
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        self.assertTrue(any(
+            item["code"] == "invalid-portable-prefab-reference"
+            for item in findings
+        ), findings)
+
+    def test_multiple_inheritance_script_prefab_instantiation_is_checked(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-prefab-multiple-bases-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    'namespace LP = LamaPon;\n'
+                    'struct Marker {};\n'
+                    'class Spawner : public Marker, public LP::Script {\n'
+                    '    void Update(float) override { this->Instantiate(prefabPath); }\n'
+                    '};\n'
+                ),
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+        self.assertTrue(any(
+            item["code"] == "invalid-portable-prefab-reference"
+            for item in findings
+        ), findings)
+
+    def test_dynamic_prefab_instantiation_rejects_cyclic_hierarchies(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    "class Spawner : public LamaPon::Script {\n"
+                    '    void Update(float) override { Instantiate("prefabs/Enemy.prefab.json"); }\n'
+                    "};\n"
+                ),
+                asset_include_paths=["scenes", "prefabs"],
+            )
+            prefabs = root / "assets" / "prefabs"
+            prefabs.mkdir()
+            (prefabs / "Enemy.prefab.json").write_text(json.dumps({
+                "format": "LamaPonPrefab", "version": 1, "root": 7,
+                "objects": [
+                    {"id": 7, "name": "Enemy", "parent": None,
+                     "components": []},
+                    {"id": 8, "name": "Cycle A", "parent": 9,
+                     "components": []},
+                    {"id": 9, "name": "Cycle B", "parent": 8,
+                     "components": []},
+                ],
+            }), encoding="utf-8")
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertTrue(any(
+                item["code"] == "invalid-portable-prefab-hierarchy"
+                and item["level"] == "reject"
+                for item in findings
+            ), findings)
+
+    def test_unimplemented_scene_manager_methods_are_rejected_before_build(self):
+        methods = (
+            "RequestLoadAsync", "RequestLoadAdditive", "IsInputBlocked",
+            "LoadStatus", "PrefetchFailureCount", "PrefetchedAssetBytes",
+            "PrefetchedAssetCount", "ResetTransition", "ResolveScenePath",
+            "SetCurrentScenePath", "TransitionFrame",
+        )
+        calls = "\n".join(
+            f'        GetScene().Scenes().{method}("scenes/next.scene.json");'
+            if method in {"RequestLoadAsync", "RequestLoadAdditive"}
+            else f"        GetScene().Scenes().{method}();"
+            for method in methods
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    "class Spawner : public LamaPon::Script {\n"
+                    "    void Update(float) override {\n"
+                    + calls
+                    + "\n    }\n"
+                    "};\n"
+                ),
+            )
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            rejected_methods = [
+                item["message"] for item in findings
+                if item["code"] == "unsupported-portable-scene-api"
+            ]
+            self.assertEqual(len(rejected_methods), len(methods), findings)
+            self.assertEqual(
+                {method for method in methods
+                 if any(f"{method}はPortable" in item for item in rejected_methods)},
+                set(methods), findings,
+            )
+
+    def test_request_load_requires_a_static_packaged_scene_path(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    "class Spawner : public LamaPon::Script {\n"
+                    "    void Update(float) override { GetScene().Scenes().RequestLoad(nextScene); }\n"
+                    "};\n"
+                ),
+            )
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertTrue(any(
+                item["code"] == "invalid-portable-scene-reference"
+                for item in findings
+            ), findings)
+
+    def test_request_load_checks_target_scene_scripts_and_hierarchy(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(
+                root,
+                source_text=(
+                    '#include "LamaPon/LamaPon.h"\n'
+                    'LAMAPON_SCRIPT_NAMED(Spawner, "Test.Spawner", "Spawner");\n'
+                    "class Spawner : public LamaPon::Script {\n"
+                    '    void Update(float) override { GetScene().Scenes().RequestLoad("scenes/Next.scene.json"); }\n'
+                    "};\n"
+                ),
+            )
+            (root / "assets" / "scenes" / "Next.scene.json").write_text(
+                json.dumps({
+                    "format": "LamaPonScene",
+                    "objects": [{
+                        "id": 1,
+                        "name": "Unregistered target script",
+                        "parent": None,
+                        "components": [{
+                            "type": "NativeScript",
+                            "script": "Test.Missing",
+                        }],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            self.assertTrue(any(
+                item["code"] == "unregistered-scene-script"
+                and "Test.Missing" in item["message"]
+                for item in findings
+            ), findings)
+
+    def test_unregistered_dynamic_scripts_are_rejected_across_namespace_spellings(self):
+        cases = (
+            ("using namespace LamaPon;", "NativeScriptComponent"),
+            ("namespace LP = LamaPon;", "LP::NativeScriptComponent"),
+            ("namespace LP = LamaPon; using namespace LP;", "NativeScriptComponent"),
+            ("using LamaPon::NativeScriptComponent;", "NativeScriptComponent"),
+            ("using namespace :: LamaPon;", "NativeScriptComponent"),
+            ("namespace LP = :: LamaPon;", "LP :: NativeScriptComponent"),
+            ("using :: LamaPon :: NativeScriptComponent;", "NativeScriptComponent"),
+        )
+        for namespace_setup, component_type in cases:
+            with self.subTest(namespace_setup=namespace_setup), \
+                    tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+                root = Path(directory)
+                source = (
+                    '#include "LamaPon/LamaPon.h"\n'
+                    + namespace_setup + "\n"
+                    'LAMAPON_SCRIPT_NAMED(Probe, "Game.Probe", "Probe");\n'
+                    'void Spawn(LamaPon::GameObject& object) {\n'
+                    f'    object.AddComponent<{component_type}>("Game.Missing");\n'
+                    '}\n'
+                )
+                project = self._portable_fixture(root, source_text=source)
+
+                findings = EXPORT_WEB.validate_web_compatibility(
+                    root, project, "webgl2-basic-3d", "lamapon-web-target"
+                )
+
+                self.assertTrue(any(
+                    item["code"] == "unregistered-dynamic-script"
+                    and "Game.Missing" in item["message"]
+                    for item in findings
+                ), findings)
+
     # test_strict_check_rejects_scene_contract_failures(self: テストケース): 欠落素材や循環階層などのシーン違反を診断する。
     def test_strict_check_rejects_scene_contract_failures(self):
         # directory は検証用の一時領域。処理と出力を隔離する。
@@ -742,6 +2111,130 @@ class WebExportToolTests(unittest.TestCase):
             self.assertIn("unsupported-scene-component", codes)
             self.assertIn("unregistered-scene-script", codes)
             self.assertIn("cyclic-scene-hierarchy", codes)
+
+    def test_default_script_registration_macro_matches_scene_and_dynamic_ids(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = (
+                '#include "LamaPon/LamaPon.h"\n'
+                'class ProbeScript final : public LamaPon::Script {};\n'
+                'LAMAPON_SCRIPT(ProbeScript);\n'
+                'void Spawn(LamaPon::GameObject& object) {\n'
+                '    object.AddComponent<LamaPon::NativeScriptComponent>("Game.ProbeScript");\n'
+                '}\n'
+            )
+            scene = (
+                '{"format":"LamaPonScene","mainCamera":1,"objects":[{'
+                '"id":1,"name":"Camera","components":['
+                '{"type":"Camera"},'
+                '{"type":"NativeScript","script":"Game.ProbeScript","properties":{}}'
+                ']}]}'
+            )
+            project = self._portable_fixture(root, source_text=source, scene=scene)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            codes = {item["code"] for item in findings}
+            self.assertNotIn("unregistered-scene-script", codes, findings)
+            self.assertNotIn("unregistered-dynamic-script", codes, findings)
+            self.assertFalse(any(item["level"] == "reject" for item in findings), findings)
+
+    def test_default_script_macro_examples_in_comments_and_strings_do_not_register(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            source = (
+                '#include "LamaPon/LamaPon.h"\n'
+                '// LAMAPON_SCRIPT(FakeScript);\n'
+                'const char* example = "LAMAPON_SCRIPT(FakeScript);";\n'
+            )
+            scene = (
+                '{"format":"LamaPonScene","mainCamera":1,"objects":[{'
+                '"id":1,"name":"Camera","components":['
+                '{"type":"Camera"},'
+                '{"type":"NativeScript","script":"Game.FakeScript","properties":{}}'
+                ']}]}'
+            )
+            project = self._portable_fixture(root, source_text=source, scene=scene)
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+            self.assertIn("unregistered-scene-script", {item["code"] for item in findings})
+
+    def test_strict_check_rejects_non_finite_scene_numbers(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            for value in ("NaN", "Infinity", "1e999"):
+                with self.subTest(value=value):
+                    case_root = root / value
+                    scene = (
+                        '{"format":"LamaPonScene","mainCamera":1,"objects":['
+                        '{"id":1,"name":"Camera","components":['
+                        '{"type":"Camera","field":' + value + '}]}]}'
+                    )
+                    project = self._portable_fixture(case_root, scene=scene)
+
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        case_root, project, "webgl2-basic-3d", "lamapon-web-target"
+                    )
+
+                    diagnostic = next(
+                        item for item in findings
+                        if item["code"] == "invalid-scene-number"
+                    )
+                    self.assertIn("objects[0].components[0].field", diagnostic["message"])
+
+    def test_strict_check_reports_invalid_utf8_startup_scene(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            project = self._portable_fixture(root)
+            (root / "assets/scenes/Main.scene.json").write_bytes(b"\xff\xfe")
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target"
+            )
+
+            diagnostic = next(
+                item for item in findings if item["code"] == "invalid-scene-json"
+            )
+            self.assertIn("UTF-8 byte 0", diagnostic["message"])
+
+    def test_strict_check_rejects_invalid_material_and_non_finite_asset_numbers(self):
+        cases = (
+            ("broken-material", "materials/Broken.material.json", "{ invalid",
+             "invalid-portable-material"),
+            ("non-finite-material", "materials/NonFinite.material.json",
+             '{"type":"LamaPonLitMaterial","version":1,"baseColor":[NaN,1,1,1]}',
+             "invalid-portable-material-number"),
+            ("wrong-material-field", "materials/WrongField.material.json",
+             '{"type":"LamaPonLitMaterial","version":1,"roughness":"high"}',
+             "invalid-portable-material-setting"),
+            ("wrong-material-version", "materials/WrongVersion.material.json",
+             '{"type":"LamaPonLitMaterial","version":true}',
+             "invalid-portable-material"),
+            ("non-finite-animation", "animations/NonFinite.animation.json",
+             '{"format":"LamaPonAnimationClip","version":1,"duration":1e999,'
+             '"keyframes":[{"time":1e999,"position":[0,0,0],"rotation":[0,0,0],"scale":[1,1,1]}]}',
+             "invalid-portable-animation"),
+        )
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            for name, relative, contents, expected_code in cases:
+                with self.subTest(name=name):
+                    case_root = root / name
+                    project = self._portable_fixture(
+                        case_root,
+                        asset_include_paths=["scenes", "materials", "animations"],
+                    )
+                    for asset_directory in ("materials", "animations"):
+                        (case_root / "assets" / asset_directory).mkdir(parents=True)
+                    asset = case_root / "assets" / relative
+                    asset.write_text(contents, encoding="utf-8")
+
+                    findings = EXPORT_WEB.validate_web_compatibility(
+                        case_root, project, "webgl2-basic-3d", "lamapon-web-target"
+                    )
+
+                    self.assertIn(expected_code, {item["code"] for item in findings})
 
     # test_strict_check_accepts_ui_rect_scene_component(self: テストケース): 対応済みUIシーン要素を受け入れる。
     def test_strict_check_accepts_ui_rect_scene_component(self):
@@ -1539,6 +3032,76 @@ class WebExportToolTests(unittest.TestCase):
             self.assertIn("unsupported-world-overlay", codes)
             self.assertIn("unsupported-sprite-render-texture", codes)
 
+    def test_portable_serialized_feature_differences_have_diagnostics(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            components = [
+                {"type": "Camera", "targetTexture": "textures/target.png"},
+                {"type": "DirectionalLight", "castsShadows": True},
+                {"type": "PointLight", "castsShadows": True},
+                {"type": "SpotLight", "castsShadows": True},
+                {"type": "MeshRenderer", "shape": "Torus",
+                 "shader": "shaders/custom.hlsl", "worldOverlay": True,
+                 "shaderKeywords": ["CUSTOM"], "customParameters": [[1, 0, 0, 0]],
+                 "customTexture0": "textures/custom.png"},
+                {"type": "SpriteRenderer", "renderTexture": "textures/target.png",
+                 "shader": "shaders/sprite.hlsl", "customParameters": [[1, 0, 0, 0]]},
+                {"type": "UIButton", "targetScene": "scenes/Other.scene.json",
+                 "clickEvent": "Start", "reloadCurrentScene": True,
+                 "loadTargetAdditive": True},
+                {"type": "UIImage", "border": [1, 1, 1, 1],
+                 "renderTexture": "textures/target.png"},
+                {"type": "AudioSource", "bus": 1, "streaming": True,
+                 "spatial": True},
+                {"type": "ModelRenderer", "wireframe": True,
+                 "animationController": "animations/model.controller.json",
+                 "applyRootMotion": True, "rootMotionNode": "Root",
+                 "useLegacyShading": True, "preserveEmbeddedMaterialColor": True,
+                 "shader": "shaders/model.hlsl", "shaderKeywords": ["CUSTOM"],
+                 "customParameters": [[1, 0, 0, 0]],
+                 "customTexture0": "textures/custom.png"},
+                {"type": "ParticleSystem", "shape": "Mesh",
+                 "renderMode": "StretchedBillboard", "shader": "shaders/particle.hlsl",
+                 "auxiliaryTexture": "textures/aux.png",
+                 "customParameters": [[1, 0, 0, 0]]},
+                {"type": "BoxCollider3D", "friction": 0.9, "restitution": 0.8},
+                {"type": "MeshCollider3D"},
+                {"type": "Rigidbody", "mass": 5.0, "interpolate": True},
+            ]
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [{"id": index + 1, "name": component["type"],
+                             "components": [component]}
+                            for index, component in enumerate(components)],
+            })
+            project = self._portable_fixture(
+                root,
+                scene=scene,
+                modules=["core", "input", "renderer2d", "renderer3d",
+                         "audio", "physics3d", "particles3d"],
+            )
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            codes = {item["code"] for item in findings}
+            expected_codes = {
+                "unsupported-camera-render-texture", "unsupported-portable-shadows",
+                "unsupported-primitive-shape", "unsupported-mesh-custom-shader",
+                "unsupported-mesh-custom-bindings", "unsupported-world-overlay",
+                "unsupported-sprite-render-texture", "unsupported-sprite-custom-shader",
+                "unsupported-ui-button-action", "unsupported-ui-image-feature",
+                "portable-audio-bus-approximation", "portable-audio-buffered-stream",
+                "web-spatial-audio-approximation", "unsupported-model-wireframe",
+                "unsupported-animation-controller", "unsupported-root-motion",
+                "unsupported-legacy-model-shading", "unsupported-preserve-material-color",
+                "unsupported-model-custom-shader", "unsupported-model-shader-keywords",
+                "unsupported-model-custom-bindings", "web-particle-shape-approximation",
+                "unsupported-particle-render-mode", "unsupported-particle-custom-shader",
+                "portable-basic-box-physics", "unsupported-scene-mesh-collider",
+                "unsupported-advanced-rigidbody", "portable-rigidbody-interpolation-ignored",
+            }
+            self.assertTrue(expected_codes <= codes, sorted(expected_codes - codes))
+
     # test_scene_feature_contract_rejects_silent_model_and_physics_loss(self: テストケース): 消失するモデル・物理機能を診断する。
     def test_scene_feature_contract_rejects_silent_model_and_physics_loss(self):
         # directory は検証用の一時領域。処理と出力を隔離する。
@@ -1592,6 +3155,98 @@ class WebExportToolTests(unittest.TestCase):
             self.assertIn("unsupported-animation-controller", codes)
             self.assertIn("unsupported-root-motion", codes)
             self.assertIn("unsupported-advanced-rigidbody", codes)
+
+    # test_audio_bus_contract_reports_portable_mixer_limits(self: テストケース): 個別音声バスの近似と不正値を検査する。
+    def test_audio_bus_contract_reports_portable_mixer_limits(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            scene = json.dumps({
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [{
+                    "id": 1,
+                    "name": "Camera",
+                    "components": [{"type": "Camera"}],
+                }, {
+                    "id": 2,
+                    "name": "Music",
+                    "components": [{"type": "AudioSource", "bus": 1}],
+                }, {
+                    "id": 3,
+                    "name": "Effects",
+                    "components": [{"type": "AudioSource", "bus": 2}],
+                }],
+            })
+            project = self._portable_fixture(
+                root, scene=scene, modules=["core", "audio", "renderer3d"])
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            bus_warnings = [item for item in findings
+                            if item["code"] == "portable-audio-bus-approximation"]
+            self.assertEqual(len(bus_warnings), 1, findings)
+            self.assertIn("Music", bus_warnings[0]["message"])
+            self.assertEqual(bus_warnings[0]["level"], "warning")
+
+            for invalid_bus in (True, -1, 4, "music"):
+                with self.subTest(invalid_bus=invalid_bus):
+                    invalid_scene = json.loads(scene)
+                    invalid_scene["objects"][1]["components"][0]["bus"] = invalid_bus
+                    (root / "assets/scenes/Main.scene.json").write_text(
+                        json.dumps(invalid_scene), encoding="utf-8")
+                    invalid_findings = EXPORT_WEB.validate_web_compatibility(
+                        root, project, "webgl2-basic-3d", "lamapon-web-target")
+                    self.assertTrue(any(
+                        item["code"] == "invalid-scene-audio-bus"
+                        and item["level"] == "reject"
+                        for item in invalid_findings
+                    ), invalid_findings)
+
+    # test_rigidbody_interpolation_is_reported_when_portable_renderer_ignores_it(self: テストケース): Rigidbody描画補間の差を診断する。
+    def test_rigidbody_interpolation_is_reported_when_portable_renderer_ignores_it(self):
+        with tempfile.TemporaryDirectory(prefix="lamapon-web-") as directory:
+            root = Path(directory)
+            scene = {
+                "format": "LamaPonScene",
+                "mainCamera": 1,
+                "objects": [{
+                    "id": 1,
+                    "name": "Camera",
+                    "components": [{"type": "Camera"}],
+                }, {
+                    "id": 2,
+                    "name": "Moving body",
+                    "components": [{"type": "Rigidbody", "interpolate": True}],
+                }],
+            }
+            project = self._portable_fixture(
+                root, scene=json.dumps(scene), modules=["core", "physics3d", "renderer3d"])
+
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            warning = next(item for item in findings
+                           if item["code"] == "portable-rigidbody-interpolation-ignored")
+            self.assertEqual(warning["level"], "warning")
+            self.assertIn("Moving body", warning["message"])
+
+            scene["objects"][1]["components"][0]["interpolate"] = False
+            (root / "assets/scenes/Main.scene.json").write_text(
+                json.dumps(scene), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertNotIn(
+                "portable-rigidbody-interpolation-ignored",
+                {item["code"] for item in findings})
+
+            scene["objects"][1]["components"][0]["interpolate"] = "false"
+            (root / "assets/scenes/Main.scene.json").write_text(
+                json.dumps(scene), encoding="utf-8")
+            findings = EXPORT_WEB.validate_web_compatibility(
+                root, project, "webgl2-basic-3d", "lamapon-web-target")
+            self.assertTrue(any(
+                item["code"] == "invalid-rigidbody-interpolation"
+                and item["level"] == "reject"
+                for item in findings), findings)
 
     # test_material_contract_checks_nested_assets_and_custom_shader(self: テストケース): 材料の参照素材と独自シェーダーを診断する。
     def test_material_contract_checks_nested_assets_and_custom_shader(self):

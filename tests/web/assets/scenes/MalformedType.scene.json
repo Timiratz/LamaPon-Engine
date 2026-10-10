@@ -1,0 +1,13 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "objects": [
+    {
+      "id": 99,
+      "name": "Malformed type probe",
+      "components": [
+        { "type": "Camera", "nearPlane": "not-a-number" }
+      ]
+    }
+  ]
+}

@@ -1,13 +1,20 @@
 #include "LamaPon/Web/WebRenderer3D.h"
 
+#if defined(LAMAPON_NATIVE_RUNTIME)
+#include "LamaPon/Native/NativeGL.h"
+#include "LamaPon/Native/NativeRenderBridge.h"
+#else
 #include <emscripten.h>
 #include <emscripten/html5.h>
 #include <GLES3/gl3.h>
+#endif
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -18,8 +25,7 @@ namespace LamaPon::Web
     namespace
     {
         // WebGL2向け頂点GLSL
-        constexpr char VertexShaderSourceWebGL2[] = R"glsl(
-#version 300 es
+        constexpr char VertexShaderSourceWebGL2[] = R"glsl(#version 300 es
 precision highp float;
 
 // ローカル空間の頂点位置
@@ -70,18 +76,24 @@ void main()
 )glsl";
 
         // WebGL2向け材質GLSL
-        constexpr char FragmentShaderSourceWebGL2[] = R"glsl(
-#version 300 es
+        constexpr char FragmentShaderSourceWebGL2[] = R"glsl(#version 300 es
 precision mediump float;
 
 // 補間するWorld法線
 in vec3 vWorldNormal;
 // 補間するWorld位置
 in vec3 vWorldPosition;
+in vec2 vUv;
 // 表面色のRGBA倍率
 uniform vec4 uColor;
 // 平行光が進むWorld方向
 uniform vec3 uLightDirection;
+uniform int uLocalLightCount;
+uniform vec4 uLocalPositionRange[8];
+uniform vec4 uLocalColorIntensity[8];
+uniform vec4 uLocalDirectionOuter[8];
+uniform vec2 uLocalInnerSpot[8];
+
 // 環境光のRGB
 uniform vec3 uAmbientColor;
 // 環境光の強度
@@ -228,6 +240,25 @@ void main()
         + uDirectionalColor * uDirectionalIntensity * diffuse)
         + specularColor * specular * uDirectionalColor
             * uDirectionalIntensity + emissive;
+    // 距離減衰と円錐の内外角を使った局所照明。
+    for (int i = 0; i < 8; ++i) {
+        if (i >= uLocalLightCount) break;
+        vec3 offset = uLocalPositionRange[i].xyz - vWorldPosition;
+        float lightDistance = length(offset);
+        vec3 toLight = offset / max(lightDistance, 0.0001);
+        float attenuation = max(1.0 - lightDistance / uLocalPositionRange[i].w, 0.0);
+        attenuation *= attenuation;
+        if (uLocalInnerSpot[i].y > 0.5) {
+            float cone = dot(-toLight, uLocalDirectionOuter[i].xyz);
+            attenuation *= clamp((cone - uLocalDirectionOuter[i].w)
+                / max(uLocalInnerSpot[i].x - uLocalDirectionOuter[i].w, 0.0001), 0.0, 1.0);
+        }
+        float localDiffuse = max(dot(normal, toLight), 0.0);
+        vec3 localHalf = normalize(viewDirection + toLight);
+        float localSpecular = pow(max(dot(normal, localHalf), 0.0), specularPower);
+        litColor += (diffuseColor * localDiffuse + specularColor * localSpecular)
+            * uLocalColorIntensity[i].rgb * uLocalColorIntensity[i].a * attenuation;
+    }
     litColor = mix(litColor, surface.rgb + emissive, uUnlit);
     // フォグ距離範囲の幅
     float fogSpan = max(uFogRange.y - uFogRange.x, 0.0001);
@@ -305,6 +336,12 @@ varying vec3 vWorldPosition;
 uniform vec4 uColor;
 // 平行光が進むWorld方向
 uniform vec3 uLightDirection;
+uniform int uLocalLightCount;
+uniform vec4 uLocalPositionRange[8];
+uniform vec4 uLocalColorIntensity[8];
+uniform vec4 uLocalDirectionOuter[8];
+uniform vec2 uLocalInnerSpot[8];
+
 // 環境光のRGB
 uniform vec3 uAmbientColor;
 // 環境光の強度
@@ -414,6 +451,25 @@ void main()
         + uDirectionalColor * uDirectionalIntensity * diffuse)
         + specularColor * specular * uDirectionalColor
             * uDirectionalIntensity + emissive;
+    // 距離減衰と円錐の内外角を使った局所照明。
+    for (int i = 0; i < 8; ++i) {
+        if (i >= uLocalLightCount) break;
+        vec3 offset = uLocalPositionRange[i].xyz - vWorldPosition;
+        float lightDistance = length(offset);
+        vec3 toLight = offset / max(lightDistance, 0.0001);
+        float attenuation = max(1.0 - lightDistance / uLocalPositionRange[i].w, 0.0);
+        attenuation *= attenuation;
+        if (uLocalInnerSpot[i].y > 0.5) {
+            float cone = dot(-toLight, uLocalDirectionOuter[i].xyz);
+            attenuation *= clamp((cone - uLocalDirectionOuter[i].w)
+                / max(uLocalInnerSpot[i].x - uLocalDirectionOuter[i].w, 0.0001), 0.0, 1.0);
+        }
+        float localDiffuse = max(dot(normal, toLight), 0.0);
+        vec3 localHalf = normalize(viewDirection + toLight);
+        float localSpecular = pow(max(dot(normal, localHalf), 0.0), specularPower);
+        litColor += (diffuseColor * localDiffuse + specularColor * localSpecular)
+            * uLocalColorIntensity[i].rgb * uLocalColorIntensity[i].a * attenuation;
+    }
     litColor = mix(litColor, surface.rgb + emissive, uUnlit);
     // フォグ距離範囲の幅
     float fogSpan = max(uFogRange.y - uFogRange.x, 0.0001);
@@ -427,14 +483,21 @@ void main()
 )glsl";
 
         // 描画方式をDOMへ公開する(version: 2WebGL2／1WebGL1／0互換)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::BrowserSetRendererBackend;
+#else
         EM_JS(void, BrowserSetRendererBackend, (int version), {
             if (!document.body) return;
             document.body.dataset.lamaponRenderer = version >= 2
                 ? "webgl2" : version == 1 ? "webgl1" : "canvas2d";
         });
+#endif
 
 
         // Canvas2DまたはSVGの描画先を用意する(selector: 元CanvasのCSS指定, width: 描画幅, height: 描画高さ)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DInitialize;
+#else
         EM_JS(int, Canvas2DInitialize,
               (const char* selector, int width, int height), {
             // CSS指定から得た元Canvas
@@ -495,8 +558,12 @@ void main()
             }
             return 1;
         });
+#endif
 
         // 互換描画先のサイズを変更し、保留描画を破棄する(width: 描画幅, height: 描画高さ)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DResize;
+#else
         EM_JS(void, Canvas2DResize, (int width, int height), {
             // ブラウザー共有の互換描画状態
             const runtime = globalThis.__lamaponCanvas2D;
@@ -515,8 +582,12 @@ void main()
                     + String(Math.max(1, height));
             }
         });
+#endif
 
         // 互換描画の背景を消去し、保留描画を破棄する(red: 背景R, green: 背景G, blue: 背景B, alpha: 背景Alpha)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DBeginFrame;
+#else
         EM_JS(void, Canvas2DBeginFrame,
               (float red, float green, float blue, float alpha), {
             // ブラウザー共有の互換描画状態
@@ -590,8 +661,12 @@ void main()
             }
             context.fillRect(0, 0, runtime.canvas.width, runtime.canvas.height);
         });
+#endif
 
         // 互換描画の距離フォグを設定する(enabled: フォグを使うか, red: フォグR, green: フォグG, blue: フォグB, startDistance: 開始距離, endDistance: 終了距離)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DSetFog;
+#else
         EM_JS(void, Canvas2DSetFog,
               (int enabled, float red, float green, float blue,
                float startDistance, float endDistance), {
@@ -605,8 +680,12 @@ void main()
                 end: Math.max(startDistance + 0.001, endDistance),
             };
         });
+#endif
 
         // 互換描画の空の階調を設定する(enabled: 空を使うか, topRed: 上端R, topGreen: 上端G, topBlue: 上端B, horizonRed: 水平線R, horizonGreen: 水平線G, horizonBlue: 水平線B)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DSetSky;
+#else
         EM_JS(void, Canvas2DSetSky,
               (int enabled,
                float topRed, float topGreen, float topBlue,
@@ -620,8 +699,12 @@ void main()
                 horizon: [horizonRed, horizonGreen, horizonBlue],
             };
         });
+#endif
 
         // 32成分単位の三角形をJSへ複製して描画予約する(vertices: 転送データのポインター, floatCount: float成分数, red: 表面R, green: 表面G, blue: 表面B, alpha: 表面Alpha, textureId: 表面色テクスチャID, alphaBlended: 透過合成するか, alphaCutoff: Alphaしきい値, additiveBlend: 加算合成するか)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DQueueTriangles;
+#else
         EM_JS(void, Canvas2DQueueTriangles,
               (const float* vertices, int floatCount,
                float red, float green, float blue, float alpha,
@@ -641,8 +724,12 @@ void main()
                 additiveBlend: !!additiveBlend,
             });
         });
+#endif
 
         // 予約した三角形をSVG・深度バッファ・アフィン描画のいずれかで描く。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::Canvas2DEndFrame;
+#else
         EM_JS(void, Canvas2DEndFrame, (), {
             // ブラウザー共有の互換描画状態
             const runtime = globalThis.__lamaponCanvas2D;
@@ -1590,23 +1677,17 @@ void main()
             }
             runtime.queue = [];
         });
+#endif
 
         // 仮想FSの画像を非同期に読み込みIDを返す(virtualPath: 仮想FS内の画像パス, rendererVersion: 2WebGL2／1WebGL1／0互換)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::BrowserTextureCreate;
+#else
         EM_JS(int, BrowserTextureCreate,
-              (const char* virtualPath, int rendererVersion), {
-            // 互換描画またはGLのCanvas
-            const canvas = document.querySelector("#canvas");
-            // 画像を接続する共有WebGL
-            let gl = null;
-            if (rendererVersion >= 2 && canvas
-                && typeof canvas.getContext === "function") {
-                gl = canvas.getContext("webgl2");
-            } else if (rendererVersion == 1 && canvas
-                && typeof canvas.getContext === "function") {
-                gl = canvas.getContext("webgl")
-                    || canvas.getContext("experimental-webgl");
-            }
-            if (!globalThis.FS) return 0;
+              (const char* virtualPath, int rendererVersion, const unsigned char* encoded, int byteCount), {
+            // Rendererと同じ現在のContextへ接続し、任意のCanvasを扱う。
+            const gl = rendererVersion > 0 && GL.currentContext ? GL.currentContext.GLctx : null;
+            if ((!encoded || byteCount <= 0) && !globalThis.FS) return 0;
             if (gl) globalThis.__lamaponWebGl = gl;
             globalThis.__lamaponTextures = globalThis.__lamaponTextures || {};
             globalThis.__lamaponNextTextureId = globalThis.__lamaponNextTextureId || 1;
@@ -1623,7 +1704,9 @@ void main()
             globalThis.__lamaponTextures[id] = slot;
             try {
                 // 仮想FSから読んだ画像データ
-                const bytes = FS.readFile(UTF8ToString(virtualPath));
+                const bytes = encoded && byteCount > 0
+                    ? HEAPU8.slice(encoded, encoded + byteCount)
+                    : FS.readFile(UTF8ToString(virtualPath));
                 // 画像先頭から判定したMIME
                 const imageMime = bytes.length >= 12
                     && bytes[0] === 0x52 && bytes[1] === 0x49
@@ -1638,7 +1721,16 @@ void main()
                 // ブラウザーが読む画像バイト列
                 const blob = new Blob([bytes], { type: imageMime });
                 // 画像をGLまたはCPUミップへ登録する(bitmap: デコード済み画像, error: デコード・登録エラー)。
-                createImageBitmap(blob).then(bitmap => {
+                slot.gl = gl;
+                slot.generation = 0;
+                slot.recreate = () => {
+                    const generation = ++slot.generation;
+                    slot.ready = false;
+                    slot.texture = null;
+                    return createImageBitmap(blob).then(bitmap => {
+                    if (generation !== slot.generation || (gl && gl.isContextLost())) {
+                        bitmap.close(); return;
+                    }
                     if (gl) {
                         // 画像を保持するGL Texture
                         const texture = gl.createTexture();
@@ -1689,7 +1781,9 @@ void main()
                         slot.softwareLevels = levels;
                     }
                     slot.ready = true;
-                }).catch(error => console.warn("LamaPon Web texture load failed", virtualPath, error));
+                    }).catch(error => console.warn("LamaPon Web texture load failed", virtualPath, error));
+                };
+                slot.recreate();
                 return id;
             }
             // 同期読込の失敗時は画像IDを破棄する(error: 読込エラー)。
@@ -1699,8 +1793,12 @@ void main()
                 return 0;
             }
         });
+#endif
 
         // 読込済み画像をGL_TEXTURE0へ接続する(textureId: ブラウザー共有の画像ID)。
+        #if defined(LAMAPON_NATIVE_RUNTIME)
+        using LamaPon::Native::BrowserTextureBind;
+#else
         EM_JS(int, BrowserTextureBind, (int textureId), {
             // 画像を接続する共有WebGL
             const gl = globalThis.__lamaponWebGl;
@@ -1711,6 +1809,7 @@ void main()
             gl.bindTexture(gl.TEXTURE_2D, slot.texture);
             return 1;
         });
+#endif
 
         struct ClipVertex final
         {
@@ -1754,6 +1853,18 @@ void main()
             GLenum type,
             const char* source) noexcept
         {
+#if defined(LAMAPON_NATIVE_RUNTIME) && !defined(__ANDROID__)
+            // GLES 3の共通ShaderをデスクトップGLSL 3.30へ接続する。
+            std::string desktopSource(source);
+            const auto version = desktopSource.find("#version 300 es");
+            if (version != std::string::npos) desktopSource.replace(version, 15, "#version 330 core");
+            for (const std::string_view precision : {"precision highp float;", "precision mediump float;"})
+            {
+                const auto offset = desktopSource.find(precision);
+                if (offset != std::string::npos) desktopSource.erase(offset, precision.size());
+            }
+            source = desktopSource.c_str();
+#endif
             // コンパイルするGL Shader
             const GLuint shader = glCreateShader(type);
             glShaderSource(shader, 1, &source, nullptr);
@@ -1765,6 +1876,9 @@ void main()
             {
                 return shader;
             }
+            std::array<char, 4096> diagnostics{};
+            glGetShaderInfoLog(shader, diagnostics.size(), nullptr, diagnostics.data());
+            std::fprintf(stderr, "LamaPon Web shader compile failed: %s\n", diagnostics.data());
             glDeleteShader(shader);
             return 0;
         }
@@ -1807,6 +1921,9 @@ void main()
             {
                 return program;
             }
+            std::array<char, 4096> diagnostics{};
+            glGetProgramInfoLog(program, diagnostics.size(), nullptr, diagnostics.data());
+            std::fprintf(stderr, "LamaPon Web shader link failed: %s\n", diagnostics.data());
             glDeleteProgram(program);
             return 0;
         }
@@ -1829,7 +1946,12 @@ void main()
         };
 
         // 所有するWebGL Context
+#if defined(LAMAPON_NATIVE_RUNTIME)
+        // ネイティブGL contextはSDLアプリケーションが所有する。
+        int context{};
+#else
         EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context{};
+#endif
         // 材質描画用のGL Program
         GLuint program{};
         // World行列のUniform位置
@@ -1850,6 +1972,11 @@ void main()
         GLint directionalColorLocation{ -1 };
         // 平行光強度のUniform位置
         GLint directionalIntensityLocation{ -1 };
+        GLint localLightCountLocation{ -1 };
+        GLint localPositionRangeLocation{ -1 };
+        GLint localColorIntensityLocation{ -1 };
+        GLint localDirectionOuterLocation{ -1 };
+        GLint localInnerSpotLocation{ -1 };
         // 粗さのUniform位置
         GLint roughnessLocation{ -1 };
         // 金属度のUniform位置
@@ -1904,6 +2031,7 @@ void main()
         GLint fogEnabledLocation{ -1 };
         // 選んだWebGL版番号
         int webGLVersion{};
+        std::string canvasSelector;
         // Canvas2D/SVGを使うか
         bool fallback2D{};
         // IDごとに所有するMesh資源
@@ -1937,10 +2065,139 @@ void main()
         {
             glDeleteProgram(m_impl->program);
         }
+#if !defined(LAMAPON_NATIVE_RUNTIME)
+        if (!m_impl->canvasSelector.empty())
+        {
+            emscripten_set_webglcontextlost_callback(m_impl->canvasSelector.c_str(), nullptr, false, nullptr);
+            emscripten_set_webglcontextrestored_callback(m_impl->canvasSelector.c_str(), nullptr, false, nullptr);
+        }
         if (m_impl->context != 0)
         {
+            EM_ASM({
+                const context = GL.getContext($0);
+                const gl = context ? context.GLctx : null;
+                for (const [id, slot] of Object.entries(globalThis.__lamaponTextures || {})) {
+                    if (!gl || slot.gl !== gl) continue;
+                    ++slot.generation;
+                    slot.recreate = null;
+                    if (slot.image) slot.image.close();
+                    if (slot.texture && !gl.isContextLost()) gl.deleteTexture(slot.texture);
+                    delete globalThis.__lamaponTextures[id];
+                }
+            }, m_impl->context);
             emscripten_webgl_destroy_context(m_impl->context);
         }
+#endif
+    }
+
+    void Renderer3D::ConfigureGraphicsState() noexcept
+    {
+        m_impl->modelLocation = glGetUniformLocation(
+            m_impl->program,
+            "uModel");
+        m_impl->viewLocation = glGetUniformLocation(
+            m_impl->program,
+            "uView");
+        m_impl->projectionLocation = glGetUniformLocation(
+            m_impl->program,
+            "uProjection");
+        m_impl->colorLocation = glGetUniformLocation(
+            m_impl->program,
+            "uColor");
+        m_impl->lightDirectionLocation = glGetUniformLocation(
+            m_impl->program,
+            "uLightDirection");
+        m_impl->ambientColorLocation = glGetUniformLocation(
+            m_impl->program,
+            "uAmbientColor");
+        m_impl->ambientIntensityLocation = glGetUniformLocation(
+            m_impl->program,
+            "uAmbientIntensity");
+        m_impl->directionalColorLocation = glGetUniformLocation(
+            m_impl->program,
+            "uDirectionalColor");
+        m_impl->directionalIntensityLocation = glGetUniformLocation(
+            m_impl->program,
+            "uDirectionalIntensity");
+        m_impl->localLightCountLocation = glGetUniformLocation(m_impl->program, "uLocalLightCount");
+        m_impl->localPositionRangeLocation = glGetUniformLocation(m_impl->program, "uLocalPositionRange[0]");
+        m_impl->localColorIntensityLocation = glGetUniformLocation(m_impl->program, "uLocalColorIntensity[0]");
+        m_impl->localDirectionOuterLocation = glGetUniformLocation(m_impl->program, "uLocalDirectionOuter[0]");
+        m_impl->localInnerSpotLocation = glGetUniformLocation(m_impl->program, "uLocalInnerSpot[0]");
+        m_impl->roughnessLocation = glGetUniformLocation(
+            m_impl->program,
+            "uRoughness");
+        m_impl->metallicLocation = glGetUniformLocation(
+            m_impl->program,
+            "uMetallic");
+        m_impl->dielectricSpecularLocation = glGetUniformLocation(
+            m_impl->program,
+            "uDielectricSpecular");
+        m_impl->textureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uTexture");
+        m_impl->useTextureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uUseTexture");
+        m_impl->alphaCutoffLocation = glGetUniformLocation(
+            m_impl->program,
+            "uAlphaCutoff");
+        m_impl->normalTextureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uNormalTexture");
+        m_impl->useNormalTextureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uUseNormalTexture");
+        m_impl->normalStrengthLocation = glGetUniformLocation(
+            m_impl->program,
+            "uNormalStrength");
+        m_impl->metallicRoughnessTextureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uMetallicRoughnessTexture");
+        m_impl->useMetallicRoughnessTextureLocation = glGetUniformLocation(
+            m_impl->program,
+            "uUseMetallicRoughnessTexture");
+        m_impl->roughnessTextureLocation = glGetUniformLocation(
+            m_impl->program, "uRoughnessTexture");
+        m_impl->useRoughnessTextureLocation = glGetUniformLocation(
+            m_impl->program, "uUseRoughnessTexture");
+        m_impl->metallicTextureLocation = glGetUniformLocation(
+            m_impl->program, "uMetallicTexture");
+        m_impl->useMetallicTextureLocation = glGetUniformLocation(
+            m_impl->program, "uUseMetallicTexture");
+        m_impl->occlusionTextureLocation = glGetUniformLocation(
+            m_impl->program, "uOcclusionTexture");
+        m_impl->useOcclusionTextureLocation = glGetUniformLocation(
+            m_impl->program, "uUseOcclusionTexture");
+        m_impl->occlusionStrengthLocation = glGetUniformLocation(
+            m_impl->program, "uOcclusionStrength");
+        m_impl->emissiveTextureLocation = glGetUniformLocation(
+            m_impl->program, "uEmissiveTexture");
+        m_impl->useEmissiveTextureLocation = glGetUniformLocation(
+            m_impl->program, "uUseEmissiveTexture");
+        m_impl->emissiveColorLocation = glGetUniformLocation(
+            m_impl->program, "uEmissiveColor");
+        m_impl->unlitLocation = glGetUniformLocation(
+            m_impl->program, "uUnlit");
+        m_impl->cameraPositionLocation = glGetUniformLocation(
+            m_impl->program,
+            "uCameraPosition");
+        m_impl->fogColorLocation = glGetUniformLocation(
+            m_impl->program,
+            "uFogColor");
+        m_impl->fogRangeLocation = glGetUniformLocation(
+            m_impl->program,
+            "uFogRange");
+        m_impl->fogEnabledLocation = glGetUniformLocation(
+            m_impl->program,
+            "uFogEnabled");
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glCullFace(GL_BACK);
+        // DirectXの手続き型メッシュと合わせ、時計回りを表面とする。
+        glFrontFace(GL_CW);
+    BrowserSetRendererBackend(m_impl->webGLVersion);
     }
 
     bool Renderer3D::Initialize(
@@ -1956,6 +2213,13 @@ void main()
         {
             return false;
         }
+#if defined(LAMAPON_NATIVE_RUNTIME)
+        m_impl->program = CreateProgram(true);
+        if (m_impl->program == 0) return false;
+        m_impl->context = 1;
+        m_impl->webGLVersion = 2;
+        {
+#else
         emscripten_set_canvas_element_size(
             canvasSelector,
             static_cast<int>(std::max(width, 1u)),
@@ -1989,9 +2253,9 @@ void main()
                 continue;
             }
             if (version == 1
-                && emscripten_webgl_enable_extension(
+                && !emscripten_webgl_enable_extension(
                     m_impl->context,
-                    "OES_element_index_uint") != EMSCRIPTEN_RESULT_SUCCESS)
+                    "OES_element_index_uint"))
             {
                 emscripten_webgl_destroy_context(m_impl->context);
                 m_impl->context = 0;
@@ -2009,107 +2273,8 @@ void main()
         }
         if (m_impl->context > 0 && m_impl->program != 0)
         {
-            m_impl->modelLocation = glGetUniformLocation(
-                m_impl->program,
-                "uModel");
-            m_impl->viewLocation = glGetUniformLocation(
-                m_impl->program,
-                "uView");
-            m_impl->projectionLocation = glGetUniformLocation(
-                m_impl->program,
-                "uProjection");
-            m_impl->colorLocation = glGetUniformLocation(
-                m_impl->program,
-                "uColor");
-            m_impl->lightDirectionLocation = glGetUniformLocation(
-                m_impl->program,
-                "uLightDirection");
-            m_impl->ambientColorLocation = glGetUniformLocation(
-                m_impl->program,
-                "uAmbientColor");
-            m_impl->ambientIntensityLocation = glGetUniformLocation(
-                m_impl->program,
-                "uAmbientIntensity");
-            m_impl->directionalColorLocation = glGetUniformLocation(
-                m_impl->program,
-                "uDirectionalColor");
-            m_impl->directionalIntensityLocation = glGetUniformLocation(
-                m_impl->program,
-                "uDirectionalIntensity");
-            m_impl->roughnessLocation = glGetUniformLocation(
-                m_impl->program,
-                "uRoughness");
-            m_impl->metallicLocation = glGetUniformLocation(
-                m_impl->program,
-                "uMetallic");
-            m_impl->dielectricSpecularLocation = glGetUniformLocation(
-                m_impl->program,
-                "uDielectricSpecular");
-            m_impl->textureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uTexture");
-            m_impl->useTextureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uUseTexture");
-            m_impl->alphaCutoffLocation = glGetUniformLocation(
-                m_impl->program,
-                "uAlphaCutoff");
-            m_impl->normalTextureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uNormalTexture");
-            m_impl->useNormalTextureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uUseNormalTexture");
-            m_impl->normalStrengthLocation = glGetUniformLocation(
-                m_impl->program,
-                "uNormalStrength");
-            m_impl->metallicRoughnessTextureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uMetallicRoughnessTexture");
-            m_impl->useMetallicRoughnessTextureLocation = glGetUniformLocation(
-                m_impl->program,
-                "uUseMetallicRoughnessTexture");
-            m_impl->roughnessTextureLocation = glGetUniformLocation(
-                m_impl->program, "uRoughnessTexture");
-            m_impl->useRoughnessTextureLocation = glGetUniformLocation(
-                m_impl->program, "uUseRoughnessTexture");
-            m_impl->metallicTextureLocation = glGetUniformLocation(
-                m_impl->program, "uMetallicTexture");
-            m_impl->useMetallicTextureLocation = glGetUniformLocation(
-                m_impl->program, "uUseMetallicTexture");
-            m_impl->occlusionTextureLocation = glGetUniformLocation(
-                m_impl->program, "uOcclusionTexture");
-            m_impl->useOcclusionTextureLocation = glGetUniformLocation(
-                m_impl->program, "uUseOcclusionTexture");
-            m_impl->occlusionStrengthLocation = glGetUniformLocation(
-                m_impl->program, "uOcclusionStrength");
-            m_impl->emissiveTextureLocation = glGetUniformLocation(
-                m_impl->program, "uEmissiveTexture");
-            m_impl->useEmissiveTextureLocation = glGetUniformLocation(
-                m_impl->program, "uUseEmissiveTexture");
-            m_impl->emissiveColorLocation = glGetUniformLocation(
-                m_impl->program, "uEmissiveColor");
-            m_impl->unlitLocation = glGetUniformLocation(
-                m_impl->program, "uUnlit");
-            m_impl->cameraPositionLocation = glGetUniformLocation(
-                m_impl->program,
-                "uCameraPosition");
-            m_impl->fogColorLocation = glGetUniformLocation(
-                m_impl->program,
-                "uFogColor");
-            m_impl->fogRangeLocation = glGetUniformLocation(
-                m_impl->program,
-                "uFogRange");
-            m_impl->fogEnabledLocation = glGetUniformLocation(
-                m_impl->program,
-                "uFogEnabled");
-            glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glCullFace(GL_BACK);
-            // DirectXの手続き型メッシュと合わせ、時計回りを表面とする。
-            glFrontFace(GL_CW);
-            BrowserSetRendererBackend(m_impl->webGLVersion);
+#endif
+            ConfigureGraphicsState();
         }
         if (m_impl->context <= 0 || m_impl->program == 0)
         {
@@ -2122,10 +2287,136 @@ void main()
             }
             m_impl->fallback2D = true;
         }
+#if !defined(LAMAPON_NATIVE_RUNTIME)
+        if (!m_impl->fallback2D)
+        {
+            m_impl->canvasSelector = canvasSelector;
+            if (emscripten_set_webglcontextlost_callback(canvasSelector, this, false,
+                [](int, const void*, void* data) -> bool {
+                    auto& renderer = *static_cast<Renderer3D*>(data);
+                    renderer.m_initialized = false;
+                    EM_ASM({
+                        document.__lamaponContextLost = true;
+                        document.body.dataset.lamaponGraphicsRecovery = 'pending';
+                    });
+                    return true; // preventDefault permits the browser to restore this context.
+                }) != EMSCRIPTEN_RESULT_SUCCESS
+                || emscripten_set_webglcontextrestored_callback(canvasSelector, this, false,
+                [](int, const void*, void* data) -> bool {
+                    auto& renderer = *static_cast<Renderer3D*>(data);
+                    const bool restored = renderer.RestoreWebGraphics();
+                    EM_ASM({
+                        if (!$0) {
+                            document.body.dataset.lamaponGraphicsRecovery = 'failed';
+                            document.body.dataset.lamaponStatus = 'failed';
+                            document.body.dataset.lamaponError = 'Graphics could not be restored.';
+                            const help = document.getElementById('help');
+                            if (help) {
+                                help.textContent = document.body.dataset.lamaponError;
+                                help.style.color = '#ffd0d0';
+                            }
+                            const reload = document.getElementById('reload');
+                            if (reload) reload.hidden = false;
+                        }
+                    }, restored);
+                    return true;
+                }) != EMSCRIPTEN_RESULT_SUCCESS) return false;
+        }
+#endif
         m_initialized = true;
         Resize(width, height);
         return true;
     }
+
+#if defined(LAMAPON_NATIVE_RUNTIME)
+    bool Renderer3D::RestoreNativeGraphics() noexcept
+    {
+        // Never delete names from the previous context in the new context.
+        m_initialized = false;
+        m_impl->program = 0;
+        m_impl->context = 0;
+        for (auto& [id, mesh] : m_impl->meshes)
+        {
+            (void)id;
+            mesh.vertexBuffer = mesh.indexBuffer = 0;
+        }
+        if (!Initialize("native", m_width, m_height)) return false;
+        for (auto& [id, mesh] : m_impl->meshes)
+        {
+            glGenBuffers(1, &mesh.vertexBuffer);
+            glGenBuffers(1, &mesh.indexBuffer);
+            if (!mesh.vertexBuffer || !mesh.indexBuffer) return false;
+            UpdateMesh(id, mesh.vertices, mesh.indices);
+        }
+        return glGetError() == GL_NO_ERROR;
+    }
+#endif
+
+#if !defined(LAMAPON_NATIVE_RUNTIME)
+    bool Renderer3D::RestoreWebGraphics() noexcept
+    {
+        if (!m_impl->context || emscripten_webgl_make_context_current(m_impl->context)
+            != EMSCRIPTEN_RESULT_SUCCESS) return false;
+        if (m_impl->webGLVersion == 1 && !emscripten_webgl_enable_extension(
+                m_impl->context, "OES_element_index_uint")) return false;
+        m_impl->program = CreateProgram(m_impl->webGLVersion >= 2);
+        if (!m_impl->program) return false;
+        ConfigureGraphicsState();
+        m_initialized = true;
+        for (auto& [id, mesh] : m_impl->meshes)
+        {
+            glGenBuffers(1, &mesh.vertexBuffer);
+            glGenBuffers(1, &mesh.indexBuffer);
+            if (!mesh.vertexBuffer || !mesh.indexBuffer) { m_initialized = false; return false; }
+            UpdateMesh(id, mesh.vertices, mesh.indices);
+        }
+        EM_ASM({
+            const gl = GL.currentContext.GLctx;
+            globalThis.__lamaponWebGl = gl;
+            const recovery = document.__lamaponRecoveryGeneration || 0;
+            const slots = Object.values(globalThis.__lamaponTextures || {})
+                .filter(slot => slot.gl === gl);
+            const restorations = slots.map(slot => slot.recreate
+                ? Promise.resolve(slot.recreate())
+                : Promise.reject(new Error('Web texture has no restoration callback')));
+            document.body.dataset.lamaponGraphicsRecovery = 'pending';
+            const publishRecovery = restored => {
+                if (recovery !== (document.__lamaponRecoveryGeneration || 0)
+                    || gl.isContextLost()) return;
+                document.body.dataset.lamaponGraphicsRecovery = restored ? 'restored' : 'failed';
+                if (restored) {
+                    document.__lamaponContextLost = false;
+                    if (document.__lamaponVisibility) document.__lamaponVisibility.changed = true;
+                    const help = document.getElementById('help');
+                    if (help) {
+                        help.textContent = 'Graphics restored.';
+                        help.style.removeProperty('color');
+                    }
+                } else {
+                    document.body.dataset.lamaponStatus = 'failed';
+                    document.body.dataset.lamaponError = 'Graphics resources could not be restored.';
+                    const help = document.getElementById('help');
+                    if (help) {
+                        help.textContent = document.body.dataset.lamaponError;
+                        help.style.color = '#ffd0d0';
+                    }
+                    const reload = document.getElementById('reload');
+                    if (reload) reload.hidden = false;
+                }
+            };
+            Promise.all(restorations).then(() => publishRecovery(
+                !gl.isContextLost() && slots.every(slot => slot.ready
+                    && Boolean(slot.texture) && gl.isTexture(slot.texture))))
+                .catch(error => {
+                    console.warn('LamaPon Web graphics resource restoration failed', error);
+                    publishRecovery(false);
+                });
+        });
+        Resize(m_width, m_height);
+        if (glGetError() != GL_NO_ERROR) { m_initialized = false; return false; }
+        return true;
+    }
+#endif
 
     void Renderer3D::Resize(
         std::uint32_t width,
@@ -2296,9 +2587,38 @@ void main()
         }
     }
 
+    void Renderer3D::SetLocalLights(const std::vector<LocalLight3D>& lights) noexcept
+    {
+        m_lighting.localLightCount = static_cast<std::uint32_t>(
+            std::min(lights.size(), m_lighting.localLights.size()));
+        for (std::uint32_t i = 0; i < m_lighting.localLightCount; ++i)
+        {
+            auto light = lights[i];
+            light.range = std::max(0.1f, light.range);
+            light.intensity = std::clamp(light.intensity, 0.0f, 64.0f);
+            light.direction = Length(light.direction) > 0.0001f
+                ? Normalize(light.direction) : Vec3{ 0.0f, 0.0f, -1.0f };
+            light.outerConeAngle = std::clamp(light.outerConeAngle, 0.0174533f, 1.553343f);
+            light.innerConeAngle = std::clamp(light.innerConeAngle, 0.0174533f, light.outerConeAngle);
+            m_lighting.localLights[i] = light;
+        }
+    }
+
     void Renderer3D::SetLighting(const Lighting3D& lighting) noexcept
     {
         m_lighting = lighting;
+        m_lighting.localLightCount = std::min<std::uint32_t>(
+            m_lighting.localLightCount, m_lighting.localLights.size());
+        for (std::uint32_t i = 0; i < m_lighting.localLightCount; ++i)
+        {
+            auto& light = m_lighting.localLights[i];
+            light.range = std::max(0.1f, light.range);
+            light.intensity = std::clamp(light.intensity, 0.0f, 64.0f);
+            light.direction = Length(light.direction) > 0.0001f
+                ? Normalize(light.direction) : Vec3{0,0,-1};
+            light.outerConeAngle = std::clamp(light.outerConeAngle, 0.0174533f, 1.553343f);
+            light.innerConeAngle = std::clamp(light.innerConeAngle, 0.0174533f, light.outerConeAngle);
+        }
         m_lighting.ambientIntensity = std::max(
             0.0f, m_lighting.ambientIntensity);
         m_lighting.directionalIntensity = std::max(
@@ -2377,7 +2697,15 @@ void main()
             return 0;
         }
         return static_cast<TextureId>(BrowserTextureCreate(
-            virtualPath, m_impl->fallback2D ? 0 : m_impl->webGLVersion));
+            virtualPath, m_impl->fallback2D ? 0 : m_impl->webGLVersion, nullptr, 0));
+    }
+
+    TextureId Renderer3D::CreateTextureEncoded(const std::vector<unsigned char>& bytes) noexcept
+    {
+        if (!m_initialized || bytes.empty()
+            || bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return 0;
+        return static_cast<TextureId>(BrowserTextureCreate(nullptr,
+            m_impl->fallback2D ? 0 : m_impl->webGLVersion, bytes.data(), static_cast<int>(bytes.size())));
     }
 
     // 既存Meshの全データを置き換える(meshId: 登録済みID, vertices: 頂点配列, indices: 三角形の頂点番号列)。
@@ -2395,7 +2723,7 @@ void main()
         found->second.vertices = vertices;
         found->second.indices = indices;
         found->second.indexCount = static_cast<GLsizei>(indices.size());
-        if (m_impl->fallback2D)
+        if (m_impl->fallback2D || !m_initialized)
         {
             return;
         }
@@ -2493,6 +2821,7 @@ void main()
                 Vec3 normal{};
                 // テクスチャ座標
                 Vec2 uv{};
+                Vec3 world{};
             };
             // Canvas版は逆転置を使わないため、非一様な倍率ではWebGL版と法線が異なる。
             // modelの線形成分で法線を変換し正規化する(source: ローカル法線)。
@@ -2516,7 +2845,7 @@ void main()
             // 環境光と平行光から頂点の照明倍率を求める(normal: World法線)。
             const auto lightForNormal = [this, &lightToSource,
                                          environmentSpecular, unlit](
-                const Vec3& normal) noexcept
+                const Vec3& normal, const Vec3& position) noexcept
             {
                 if (unlit)
                 {
@@ -2525,7 +2854,7 @@ void main()
                 // 法線と光源方向の内積
                 const float diffuse = std::max(
                     Dot(normal, lightToSource), 0.0f);
-                return std::array<float, 3>{
+                auto result = std::array<float, 3>{
                     std::max(
                         0.0f,
                         m_lighting.ambientColor.r
@@ -2548,6 +2877,24 @@ void main()
                             + m_lighting.directionalColor.b
                                 * m_lighting.directionalIntensity * diffuse),
                 };
+                for (std::uint32_t i = 0; i < m_lighting.localLightCount; ++i)
+                {
+                    const auto& light = m_lighting.localLights[i];
+                    const Vec3 offset = light.position - position;
+                    const float distance = Length(offset);
+                    const Vec3 toLight = offset * (1.0f / std::max(distance, 0.0001f));
+                    float attenuation = std::max(1.0f - distance / light.range, 0.0f);
+                    attenuation *= attenuation;
+                    if (light.spot)
+                        attenuation *= std::clamp((Dot(toLight * -1.0f, light.direction)
+                            - std::cos(light.outerConeAngle)) / std::max(
+                                std::cos(light.innerConeAngle) - std::cos(light.outerConeAngle), 0.0001f), 0.0f, 1.0f);
+                    const float amount = attenuation * light.intensity * std::max(Dot(normal, toLight), 0.0f);
+                    result[0] += light.color.r * amount;
+                    result[1] += light.color.g * amount;
+                    result[2] += light.color.b * amount;
+                }
+                return result;
             };
             // クリップ頂点を線形補間する(first: 始点, second: 終点, amount: 補間比0～1)。
             const auto interpolateVertex = [](const SoftwareVertex& first,
@@ -2575,6 +2922,7 @@ void main()
                         first.uv.x + (second.uv.x - first.uv.x) * amount,
                         first.uv.y + (second.uv.y - first.uv.y) * amount,
                     },
+                    first.world + (second.world - first.world) * amount,
                 };
             };
             // 描画予約する投影済み三角形
@@ -2657,13 +3005,13 @@ void main()
                 }
                 // 第1頂点の照明RGB倍率
                 const std::array<float, 3> firstLight =
-                    lightForNormal(first.normal);
+                    lightForNormal(first.normal, first.world);
                 // 第2頂点の照明RGB倍率
                 const std::array<float, 3> secondLight =
-                    lightForNormal(second.normal);
+                    lightForNormal(second.normal, second.world);
                 // 第3頂点の照明RGB倍率
                 const std::array<float, 3> thirdLight =
-                    lightForNormal(third.normal);
+                    lightForNormal(third.normal, third.world);
                 triangles.push_back({
                     { x1, y1, x2, y2, x3, y3,
                       firstLight[0], firstLight[1], firstLight[2],
@@ -2722,6 +3070,9 @@ void main()
                         TransformPoint(viewModel, firstSource.position),
                         transformNormal(firstSource.normal),
                         firstSource.uv,
+                        { TransformPoint(model, firstSource.position).x,
+                          TransformPoint(model, firstSource.position).y,
+                          TransformPoint(model, firstSource.position).z },
                     },
                     {
                         TransformPoint(
@@ -2729,6 +3080,9 @@ void main()
                         TransformPoint(viewModel, secondSource.position),
                         transformNormal(secondSource.normal),
                         secondSource.uv,
+                        { TransformPoint(model, secondSource.position).x,
+                          TransformPoint(model, secondSource.position).y,
+                          TransformPoint(model, secondSource.position).z },
                     },
                     {
                         TransformPoint(
@@ -2736,6 +3090,9 @@ void main()
                         TransformPoint(viewModel, thirdSource.position),
                         transformNormal(thirdSource.normal),
                         thirdSource.uv,
+                        { TransformPoint(model, thirdSource.position).x,
+                          TransformPoint(model, thirdSource.position).y,
+                          TransformPoint(model, thirdSource.position).z },
                     },
                 }};
                 // 近端でクリップした頂点
@@ -2859,6 +3216,34 @@ void main()
         glUniform1f(
             m_impl->directionalIntensityLocation,
             m_lighting.directionalIntensity);
+        glUniform1i(m_impl->localLightCountLocation, m_lighting.localLightCount);
+        std::array<float, 32> positions{}, colors{}, directions{};
+        std::array<float, 16> cones{};
+        for (std::uint32_t i = 0; i < m_lighting.localLightCount; ++i)
+        {
+            const auto& light = m_lighting.localLights[i];
+            positions[i*4] = light.position.x;
+            positions[i*4+1] = light.position.y;
+            positions[i*4+2] = light.position.z;
+            positions[i*4+3] = light.range;
+            colors[i*4] = light.color.r;
+            colors[i*4+1] = light.color.g;
+            colors[i*4+2] = light.color.b;
+            colors[i*4+3] = light.intensity;
+            directions[i*4] = light.direction.x;
+            directions[i*4+1] = light.direction.y;
+            directions[i*4+2] = light.direction.z;
+            directions[i*4+3] = std::cos(light.outerConeAngle);
+            cones[i*2] = std::cos(light.innerConeAngle);
+            cones[i*2+1] = light.spot ? 1.0f : 0.0f;
+        }
+        if (m_lighting.localLightCount > 0)
+        {
+            glUniform4fv(m_impl->localPositionRangeLocation, m_lighting.localLightCount, positions.data());
+            glUniform4fv(m_impl->localColorIntensityLocation, m_lighting.localLightCount, colors.data());
+            glUniform4fv(m_impl->localDirectionOuterLocation, m_lighting.localLightCount, directions.data());
+            glUniform2fv(m_impl->localInnerSpotLocation, m_lighting.localLightCount, cones.data());
+        }
         glUniform1f(m_impl->roughnessLocation, std::clamp(roughness, 0.0f, 1.0f));
         glUniform1f(m_impl->metallicLocation, std::clamp(metallic, 0.0f, 1.0f));
         glUniform3f(

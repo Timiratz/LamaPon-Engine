@@ -1,0 +1,25 @@
+{
+  "format": "LamaPonPrefab",
+  "version": 1,
+  "root": 9901,
+  "objects": [
+    {
+      "id": 9901,
+      "name": "Malformed prefab root",
+      "parent": null,
+      "components": []
+    },
+    {
+      "id": 9902,
+      "name": "Malformed prefab child A",
+      "parent": 9903,
+      "components": []
+    },
+    {
+      "id": 9903,
+      "name": "Malformed prefab child B",
+      "parent": 9902,
+      "components": []
+    }
+  ]
+}

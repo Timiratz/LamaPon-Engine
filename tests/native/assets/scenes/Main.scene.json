@@ -1,0 +1,55 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": 1,
+  "objects": [
+    {
+      "id": 1,
+      "name": "Native probe",
+      "tag": "native-probe",
+      "alwaysVisible": true,
+      "cullingMargin": 4.0,
+      "transform": {"position": [0, 0, 5]},
+      "components": [
+        {"type": "Camera", "enabled": true},
+        {"type": "AudioSource", "audio": "audio/mono-24000.wav",
+         "loop": true, "playOnStart": true},
+        {"type": "NativeScript", "script": "Test.NativeStartup", "properties": {}}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Canvas",
+      "components": [{"type": "UICanvas", "referenceResolution": [640, 360]}]
+    },
+    {
+      "id": 3,
+      "name": "Green image",
+      "tag": "native-ui",
+      "parent": 2,
+      "components": [
+        {"type": "UIRectTransform", "sizeDelta": [60, 60], "anchoredPosition": [-150, 0]},
+        {"type": "UIImage", "texture": "scenes/白画像.bmp", "color": [0, 1, 0, 1]}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Button",
+      "tag": "native-ui",
+      "parent": 2,
+      "components": [
+        {"type": "UIRectTransform", "sizeDelta": [180, 50]},
+        {"type": "UIButton", "label": "Native Button", "clickEvent": "Native.ExportButtonClicked"}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Emissive cube",
+      "transform": {"position": [0, 1.5, 0]},
+      "components": [
+        {"type": "MeshRenderer", "shape": "Cube", "baseColor": [0, 0, 0, 1],
+         "emissiveColor": [0, 0, 1], "roughness": 1, "cullMode": "None"}
+      ]
+    }
+  ]
+}

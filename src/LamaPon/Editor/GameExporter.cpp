@@ -1723,6 +1723,9 @@ namespace LamaPon
         // 完成した配布フォルダーのパス
         const auto outputDirectory = std::filesystem::absolute(
             options.outputDirectory).lexically_normal();
+        // junction・symlink・SUBST別名を含む出力先の実体パス
+        const auto canonicalOutputDirectory =
+            std::filesystem::weakly_canonical(outputDirectory);
 
         if (!std::filesystem::is_directory(runtimeDirectory))
         {
@@ -1749,16 +1752,22 @@ namespace LamaPon
                 "Export destination is not a directory",
                 outputDirectory);
         }
-        if (outputDirectory == assetDirectory
-            || IsPathWithin(assetDirectory, outputDirectory)
-            || IsPathWithin(outputDirectory, assetDirectory))
+        if (canonicalOutputDirectory == assetDirectory
+            || IsPathWithin(
+                assetDirectory,
+                canonicalOutputDirectory)
+            || IsPathWithin(
+                canonicalOutputDirectory,
+                assetDirectory))
         {
             throw ExportError(
                 "Export directory cannot contain or be inside the asset directory",
                 outputDirectory);
         }
-        if (outputDirectory == runtimeDirectory
-            || IsPathWithin(outputDirectory, runtimeDirectory))
+        if (canonicalOutputDirectory == runtimeDirectory
+            || IsPathWithin(
+                canonicalOutputDirectory,
+                runtimeDirectory))
         {
             throw ExportError(
                 "Export directory cannot contain the runtime directory",

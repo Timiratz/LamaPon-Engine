@@ -1535,10 +1535,16 @@ int main(const int argumentCount, char** const arguments)
             bool invalidManifestReported{};
             // compileFailureReported: shader compile失敗を確認した状態。
             bool compileFailureReported{};
+            // warningSummary: 実際に出力された警告。
+            std::string warningSummary;
             // exportされた各shader cache fileを調べます。
             for (const auto& entry :
                 LamaPon::Logger::Instance().Snapshot())
             {
+                if (entry.level == LamaPon::LogLevel::Warning)
+                {
+                    warningSummary += entry.message + "\n";
+                }
                 // 対象manifestのwarning診断だけを照合します。
                 if (entry.level == LamaPon::LogLevel::Warning
                     && entry.message.find(
@@ -1565,10 +1571,13 @@ int main(const int argumentCount, char** const arguments)
                     compileFailureReported = true;
                 }
             }
+            const std::string invalidManifestFailure =
+                "An invalid shader manifest was skipped without a"
+                " path-and-reason warning. Observed warnings: "
+                + warningSummary;
             Require(
                 invalidManifestReported,
-                "An invalid shader manifest was skipped without a"
-                    " path-and-reason warning.");
+                invalidManifestFailure.c_str());
             Require(
                 compileFailureReported,
                 "A required manifest stage compile failure omitted"

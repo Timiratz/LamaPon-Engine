@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import copy
 import hashlib
 import html
 import json
+import math
 import re
 import shlex
 import shutil
@@ -17,6 +21,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 
 # repository root.
@@ -160,25 +165,32 @@ SOURCE_WARNINGS = {
     ),
 }
 
-# API typeと必要module。
+# 公開API名と必要module。
 PORTABLE_API_MODULES: dict[str, str] = {
     "AudioBus": "audio",
     "AudioSourceComponent": "audio",
     "BoxCollider3DComponent": "physics3d",
     "CameraComponent": "renderer3d",
     "CollisionEvent": "physics3d",
+    "CompositeSubscription": "core",
     "Component": "core",
+    "CreatePortableScript": "core",
+    "EventArgs": "core",
+    "EventBus": "core",
     "GameObject": "core",
+    "GameObjectId": "core",
     "GraphicsDevice": "core",
     "MeshCollider3DComponent": "physics3d",
     "MeshRendererComponent": "renderer3d",
     "ModelRendererComponent": "renderer3d",
     "NativeScriptComponent": "core",
+    "Observable": "core",
     "ParticleEmitterShape": "particles3d",
     "ParticleRenderMode": "particles3d",
     "ParticleSystemComponent": "particles3d",
     "InputPointerButtonState": "input",
     "InputPointerState": "input",
+    "PortableKeyboardState": "input",
     "InputMoverComponent": "input",
     "InputSystem": "input",
     "Logger": "core",
@@ -204,8 +216,29 @@ PORTABLE_API_MODULES: dict[str, str] = {
     "TextRendererComponent": "renderer2d",
     "TextVerticalAlignment": "renderer2d",
     "UIRectTransformComponent": "renderer2d",
+    "UICanvasComponent": "renderer2d",
+    "UIImageComponent": "renderer2d",
+    "UIButtonComponent": "renderer2d",
+    "PointLightComponent": "renderer3d",
+    "PortableLocalLightComponent": "renderer3d",
+    "SpotLightComponent": "renderer3d",
     "TransformAnimatorComponent": "core",
+    "PortableUIVisualComponent": "renderer2d",
+    "RuntimeState": "core",
+    "RegisterPortableScript": "core",
+    "SceneCollection": "core",
+    "ScriptFactory": "core",
+    "Subscription": "core",
+    "Transform": "core",
+    "UIRect": "renderer2d",
     "ParallaxLayerComponent": "renderer2d",
+}
+
+# core型から別moduleの機能を呼び出す公開method。
+PORTABLE_API_METHOD_MODULES: dict[str, str] = {
+    "Scene::Raycast": "physics3d",
+    "Scene::WebAudio": "audio",
+    "Scene::InstantiatePrefab": "core",
 }
 
 # scene componentと必要module。
@@ -215,6 +248,8 @@ PORTABLE_SCENE_COMPONENTS: dict[str, str] = {
     # AudioListenerは不要で、DirectionalLightはscene環境の既定値を使います。
     "AudioListener": "audio",
     "DirectionalLight": "renderer3d",
+    "PointLight": "renderer3d",
+    "SpotLight": "renderer3d",
     "InputMover": "input",
     "AudioSource": "audio",
     "BoxCollider3D": "physics3d",
@@ -231,13 +266,20 @@ PORTABLE_SCENE_COMPONENTS: dict[str, str] = {
     "TextRenderer": "renderer2d",
     "TransformAnimator": "core",
     "UIRectTransform": "renderer2d",
+    "UICanvas": "renderer2d",
+    "UIImage": "renderer2d",
+    "UIButton": "renderer2d",
     "ParallaxLayer": "renderer2d",
 }
 
 # 処理のないcomponent。
 PORTABLE_NOOP_SCENE_COMPONENTS = {"AudioListener", "RenderCulling"}
 # 近似対応component。
-PORTABLE_APPROXIMATE_SCENE_COMPONENTS = {"DirectionalLight"}
+PORTABLE_APPROXIMATE_SCENE_COMPONENTS = {"DirectionalLight", "PointLight", "SpotLight"}
+# AudioBus::Effects in AudioSystem.h is the serialized default. Portable audio
+# currently has a single mixer and cannot preserve non-default bus routing.
+PORTABLE_DEFAULT_AUDIO_BUS = 2
+PORTABLE_AUDIO_BUS_COUNT = 4
 
 # 新しいnative componentはWeb互換を宣言する前に両registryへ分類します。
 # Web判定対象のcomponent。
@@ -261,6 +303,7 @@ KNOWN_NATIVE_SCENE_COMPONENTS = {
 PORTABLE_API_MODULES.update({
     "Blink2DComponent": "renderer2d",
     "Blink2DSettings": "renderer2d",
+    "CharacterRig2DRuntime": "renderer2d",
     "Keyform2DChannel": "core",
     "Keyform2DComponent": "core",
     "Keyform2DKey": "core",
@@ -283,31 +326,847 @@ PORTABLE_SCENE_COMPONENTS.update({
 })
 
 # API名の検索pattern.
-LAMAPON_API_TOKEN = re.compile(r"\bLamaPon::([A-Za-z_][A-Za-z0-9_]*)")
+LAMAPON_API_TOKEN = re.compile(r"\bLamaPon\s*::\s*([A-Za-z_][A-Za-z0-9_]*)")
+PORTABLE_SCENE_METHOD_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:(?:::)?\s*LamaPon\s*::\s*)?Scene\s*::\s*"
+    r"(Raycast|WebAudio|InstantiatePrefab)\b"
+)
+PORTABLE_SCENE_MEMBER_METHOD_TOKEN = re.compile(
+    r"(?:\.|->)\s*(Raycast|WebAudio|InstantiatePrefab)\s*\("
+)
+LAMAPON_NAMESPACE_IMPORT = re.compile(r"\busing\s+namespace\s+(?:::)?\s*LamaPon\s*;")
+LAMAPON_NAMESPACE_ALIAS = re.compile(
+    r"\bnamespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:::)?\s*LamaPon\s*;"
+)
+NAMESPACE_IMPORT = re.compile(
+    r"\busing\s+namespace\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
 # asset path検索pattern.
 ASSET_PATH_TOKEN = re.compile(
     r"(?:std::filesystem::path\s*)?\{?\s*"
-    r'"((?:textures|audio|scenes|models|fonts)/[^"\r\n]+)"'
+    r'"((?:textures|audio|scenes|models|fonts|prefabs)/[^"\r\n]+)"'
 )
 # 静的script登録pattern.
 SCRIPT_REGISTRATION_TOKEN = re.compile(
     r"LAMAPON_SCRIPT_(?:NAMED|WITH_SCHEMA)\s*\(\s*[^,]+,\s*\"([^\"]+)\"",
     re.MULTILINE,
 )
-# 動的script登録pattern.
-DYNAMIC_SCRIPT_TOKEN = re.compile(
-    r"AddComponent\s*<\s*LamaPon::NativeScriptComponent\s*>\s*"
-    r"\(\s*\"([^\"]+)\"",
+SCRIPT_DEFAULT_REGISTRATION_TOKEN = re.compile(
+    r"\bLAMAPON_SCRIPT\s*\(\s*"
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*\)",
     re.MULTILINE,
 )
-# 非対応環境効果。
-WEB_UNSUPPORTED_ENVIRONMENT_EFFECTS = {
+# Portable Prefab生成は出力前に参照先を検査できるよう静的asset pathを要求します。
+PORTABLE_SCRIPT_CLASS_TOKEN = re.compile(
+    r"\b(?:class|struct)\s+[A-Za-z_]\w*(?:\s+final)?\s*:\s*[^;{}]*?"
+    r"(?:(?:public|protected|private)\s+)?"
+    r"(?:(?:::)?\s*LamaPon\s*::\s*)?Script\b"
+)
+PORTABLE_UNSUPPORTED_SCRIPT_METHODS = (
+    "Invoke", "InvokeRepeating", "CancelInvoke", "CancelAllInvokes",
+    "StartCoroutine", "StopCoroutine", "StopAllCoroutines",
+    "SetWindowSize", "WindowSize", "LoadDataAsset",
+    "SignInWithDiscord", "CancelDiscordSignIn", "Network", "IsNetworkHost",
+    "CreateGameObject", "HostNetwork", "JoinNetwork", "JoinDirectNetwork", "JoinNetworkRoom",
+    "SendNetworkCommand", "SetNetworkSessionState", "StopNetwork",
+    "NetworkSpawn", "NetworkDespawn", "FindNetworkObject", "SignOutOnline",
+    "OnlineState", "IsOnlineSignedIn", "OnlinePlayerId", "OnlinePlayerName",
+    "OnlineAuthorizationUrl", "OnlineError", "CloudSyncStatus", "CloudConflicts",
+    "RequestCloudSync", "ResolveCloudConflict", "PersistenceRecoveryStatus",
+    "RestorePersistence", "DiscardPersistence", "SetDiscordActivity",
+    "ClearDiscordActivity", "IsDiscordPresenceAvailable", "DiscordPresenceStatus",
+    "DiscordPresenceError", "SaveNumber", "LoadNumber", "HasSaved", "DeleteSaved",
+)
+PORTABLE_SCRIPT_PREFAB_INSTANTIATE_TOKEN = re.compile(
+    r"\b(?:this\s*->\s*)?Instantiate\s*\("
+)
+PORTABLE_SCENE_PREFAB_INSTANTIATE_TOKEN = re.compile(
+    r"(?:\.|->)\s*InstantiatePrefab\s*\("
+)
+PORTABLE_SCENE_LOAD_TOKEN = re.compile(
+    r"(?:\.|->)\s*RequestLoad\s*\("
+)
+PORTABLE_UNSUPPORTED_SCENE_METHODS = (
+    "RequestLoadAsync", "RequestReloadAsync", "RequestLoadAdditive",
+    "RequestLoadAdditiveAsync", "RequestUnload", "IsLoading", "LoadProgress",
+    "LoadState", "SetDefaultTransition", "DefaultTransition", "PlayTransition",
+    "TransitionCoverage", "ActiveTransition", "TransitionPhase", "IsTransitioning",
+    "LoadingScreen", "SetMinimumLoadingScreenDuration",
+    "MinimumLoadingScreenDuration", "AdvanceTransition", "ProcessPending",
+    "MergeFromFile", "MergeFromJson", "UnloadScene", "UnloadAllAdditiveScenes",
+    "AdditiveScenes", "FindAdditiveScene", "DontDestroyOnLoad", "DestroyOnLoad",
+    "SourceScene", "IsPersistent", "SerializePrefabToJson", "SavePrefab",
+    "InstantiatePrefabFromJson", "FindPrefabInstanceRoot", "HasPrefabOverrides",
+    "GetPrefabOverrides", "ApplyPrefabOverride", "RevertPrefabOverride",
+    "ApplyPrefabInstance", "RevertPrefabInstance",
+    "RaycastAll", "SphereCast", "BoxCast", "CapsuleCast", "OverlapBox",
+    "OverlapSphere", "OverlapCapsule",
+    "SetWindowSize", "WindowSize", "SetWindowSizeCallbacks",
+    "SetMainCamera", "ClearMainCamera", "MainCamera",
+    "FindGameObjectsByName", "LoadDataAsset",
+    "SetAmbientLightColor", "AmbientLightColor", "SetAmbientLightIntensity",
+    "AmbientLightIntensity", "SetSkySettings", "ResolvedSky", "ResolveSkySun",
+    "SetFogSettings", "SetAmbientOcclusionSettings", "AmbientOcclusion",
+    "SetTemporalAntiAliasingSettings", "TemporalAntiAliasing",
+    "SetScreenSpaceReflectionSettings", "ScreenSpaceReflection",
+    "SetBakedGlobalIlluminationSettings", "BakedGlobalIllumination",
+    "RequestBakedGlobalIlluminationBake", "BakedGlobalIlluminationBakeProgress",
+    "HasBakedGlobalIllumination", "RestoreBakedGlobalIllumination",
+    "SetVolumetricLightSettings", "VolumetricLight", "VolumetricLightFrameData",
+    "SetBloomSettings", "SetScreenOutlineSettings", "ScreenOutline",
+    "SetScreenSpaceLensFlareSettings", "ScreenSpaceLensFlare",
+    "SetDepthOfFieldSettings", "DepthOfField", "SetMotionBlurSettings",
+    "MotionBlur", "SetAutoExposureSettings", "AutoExposure",
+    "SetColorGradingSettings", "ColorGrading",
+    "SetPhysicsBroadPhaseCellSize", "PhysicsBroadPhaseCellSize", "PhysicsStats",
+    "SetPhysicsDebugCaptureEnabled", "IsPhysicsDebugCaptureEnabled",
+    "PhysicsDebugContacts", "FixedPhysicsDeltaTime", "PhysicsTiming",
+    "PhysicsFixedStepsLastFrame", "RenderingInterpolatedTransforms",
+    "SetFrustumCullingEnabled", "FrustumCullingEnabled",
+    "SetOcclusionCullingEnabled", "OcclusionCullingEnabled", "VisibilityStats",
+    "EvaluateRenderVisibility", "SaveToFile", "LoadFromFile", "SerializeToJson",
+    "LoadFromJson", "BakedGlobalIlluminationBakedShape",
+    "BakedGlobalIlluminationPayload", "ContentRevision", "DuplicateGameObject",
+    "FindComponentsOfType", "FindGameObject", "IsTagRegistered",
+    "NearestReflectionProbe", "PostProcessFrameData", "PrimarySceneHandle",
+    "ReflectionProbeEnvironmentAt", "RegisteredTags", "RemoveComponent",
+    "Render2D", "RenderGameFrame", "RenderMainCamera", "RenderTargetTextures",
+    "RenderWithMatrices", "ReorderGameObject", "SetRegisteredTags", "WarnUnregisteredTag",
+    "Bloom", "Fog", "Sky", "TemporalFrameData",
+    "IsInputBlocked", "LoadStatus", "PrefetchFailureCount", "PrefetchedAssetBytes",
+    "PrefetchedAssetCount", "ResetTransition", "ResolveScenePath",
+    "SetCurrentScenePath", "TransitionFrame",
+)
+PORTABLE_UNSUPPORTED_SCENE_TYPED_METHODS = ("Clear",)
+PORTABLE_UNSUPPORTED_GAMEOBJECT_METHODS = (
+    "FixedUpdate", "HasAlphaBlended3DPass", "HasPreRender3DPass",
+    "IsPersistent", "IsPrefabInstanceRoot", "LateUpdate", "PersistenceKey",
+    "PrefabAssetPath", "Render2D", "Render2DSortOrder", "Render3D",
+    "RenderDebug3D", "RenderPre3D", "SetPrefabAssetPath", "SourceScene",
+    "TranslateWorld", "RotateWorld", "Update",
+)
+PORTABLE_UNSUPPORTED_COMPONENT_METHODS = {
+    "AudioSourceComponent": (
+        "BassBoostDb",
+        "BassBoostMakeup",
+        "ClearLoopRegion",
+        "CompletedLoopCount",
+        "IsLevelMeterEnabled",
+        "IsStreaming",
+        "Pause",
+        "PlaybackFrame",
+        "ReadLevelBands",
+        "ReadPeakEnvelope",
+        "Resume",
+        "SampleRate",
+        "SetBassBoost",
+        "SetLevelMeterEnabled",
+        "SetLoopRegionFrames",
+        "SetStartFrame",
+        "SetStreaming",
+        "StartFrame",
+        "State",
+        "TotalFrames"
+    ),
+    "BoxCollider3DComponent": (
+        "CanCollideWith",
+        "Material",
+        "SetMaterial",
+        "WorldBounds",
+        "WorldBox"
+    ),
+    "CameraComponent": (
+        "ProjectionMatrix",
+        "RendersToTexture",
+        "SetTargetClearColor",
+        "SetTargetTexture",
+        "SetTargetTextureSize",
+        "TargetClearColor",
+        "TargetTexture",
+        "TargetTextureHeight",
+        "TargetTextureWidth",
+        "ViewMatrix"
+    ),
+    "MeshCollider3DComponent": (
+        "CollectTriangles",
+        "CollisionMask",
+        "HasMesh",
+        "IsTrigger",
+        "LastError",
+        "Layer",
+        "Material",
+        "ModelPath",
+        "Offset",
+        "OverlapsBounds",
+        "Raycast",
+        "SetCollisionMask",
+        "SetMaterial",
+        "SetModelPath",
+        "SetOffset",
+        "SetTrigger",
+        "TriangleCount",
+        "WorldBounds"
+    ),
+    "MeshRendererComponent": (
+        "AlbedoTexturePath",
+        "CanBeInstanced",
+        "ClearCullModeOverride",
+        "ClearProceduralMesh",
+        "Color",
+        "CullMode",
+        "CustomParameter",
+        "CustomVector",
+        "DescribeDrawEvent",
+        "DisableShaderKeyword",
+        "EmissiveColor",
+        "EmissiveTexturePath",
+        "EnableShaderKeyword",
+        "HasProceduralMesh",
+        "InstanceBatchKey",
+        "IsAlphaBlended3D",
+        "IsCullModeOverridden",
+        "IsShaderKeywordEnabled",
+        "IsWorldOverlay",
+        "Material",
+        "MaterialAssetPath",
+        "Metallic",
+        "MetallicTexturePath",
+        "NormalStrength",
+        "NormalTexturePath",
+        "OcclusionStrength",
+        "OcclusionTexturePath",
+        "ProceduralIndices",
+        "ProceduralVertices",
+        "ReloadMaterialAsset",
+        "ReloadShader",
+        "RenderInstancedBatch",
+        "Roughness",
+        "RoughnessTexturePath",
+        "SetAlbedoTexturePath",
+        "SetColor",
+        "SetCustomParameter",
+        "SetCustomTexturePath",
+        "SetCustomVector",
+        "SetMaterial",
+        "SetMaterialAssetPath",
+        "SetShaderKeywords",
+        "SetShaderPath",
+        "SetWorldOverlay",
+        "ShaderError",
+        "ShaderKeywords",
+        "ShaderPath",
+        "Shape",
+        "TryGetLocalBounds"
+    ),
+    "ModelRendererComponent": (
+        "AdvanceAnimation",
+        "AlbedoTexturePath",
+        "AnimationControllerPath",
+        "AnimationFloat",
+        "AnimationFloatParameters",
+        "AnimationTriggers",
+        "ApplyRootMotion",
+        "AutomaticLodLevel",
+        "CanBeInstanced",
+        "Color",
+        "CommonLitStatus",
+        "CurrentAnimationState",
+        "CustomParameter",
+        "DescribeDrawEvent",
+        "DisableShaderKeyword",
+        "EmissiveColor",
+        "EmissiveTexturePath",
+        "EnableShaderKeyword",
+        "HasPreRender3DPass",
+        "InstanceBatchKey",
+        "IsAlphaBlended3D",
+        "IsAnimationTransitioning",
+        "IsMaterialOverrideEnabled",
+        "IsShaderKeywordEnabled",
+        "IsWireframe",
+        "Material",
+        "MaterialAssetPath",
+        "Metallic",
+        "MetallicTexturePath",
+        "NormalStrength",
+        "NormalTexturePath",
+        "OcclusionStrength",
+        "OcclusionTexturePath",
+        "PendingAnimationEventCount",
+        "PollAnimationEvent",
+        "PreserveEmbeddedMaterialColor",
+        "ReloadAnimationController",
+        "ReloadMaterialAsset",
+        "ReloadShader",
+        "RenderInstancedBatch",
+        "RootMotionNode",
+        "Roughness",
+        "RoughnessTexturePath",
+        "SetAnimationControllerPath",
+        "SetAnimationFloat",
+        "SetAnimationTrigger",
+        "SetApplyRootMotion",
+        "SetCustomParameter",
+        "SetCustomTexturePath",
+        "SetMaterialAssetPath",
+        "SetPreserveEmbeddedMaterialColor",
+        "SetRootMotionNode",
+        "SetShaderKeywords",
+        "SetShaderPath",
+        "SetUseLegacyShading",
+        "SetWireframe",
+        "ShaderError",
+        "ShaderKeywords",
+        "ShaderPath",
+        "SkeletonNodeNames",
+        "TriangleCount",
+        "TryGetLocalBounds",
+        "UsesCommonLit",
+        "UsesLamaPonLit",
+        "UsesLegacyShading"
+    ),
+    "NativeScriptComponent": (
+        "ApplyPropertiesJsonLive",
+        "DisplayName",
+        "IsResolved",
+        "LastError",
+        "PropertiesJson",
+        "PropertiesSchemaJson",
+        "ScriptType",
+        "SerializedProperties",
+        "SetPropertiesJson"
+    ),
+    "ParticleSystemComponent": (
+        "ActiveParticleCount",
+        "Additive",
+        "AuxiliaryTexturePath",
+        "ConeAngle",
+        "CustomParameter",
+        "CustomShaderParameters",
+        "DescribeDrawEvent",
+        "Duration",
+        "EmissionRate",
+        "EmitParticle",
+        "EmitterShape",
+        "EmitterSize",
+        "EndColor",
+        "EndSizeMultiplier",
+        "Gravity",
+        "IsPlaying",
+        "Lifetime",
+        "Looping",
+        "MaxParticles",
+        "Play",
+        "PlayOnStart",
+        "PreviewInEditor",
+        "ReloadShader",
+        "RenderMode",
+        "Restart",
+        "SetAuxiliaryTexturePath",
+        "SetCustomParameter",
+        "SetEmissionRate",
+        "SetEmitterShape",
+        "SetEndColor",
+        "SetLifetime",
+        "SetMaxParticles",
+        "SetPreviewInEditor",
+        "SetShaderPath",
+        "SetStartColor",
+        "SetStartSize",
+        "SetStartSpeed",
+        "SetTexturePath",
+        "ShaderError",
+        "ShaderPath",
+        "StartColor",
+        "StartSize",
+        "StartSpeed",
+        "TexturePath",
+        "UpdatePreview"
+    ),
+    "PointLightComponent": (
+        "CastsShadows",
+        "SetCastsShadows",
+        "SetShadowBias",
+        "SetShadowStrength",
+        "ShadowBias",
+        "ShadowStrength"
+    ),
+    "RigidbodyComponent": (
+        "AddForce",
+        "AddForceAtPosition",
+        "AddTorque",
+        "AngularDrag",
+        "AngularVelocity",
+        "ApplyImpulseAtPoint",
+        "ApplyInverseInertia",
+        "CenterOfMass",
+        "ClearAccumulators",
+        "CollisionDetection",
+        "Constraints",
+        "Integrate",
+        "Interpolates",
+        "InverseMass",
+        "IsSleeping",
+        "LinearDrag",
+        "Mass",
+        "RemoveInwardVelocity",
+        "SetAngularDrag",
+        "SetAngularVelocity",
+        "SetCenterOfMass",
+        "SetCollisionDetection",
+        "SetConstraints",
+        "SetInterpolate",
+        "SetLinearDrag",
+        "SetMass",
+        "Sleep",
+        "UpdateSleepState",
+        "UsesContinuousCollisionDetection",
+        "VelocityAtPoint",
+        "WakeUp",
+        "WorldCenterOfMass"
+    ),
+    "SpotLightComponent": (
+        "CastsShadows",
+        "SetCastsShadows",
+        "SetShadowBias",
+        "SetShadowNormalBias",
+        "SetShadowStrength",
+        "ShadowBias",
+        "ShadowNormalBias",
+        "ShadowStrength"
+    ),
+    "SpriteMaskComponent": (
+        "Shape",
+        "Size",
+        "WorldPosition"
+    ),
+    "SpriteRendererComponent": (
+        "BeginRenderPass",
+        "CustomParameter",
+        "CustomParameterValues",
+        "DescribeDrawEvent",
+        "MaskInteraction",
+        "ReloadShader",
+        "RenderSortOrder",
+        "RenderTexture",
+        "SetCustomParameter",
+        "SetRenderTexture",
+        "SetShaderPath",
+        "ShaderError",
+        "ShaderGeneration",
+        "ShaderPath",
+    ),
+    "TextRendererComponent": (
+        "DescribeDrawEvent",
+        "RenderSortOrder"
+    ),
+    "TransformAnimatorComponent": (
+        "ClipPath",
+        "ControllerPath",
+        "CurrentState",
+        "IsTransitioning",
+        "KeyframeCount",
+        "PlayOnStart",
+        "ReloadClip",
+        "ReloadController",
+        "SetClipPath",
+        "SetControllerPath",
+        "SetPlayOnStart",
+        "SetTrigger"
+    ),
+    "UIButtonComponent": (
+        "DescribeDrawEvent",
+        "LoadTargetAdditive",
+        "RenderSortOrder",
+        "SetLoadTargetAdditive"
+    ),
+    "UIImageComponent": (
+        "Border",
+        "DescribeDrawEvent",
+        "RenderSortOrder",
+        "RenderTexture",
+        "SetBorder",
+        "SetRenderTexture"
+    ),
+}
+PORTABLE_UNSUPPORTED_GAMEOBJECT_QUALIFIED_METHOD_TOKEN = re.compile(
+    r"(?:(?:::)?\s*LamaPon\s*::\s*|[A-Za-z_]\w*\s*::\s*)?GameObject\s*::\s*"
+    r"(?P<method>" + "|".join(map(re.escape, PORTABLE_UNSUPPORTED_GAMEOBJECT_METHODS))
+    + r")\b"
+)
+PORTABLE_UNSUPPORTED_SCENE_CALL_TOKEN = re.compile(
+    r"(?:\.|->)\s*(?P<method>"
+    + "|".join(map(re.escape, PORTABLE_UNSUPPORTED_SCENE_METHODS))
+    + r")\s*\("
+)
+PORTABLE_UNSUPPORTED_SCENE_QUALIFIED_METHOD_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_:])(?:(?:::)?\s*LamaPon\s*::\s*)?Scene\s*::\s*"
+    r"(?P<method>" + "|".join(map(re.escape, PORTABLE_UNSUPPORTED_SCENE_METHODS))
+    + r")\b"
+)
+# Portable描画で再現しない環境効果。WebとSDLネイティブで共通です。
+PORTABLE_UNSUPPORTED_ENVIRONMENT_EFFECTS = {
+    "ambientOcclusion": "アンビエントオクルージョン",
+    "bakedGlobalIllumination": "ベイク済みグローバルイルミネーション",
     "autoExposure": "自動露出",
     "bloom": "ブルーム",
+    "colorGrading": "カラーグレーディング",
     "depthOfField": "被写界深度",
     "motionBlur": "モーションブラー",
+    "screenOutline": "スクリーンアウトライン",
     "screenSpaceLensFlare": "スクリーンスペースレンズフレア",
+    "screenSpaceReflection": "スクリーンスペース反射",
+    "temporalAntiAliasing": "時間的アンチエイリアス",
+    "volumetricLight": "ボリューメトリックライト",
 }
+# PortableRuntimeが描画へ反映するScene環境設定。
+PORTABLE_HANDLED_ENVIRONMENT_SETTINGS = {
+    "ambientColor",
+    "ambientIntensity",
+    "fog",
+    "sky",
+}
+
+# 型付きJSON変換を行うPortable Scene component項目。Scene::Loadで読む項目を
+# 出力時にも確認し、不正な型が実行時まで残らないようにします。
+PORTABLE_SCENE_COMPONENT_STRING_FIELDS = {
+    "type", "script", "shape", "materialAsset", "cullMode", "model",
+    "renderMode", "texture", "audio", "controller", "clip",
+    "horizontalAction", "verticalAction", "label", "fontFamily",
+    "horizontalAlignment", "verticalAlignment", "text", "fontAsset",
+    "defaultClip", "albedoTexture", "normalTexture", "roughnessTexture",
+    "metallicTexture", "occlusionTexture", "emissiveTexture",
+    "targetTexture", "targetScene", "clickEvent", "shader",
+    "animationController", "rootMotionNode", "auxiliaryTexture",
+    "collisionDetection", "customTexture", "renderTexture",
+}
+PORTABLE_SCENE_COMPONENT_BOOLEAN_FIELDS = {
+    "enabled", "wireframe", "materialOverride", "animationLoop",
+    "animationPlayOnStart", "trigger", "kinematic", "useGravity",
+    "looping", "additive", "playOnStart", "loop", "spatial",
+    "interactable", "navigationEnabled", "circularHitArea", "wordWrap",
+    "alwaysVisible", "castsShadows", "applyRootMotion", "useLegacyShading",
+    "preserveEmbeddedMaterialColor", "reloadCurrentScene", "loadTargetAdditive",
+    "streaming", "previewInEditor", "worldOverlay", "interpolate",
+    "autoBlink", "includeChildren", "bound",
+}
+PORTABLE_SCENE_COMPONENT_FLOAT_FIELDS = {
+    "verticalFieldOfView", "nearPlane", "farPlane", "intensity", "range",
+    "innerConeAngle", "outerConeAngle", "animationSpeed", "emissionRate",
+    "endSizeMultiplier", "coneAngle", "duration", "volume", "pitch", "pan",
+    "minimumDistance", "maximumDistance", "speed", "matchWidthOrHeight",
+    "fontSize", "cullingMargin", "roughness", "metallic", "normalStrength",
+    "occlusionStrength", "shadowDistance", "shadowBias", "shadowNormalBias",
+    "shadowStrength", "shadowSplitLambda", "angularDiameterDegrees",
+    "friction", "restitution", "mass", "linearDrag", "angularDrag",
+    "stiffness", "damping", "inertia", "maxAngle", "windAmplitude",
+    "windFrequency", "windPhase", "frameSeconds", "closedSeconds",
+    "intervalMin", "intervalMax", "doubleBlinkChance", "weightFalloff",
+}
+PORTABLE_SCENE_COMPONENT_INTEGER_FIELDS = {
+    "animationIndex", "layer", "mask", "maxParticles", "bus", "sortOrder",
+    "maskInteraction", "columns", "rows", "referenceId", "targetTextureWidth",
+    "targetTextureHeight", "shadowCascadeCount", "meshColumns", "meshRows",
+    "openFrame", "closingStartFrame", "closingFrameCount", "boundColumns",
+    "boundRows",
+}
+PORTABLE_SCENE_COMPONENT_INTEGER_FIELD_TYPES = {
+    "animationIndex": "unsigned integer",
+    "layer": "unsigned 32-bit integer",
+    "mask": "unsigned 32-bit integer",
+    "maxParticles": "unsigned 32-bit integer",
+    "bus": "signed 32-bit integer",
+    "sortOrder": "signed 32-bit integer",
+    "maskInteraction": "signed 32-bit integer",
+    "columns": "signed 32-bit integer",
+    "rows": "signed 32-bit integer",
+    "referenceId": "unsigned integer",
+    "targetTextureWidth": "signed 32-bit integer",
+    "targetTextureHeight": "signed 32-bit integer",
+    "shadowCascadeCount": "signed 32-bit integer",
+    "meshColumns": "signed 32-bit integer",
+    "meshRows": "signed 32-bit integer",
+    "openFrame": "signed 32-bit integer",
+    "closingStartFrame": "signed 32-bit integer",
+    "closingFrameCount": "signed 32-bit integer",
+    "boundColumns": "signed 32-bit integer",
+    "boundRows": "signed 32-bit integer",
+}
+PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS = {
+    "color", "size", "offset", "velocity", "lifetime", "startSpeed",
+    "startSize", "startColor", "endColor", "gravity", "emitterSize",
+    "angularVelocity", "anchorMin", "anchorMax", "pivot",
+    "anchoredPosition", "sizeDelta", "referenceResolution", "normalColor",
+    "hoveredColor", "pressedColor", "disabledColor", "textColor",
+    "fallbackSize", "layoutSize", "sourceRect", "factor", "baseColor",
+    "emissiveColor", "targetClearColor", "border", "centerOfMass",
+    "tipOffset", "spriteBindPose",
+}
+PORTABLE_SCENE_COMPONENT_OBJECT_FIELDS = {"properties", "constraints", "rest"}
+PORTABLE_SCENE_COMPONENT_OBJECT_FIELD_TYPES = {
+    "constraints": "boolean object",
+    "properties": "object",
+    "rest": "object",
+}
+PORTABLE_SCENE_COMPONENT_LIST_FIELDS = {
+    "clips", "shaderKeywords", "customParameters", "bones", "boneBindPoses",
+    "weights", "parameters", "channels",
+}
+PORTABLE_SCENE_COMPONENT_LIST_FIELD_TYPES = {
+    "clips": "array",
+    "shaderKeywords": "string array",
+    "customParameters": "number arrays",
+    "bones": "unsigned integer array",
+    "boneBindPoses": "number arrays",
+    "weights": "number arrays",
+    "parameters": "object array",
+    "channels": "object array",
+}
+PORTABLE_SCENE_COMPONENT_FIELDS = (
+    PORTABLE_SCENE_COMPONENT_STRING_FIELDS
+    | PORTABLE_SCENE_COMPONENT_BOOLEAN_FIELDS
+    | PORTABLE_SCENE_COMPONENT_FLOAT_FIELDS
+    | PORTABLE_SCENE_COMPONENT_INTEGER_FIELDS
+    | PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS
+    | PORTABLE_SCENE_COMPONENT_OBJECT_FIELDS
+    | PORTABLE_SCENE_COMPONENT_LIST_FIELDS
+)
+
+# Scene::Loadが復元する値。Material値はModelRendererのinline materialとして含めます。
+PORTABLE_SCENE_COMPONENT_RUNTIME_FIELDS = {
+    "type", "enabled", "script", "properties", "verticalFieldOfView",
+    "nearPlane", "farPlane", "intensity", "range", "innerConeAngle",
+    "outerConeAngle", "materialAsset", "shape", "cullMode", "model",
+    "wireframe", "materialOverride", "animationIndex", "animationSpeed",
+    "animationLoop", "animationPlayOnStart", "layer", "mask", "trigger",
+    "kinematic", "useGravity", "maxParticles", "emissionRate", "texture",
+    "endSizeMultiplier", "renderMode", "coneAngle", "duration", "looping",
+    "additive", "playOnStart", "audio", "volume", "loop", "pitch", "pan",
+    "bus", "spatial", "minimumDistance", "maximumDistance", "controller",
+    "clip", "speed", "horizontalAction", "verticalAction", "matchWidthOrHeight",
+    "label", "fontFamily", "fontSize", "interactable", "navigationEnabled",
+    "circularHitArea", "wordWrap", "sortOrder", "horizontalAlignment", "verticalAlignment",
+    "targetScene", "clickEvent", "reloadCurrentScene",
+    "text", "fontAsset", "maskInteraction", "columns", "rows", "defaultClip",
+    "clips", "referenceId", "alwaysVisible", "cullingMargin", "meshColumns",
+    "meshRows", "tipOffset", "stiffness", "damping", "inertia", "maxAngle",
+    "windAmplitude", "windFrequency", "windPhase", "frameSeconds",
+    "closedSeconds", "intervalMin", "intervalMax", "doubleBlinkChance",
+    "autoBlink", "includeChildren", "openFrame", "closingStartFrame",
+    "closingFrameCount", "weightFalloff", "bound", "boundColumns", "boundRows",
+    "spriteBindPose", "boneBindPoses", "bones", "weights", "parameters",
+    "channels", "rest", "anchorMax",
+    "anchorMin", "anchoredPosition", "angularVelocity", "color", "disabledColor",
+    "emitterSize", "endColor", "factor", "fallbackSize", "gravity",
+    "hoveredColor", "layoutSize", "lifetime", "normalColor", "offset",
+    "pivot", "pressedColor", "referenceResolution", "size", "sizeDelta",
+    "sourceRect", "startColor", "startSize", "startSpeed", "textColor", "velocity",
+    "albedoTexture", "baseColor", "emissiveTexture", "metallic",
+    "metallicTexture", "normalStrength", "normalTexture", "occlusionStrength",
+    "occlusionTexture", "roughness", "roughnessTexture", "emissiveColor",
+}
+
+# シリアライザーは保存するがPortable出力で保持できない機能値。
+# 互換性診断は、値が有効な場合に拒否・警告・エディター専用として分類します。
+PORTABLE_SCENE_COMPONENT_UNSUPPORTED_FIELDS = {
+    "Camera": {
+        "targetTexture", "targetTextureWidth", "targetTextureHeight",
+        "targetClearColor",
+    },
+    "DirectionalLight": {
+        "castsShadows", "shadowDistance", "shadowBias", "shadowNormalBias",
+        "shadowStrength", "shadowCascadeCount", "shadowSplitLambda",
+        "angularDiameterDegrees",
+    },
+    "PointLight": {"castsShadows", "shadowBias", "shadowStrength"},
+    "SpotLight": {
+        "castsShadows", "shadowBias", "shadowNormalBias", "shadowStrength",
+    },
+    "BoxCollider3D": {"friction", "restitution"},
+    "MeshRenderer": {
+        "shader", "shaderKeywords", "customParameters", "customTexture",
+        "worldOverlay",
+    },
+    "SpriteRenderer": {"shader", "customParameters", "renderTexture"},
+    "UIButton": {"loadTargetAdditive"},
+    "UIImage": {"border", "renderTexture"},
+    "AudioSource": {"streaming"},
+    "ModelRenderer": {
+        "shader", "shaderKeywords", "customParameters", "customTexture",
+        "animationController", "applyRootMotion", "rootMotionNode",
+        "useLegacyShading", "preserveEmbeddedMaterialColor",
+    },
+    "ParticleSystem": {"shader", "auxiliaryTexture", "customParameters"},
+    "Rigidbody": {
+        "mass", "linearDrag", "angularDrag", "angularVelocity", "centerOfMass",
+        "constraints", "interpolate", "collisionDetection",
+    },
+}
+# ゲーム実行時には影響しないエディター専用設定です。
+PORTABLE_SCENE_COMPONENT_EDITOR_ONLY_FIELDS = {
+    "ParticleSystem": {"previewInEditor"},
+}
+PORTABLE_SCENE_ALWAYS_REJECT_COMPONENTS = {"MeshCollider3D"}
+
+PORTABLE_SCENE_CLIP_STRING_FIELDS = {"name"}
+PORTABLE_SCENE_CLIP_BOOLEAN_FIELDS = {"loop"}
+PORTABLE_SCENE_CLIP_FLOAT_FIELDS = {"framesPerSecond"}
+PORTABLE_SCENE_CLIP_INTEGER_FIELDS = {"startFrame", "frameCount"}
+PORTABLE_SCENE_CLIP_INTEGER_FIELD_TYPES = {
+    "startFrame": "signed 32-bit integer",
+    "frameCount": "signed 32-bit integer",
+}
+PORTABLE_SCENE_CLIP_FIELDS = (
+    PORTABLE_SCENE_CLIP_STRING_FIELDS
+    | PORTABLE_SCENE_CLIP_BOOLEAN_FIELDS
+    | PORTABLE_SCENE_CLIP_FLOAT_FIELDS
+    | PORTABLE_SCENE_CLIP_INTEGER_FIELDS
+)
+
+PORTABLE_MATERIAL_STRING_FIELDS = {
+    "type", "albedoTexture", "normalTexture", "roughnessTexture",
+    "metallicTexture", "occlusionTexture", "emissiveTexture", "shader",
+}
+PORTABLE_MATERIAL_NUMBER_FIELDS = {
+    "roughness", "metallic", "normalStrength", "occlusionStrength",
+}
+PORTABLE_MATERIAL_ARRAY_FIELDS = {"baseColor", "color", "emissiveColor"}
+PORTABLE_MATERIAL_LIST_FIELD_TYPES = {
+    "customTextures": "string array",
+    "customParameters": "number arrays",
+}
+PORTABLE_MATERIAL_UNSUPPORTED_FIELDS = {
+    "shader", "customTextures", "customParameters",
+}
+
+
+def is_finite_portable_float(value: Any) -> bool:
+    """Whether a JSON value fits a finite C++ float used by Portable runtime."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError):
+        return False
+    return math.isfinite(converted) and abs(converted) <= 3.4028234663852886e38
+
+
+def portable_scene_json_value_matches(value: Any, expected: str) -> bool:
+    """Check JSON values before the Portable C++ loader converts their types."""
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "number":
+        return is_finite_portable_float(value)
+    if expected == "integer":
+        return (isinstance(value, int) and not isinstance(value, bool)
+                and -(1 << 63) <= value < (1 << 63))
+    if expected == "unsigned integer":
+        return isinstance(value, int) and not isinstance(value, bool) \
+            and 0 <= value < (1 << 64)
+    if expected == "signed 32-bit integer":
+        return isinstance(value, int) and not isinstance(value, bool) \
+            and -(1 << 31) <= value < (1 << 31)
+    if expected == "unsigned 32-bit integer":
+        return isinstance(value, int) and not isinstance(value, bool) \
+            and 0 <= value < (1 << 32)
+    if expected == "number array":
+        return (isinstance(value, list)
+                and all(is_finite_portable_float(item) for item in value))
+    if expected == "string array":
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if expected == "number arrays":
+        return (isinstance(value, list)
+                and all(
+                    isinstance(item, list)
+                    and all(is_finite_portable_float(channel) for channel in item)
+                    for item in value
+                ))
+    if expected == "unsigned integer array":
+        return (isinstance(value, list)
+                and all(
+                    isinstance(item, int) and not isinstance(item, bool)
+                    and 0 <= item < (1 << 64)
+                    for item in value
+                ))
+    if expected == "object array":
+        return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "boolean object":
+        return (isinstance(value, dict)
+                and all(isinstance(item, bool) for item in value.values()))
+    if expected == "array":
+        return isinstance(value, list)
+    return False
+
+
+def portable_scene_expected_type_label(expected: str) -> str:
+    """Return the Japanese label used in portable scene diagnostics."""
+    return {
+        "string": "文字列",
+        "boolean": "boolean",
+        "number": "有限な32ビット浮動小数",
+        "integer": "符号付き64ビット整数",
+        "unsigned integer": "64ビット符号なし整数",
+        "signed 32-bit integer": "32ビット符号付き整数",
+        "unsigned 32-bit integer": "32ビット符号なし整数",
+        "number array": "有限な数値配列",
+        "number arrays": "有限な数値配列の配列",
+        "unsigned integer array": "64ビット符号なし整数配列",
+        "object array": "オブジェクト配列",
+        "string array": "文字列配列",
+        "object": "オブジェクト",
+        "boolean object": "boolean値を持つオブジェクト",
+        "array": "配列",
+    }.get(expected, expected)
+
+
+def portable_project_physics_findings(project: dict[str, Any]) -> list[dict[str, Any]]:
+    """Report project physics settings that the shared Portable runtime ignores."""
+    physics = project.get("physics", {})
+    if not isinstance(physics, dict):
+        return []
+
+    differences: list[str] = []
+    gravity = physics.get("gravity", {})
+    if isinstance(gravity, dict):
+        defaults = {"x": 0.0, "y": -9.81, "z": 0.0}
+        values = [gravity.get(axis, fallback)
+                  for axis, fallback in defaults.items()]
+        if (all(is_finite_portable_float(value) for value in values)
+                and any(not math.isclose(float(value), defaults[axis],
+                                         rel_tol=0.0, abs_tol=1e-6)
+                        for axis, value in zip(defaults, values))):
+            differences.append("project gravity")
+
+    fixed_step = physics.get("fixedTimeStep", 1.0 / 60.0)
+    if (is_finite_portable_float(fixed_step)
+            and not math.isclose(float(fixed_step), 1.0 / 60.0,
+                                 rel_tol=0.0, abs_tol=1e-6)):
+        differences.append("fixedTimeStep")
+
+    collision_off = physics.get("collisionOff", [])
+    if isinstance(collision_off, list) and any(
+        isinstance(pair, list) and len(pair) == 2
+        and all(isinstance(layer, int) and not isinstance(layer, bool)
+                and 0 <= layer < 32 for layer in pair)
+        for pair in collision_off
+    ):
+        differences.append("global collision layer matrix")
+
+    if physics.get("clampDiscreteSpeed", False) is True:
+        differences.append("discrete collision speed clamp")
+
+    if not differences:
+        return []
+    return [finding(
+        "warning", "portable-project-physics-approximation",
+        "Portableの簡易物理はプロジェクト設定の"
+        + "、".join(differences) + "を反映しません。",
+        "Portable出力で物理挙動を確認し、同じ設定が必要ならPortable物理への対応を追加してください。",
+    )]
 # 対応input action。
 PORTABLE_INPUT_ACTIONS = {
     "MoveHorizontal",
@@ -321,6 +1180,7 @@ PORTABLE_INPUT_ACTIONS = {
     "Submit",
     "Cancel",
     "Pause",
+    "UIUp", "UIDown", "UILeft", "UIRight", "UINext", "UIPrevious",
 }
 # 対応input control。
 PORTABLE_INPUT_CONTROLS = {
@@ -1404,8 +2264,8 @@ def externalize_glb_images(
 
 
 # validate_portable_glb(glb_path: GLB file): rejects features unsupported by the portable renderer.
-def validate_portable_glb(glb_path: Path) -> dict[str, int]:
-    """ポータブルランタイムで保持できない正規GLB機能を拒否します。"""
+def read_portable_glb_document(glb_path: Path) -> dict[str, Any]:
+    """GLBコンテナーを検査し、モデルメタデータを返します。"""
     # data: source GLB bytes。
     data = glb_path.read_bytes()
     # 短すぎるGLB headerを拒否します。
@@ -1446,6 +2306,96 @@ def validate_portable_glb(glb_path: Path) -> dict[str, int]:
     # error: GLB JSON decode failure。
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ExportError(f"Converted model has invalid GLB JSON: {glb_path}") from error
+    return document
+
+
+def validate_portable_glb(glb_path: Path) -> dict[str, int]:
+    return validate_portable_model_document(read_portable_glb_document(glb_path), glb_path)
+
+
+def model_references(document: dict) -> list[str]:
+    references = []
+    if not isinstance(document.get("images", []), list) or not isinstance(document.get("buffers", []), list):
+        raise ExportError("Portable model images and buffers must be arrays")
+    for image in document.get("images", []):
+        if not isinstance(image, dict) or ("uri" in image) == ("bufferView" in image):
+            raise ExportError("Model image must have exactly one URI or bufferView")
+        if "bufferView" in image:
+            views = document.get("bufferViews", [])
+            index = image["bufferView"]
+            if image.get("mimeType") not in ("image/png", "image/jpeg") \
+                    or not isinstance(views, list) or type(index) is not int or not 0 <= index < len(views):
+                raise ExportError("Embedded model image requires a valid PNG/JPEG bufferView")
+            view = views[index]
+            if not isinstance(view, dict):
+                raise ExportError("Invalid model image bufferView")
+            buffer = view.get("buffer")
+            offset, length = view.get("byteOffset", 0), view.get("byteLength")
+            buffers = document.get("buffers", [])
+            if type(buffer) is not int or not 0 <= buffer < len(buffers) \
+                    or type(offset) is not int or offset < 0 or type(length) is not int or length <= 0 \
+                    or not isinstance(buffers[buffer], dict) \
+                    or type(buffers[buffer].get("byteLength")) is not int \
+                    or offset + length > buffers[buffer]["byteLength"]:
+                raise ExportError("Model image bufferView exceeds its declared buffer")
+        elif not isinstance(image["uri"], str) or not image["uri"]:
+            raise ExportError("Model image URI must be a nonempty string")
+    for kind in ("images", "buffers"):
+        entries = document.get(kind, [])
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("uri", ""), str):
+                raise ExportError("Portable model references must be URI strings")
+            uri = entry.get("uri", "")
+            if uri.startswith("data:"):
+                if kind == "images":
+                    header, separator, payload = uri.partition(',')
+                    if not separator or header not in {"data:image/png;base64", "data:image/jpeg;base64"}:
+                        raise ExportError("Model image data URI must contain base64 PNG or JPEG")
+                    try:
+                        decoded = base64.b64decode(payload, validate=True)
+                    except (ValueError, binascii.Error) as error:
+                        raise ExportError("Invalid model image base64") from error
+                    signature = b"\x89PNG\r\n\x1a\n" if header == "data:image/png;base64" else b"\xff\xd8\xff"
+                    if not decoded.startswith(signature):
+                        raise ExportError("Model image data URI does not match its declared image format")
+                continue  # cgltf decodes embedded geometry buffers.
+            if uri:
+                uri = unquote(uri, errors="strict").replace("\\", "/")
+                if ":" in uri or uri.startswith("/"):
+                    raise ExportError("Portable model references must be relative asset paths")
+                references.append(uri)
+    return references
+
+
+
+def direct_portable_model(path: Path, web: dict) -> bool:
+    return web.get("portableGame", False) and path.suffix.lower() in {".gltf", ".glb"}
+
+
+def validate_direct_portable_model(path: Path, asset_root: Path, included: list[Path]) -> None:
+    document = (read_portable_glb_document(path) if path.suffix.lower() == ".glb"
+                else json.loads(path.read_text(encoding="utf-8-sig")))
+    validate_portable_model_document(document, path)
+    for reference in model_references(document):
+        referenced = path.parent / reference
+        resolved = referenced.resolve()
+        if not is_within(resolved, asset_root) or not resolved.is_file() or not asset_is_selected(resolved, included):
+            raise ExportError(f"Portable model reference is missing or not packaged: {reference}")
+        # Web FS is case-sensitive even when export runs on Windows.
+        cursor = asset_root
+        for part in referenced.relative_to(asset_root).parts:
+            if part == "..":
+                cursor = cursor.parent
+            else:
+                if part not in {item.name for item in cursor.iterdir()}:
+                    raise ExportError(f"Portable model reference filename case does not match: {reference}")
+                cursor /= part
+            if not is_within(cursor.resolve(), asset_root):
+                raise ExportError(f"Portable model reference escapes assets: {reference}")
+
+
+def validate_portable_model_document(document: Any, glb_path: Path) -> dict[str, int]:
+    """Webとネイティブが共有するPortableモデルの機能制約を検査します。"""
     # object以外のGLB rootを拒否します。
     if not isinstance(document, dict):
         raise ExportError(f"Converted model GLB root is not an object: {glb_path}")
@@ -1692,19 +2642,21 @@ def infer_lamapon_modules(source: Path, project: dict[str, Any]) -> list[str]:
         for path in script_files
     )
     # api: each LamaPon API name found in scripts。
-    for api in LAMAPON_API_TOKEN.findall(script_text):
+    for api, _ in portable_api_references(script_text):
         # module: runtime module required by the API。
-        module = PORTABLE_API_MODULES.get(api)
+        module = PORTABLE_API_MODULES.get(api, PORTABLE_API_METHOD_MODULES.get(api))
         # 既知APIのruntime moduleを追加します。
         if module is not None:
             modules.append(module)
 
-    # startup_scene: project起動scene path。
-    startup_scene = project.get("startupScene")
-    # scene pathが有効な場合だけsceneを解析します。
-    if isinstance(startup_scene, str) and startup_scene:
-        # scene_path: startup scene file。
-        scene_path = source / "assets" / startup_scene
+    exports = project.get("export", {})
+    web = exports.get("web", project.get("webExport", {})) if isinstance(exports, dict) else {}
+    web = web if isinstance(web, dict) else {}
+    startup_scene = project.get("startupScene", "scenes/Main.scene.json")
+    scene = web.get("scenePath", "/assets/" + startup_scene.lstrip("/") if isinstance(startup_scene, str) else "")
+    assets = web.get("assetDirectory", "assets")
+    if isinstance(scene, str) and scene.startswith("/assets/") and isinstance(assets, str):
+        scene_path = source / assets / scene[8:]
         # startup scene JSONを読み込みます。
         try:
             # scene: decoded startup scene object。
@@ -1748,6 +2700,415 @@ def infer_lamapon_modules(source: Path, project: dict[str, Any]) -> list[str]:
         )
     # 重複を除いたportable module一覧を返します。
     return list(dict.fromkeys(modules))
+
+
+def portable_api_references(text: str) -> list[tuple[str, int]]:
+    """Return recognized LamaPon API names and their source offsets.
+
+    Projects commonly import the namespace or alias it before using public
+    types. Keep those spellings in module inference and compatibility checks
+    so they cannot silently omit a renderer or other runtime module.
+    """
+    code = mask_cpp_non_code(text)
+    references = set((match.group(1), match.start(1))
+                     for match in LAMAPON_API_TOKEN.finditer(code))
+
+    aliases = set(LAMAPON_NAMESPACE_ALIAS.findall(code))
+    for alias in aliases:
+        alias_pattern = re.compile(
+        rf"\b{re.escape(alias)}\s*::\s*([A-Za-z_][A-Za-z0-9_]*)"
+        )
+        references.update((match.group(1), match.start(1))
+                          for match in alias_pattern.finditer(code))
+
+        scene_method_pattern = re.compile(
+            rf"\b{re.escape(alias)}\s*::\s*Scene\s*::\s*(Raycast|WebAudio)\b"
+        )
+        references.update(("Scene::" + match.group(1), match.start(1))
+                          for match in scene_method_pattern.finditer(code))
+
+    references.update(("Scene::" + match.group(1), match.start(1))
+                      for match in PORTABLE_SCENE_METHOD_TOKEN.finditer(code))
+    references.update(("Scene::" + match.group(1), match.start(1))
+                      for match in PORTABLE_SCENE_MEMBER_METHOD_TOKEN.finditer(code))
+
+    imports_lamapon = LAMAPON_NAMESPACE_IMPORT.search(code) is not None
+    imports_alias = bool(aliases & set(NAMESPACE_IMPORT.findall(code)))
+    if imports_lamapon or imports_alias:
+        known_names = sorted(PORTABLE_API_MODULES, key=len, reverse=True)
+        unqualified_pattern = re.compile(
+            r"(?<![A-Za-z0-9_:])(?:" + "|".join(map(re.escape, known_names))
+            + r")(?![A-Za-z0-9_])"
+        )
+        references.update((match.group(0), match.start())
+                          for match in unqualified_pattern.finditer(code))
+
+    return sorted(references, key=lambda item: item[1])
+
+
+def portable_script_class_patterns(text: str) -> tuple[str, list[re.Pattern[str]]]:
+    """Return masked source and recognizers for Portable Script subclasses."""
+    code = mask_cpp_non_code(text)
+    class_patterns = [PORTABLE_SCRIPT_CLASS_TOKEN]
+    for alias in set(LAMAPON_NAMESPACE_ALIAS.findall(code)):
+        class_patterns.append(re.compile(
+            rf"\b(?:class|struct)\s+[A-Za-z_]\w*(?:\s+final)?\s*:\s*[^;{{}}]*?"
+            rf"(?:(?:public|protected|private)\s+)?"
+            rf"{re.escape(alias)}\s*::\s*Script\b"
+        ))
+    return code, class_patterns
+
+
+def portable_script_class_present(text: str) -> bool:
+    """Return whether source declares a class derived from Portable Script."""
+    code, patterns = portable_script_class_patterns(text)
+    return any(pattern.search(code) for pattern in patterns)
+
+
+def portable_unsupported_script_references(text: str) -> list[tuple[str, int]]:
+    """Return calls to Windows Script methods that Portable Script lacks."""
+    code, class_patterns = portable_script_class_patterns(text)
+    methods = "|".join(map(re.escape, PORTABLE_UNSUPPORTED_SCRIPT_METHODS))
+    call_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_:.])(?:this\s*->\s*)?(?P<method>{methods})\s*\("
+    )
+
+    references: set[tuple[str, int]] = set()
+    class_spans: set[tuple[int, int]] = set()
+    for class_pattern in class_patterns:
+        for declaration in class_pattern.finditer(code):
+            opening = code.find("{", declaration.end())
+            semicolon = code.find(";", declaration.end())
+            if opening < 0 or (semicolon >= 0 and semicolon < opening):
+                continue
+            depth = 0
+            closing = -1
+            for offset in range(opening, len(code)):
+                if code[offset] == "{":
+                    depth += 1
+                elif code[offset] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closing = offset
+                        break
+            if closing < 0:
+                continue
+            class_spans.add((opening + 1, closing))
+
+    for start, end in class_spans:
+        body = code[start:end]
+        for match in call_pattern.finditer(body):
+            method = match.group("method")
+            # A script may define its own method with the same name. That
+            # declaration shadows the Windows base method and is portable.
+            declaration = re.compile(
+                rf"(?m)^\s*(?:(?:virtual|static|inline|constexpr)\s+)*"
+                rf"[\w:<>*&\s]+\b{re.escape(method)}\s*\([^;{{}}]*\)\s*"
+                rf"(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?(?:\{{|;)"
+            )
+            if declaration.search(body):
+                continue
+            references.add((method, start + match.start("method")))
+    return sorted(references, key=lambda item: item[1])
+
+
+def portable_unsupported_scene_references(text: str) -> list[tuple[str, int]]:
+    """Return calls to Windows Scene methods that Portable Scene lacks."""
+    code = mask_cpp_non_code(text)
+    references: set[tuple[str, int]] = set()
+    for pattern in (
+        PORTABLE_UNSUPPORTED_SCENE_CALL_TOKEN,
+        PORTABLE_UNSUPPORTED_SCENE_QUALIFIED_METHOD_TOKEN,
+    ):
+        for match in pattern.finditer(code):
+            receiver = code[max(0, match.start() - 24):match.start()]
+            if re.search(r"\bthis\s*->\s*$", receiver):
+                continue
+            references.add((match.group("method"), match.start("method")))
+
+    if not PORTABLE_UNSUPPORTED_SCENE_TYPED_METHODS:
+        return sorted(references, key=lambda item: item[1])
+
+    aliases = set(LAMAPON_NAMESPACE_ALIAS.findall(code))
+    imports_lamapon = LAMAPON_NAMESPACE_IMPORT.search(code) is not None
+    imports_alias = bool(aliases & set(NAMESPACE_IMPORT.findall(code)))
+    prefixes = [r"(?:(?:::)?\s*LamaPon\s*::\s*)"]
+    prefixes.extend(rf"{re.escape(alias)}\s*::\s*" for alias in aliases)
+    if imports_lamapon or imports_alias or re.search(
+        r"\busing\s+(?:::)?\s*LamaPon\s*::\s*Scene\s*;", code
+    ):
+        prefixes.append("")
+
+    scene_variables: set[str] = set()
+    for prefix in prefixes:
+        type_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_:])(?:const\s+)?{prefix}Scene\s*"
+            rf"(?:const\s*)?[*&]+\s*(?P<name>[A-Za-z_]\w*)\b"
+        )
+        scene_variables.update(
+            match.group("name") for match in type_pattern.finditer(code)
+        )
+    auto_scene_pattern = re.compile(
+        r"\bauto\s*(?:&|&&)\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+        r"(?:(?:this\s*->\s*)?GetScene\s*\(\s*|"
+        r"(?:this\s*->\s*)?Owner\s*\(\s*\)\s*\.\s*GetScene\s*\(\s*)"
+    )
+    scene_variables.update(
+        match.group("name") for match in auto_scene_pattern.finditer(code)
+    )
+
+    for method in PORTABLE_UNSUPPORTED_SCENE_TYPED_METHODS:
+        call = re.compile(rf"\b{re.escape(method)}\s*\(")
+        receivers = [
+            r"(?:this\s*->\s*)?GetScene\s*\(\s*\)",
+            r"(?:this\s*->\s*)?Owner\s*\(\s*\)\s*\.\s*GetScene\s*\(\s*\)",
+        ]
+        receivers.extend(re.escape(name) for name in scene_variables)
+        if not receivers:
+            continue
+        pattern = re.compile(
+            r"(?:" + "|".join(receivers) + r")\s*(?:\.|->)\s*"
+            + call.pattern
+        )
+        references.update(
+            (method, match.start() + match.group(0).rfind(method))
+            for match in pattern.finditer(code)
+        )
+    return sorted(references, key=lambda item: item[1])
+
+
+def portable_unsupported_gameobject_references(
+    text: str,
+) -> list[tuple[str, int]]:
+    """Return calls to Windows GameObject methods that Portable lacks."""
+    code = mask_cpp_non_code(text)
+    methods = "|".join(map(re.escape, PORTABLE_UNSUPPORTED_GAMEOBJECT_METHODS))
+    references: set[tuple[str, int]] = set()
+    owner_call = re.compile(
+        r"(?:(?:this\s*->\s*)?Owner\s*\(\s*\))\s*(?:\.|->)\s*"
+        r"(?P<method>" + methods + r")\s*\("
+    )
+    references.update(
+        (match.group("method"), match.start("method"))
+        for match in owner_call.finditer(code)
+    )
+
+    aliases = set(LAMAPON_NAMESPACE_ALIAS.findall(code))
+    imports_lamapon = LAMAPON_NAMESPACE_IMPORT.search(code) is not None
+    imports_alias = bool(aliases & set(NAMESPACE_IMPORT.findall(code)))
+    prefixes = [r"(?:(?:::)?\s*LamaPon\s*::\s*)"]
+    prefixes.extend(rf"{re.escape(alias)}\s*::\s*" for alias in aliases)
+    if imports_lamapon or imports_alias or re.search(
+        r"\busing\s+(?:::)?\s*LamaPon\s*::\s*GameObject\s*;", code
+    ):
+        prefixes.append("")
+
+    gameobjects: set[str] = set()
+    for prefix in prefixes:
+        declaration = re.compile(
+            rf"(?<![A-Za-z0-9_:])(?:const\s+)?{prefix}GameObject\s*"
+            rf"(?:const\s*)?[*&]+\s*(?P<name>[A-Za-z_]\w*)\b"
+        )
+        gameobjects.update(
+            match.group("name") for match in declaration.finditer(code)
+        )
+
+    auto_gameobject = re.compile(
+        r"\bauto\s*(?:\*|&|&&)\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+        r"(?:(?:this\s*->\s*)?Owner\s*\(\s*\)|"
+        r"(?:(?:this\s*->\s*)?Owner\s*\(\s*\)\s*\.\s*)?"
+        r"(?:(?:this\s*->\s*)?Find|FindChild)\s*\()"
+    )
+    gameobjects.update(
+        match.group("name") for match in auto_gameobject.finditer(code)
+    )
+    for name in gameobjects:
+        receiver = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*(?:\.|->)\s*"
+            rf"(?P<method>{methods})\s*\("
+        )
+        references.update(
+            (match.group("method"), match.start("method"))
+            for match in receiver.finditer(code)
+        )
+
+    references.update(
+        (match.group("method"), match.start("method"))
+        for match in PORTABLE_UNSUPPORTED_GAMEOBJECT_QUALIFIED_METHOD_TOKEN.finditer(code)
+    )
+    return sorted(references, key=lambda item: item[1])
+
+
+def portable_unsupported_component_references(
+    text: str,
+) -> list[tuple[str, str, int]]:
+    """Return calls to Windows component methods absent from Portable."""
+    code = mask_cpp_non_code(text)
+    aliases = set(LAMAPON_NAMESPACE_ALIAS.findall(code))
+    imports_lamapon = LAMAPON_NAMESPACE_IMPORT.search(code) is not None
+    imports_alias = bool(aliases & set(NAMESPACE_IMPORT.findall(code)))
+    references: set[tuple[str, str, int]] = set()
+
+    for component_type, unsupported_methods in (
+        PORTABLE_UNSUPPORTED_COMPONENT_METHODS.items()
+    ):
+        methods = "|".join(map(re.escape, unsupported_methods))
+        prefixes = [r"(?:(?:::)?\s*LamaPon\s*::\s*)"]
+        prefixes.extend(
+            rf"{re.escape(alias)}\s*::\s*" for alias in aliases
+        )
+        if imports_lamapon or imports_alias or re.search(
+            rf"\busing\s+(?:::)?\s*LamaPon\s*::\s*{re.escape(component_type)}\s*;",
+            code,
+        ):
+            prefixes.append("")
+        class_patterns = [
+            prefix + re.escape(component_type) for prefix in prefixes
+        ]
+        class_pattern = "(?:" + "|".join(class_patterns) + ")"
+
+        receivers: set[str] = set()
+        typed_declaration = re.compile(
+            rf"(?<![A-Za-z0-9_:])(?:const\s+)?{class_pattern}\s*"
+            rf"(?:const\s*)?(?:[*&]\s*)?(?P<name>[A-Za-z_]\w*)\b"
+        )
+        receivers.update(
+            match.group("name") for match in typed_declaration.finditer(code)
+        )
+
+        # auto pointers/references returned by the component lookup or add API.
+        auto_declaration = re.compile(
+            rf"\bauto\s*(?:\*|&|&&)\s*(?P<name>[A-Za-z_]\w*)\s*=\s*"
+            rf"[^;]*?\b(?:GetComponent(?:InParent|InChildren)?|"
+            rf"GetComponents(?:InParent|InChildren)?|AddComponent)\s*"
+            rf"<\s*{class_pattern}\s*>"
+        )
+        receivers.update(
+            match.group("name") for match in auto_declaration.finditer(code)
+        )
+
+        for name in receivers:
+            receiver = re.compile(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*(?:\.|->)\s*"
+                rf"(?P<method>{methods})\s*\("
+            )
+            references.update(
+                (component_type, match.group("method"),
+                 match.start("method"))
+                for match in receiver.finditer(code)
+            )
+
+        # Directly chained lookups and pointers to unsupported member functions.
+        direct_call = re.compile(
+            rf"\b(?:GetComponent(?:InParent|InChildren)?|"
+            rf"GetComponents(?:InParent|InChildren)?|AddComponent)\s*"
+            rf"<\s*{class_pattern}\s*>\s*\([^;]*?\)\s*"
+            rf"(?:\.|->)\s*(?P<method>{methods})\s*\("
+        )
+        references.update(
+            (component_type, match.group("method"),
+             match.start("method"))
+            for match in direct_call.finditer(code)
+        )
+        member_pointer = re.compile(
+            rf"(?<![A-Za-z0-9_:]){class_pattern}\s*::\s*"
+            rf"(?P<method>{methods})\b"
+        )
+        references.update(
+            (component_type, match.group("method"),
+             match.start("method"))
+            for match in member_pointer.finditer(code)
+        )
+
+    return sorted(references, key=lambda item: item[2])
+
+
+def mask_cpp_non_code(text: str, *, mask_literals: bool = True) -> str:
+    """Mask C++ comments and optionally literals while preserving offsets."""
+    characters = list(text)
+    length = len(text)
+
+    def blank(start: int, end: int) -> None:
+        for index in range(start, end):
+            if characters[index] not in "\r\n":
+                characters[index] = " "
+
+    index = 0
+    raw_prefixes = ('u8R"', 'uR"', 'UR"', 'LR"', 'R"')
+    while index < length:
+        if text.startswith("//", index):
+            end = index + 2
+            while end < length and text[end] not in "\r\n":
+                end += 1
+            blank(index, end)
+            index = end
+            continue
+        if text.startswith("/*", index):
+            terminator = text.find("*/", index + 2)
+            end = length if terminator < 0 else terminator + 2
+            blank(index, end)
+            index = end
+            continue
+
+        raw_prefix = next((prefix for prefix in raw_prefixes
+                           if text.startswith(prefix, index)), None)
+        if raw_prefix is not None:
+            delimiter_start = index + len(raw_prefix)
+            opening = text.find("(", delimiter_start)
+            if opening >= 0 and opening - delimiter_start <= 16:
+                delimiter = text[delimiter_start:opening]
+                if not any(character.isspace() or character in "\\()" for character in delimiter):
+                    closing_token = ")" + delimiter + '"'
+                    closing = text.find(closing_token, opening + 1)
+                    end = length if closing < 0 else closing + len(closing_token)
+                    if mask_literals:
+                        blank(index, end)
+                    index = end
+                    continue
+
+        if text[index] in {'"', "'"}:
+            quote = text[index]
+            end = index + 1
+            while end < length:
+                if text[end] == "\\":
+                    end = min(length, end + 2)
+                elif text[end] == quote:
+                    end += 1
+                    break
+                else:
+                    end += 1
+            if mask_literals:
+                blank(index, end)
+            index = end
+            continue
+
+        index += 1
+
+    return "".join(characters)
+
+
+def portable_dynamic_script_ids(text: str) -> list[str]:
+    """Find literal NativeScriptComponent additions across namespace spellings."""
+    code_with_literals = mask_cpp_non_code(text, mask_literals=False)
+    aliases = set(LAMAPON_NAMESPACE_ALIAS.findall(code_with_literals))
+    namespaces = [r"(?:::)?\s*LamaPon", *(re.escape(alias) for alias in aliases)]
+    namespace_pattern = r"(?:" + "|".join(namespaces) + r")"
+    type_spellings = [namespace_pattern + r"\s*::\s*NativeScriptComponent"]
+
+    imported_namespaces = {"LamaPon"} if LAMAPON_NAMESPACE_IMPORT.search(code_with_literals) else set()
+    imported_namespaces.update(aliases & set(NAMESPACE_IMPORT.findall(code_with_literals)))
+    imported_type = re.compile(
+        r"\busing\s+" + namespace_pattern + r"\s*::\s*NativeScriptComponent\s*;"
+    ).search(code_with_literals) is not None
+    if imported_namespaces or imported_type:
+        type_spellings.append(r"NativeScriptComponent")
+
+    pattern = re.compile(
+        r"AddComponent\s*<\s*(?:" + "|".join(type_spellings)
+        + r")\s*>\s*\(\s*\"([^\"]+)\"",
+        re.MULTILINE,
+    )
+    return pattern.findall(code_with_literals)
 
 
 # resolved_project_modules(source: project root, project: settings, project_kind: loader type): validates module selection.
@@ -1980,6 +3341,7 @@ def validate_portable_contract(
     source = source.resolve()
     # findings: 互換性診断の一覧。
     findings: list[dict[str, str]] = []
+    findings.extend(portable_project_physics_findings(project))
     # source_files: Web対象のソース一覧。
     source_files = selected_web_source_files(source, web)
     # configured_input_actions: Project固有の入力設定。
@@ -2016,6 +3378,14 @@ def validate_portable_contract(
     asset_references: dict[str, list[str]] = {}
     # registered_scripts: Webソースで登録されたScript名。
     registered_scripts: set[str] = set()
+    # dynamic_prefab_references: 動的Prefab call siteとasset path。
+    dynamic_prefab_references: dict[str, list[str]] = {}
+    # dynamic_prefab_invalid: 静的に検査できないPrefab call site。
+    dynamic_prefab_invalid: list[tuple[str, str]] = []
+    # dynamic_scene_references: 動的Scene call siteとasset path。
+    dynamic_scene_references: dict[str, list[str]] = {}
+    # dynamic_scene_invalid: 静的に検査できないScene call site。
+    dynamic_scene_invalid: list[tuple[str, str]] = []
     # dynamic_scripts: 動的生成されたScriptと使用位置。
     dynamic_scripts: dict[str, list[str]] = {}
     # input_actions: 使用入力Actionと参照位置。
@@ -2024,13 +3394,106 @@ def validate_portable_contract(
     for path, text in source_text.items():
         # relative: Project相対のソースパス。
         relative = path.relative_to(source)
+        # importまたはalias経由のAPIも位置付きで記録します。
+        for api, offset in portable_api_references(text):
+            line_number = text.count("\n", 0, offset) + 1
+            api_locations.setdefault(api, []).append(f"{relative}:{line_number}")
+        code = mask_cpp_non_code(text)
+        for method, offset in portable_unsupported_scene_references(text):
+            line_number = text.count("\n", 0, offset) + 1
+            findings.append(finding(
+                "reject", "unsupported-portable-scene-api",
+                f"{relative}:{line_number}: {method}はPortableのScene APIに実装されていません。",
+                "Portableでは同期主SceneのRequestLoad／RequestReloadを使用するか、対応済みのシーンAPIへ置き換えてください。",
+            ))
+        for method, offset in portable_unsupported_gameobject_references(text):
+            line_number = text.count("\n", 0, offset) + 1
+            findings.append(finding(
+                "reject", "unsupported-portable-gameobject-api",
+                f"{relative}:{line_number}: GameObject::{method}はPortableに実装されていません。",
+                "ポータブル対応APIへ置き換えるか、この機能を使う処理を出力対象から外してください。",
+            ))
+        for component_type, method, offset in (
+            portable_unsupported_component_references(text)
+        ):
+            line_number = text.count("\n", 0, offset) + 1
+            findings.append(finding(
+                "reject", "unsupported-portable-component-api",
+                f"{relative}:{line_number}: {component_type}::{method}はPortableに実装されていません。",
+                "Portableで対応するcomponent APIへ置き換えるか、この機能を使う処理を出力対象から外してください。",
+            ))
+        for method, offset in portable_unsupported_script_references(text):
+            line_number = text.count("\n", 0, offset) + 1
+            findings.append(finding(
+                "reject", "unsupported-portable-script-api",
+                f"{relative}:{line_number}: Script::{method}はPortable Scriptに実装されていません。",
+                "ポータブル対応APIへ置き換えるか、この機能を使う処理を出力対象から外してください。",
+            ))
+        for match in PORTABLE_SCENE_LOAD_TOKEN.finditer(code):
+            line_number = text.count("\n", 0, match.start()) + 1
+            location = f"{relative}:{line_number}"
+            literal = re.match(
+                r'\s*(?:(?:std::filesystem::path)\s*(?:\(\s*|\{\s*))?'
+                r'(?:u8)?"([^"\r\n]+)"',
+                text[match.end():],
+            )
+            if literal is None:
+                dynamic_scene_invalid.append((
+                    location,
+                    "Scene path must be a string literal so its target can be checked before export.",
+                ))
+                continue
+            asset = literal.group(1).replace("\\", "/")
+            if asset.startswith("/assets/"):
+                asset = asset[len("/assets/"):]
+            elif asset.startswith("assets/"):
+                asset = asset[len("assets/"):]
+            parts = [part for part in asset.split("/") if part not in {"", "."}]
+            asset = "/".join(parts)
+            if (not asset.startswith("scenes/") or ".." in parts
+                    or not asset.lower().endswith(".scene.json")):
+                dynamic_scene_invalid.append((
+                    location,
+                    "Scene path must name an asset-contained scenes/*.scene.json file without parent-directory segments.",
+                ))
+                continue
+            dynamic_scene_references.setdefault(asset, []).append(location)
+            asset_references.setdefault(asset, []).append(location)
+        prefab_matches = list(PORTABLE_SCENE_PREFAB_INSTANTIATE_TOKEN.finditer(code))
+        if portable_script_class_present(code):
+            prefab_matches.extend(PORTABLE_SCRIPT_PREFAB_INSTANTIATE_TOKEN.finditer(code))
+        for match in prefab_matches:
+            line_number = text.count("\n", 0, match.start()) + 1
+            location = f"{relative}:{line_number}"
+            literal = re.match(
+                r'\s*(?:(?:std::filesystem::path)\s*(?:\(\s*|\{\s*))?'
+                r'(?:u8)?"([^"\r\n]+)"',
+                text[match.end():],
+            )
+            if literal is None:
+                dynamic_prefab_invalid.append((
+                    location,
+                    "Prefab path must be a string literal so the target asset and its components can be checked before export.",
+                ))
+                continue
+            asset = literal.group(1).replace("\\", "/")
+            if asset.startswith("/assets/"):
+                asset = asset[len("/assets/"):]
+            elif asset.startswith("assets/"):
+                asset = asset[len("assets/"):]
+            parts = [part for part in asset.split("/") if part not in {"", "."}]
+            asset = "/".join(parts)
+            if (not asset or ".." in parts
+                    or not asset.lower().endswith(".prefab.json")):
+                dynamic_prefab_invalid.append((
+                    location,
+                    "Prefab path must name an asset-contained .prefab.json file without parent-directory segments.",
+                ))
+                continue
+            dynamic_prefab_references.setdefault(asset, []).append(location)
+            asset_references.setdefault(asset, []).append(location)
         # line_number/line: 検査中の行番号と内容。
         for line_number, line in enumerate(text.splitlines(), start=1):
-            # API使用箇所を記録します。
-            for api in LAMAPON_API_TOKEN.findall(line):
-                api_locations.setdefault(api, []).append(
-                    f"{relative}:{line_number}"
-                )
             # アセット参照箇所を記録します。
             for asset in ASSET_PATH_TOKEN.findall(line):
                 asset_references.setdefault(asset, []).append(
@@ -2041,15 +3504,35 @@ def validate_portable_contract(
                 input_actions.setdefault(action, []).append(
                     f"{relative}:{line_number}"
                 )
-        registered_scripts.update(SCRIPT_REGISTRATION_TOKEN.findall(text))
+        code = mask_cpp_non_code(text)
+        code_with_literals = mask_cpp_non_code(text, mask_literals=False)
+        registered_scripts.update(SCRIPT_REGISTRATION_TOKEN.findall(code_with_literals))
+        # LAMAPON_SCRIPT(Type) expands to the stable ID "Game." #Type.
+        # Read this spelling from comment/string-masked code so examples cannot
+        # register scripts that the compiler never sees.
+        for script_type in SCRIPT_DEFAULT_REGISTRATION_TOKEN.findall(code):
+            registered_scripts.add("Game." + re.sub(r"\s+", " ", script_type.strip()))
         # 動的Script生成箇所を記録します。
-        for script_id in DYNAMIC_SCRIPT_TOKEN.findall(text):
+        for script_id in portable_dynamic_script_ids(text):
             dynamic_scripts.setdefault(script_id, []).append(str(relative))
+
+    for location, reason in sorted(dynamic_prefab_invalid):
+        findings.append(finding(
+            "reject", "invalid-portable-prefab-reference",
+            f"{location}: {reason}",
+            "Scene::InstantiatePrefabまたはScript::Instantiateへ、assetIncludePathsに含まれるPrefabの文字列リテラルを指定してください。",
+        ))
+    for location, reason in sorted(dynamic_scene_invalid):
+        findings.append(finding(
+            "reject", "invalid-portable-scene-reference",
+            f"{location}: {reason}",
+            "SceneCollection::RequestLoadへassetIncludePaths内のscenes/*.scene.jsonを文字列リテラルで指定してください。",
+        ))
 
     # api/locations: API名と参照箇所。
     for api, locations in sorted(api_locations.items()):
         # required_module: APIが必要とするModule。
-        required_module = PORTABLE_API_MODULES.get(api)
+        required_module = PORTABLE_API_MODULES.get(api, PORTABLE_API_METHOD_MODULES.get(api))
         # location: 最初に見つかった使用箇所。
         location = locations[0]
         # 未実装APIはrejectします。
@@ -2182,12 +3665,19 @@ def validate_portable_contract(
     try:
         # scene: JSONから復元した起動Scene。
         scene = json.loads(scene_file.read_text(encoding="utf-8"))
-    # error: Scene JSONの構文エラー。
-    except json.JSONDecodeError as error:
+    # 読み取れないSceneをOS共通の診断へ変換します。
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        # location: JSON行または不正UTF-8のバイト位置。
+        if isinstance(error, json.JSONDecodeError):
+            location = f":{error.lineno}"
+        elif isinstance(error, UnicodeDecodeError):
+            location = f":UTF-8 byte {error.start}"
+        else:
+            location = ""
         findings.append(finding(
             "reject", "invalid-scene-json",
-            f"{scene_file.relative_to(source)}:{error.lineno}: シーンJSONが正しくありません。",
-            "Web出力を行う前にシーンファイルを修正してください。",
+            f"{scene_file.relative_to(source)}{location}: シーンJSONを読み込めません: {error}",
+            "UTF-8の有効なLamaPonScene JSONとしてシーンファイルを保存し直してください。",
         ))
         return findings
     # 未対応形式のSceneは以降の検査を省きます。
@@ -2199,12 +3689,318 @@ def validate_portable_contract(
         ))
         return findings
 
+    # serialized UIButton scene targets must be checked and packaged like script requests.
+    scene_objects = scene.get("objects", [])
+    def collect_button_scene_targets(
+        objects: Any, source_name: str, validate_assets: bool,
+    ) -> None:
+        if not isinstance(objects, list):
+            return
+        for object_index, object_value in enumerate(objects):
+            if not isinstance(object_value, dict):
+                continue
+            components = object_value.get("components", [])
+            if not isinstance(components, list):
+                continue
+            object_name = object_value.get("name", f"object {object_index}")
+            for component_index, component in enumerate(components):
+                if not isinstance(component, dict) or component.get("type") != "UIButton":
+                    continue
+                raw_target = component.get("targetScene")
+                if not raw_target:
+                    continue
+                location = (
+                    f"{source_name}:objects[{object_index}]"
+                    f"({object_name}).components[{component_index}].targetScene"
+                )
+                if not isinstance(raw_target, str):
+                    findings.append(finding(
+                        "reject", "invalid-ui-button-scene",
+                        f"{location}は文字列のScene pathである必要があります。",
+                        "assetIncludePaths内のscenes/*.scene.jsonを指定してください。",
+                    ))
+                    continue
+                target = raw_target.replace("\\", "/")
+                if target.startswith("/assets/"):
+                    target = target[len("/assets/"):]
+                elif target.startswith("assets/"):
+                    target = target[len("assets/"):]
+                parts = [part for part in target.split("/") if part not in {"", "."}]
+                target = "/".join(parts)
+                if (not target.startswith("scenes/") or ".." in parts
+                        or not target.lower().endswith(".scene.json")):
+                    findings.append(finding(
+                        "reject", "invalid-ui-button-scene",
+                        f"{location}はasset内のscenes/*.scene.jsonを指していません。",
+                        "assetIncludePaths内のScene JSONを指定し、親フォルダー参照を避けてください。",
+                    ))
+                    continue
+                dynamic_scene_references.setdefault(target, []).append(location)
+                asset_references.setdefault(target, []).append(location)
+                if validate_assets and asset_directory is not None:
+                    target_file = (asset_directory / target).resolve()
+                    if (not is_within(target_file, asset_directory)
+                            or not target_file.is_file()):
+                        findings.append(finding(
+                            "reject", "missing-scene-asset",
+                            f"{location}が参照するScene「{target}」が見つかりません。",
+                            "対象Sceneを追加するか、ボタンのScene pathを修正してください。",
+                        ))
+                    elif not asset_is_selected(target_file, included_roots):
+                        findings.append(finding(
+                            "reject", "unpackaged-scene-asset",
+                            f"{location}が参照するScene「{target}」はassetIncludePathsの対象外です。",
+                            "対象Sceneを含むフォルダーをWebパッケージへ追加してください。",
+                        ))
+
+    collect_button_scene_targets(scene_objects, str(scene_file.relative_to(source)), False)
+    # 動的生成されるPrefabも通常のScene object検査へ合流させます。
+    if isinstance(scene_objects, list) and asset_directory is not None:
+        used_ids = {
+            item.get("id") for item in scene_objects
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), int)
+            and not isinstance(item.get("id"), bool)
+        }
+        next_id = max(used_ids, default=0) + 1
+        scene_reference_queue = list(sorted(dynamic_scene_references.items()))
+        queued_scene_references = set(dynamic_scene_references)
+        scene_reference_index = 0
+        while scene_reference_index < len(scene_reference_queue):
+            reference, locations = scene_reference_queue[scene_reference_index]
+            scene_reference_index += 1
+            dynamic_scene_file = (asset_directory / reference).resolve()
+            if (not is_within(dynamic_scene_file, asset_directory)
+                    or not dynamic_scene_file.is_file()):
+                continue  # The shared asset check above has the actionable finding.
+            try:
+                dynamic_scene = json.loads(
+                    dynamic_scene_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                findings.append(finding(
+                    "reject", "invalid-portable-scene-reference",
+                    f"Scene「{reference}」を読み込めません: {error}",
+                    "UTF-8の有効なLamaPonScene JSONとして保存し直してください。",
+                ))
+                continue
+            dynamic_objects = (
+                dynamic_scene.get("objects")
+                if isinstance(dynamic_scene, dict) else None
+            )
+            if (not isinstance(dynamic_scene, dict)
+                    or dynamic_scene.get("format") != "LamaPonScene"
+                    or not isinstance(dynamic_objects, list)
+                    or len(dynamic_objects) > 4096):
+                findings.append(finding(
+                    "reject", "invalid-portable-scene-reference",
+                    f"Scene「{reference}」はLamaPonScene形式の0〜4096 objectを必要とします。",
+                    "互換性のあるLamaPon Editorでシーンを開き、保存し直してください。",
+                ))
+                continue
+            collect_button_scene_targets(
+                dynamic_objects, f"Scene「{reference}」", True)
+            for scene_reference in sorted(dynamic_scene_references):
+                if scene_reference not in queued_scene_references:
+                    queued_scene_references.add(scene_reference)
+                    scene_reference_queue.append((
+                        scene_reference,
+                        dynamic_scene_references[scene_reference],
+                    ))
+            dynamic_ids: set[int] = set()
+            dynamic_parents: dict[int, int] = {}
+            valid_hierarchy = True
+            for item in dynamic_objects:
+                if not isinstance(item, dict):
+                    valid_hierarchy = False
+                    break
+                object_id = item.get("id")
+                if (not isinstance(object_id, int) or isinstance(object_id, bool)
+                        or object_id <= 0 or object_id >= (1 << 63)
+                        or object_id in dynamic_ids):
+                    valid_hierarchy = False
+                    break
+                dynamic_ids.add(object_id)
+                parent_id = item.get("parent")
+                if parent_id is None:
+                    continue
+                if not isinstance(parent_id, int) or isinstance(parent_id, bool):
+                    valid_hierarchy = False
+                    break
+                dynamic_parents[object_id] = parent_id
+            if (valid_hierarchy
+                    and any(parent_id not in dynamic_ids
+                            for parent_id in dynamic_parents.values())):
+                valid_hierarchy = False
+            if valid_hierarchy:
+                for object_id in dynamic_ids:
+                    visited: set[int] = set()
+                    cursor = object_id
+                    while cursor in dynamic_parents:
+                        if cursor in visited:
+                            valid_hierarchy = False
+                            break
+                        visited.add(cursor)
+                        cursor = dynamic_parents[cursor]
+                    if not valid_hierarchy:
+                        break
+            if not valid_hierarchy:
+                findings.append(finding(
+                    "reject", "invalid-portable-scene-hierarchy",
+                    f"Scene「{reference}」のobject IDと親参照が有効な階層を構成していません。",
+                    "各objectへ一意な正のIDを設定し、親参照を同じScene内の循環しない階層にしてください。",
+                ))
+                continue
+            for _location in locations:
+                if next_id + len(dynamic_objects) >= (1 << 63):
+                    findings.append(finding(
+                        "reject", "portable-scene-id-limit",
+                        f"Scene「{reference}」を読み込むobject IDが64ビット範囲を超えます。",
+                        "動的に読み込むSceneのobject数と起動SceneのIDを整理してください。",
+                    ))
+                    break
+                id_map = {
+                    item["id"]: next_id + index
+                    for index, item in enumerate(dynamic_objects)
+                }
+                for item in dynamic_objects:
+                    clone = copy.deepcopy(item)
+                    clone["id"] = id_map[item["id"]]
+                    if clone.get("parent") is not None:
+                        clone["parent"] = id_map[clone["parent"]]
+                    for component in clone.get("components", []):
+                        if (isinstance(component, dict)
+                                and component.get("type") == "ParallaxLayer"
+                                and component.get("referenceId") in id_map):
+                            component["referenceId"] = id_map[
+                                component["referenceId"]
+                            ]
+                    scene_objects.append(clone)
+                used_ids.update(id_map.values())
+                next_id += len(dynamic_objects)
+        for reference, locations in sorted(dynamic_prefab_references.items()):
+            prefab_file = (asset_directory / reference).resolve()
+            if not is_within(prefab_file, asset_directory) or not prefab_file.is_file():
+                continue  # The shared asset check above has the actionable finding.
+            try:
+                prefab = json.loads(prefab_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                findings.append(finding(
+                    "reject", "invalid-portable-prefab",
+                    f"Prefab「{reference}」を読み込めません: {error}",
+                    "UTF-8の有効なLamaPonPrefab JSONとして保存し直してください。",
+                ))
+                continue
+            prefab_objects = prefab.get("objects") if isinstance(prefab, dict) else None
+            if (not isinstance(prefab, dict)
+                    or prefab.get("format") != "LamaPonPrefab"
+                    or prefab.get("version") != 1
+                    or not isinstance(prefab_objects, list)
+                    or not 1 <= len(prefab_objects) <= 4096):
+                findings.append(finding(
+                    "reject", "invalid-portable-prefab",
+                    f"Prefab「{reference}」はLamaPonPrefab version 1の1〜4096 object形式ではありません。",
+                    "互換性のあるLamaPon EditorでPrefabを開き、保存し直してください。",
+                ))
+                continue
+            prefab_ids: set[int] = set()
+            prefab_parents: dict[int, int] = {}
+            valid_hierarchy = True
+            root_count = 0
+            for item in prefab_objects:
+                if not isinstance(item, dict):
+                    valid_hierarchy = False
+                    break
+                object_id = item.get("id")
+                if (not isinstance(object_id, int) or isinstance(object_id, bool)
+                        or object_id <= 0 or object_id >= (1 << 63)
+                        or object_id in prefab_ids):
+                    valid_hierarchy = False
+                    break
+                prefab_ids.add(object_id)
+                parent_id = item.get("parent")
+                if parent_id is None:
+                    root_count += 1
+                elif (not isinstance(parent_id, int)
+                        or isinstance(parent_id, bool)):
+                    valid_hierarchy = False
+                    break
+                else:
+                    prefab_parents[object_id] = parent_id
+            root_id = prefab.get("root")
+            if (not valid_hierarchy
+                    or not isinstance(root_id, int) or isinstance(root_id, bool)
+                    or root_id not in prefab_ids or root_count != 1
+                    or not any(item.get("id") == root_id and item.get("parent") is None
+                               for item in prefab_objects)
+                    or any(item.get("parent") is not None
+                           and item.get("parent") not in prefab_ids
+                           for item in prefab_objects)):
+                valid_hierarchy = False
+            if valid_hierarchy:
+                for object_id in prefab_ids:
+                    visited: set[int] = set()
+                    cursor = object_id
+                    while cursor in prefab_parents:
+                        if cursor in visited:
+                            valid_hierarchy = False
+                            break
+                        visited.add(cursor)
+                        cursor = prefab_parents[cursor]
+                    if not valid_hierarchy:
+                        break
+            if not valid_hierarchy:
+                findings.append(finding(
+                    "reject", "invalid-portable-prefab-hierarchy",
+                    f"Prefab「{reference}」のroot、object ID、親参照が有効な階層を構成していません。",
+                    "Prefabのrootを1つにし、重複しない正のobject IDと同一Prefab内の親参照を設定してください。",
+                ))
+                continue
+            for _location in locations:
+                if next_id + len(prefab_objects) >= (1 << 63):
+                    findings.append(finding(
+                        "reject", "portable-prefab-id-limit",
+                        f"Prefab「{reference}」をSceneへ配置するobject IDが64ビット範囲を超えます。",
+                        "Prefabのobject数と起動SceneのIDを整理してください。",
+                    ))
+                    break
+                id_map = {
+                    item["id"]: next_id + index
+                    for index, item in enumerate(prefab_objects)
+                }
+                for item in prefab_objects:
+                    clone = copy.deepcopy(item)
+                    clone["id"] = id_map[item["id"]]
+                    if clone.get("parent") is not None:
+                        clone["parent"] = id_map[clone["parent"]]
+                    for component in clone.get("components", []):
+                        if (isinstance(component, dict)
+                                and component.get("type") == "ParallaxLayer"
+                                and component.get("referenceId") in id_map):
+                            component["referenceId"] = id_map[
+                                component["referenceId"]
+                            ]
+                    scene_objects.append(clone)
+                used_ids.update(id_map.values())
+                next_id += len(prefab_objects)
+
+    # Non-finite values are accepted by Python's JSON decoder but not by the
+    # strict JSON readers used by the native and browser runtimes.
+    invalid_numbers = non_finite_json_paths(scene)
+    if invalid_numbers:
+        findings.append(finding(
+            "reject", "invalid-scene-number",
+            f"{scene_file.relative_to(source)}に有限でない数値があります: "
+            + ", ".join(invalid_numbers[:5]),
+            "シーン内のNaN、Infinity、または範囲外の数値を有限値へ修正してください。",
+        ))
+        return findings
+
     # scene_asset_strings(value: nested JSON value): Collect asset-path strings from a Scene value.
     def scene_asset_strings(value: Any) -> list[str]:
         # 対応する相対アセットパスだけを返します。
         if isinstance(value, str) and value.startswith(
             (
-                "textures/", "audio/", "scenes/", "models/", "fonts/",
+                "textures/", "audio/", "scenes/", "models/", "fonts/", "prefabs/",
                 "materials/", "animations/", "shaders/",
             )
         ):
@@ -2258,13 +4054,31 @@ def validate_portable_contract(
         try:
             # material: JSONから復元したMaterial。
             material = json.loads(material_file.read_text(encoding="utf-8"))
-        # 壊れたMaterialはこの検査では対象外です。
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        # 壊れたMaterialを出力前にrejectします。
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            findings.append(finding(
+                "reject", "invalid-portable-material",
+                f"マテリアル「{location}」のJSONを読み込めません: {error}",
+                "互換性のあるLamaPon Editorでマテリアルを開き、保存し直してください。",
+            ))
+            continue
+        # JSON decoderが受け入れる非有限数をrejectします。
+        invalid_numbers = non_finite_json_paths(material)
+        if invalid_numbers:
+            findings.append(finding(
+                "reject", "invalid-portable-material-number",
+                f"マテリアル「{location}」に有限でない数値があります: "
+                + ", ".join(invalid_numbers[:5]),
+                "マテリアル内のNaN、Infinity、または範囲外の数値を有限値へ修正してください。",
+            ))
             continue
         # 未対応形式のMaterialをrejectします。
         if (
             not isinstance(material, dict)
             or material.get("type") != "LamaPonLitMaterial"
+            or not portable_scene_json_value_matches(
+                material.get("version"), "integer"
+            )
             or material.get("version") not in {1, 2}
         ):
             findings.append(finding(
@@ -2272,6 +4086,29 @@ def validate_portable_contract(
                 f"マテリアル「{location}」は対応しているLamaPonLitMaterial形式ではありません。",
                 "互換性のあるLamaPon Editorでマテリアルを開き、保存し直してください。",
             ))
+            continue
+        # Materialの値型をScene::Loadが読む型へ合わせます。
+        invalid_material_fields = []
+        for fields, expected in (
+            (PORTABLE_MATERIAL_STRING_FIELDS, "string"),
+            (PORTABLE_MATERIAL_NUMBER_FIELDS, "number"),
+            (PORTABLE_MATERIAL_ARRAY_FIELDS, "number array"),
+        ):
+            for field in fields & material.keys():
+                if not portable_scene_json_value_matches(material[field], expected):
+                    invalid_material_fields.append((field, expected))
+        for field, expected in PORTABLE_MATERIAL_LIST_FIELD_TYPES.items():
+            if field in material and not portable_scene_json_value_matches(
+                material[field], expected
+            ):
+                invalid_material_fields.append((field, expected))
+        if invalid_material_fields:
+            for field, expected in invalid_material_fields:
+                findings.append(finding(
+                    "reject", "invalid-portable-material-setting",
+                    f"マテリアル「{location}」の「{field}」は{portable_scene_expected_type_label(expected)}である必要があります。",
+                    "マテリアルの値を修正してから再出力してください。",
+                ))
             continue
         # field: Materialが参照する標準Texture欄。
         for field in (
@@ -2400,6 +4237,7 @@ def validate_portable_contract(
                 and duration > 0.0
                 and duration >= times[-1]
                 and valid_vectors
+                and not non_finite_json_paths(animation)
             )
         # invalid形式はreject対象として扱います。
         except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
@@ -2412,6 +4250,17 @@ def validate_portable_contract(
                 f"アニメーション「{location}」は有効なLamaPonAnimationClip version 1形式ではありません。",
                 "互換性のあるLamaPon Editorでクリップを開き、保存し直してください。",
             ))
+
+    def invalid_scene_setting(location: str, expected: str) -> None:
+        findings.append(finding(
+            "reject", "invalid-scene-setting",
+            f"シーン設定「{location}」は{portable_scene_expected_type_label(expected)}である必要があります。",
+            "Sceneの値を修正してから再出力してください。",
+        ))
+
+    if ("mainCamera" in scene
+            and not portable_scene_json_value_matches(scene["mainCamera"], "integer")):
+        invalid_scene_setting("mainCamera", "整数")
 
     # objects: Sceneに保存されたGameObject一覧。
     objects = scene.get("objects", [])
@@ -2443,12 +4292,39 @@ def validate_portable_contract(
                 "シーンを修復するか保存し直してください。",
             ))
             continue
+        # name / enabled: Objectの基本設定を型検証します。
+        if "name" in object_value and not portable_scene_json_value_matches(
+            object_value["name"], "string"
+        ):
+            invalid_scene_setting(f"objects[{index}].name", "文字列")
+        if "enabled" in object_value and not portable_scene_json_value_matches(
+            object_value["enabled"], "boolean"
+        ):
+            invalid_scene_setting(f"objects[{index}].enabled", "boolean")
+        for field in ("tag", "persistenceKey", "prefabAsset", "prefabAssetGuid"):
+            if field in object_value and not portable_scene_json_value_matches(
+                object_value[field], "string"
+            ):
+                invalid_scene_setting(f"objects[{index}].{field}", "string")
+        if "persistent" in object_value and not portable_scene_json_value_matches(
+            object_value["persistent"], "boolean"
+        ):
+            invalid_scene_setting(f"objects[{index}].persistent", "boolean")
+        if "alwaysVisible" in object_value and not portable_scene_json_value_matches(
+            object_value["alwaysVisible"], "boolean"
+        ):
+            invalid_scene_setting(f"objects[{index}].alwaysVisible", "boolean")
+        if "cullingMargin" in object_value and not portable_scene_json_value_matches(
+            object_value["cullingMargin"], "number"
+        ):
+            invalid_scene_setting(f"objects[{index}].cullingMargin", "number")
         # object_id: Scene内のObject識別子。
         object_id = object_value.get("id")
         # name: 診断に使うObject表示名。
         name = str(object_value.get("name", f"#{index}"))
         # 欠落または重複IDをrejectします。
-        if not isinstance(object_id, int) or object_id in object_ids:
+        if (not portable_scene_json_value_matches(object_id, "integer")
+                or object_id in object_ids):
             findings.append(finding(
                 "reject", "invalid-scene-object-id",
                 f"シーンオブジェクト「{name}」の整数IDがないか、ほかのオブジェクトと重複しています。",
@@ -2457,9 +4333,42 @@ def validate_portable_contract(
         # 一意なIDをScene参照検査へ登録します。
         else:
             object_ids.add(object_id)
+        if object_value.get("persistent") is True:
+            findings.append(finding(
+                "warning", "portable-object-persistence-ignored",
+                f"シーンオブジェクト「{name}」のシーン間永続指定とpersistenceKeyはPortableランタイムで適用されません。",
+                "シーン切り替え後も保持する必要がある状態は、Portableスクリプトの保存APIなどで管理してください。",
+            ))
+        if (object_value.get("alwaysVisible") is True
+                or (isinstance(object_value.get("cullingMargin"), (int, float))
+                    and not isinstance(object_value.get("cullingMargin"), bool)
+                    and object_value["cullingMargin"] > 0)):
+            findings.append(finding(
+                "warning", "portable-legacy-render-culling-ignored",
+                f"シーンオブジェクト「{name}」の旧形式の常時表示・カリング余白はPortableの基本レンダラーで描画結果に反映されません。",
+                "Portable版は全描画対象を表示します。カメラ外オブジェクトのカリング動作には対応していません。",
+            ))
         # parent設定があるObjectの参照を記録します。
         if object_value.get("parent") is not None:
-            parent_links.append((name, object_value.get("parent")))
+            if not portable_scene_json_value_matches(object_value["parent"], "integer"):
+                invalid_scene_setting(f"objects[{index}].parent", "整数またはnull")
+            else:
+                parent_links.append((name, object_value["parent"]))
+        # transform vectors are converted to float arrays by the runtime.
+        transform = object_value.get("transform", {})
+        if not isinstance(transform, dict):
+            invalid_scene_setting(f"objects[{index}].transform", "オブジェクト")
+        else:
+            for field in ("position", "rotation", "scale"):
+                if field not in transform:
+                    continue
+                vector = transform[field]
+                if (not portable_scene_json_value_matches(vector, "number array")
+                        or len(vector) < 3):
+                    invalid_scene_setting(
+                        f"objects[{index}].transform.{field}",
+                        "3成分以上の有限な数値配列",
+                    )
         # components: Objectに設定されたComponent一覧。
         components = object_value.get("components", [])
         # Component一覧が配列でないObjectをrejectします。
@@ -2471,11 +4380,83 @@ def validate_portable_contract(
             ))
             continue
         # component: Objectに設定された各Component。
-        for component in components:
+        for component_index, component in enumerate(components):
             # component_type: ComponentのScene形式名。
             component_type = component.get("type") if isinstance(component, dict) else None
+            if not isinstance(component, dict):
+                invalid_scene_setting(
+                    f"objects[{index}].components[{component_index}]", "オブジェクト"
+                )
+                continue
+            if not portable_scene_json_value_matches(component_type, "string"):
+                invalid_scene_setting(
+                    f"objects[{index}].components[{component_index}].type", "文字列"
+                )
+                continue
+            component_path = f"objects[{index}].components[{component_index}]"
+            component_field_types = (
+                (PORTABLE_SCENE_COMPONENT_STRING_FIELDS, "string") ,
+                (PORTABLE_SCENE_COMPONENT_BOOLEAN_FIELDS, "boolean"),
+                (PORTABLE_SCENE_COMPONENT_FLOAT_FIELDS, "number"),
+                (PORTABLE_SCENE_COMPONENT_ARRAY_FIELDS, "number array"),
+            )
+            for fields, expected in component_field_types:
+                for field in fields & component.keys():
+                    if not portable_scene_json_value_matches(component[field], expected):
+                        invalid_scene_setting(
+                            f"{component_path}.{field}", expected
+                        )
+            for field, expected in PORTABLE_SCENE_COMPONENT_INTEGER_FIELD_TYPES.items():
+                if field in component and not portable_scene_json_value_matches(
+                    component[field], expected
+                ):
+                    invalid_scene_setting(f"{component_path}.{field}", expected)
+            for field, expected in PORTABLE_SCENE_COMPONENT_OBJECT_FIELD_TYPES.items():
+                if field in component and not portable_scene_json_value_matches(
+                    component[field], expected
+                ):
+                    invalid_scene_setting(f"{component_path}.{field}", expected)
+            for field, expected in PORTABLE_SCENE_COMPONENT_LIST_FIELD_TYPES.items():
+                if field in component and not portable_scene_json_value_matches(
+                    component[field], expected
+                ):
+                    invalid_scene_setting(f"{component_path}.{field}", expected)
+            for field, value in component.items():
+                if (field.startswith("customTexture")
+                        and not portable_scene_json_value_matches(value, "string")):
+                    invalid_scene_setting(f"{component_path}.{field}", "string")
+            clips = component.get("clips")
+            if isinstance(clips, list):
+                clip_field_types = (
+                    (PORTABLE_SCENE_CLIP_STRING_FIELDS, "string"),
+                    (PORTABLE_SCENE_CLIP_BOOLEAN_FIELDS, "boolean"),
+                    (PORTABLE_SCENE_CLIP_FLOAT_FIELDS, "number"),
+                )
+                for clip_index, clip in enumerate(clips):
+                    if not isinstance(clip, dict):
+                        invalid_scene_setting(
+                            f"{component_path}.clips[{clip_index}]", "オブジェクト"
+                        )
+                        continue
+                    for fields, expected in clip_field_types:
+                        for field in fields & clip.keys():
+                            if not portable_scene_json_value_matches(
+                                clip[field], expected
+                            ):
+                                invalid_scene_setting(
+                                    f"{component_path}.clips[{clip_index}].{field}",
+                                    expected,
+                                )
+                    for field, expected in PORTABLE_SCENE_CLIP_INTEGER_FIELD_TYPES.items():
+                        if field in clip and not portable_scene_json_value_matches(
+                            clip[field], expected
+                        ):
+                            invalid_scene_setting(
+                                f"{component_path}.clips[{clip_index}].{field}",
+                                expected,
+                            )
             # required_module: Componentが必要とするModule。
-            required_module = PORTABLE_SCENE_COMPONENTS.get(str(component_type))
+            required_module = PORTABLE_SCENE_COMPONENTS.get(component_type)
             # ポータブル対応Componentが未登録ならrejectします。
             if required_module is None:
                 # known_native: エンジン内で認識されている型か。
@@ -2512,16 +4493,28 @@ def validate_portable_contract(
             if component_type in PORTABLE_APPROXIMATE_SCENE_COMPONENTS:
                 findings.append(finding(
                     "warning", "scene-component-approximation",
-                    f"シーンの「{name}」にある{component_type}コンポーネントには、Web版の簡易ライティングを使用します。",
-                    "プレビューでライティングを確認してください。このプロファイルでは高度な影やネイティブシェーダーの動作を再現しません。",
+                    f"シーンの「{name}」にある{component_type}コンポーネントには、Portable版の簡易ライティングを使用します。",
+                    "Portable出力でライティングを確認してください。高度な影やネイティブシェーダーの動作は再現しません。",
                 ))
                 # 影描画が有効ならWeb非対応を警告します。
                 if component.get("castsShadows", False):
                     findings.append(finding(
-                        "warning", "unsupported-web-shadows",
-                        f"シーンのライト「{name}」で影が有効ですが、webgl2-basic-3dでは描画できません。",
-                        "Web版では影を無効にするか、影に対応したプロファイルを使用してください。",
+                        "warning", "unsupported-portable-shadows",
+                        f"シーンのライト「{name}」で影が有効ですが、Portableの基本レンダラーでは描画できません。",
+                        "Portable出力では影を無効にするか、影描画バックエンドへの対応を追加してください。",
                     ))
+            if component_type == "UIImage" and (
+                component.get("renderTexture")
+                or (isinstance(component.get("border", []), list)
+                    and any(component.get("border", [])))
+            ):
+                findings.append(finding("reject", "unsupported-ui-image-feature",
+                    f"「{name}」のUIImageはRenderTextureまたは9分割画像を使用しています。",
+                    "Web版では通常の画像または単色を使用してください。"))
+            if component_type == "UIButton" and component.get("loadTargetAdditive"):
+                findings.append(finding("reject", "unsupported-ui-button-action",
+                    f"「{name}」のUIButtonはPortable未対応の追加シーン読み込みを使用しています。",
+                    "主シーンの切替にはtargetSceneまたはreloadCurrentSceneを使用してください。"))
             # CameraのRenderTexture依存を検査します。
             if component_type == "Camera":
                 # RenderTextureへの描画はWeb基本版で未対応です。
@@ -2671,6 +4664,22 @@ def validate_portable_contract(
                     ))
             # AudioSourceのWeb再生制約を検査します。
             if component_type == "AudioSource":
+                # bus: AudioBusの保存値。
+                bus = component.get("bus", PORTABLE_DEFAULT_AUDIO_BUS)
+                # 未知のbus値はC++側のenum変換に渡さずrejectします。
+                if type(bus) is not int or not 0 <= bus < PORTABLE_AUDIO_BUS_COUNT:
+                    findings.append(finding(
+                        "reject", "invalid-scene-audio-bus",
+                        f"「{name}」のAudioSourceに無効な音声バス値「{bus}」があります。",
+                        "Master、Music、Effects、UIのいずれかを選択してください。",
+                    ))
+                # 個別バス指定は単一ミキサーへ置換されます。
+                elif bus != PORTABLE_DEFAULT_AUDIO_BUS:
+                    findings.append(finding(
+                        "warning", "portable-audio-bus-approximation",
+                        f"「{name}」のAudioSourceは既定以外の音声バスを指定していますが、Portable音声バックエンドは個別バスの音量を適用しません。",
+                        "Portable出力では全バスが同じミキサーへ入ります。バスごとの音量差が必要なら音源ごとのvolumeへ反映してください。",
+                    ))
                 # 空間音響は距離減衰とパンで近似します。
                 if component.get("spatial", False):
                     findings.append(finding(
@@ -2681,9 +4690,9 @@ def validate_portable_contract(
                 # ストリーミング音声はバッファ再生へ置換します。
                 if component.get("streaming", False):
                     findings.append(finding(
-                        "warning", "web-audio-buffered-stream",
-                        f"「{name}」のAudioSourceでストリーミング再生が有効です。",
-                        "基本Webプロファイルでは、パッケージ内の音声を再生前にメモリへデコードします。",
+                        "warning", "portable-audio-buffered-stream",
+                        f"「{name}」のAudioSourceはstreamingが有効ですが、Portable音声バックエンドは再生前に音声をメモリーへデコードします。",
+                        "長い音声のメモリー使用量を確認し、必要なら短い音声へ分割するかPortableストリーミング対応を追加してください。",
                     ))
             # ParticleSystemのWeb描画制約を検査します。
             if component_type == "ParticleSystem":
@@ -2735,9 +4744,9 @@ def validate_portable_contract(
             # BoxCollider3Dは簡易AABB物理を警告します。
             if component_type == "BoxCollider3D":
                 findings.append(finding(
-                    "warning", "web-basic-box-physics",
-                    f"「{name}」のBoxCollider3Dには、決定論的なAABB方式のブラウザー物理バックエンドを使用します。",
-                    "回転、摩擦の合成方法、連続衝突は近似されます。プレビューでゲームプレイを確認してください。",
+                    "warning", "portable-basic-box-physics",
+                    f"「{name}」のBoxCollider3Dには、Portableの基本AABB物理バックエンドを使用します。",
+                    "回転した箱はAABBに近似され、摩擦・反発・材質の合成や連続衝突は再現されません。Portable出力でゲームプレイを確認してください。",
                 ))
             # MeshCollider3Dの未対応をrejectします。
             if component_type == "MeshCollider3D":
@@ -2746,8 +4755,22 @@ def validate_portable_contract(
                     f"「{name}」のMeshCollider3Dは、ポータブルシーンローダーでモデルから衝突用三角形をまだ生成できません。",
                     "このWebプロファイルではBoxCollider3Dを使用するか、ポータブル版のメッシュコライダー用デコーダーを追加してください。",
                 ))
-            # RigidbodyのWeb物理設定を検査します。
+            # RigidbodyのPortable物理・描画設定を検査します。
             if component_type == "Rigidbody":
+                # Portable rendererは固定更新後のTransformを直接描画し、alpha補間を行いません。
+                interpolate = component.get("interpolate", True)
+                if type(interpolate) is not bool:
+                    findings.append(finding(
+                        "reject", "invalid-rigidbody-interpolation",
+                        f"「{name}」のRigidbodyに無効な補間設定「{interpolate}」があります。",
+                        "interpolateにはtrueまたはfalseを指定してください。",
+                    ))
+                elif interpolate:
+                    findings.append(finding(
+                        "warning", "portable-rigidbody-interpolation-ignored",
+                        f"「{name}」のRigidbodyは描画補間が有効ですが、Portableランタイムは最新のTransformを直接描画します。",
+                        "低いフレームレートで動きが不連続に見える可能性があります。Portable出力を実行して確認してください。",
+                    ))
                 # advanced_rigidbody: 基本Solver非対応設定の有無。
                 advanced_rigidbody = (
                     component.get("collisionDetection", "discrete") != "discrete"
@@ -2791,7 +4814,8 @@ def validate_portable_contract(
                     # action: Componentに指定された入力名。
                     action = component.get(field, fallback)
                     # Web入力mapにないActionをrejectします。
-                    if action not in available_input_actions:
+                    if (not isinstance(action, str)
+                            or action not in available_input_actions):
                         findings.append(finding(
                             "reject", "unsupported-input-action",
                             f"「{name}」のInputMoverは、基本Webバインドにないアクション「{action}」を使用しています。",
@@ -2835,7 +4859,8 @@ def validate_portable_contract(
                 # reference: ParallaxLayerの参照ID。
                 reference = component.get("referenceId", 0)
                 # 有効な参照IDだけ後段で存在を確認します。
-                if reference not in (0, None):
+                if (portable_scene_json_value_matches(reference, "unsigned integer")
+                        and reference not in (0, None)):
                     component_links.append((name, "ParallaxLayer", reference))
             # SpriteRendererのTextureとShader制約を検査します。
             if component_type == "SpriteRenderer":
@@ -2937,7 +4962,9 @@ def validate_portable_contract(
     # main_camera: Sceneで指定された主Camera ID。
     main_camera = scene.get("mainCamera")
     # 3D Moduleに有効な主Cameraがなければrejectします。
-    if "renderer3d" in declared_modules and main_camera not in cameras:
+    if ("renderer3d" in declared_modules
+            and (not portable_scene_json_value_matches(main_camera, "integer")
+                 or main_camera not in cameras)):
         findings.append(finding(
             "reject", "invalid-main-camera",
             "シーンのmainCameraが、有効なCameraコンポーネントを参照していません。",
@@ -2953,19 +4980,115 @@ def validate_portable_contract(
 
     # environment: Sceneの環境効果設定。
     environment = scene.get("environment", {})
-    # 環境効果の設定がオブジェクト形式か確認します。
-    if isinstance(environment, dict):
-        # key/label: 検査する効果名と表示名。
-        for key, label in WEB_UNSUPPORTED_ENVIRONMENT_EFFECTS.items():
-            # effect: Sceneに保存された効果設定。
-            effect = environment.get(key, {})
-            # 有効な非対応効果を警告します。
-            if isinstance(effect, dict) and effect.get("enabled", False):
-                findings.append(finding(
-                    "warning", "unsupported-environment-effect",
-                    f"シーンで{label}が有効ですが、webgl2-basic-3dでは描画できません。",
-                    "Web版ではこの効果を自動的に無効にします。配布前にプレビューを確認してください。",
-                ))
+
+    def invalid_environment_setting(path: str, expected: str) -> None:
+        findings.append(finding(
+            "reject", "invalid-scene-environment-setting",
+            f"シーンの環境設定「{path}」は{expected}である必要があります。",
+            "Scene環境設定の値を修正してから再出力してください。",
+        ))
+
+    if not isinstance(environment, dict):
+        invalid_environment_setting("environment", "オブジェクト形式")
+        environment = {}
+
+    def environment_object(key: str) -> dict:
+        value = environment.get(key, {})
+        if not isinstance(value, dict):
+            invalid_environment_setting(f"environment.{key}", "オブジェクト形式")
+            return {}
+        return value
+
+    def validate_environment_fields(
+        key: str, fields: dict[str, str]
+    ) -> dict:
+        value = environment_object(key)
+        for field, expected in fields.items():
+            if field not in value:
+                continue
+            item = value[field]
+            valid = False
+            if expected == "boolean":
+                valid = isinstance(item, bool)
+            elif expected == "number":
+                valid = is_finite_portable_float(item)
+            elif expected == "string":
+                valid = isinstance(item, str)
+            elif expected == "color":
+                valid = (isinstance(item, list) and len(item) >= 3
+                         and all(is_finite_portable_float(channel) for channel in item))
+            if not valid:
+                invalid_environment_setting(f"environment.{key}.{field}", expected)
+        return value
+
+    # PortableRuntimeが読む環境設定をC++ JSON変換前に型検証します。
+    if "ambientColor" in environment:
+        color = environment["ambientColor"]
+        if (not isinstance(color, list) or len(color) < 3
+                or not all(is_finite_portable_float(channel) for channel in color)):
+            invalid_environment_setting("environment.ambientColor", "3成分以上の有限な32ビット浮動小数配列")
+    if "ambientIntensity" in environment:
+        intensity = environment["ambientIntensity"]
+        if not is_finite_portable_float(intensity):
+            invalid_environment_setting("environment.ambientIntensity", "有限な32ビット浮動小数")
+    fog = validate_environment_fields("fog", {
+        "enabled": "boolean", "color": "color", "startDistance": "number",
+        "endDistance": "number", "density": "number",
+    })
+    sky = validate_environment_fields("sky", {
+        "enabled": "boolean", "topColor": "color", "horizonColor": "color",
+        "groundColor": "color", "intensity": "number", "cubemap": "string",
+        "iblIntensity": "number", "sunDriven": "boolean",
+    })
+
+    # key/label: Portableで描画しない環境効果と表示名。
+    for key, label in PORTABLE_UNSUPPORTED_ENVIRONMENT_EFFECTS.items():
+        # effect: Sceneに保存された効果設定。
+        effect = validate_environment_fields(key, {"enabled": "boolean"})
+        # 有効な非対応効果を警告します。
+        if effect.get("enabled", False):
+            findings.append(finding(
+                "warning", "unsupported-environment-effect",
+                f"シーンで{label}が有効ですが、Portableの基本レンダラーでは描画できません。",
+                "対象環境で同じ効果が必要ならPortable側の対応を追加するか、出力前に無効にしてください。",
+            ))
+
+    # Portable rendererはlinear fogのみを扱い、densityは反映しません。
+    density = fog.get("density", 0.015)
+    if (fog.get("enabled", False) and is_finite_portable_float(density)
+            and density != 0.0):
+        findings.append(finding(
+            "warning", "unsupported-fog-density",
+            "シーンの霧は有効ですが、Portableの基本レンダラーはdensityを使わず開始・終了距離で近似します。",
+            "霧の濃度による見た目の差を確認し、必要なら開始・終了距離を調整してください。",
+        ))
+
+    # Portable skyは上空・地平線の色によるグラデーションだけを描画します。
+    if sky.get("enabled", False):
+        advanced_sky = (
+            bool(sky.get("cubemap", ""))
+            or sky.get("groundColor", [0.04, 0.05, 0.08]) != [0.04, 0.05, 0.08]
+            or sky.get("intensity", 1.0) != 1.0
+            or sky.get("iblIntensity", 1.0) != 1.0
+            or sky.get("sunDriven", False)
+        )
+        if advanced_sky:
+            findings.append(finding(
+                "warning", "unsupported-sky-settings",
+                "シーンの空は上空・地平線の色によるグラデーションで描画され、キューブマップ・地面色・強度・IBL・太陽連動は反映されません。",
+                "Portable版の空の見た目を確認し、必要なら対応していない設定を無効にしてください。",
+            ))
+
+    local_light_count = sum(
+        1 for obj in objects if isinstance(obj, dict) and obj.get("enabled", True)
+        for component in (obj.get("components", []) if isinstance(obj.get("components", []), list) else [])
+        if isinstance(component, dict) and component.get("enabled", True)
+        and component.get("type") in {"PointLight", "SpotLight"}
+    )
+    if local_light_count > 8:
+        findings.append(finding("warning", "portable-local-light-limit",
+            f"有効な点光源・スポットライトが{local_light_count}灯あります。Portable rendererはシーン順の先頭8灯を使用します。",
+            "Portable出力では局所光源を合計8灯以内にしてください。"))
 
     # ワールド行列の再帰走査でブラウザーのスタックがあふれる前に、シーン階層の循環を検出します。
     # parents: Object IDから親IDへの対応表。
@@ -3211,7 +5334,9 @@ def validate_web_compatibility(
     # asset_directory/included_asset_roots: 出力対象アセット情報。
     asset_directory, included_asset_roots = asset_selection
     # supported_extensions: Profile対応の拡張子。
-    supported_extensions = profile["asset_extensions"]
+    supported_extensions = set(profile["asset_extensions"])
+    if web.get("portableGame", False):
+        supported_extensions.update({".gltf", ".glb", ".bin"})
     # asset_files: Web出力で選択されたファイル。
     asset_files: list[Path] = []
     # root: 選択済みアセットの検索起点。
@@ -3231,10 +5356,17 @@ def validate_web_compatibility(
             and path.suffix.lower() != ".txt"
         ):
             findings.extend(validate_asset_integrity(path, source))
+    for path in asset_files:
+        if direct_portable_model(path, web):
+            try:
+                validate_direct_portable_model(path, asset_directory, included_asset_roots)
+            except (ExportError, OSError, ValueError) as error:
+                findings.append(finding("reject", "unsupported-portable-model", str(error),
+                                        "Use a supported Portable glTF/GLB with all dependencies selected."))
     # convertible_assets: 変換が必要なアセット。
     convertible_assets = [
         path for path in asset_files
-        if path.suffix.lower() in WEB_ASSET_CONVERSIONS
+        if path.suffix.lower() in WEB_ASSET_CONVERSIONS and not direct_portable_model(path, web)
     ]
     # conversion_groups: 種別と実行形式ごとの変換対象。
     conversion_groups: dict[tuple[str, str], list[Path]] = {}
@@ -3343,6 +5475,28 @@ def is_within(path: Path, parent: Path) -> bool:
     # relative_toが示す範囲外結果をFalseにします。
     except ValueError:
         return False
+
+
+# non_finite_json_paths(document: decoded JSON value): returns paths to numeric values JSON runtimes cannot represent safely.
+def non_finite_json_paths(document: Any) -> list[str]:
+    """Find Python JSON extensions such as NaN and infinities without recursive traversal."""
+    # pending: values and JSON paths awaiting inspection.
+    pending = [("$", document)]
+    # paths: invalid numeric value locations.
+    paths = []
+    # path/value: current value and its JSON location.
+    while pending:
+        path, value = pending.pop()
+        # Python's JSON decoder accepts NaN/Infinity and overflow such as 1e999.
+        if isinstance(value, float) and not math.isfinite(value):
+            paths.append(path)
+        # child: object property and its JSON location.
+        elif isinstance(value, dict):
+            pending.extend((f"{path}.{key}", child) for key, child in value.items())
+        # child: array element and its JSON location.
+        elif isinstance(value, list):
+            pending.extend((f"{path}[{index}]", child) for index, child in enumerate(value))
+    return paths
 
 
 # write_compatibility_report(output_directory: 保存先, project: 設定, project_kind: 種別, profile_name: Web Profile, status: 結果, findings: 診断一覧): 互換性レポートを保存します。
@@ -3475,6 +5629,17 @@ def cmake_bracket(value: Path | str) -> str:
     return f"[==[{value}]==]"
 
 
+# 同一内容の生成ファイルは更新時刻を維持し、不要な再リンクを避けます。
+def write_generated_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    if path.is_file():
+        try:
+            if path.read_text(encoding=encoding) == text:
+                return
+        except UnicodeError:
+            pass  # 壊れた生成メタデータは再生成します。
+    path.write_text(text, encoding=encoding)
+
+
 # stage_portable_web_assets(source: Project root, web: Web設定, profile_name: Web Profile, generated_directory: 生成先): 選択アセットを変換してWeb用に配置します。
 def stage_portable_web_assets(
     source: Path,
@@ -3503,13 +5668,25 @@ def stage_portable_web_assets(
     ):
         raise ExportError("export.web.assetIncludePaths must be a string list.")
     # supported: Profileが直接出力できる拡張子。
-    supported = WEB_PROFILES[profile_name]["asset_extensions"]
+    supported = set(WEB_PROFILES[profile_name]["asset_extensions"])
+    if web.get("portableGame", False):
+        supported.update({".gltf", ".glb", ".bin"})
     # staging: 変換・梱包用の生成Directory。
     staging = generated_directory.parent / "web-generated-assets"
-    # 以前の生成結果を除いて作り直します。
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    # 出力済みの画像・音声を入力と変換器のハッシュで再利用します。
+    if staging.is_symlink():
+        raise ExportError("Web asset staging directory must not be a symbolic link.")
+    staging.mkdir(parents=True, exist_ok=True)
+    cache_path = generated_directory.parent / "web-asset-cache.json"
+    try:
+        previous_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(previous_cache, dict):
+            previous_cache = {}
+    except (OSError, ValueError):
+        previous_cache = {}
+    current_cache: dict[str, Any] = {}
+    converter_hashes: dict[str, str] = {}
+    selected_files: set[Path] = set()
     # copied: 処理したアセット数。
     copied = 0
     # converted: 変換結果のManifest項目。
@@ -3543,12 +5720,19 @@ def stage_portable_web_assets(
             extension = candidate.suffix.lower()
             # conversion: 必要なWeb形式変換の設定。
             conversion = WEB_ASSET_CONVERSIONS.get(extension)
+            if direct_portable_model(candidate, web):
+                validate_direct_portable_model(candidate, asset_directory,
+                    [(asset_directory / value).resolve() for value in include_values])
+                conversion = None
             # 非対応で変換定義もない形式は飛ばします。
             if extension not in supported and conversion is None:
                 continue
             # destination: staging先の相対ファイルパス。
             destination = staging / candidate.relative_to(asset_directory)
+            if not is_within(destination.resolve(), staging.resolve()):
+                raise ExportError("Web staged asset must remain inside its generated directory.")
             destination.parent.mkdir(parents=True, exist_ok=True)
+            selected_files.add(destination.resolve())
             # 変換不要な対応形式はそのままコピーします。
             if conversion is None:
                 shutil.copy2(candidate, destination)
@@ -3567,13 +5751,31 @@ def stage_portable_web_assets(
                         f"Hub {kind} converter. Configure "
                         f"export.web.converterTools.{setting_name}."
                     )
-                run_asset_conversion(
-                    candidate,
-                    destination,
-                    kind,
-                    runtime_format,
-                    converter,
+                converter_key = str(converter.resolve())
+                if kind in {"image", "audio"} and converter_key not in converter_hashes:
+                    converter_hashes[converter_key] = sha256_file(converter)
+                cache_key = candidate.relative_to(asset_directory).as_posix()
+                # モデルは外部buffer・画像の依存があるため毎回変換します。
+                fingerprint = {
+                    "version": 1,
+                    "source": str(candidate),
+                    "sourceHash": sha256_file(candidate),
+                    "converter": str(converter.resolve()),
+                    "converterHash": converter_hashes[converter_key],
+                    "kind": kind,
+                    "format": runtime_format,
+                } if kind in {"image", "audio"} else None
+                entry = previous_cache.get(cache_key)
+                reusable = (
+                    fingerprint is not None and isinstance(entry, dict)
+                    and entry.get("input") == fingerprint and destination.is_file()
+                    and destination.stat().st_size > 0
+                    and entry.get("outputHash") == sha256_file(destination)
                 )
+                if not reusable:
+                    run_asset_conversion(candidate, destination, kind, runtime_format, converter)
+                if fingerprint is not None:
+                    current_cache[cache_key] = {"input": fingerprint, "outputHash": sha256_file(destination)}
                 # generated_model_images: GLBから分離した画像。
                 generated_model_images: list[Path] = []
                 # model_details: 検証済みGLBの要約情報。
@@ -3602,6 +5804,7 @@ def stage_portable_web_assets(
                 converted.append(conversion_entry)
                 # generated_image: GLBから外部化した画像。
                 for generated_image in generated_model_images:
+                    selected_files.add(generated_image.resolve())
                     converted.append({
                         "path": generated_image.relative_to(staging).as_posix(),
                         "sourceFormat": "embedded-model-image",
@@ -3612,9 +5815,19 @@ def stage_portable_web_assets(
     # 1件も選択されなければ出力を中止します。
     if copied == 0:
         raise ExportError("No portable Web assets were selected for packaging.")
+    # 選択から外れたアセットと古いメタデータを梱包しません。
+    metadata_names = {"lamapon-asset-conversions.json", "lamapon-input-actions.json"}
+    for stale in staging.rglob("*"):
+        if stale.is_file() and stale.resolve() not in selected_files:
+            if stale.name in metadata_names and stale.parent == staging:
+                continue
+            if not is_within(stale.resolve(), staging.resolve()):
+                raise ExportError("Staged asset cleanup must remain inside its generated directory.")
+            stale.unlink()
+    write_generated_text(cache_path, json.dumps(current_cache, ensure_ascii=False, sort_keys=True) + "\n")
     # 変換結果がある場合だけManifestを書き出します。
     if converted:
-        (staging / "lamapon-asset-conversions.json").write_text(
+        write_generated_text(staging / "lamapon-asset-conversions.json",
             json.dumps(
                 {
                     "format": "lamapon.web-asset-conversions",
@@ -3626,6 +5839,8 @@ def stage_portable_web_assets(
             ) + "\n",
             encoding="utf-8",
         )
+    else:
+        (staging / "lamapon-asset-conversions.json").unlink(missing_ok=True)
     # input_actions: Project固有の入力割当。
     input_actions = portable_project_input_actions(source)
     # 入力設定がある場合だけWeb用JSONを作成します。
@@ -3638,7 +5853,7 @@ def stage_portable_web_assets(
             ]
             for name, bindings in input_actions.items()
         }
-        (staging / "lamapon-input-actions.json").write_text(
+        write_generated_text(staging / "lamapon-input-actions.json",
             json.dumps(
                 {
                     "format": "lamapon.web-input-actions",
@@ -3650,6 +5865,8 @@ def stage_portable_web_assets(
             ) + "\n",
             encoding="utf-8",
         )
+    else:
+        (staging / "lamapon-input-actions.json").unlink(missing_ok=True)
     return staging
 
 
@@ -3765,7 +5982,7 @@ def generate_lamapon_web_target(
     )
     # cmake_path: 生成するWebターゲット設定ファイル。
     cmake_path = generated_directory / "CMakeLists.txt"
-    cmake_path.write_text(
+    write_generated_text(cmake_path,
         "\n".join([
             "cmake_minimum_required(VERSION 3.25)",
             f"project({target} LANGUAGES CXX)",
@@ -4209,7 +6426,16 @@ def parse_arguments() -> argparse.Namespace:
 
 
 # main(): Web Projectを検証・Buildし、配布Packageを作成します。
+def configure_cli_output() -> None:
+    """Keep JSON and diagnostics UTF-8 when Windows redirects CLI output."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> int:
+    configure_cli_output()
     # arguments: 解析済みCLI options。
     arguments = parse_arguments()
     # project_path: CLIで指定されたProject設定。
@@ -4368,6 +6594,7 @@ def main() -> int:
         f"-DCMAKE_BUILD_TYPE={arguments.build_type}",
         f"-DLAMAPON_WEB_REQUESTED_MODULES={';'.join(modules)}",
         f"-DLAMAPON_WEB_OUTPUT_NAME={artifact_prefix}",
+        f"-DLAMAPON_WEB_PYTHON_EXECUTABLE={sys.executable}",
     ]
     # generator指定があればConfigure引数へ加えます。
     if arguments.generator:

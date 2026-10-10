@@ -15,6 +15,8 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | [プレイヤーがホストになるP2P通信](online-p2p.md) | 2〜4人、直接接続、LAN検索、Scene／Prefab・ターン状態同期、通信試験 |
 | [Discordログイン、クラウドセーブ、Rich Presence](online-services.md) | Windowsゲームのアカウント連携、同期、競合復旧、Rich Presence、バックエンド通信契約 |
 | [WebGLエクスポート](web-export.md) | C++ゲームを単一HTMLへ変換する対応機能、自動代替、拒否条件 |
+| [複数プラットフォームとSteam連携の設計](platform-roadmap.md) | macOSを除く対応状況と移植の境界、Steamの実績・統計・Cloud・オーバーレイ計画（Steam未実装） |
+| [プラットフォーム移植タスク](platform-tasks.md) | Windowsエディターを維持したOS別ゲーム出力の作業一覧、共通基盤のビルド、検証状況 |
 | [書き出したゲームの保護](export-protection.md) | 配布物の暗号化、書き出しごとに生成する配布物固有鍵、改ざん検知と、その限界 |
 
 ## エディターとスクリプト
