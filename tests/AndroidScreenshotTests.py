@@ -59,6 +59,26 @@ def screenshot_header(width: int, height: int) -> bytes:
 
 
 class AndroidScreenshotTests(unittest.TestCase):
+    def test_closes_only_the_focused_emulator_launcher_anr(self):
+        focused = ("mCurrentFocus=Window{123 u0 Application Not Responding: "
+                   + AndroidEmulatorSmoke.EMULATOR_LAUNCHER + "}")
+        with patch.object(AndroidEmulatorSmoke, "adb",
+                          return_value=SimpleNamespace(stdout=focused)) as adb:
+            self.assertTrue(AndroidEmulatorSmoke.dismiss_emulator_launcher_anr())
+        self.assertEqual(adb.call_args.args,
+                         ("shell", "am", "force-stop", AndroidEmulatorSmoke.EMULATOR_LAUNCHER))
+
+    def test_does_not_dismiss_game_anr_or_unfocused_launcher_window(self):
+        for focused in (
+                "mCurrentFocus=Window{123 u0 Application Not Responding: "
+                + AndroidEmulatorSmoke.PACKAGE + "}",
+                "mCurrentFocus=Window{123 u0 " + AndroidEmulatorSmoke.PACKAGE + "}\n"
+                "Window #1 Application Not Responding: " + AndroidEmulatorSmoke.EMULATOR_LAUNCHER + "}"):
+            with self.subTest(focused=focused), patch.object(
+                    AndroidEmulatorSmoke, "adb", return_value=SimpleNamespace(stdout=focused)) as adb:
+                self.assertFalse(AndroidEmulatorSmoke.dismiss_emulator_launcher_anr())
+                self.assertEqual(adb.call_count, 1)
+
     def test_prepares_interactive_emulator_before_game_launch(self):
         with patch.object(AndroidEmulatorSmoke, "adb",
                           return_value=SimpleNamespace(stdout="1\n")) as adb:
@@ -113,7 +133,8 @@ class AndroidScreenshotTests(unittest.TestCase):
 
     def test_waits_for_scene_marker_in_android_screenshot(self):
         screenshot = screenshot_header(720, 1560)
-        with patch.object(AndroidEmulatorSmoke, "screenshot_render",
+        with patch.object(AndroidEmulatorSmoke, "dismiss_emulator_launcher_anr"), \
+                patch.object(AndroidEmulatorSmoke, "screenshot_render",
                           return_value=(screenshot, {"greenMarkerPixels": 1000})):
             captured, rendered = AndroidEmulatorSmoke.wait_for_scene_screenshot("startup")
         self.assertEqual(captured, screenshot)
@@ -122,7 +143,8 @@ class AndroidScreenshotTests(unittest.TestCase):
     def test_waits_for_new_dimensions_after_android_display_resize(self):
         original = screenshot_header(720, 1560)
         resized = screenshot_header(600, 1300)
-        with patch.object(AndroidEmulatorSmoke, "screenshot_render", side_effect=(
+        with patch.object(AndroidEmulatorSmoke, "dismiss_emulator_launcher_anr"), \
+                patch.object(AndroidEmulatorSmoke, "screenshot_render", side_effect=(
                 (original, {"greenMarkerPixels": 12000}),
                 (resized, {"greenMarkerPixels": 8000}))) as capture:
             captured, rendered = AndroidEmulatorSmoke.wait_for_scene_screenshot(

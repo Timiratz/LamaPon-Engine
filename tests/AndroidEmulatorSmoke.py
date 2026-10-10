@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from check_android_screenshot import count_green_marker
 
 PACKAGE = "com.lamapon.game.android_game_x86_64"
+EMULATOR_LAUNCHER = "com.google.android.apps.nexuslauncher"
 ACTIVITY = PACKAGE + "/com.lamapon.runtime.GameActivity"
 APK = ROOT / "test-output/platform-core/android-apk-build-x86_64/app/outputs/apk/debug/app-debug.apk"
 INITIAL_DISPLAY_SIZE = "720x1560"
@@ -160,6 +161,19 @@ def prepare_headless_emulator():
     adb("shell", "wm", "dismiss-keyguard")
 
 
+def dismiss_emulator_launcher_anr():
+    # Cold boot on the software-rendered CI device can leave a launcher ANR dialog
+    # above the resumed game. Close only that process; never dismiss a game ANR.
+    windows = adb("shell", "dumpsys", "window", "windows").stdout.splitlines()
+    if any("mCurrentFocus=" in line
+           and "Application Not Responding: " + EMULATOR_LAUNCHER + "}" in line
+           for line in windows):
+        adb("shell", "am", "force-stop", EMULATOR_LAUNCHER)
+        print("Closed the emulator Pixel Launcher ANR dialog; game process left running.")
+        return True
+    return False
+
+
 def screenshot_render():
     screenshot = subprocess.run(["adb", "exec-out", "screencap", "-p"],
                                 capture_output=True, timeout=10)
@@ -186,6 +200,7 @@ def wait_for_scene_screenshot(stage, dimensions_different_from=None):
         attempts += 1
         capture_started = time.monotonic()
         try:
+            dismiss_emulator_launcher_anr()
             screenshot, rendered = screenshot_render()
             last_capture_error = None
         except subprocess.TimeoutExpired:
