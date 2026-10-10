@@ -873,7 +873,7 @@ namespace
     {
         // キャッシュ読込ストリーム
         std::ifstream input(
-            path,
+            LamaPon::ExtendedLengthPath(path),
             std::ios::binary | std::ios::ate);
         if (!input)
         {
@@ -1077,8 +1077,11 @@ namespace
         const void* data,
         const std::size_t size)
     {
+        // MAX_PATH制限を避ける拡張長の保存先
+        const auto longDestination =
+            LamaPon::ExtendedLengthPath(destination);
         // 置換前に書き終えるための一時保存先
-        auto temporary = destination;
+        auto temporary = longDestination;
         temporary += L".tmp";
         {
             // 一時保存先への書込ストリーム
@@ -1112,7 +1115,7 @@ namespace
         }
         if (!MoveFileExW(
                 temporary.c_str(),
-                destination.c_str(),
+                longDestination.c_str(),
                 MOVEFILE_REPLACE_EXISTING
                     | MOVEFILE_WRITE_THROUGH))
         {
@@ -1150,7 +1153,7 @@ namespace
         // ファイル操作のエラー
         std::error_code error;
         if (!LamaPon::EnsureDirectoryExists(
-                cacheDirectory,
+                LamaPon::ExtendedLengthPath(cacheDirectory),
                 error))
         {
             return false;
@@ -1162,12 +1165,14 @@ namespace
                 ? L".fail"
                 : L".cso");
         // 古い結果と新しい依存一覧の組合せを防ぐため、結果を先に除去する。
-        std::filesystem::remove(writePath, error);
+        std::filesystem::remove(
+            LamaPon::ExtendedLengthPath(writePath), error);
         if (error)
         {
             return false;
         }
-        std::filesystem::remove(other, error);
+        std::filesystem::remove(
+            LamaPon::ExtendedLengthPath(other), error);
         if (error)
         {
             return false;
@@ -1204,8 +1209,10 @@ namespace
                 payloadSize))
         {
             // 保存に失敗した組は両方を除去する。
-            std::filesystem::remove(dependencyPath, error);
-            std::filesystem::remove(writePath, error);
+            std::filesystem::remove(
+                LamaPon::ExtendedLengthPath(dependencyPath), error);
+            std::filesystem::remove(
+                LamaPon::ExtendedLengthPath(writePath), error);
             return false;
         }
 
@@ -1356,7 +1363,8 @@ namespace LamaPon
         }
         // ファイル操作のエラー
         std::error_code error;
-        if (LamaPon::EnsureDirectoryExists(directory, error))
+        if (LamaPon::EnsureDirectoryExists(
+                LamaPon::ExtendedLengthPath(directory), error))
         {
             if (!WriteFileAtomically(
                     directory / L"index.txt",

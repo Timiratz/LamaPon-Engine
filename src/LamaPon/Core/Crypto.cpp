@@ -138,22 +138,108 @@ namespace
         return result;
     }
 
-    // 書き出し時に置換する鍵スロット
-    // 書き換え可能な.dataへ配置するため、constやconstexprにはしません。
-    // volatileで鍵の定数展開を防ぎ、80バイトの配置はCrypto.hのKeySlotと揃えます。
-    volatile std::uint8_t g_archiveKeySlot[
+    // 書き出し時に置換する分割鍵スロット(目印16+データ32を3個)
+    // 書き換え可能な.dataへ置くためconstやconstexprにはしません。
+    // 各スロットを別セクションへ分け、連続した1窓から鍵を再構成できないよう物理的に離します。
+    // volatileで鍵の定数畳み込みを防ぎ、配置はCrypto.hのKeySlot(目印16+データ32)と揃えます。
+#pragma section(".lpk0", read, write)
+#pragma section(".lpk1", read, write)
+#pragma section(".lpk2", read, write)
+    // 鍵スロット0(目印16+データ32)
+    __declspec(allocate(".lpk0"))
+    volatile std::uint8_t g_archiveKeySlot0[
         LamaPon::Crypto::KeySlotSize] = {
-        0x36, 0x62, 0x28, 0xa5, 0xaf, 0x19, 0x1b, 0x85,
-        0x58, 0x03, 0xd6, 0xa1, 0xbb, 0xe9, 0x72, 0x54,
-        0xef, 0x5a, 0xac, 0x36, 0x09, 0xa2, 0xea, 0xd6,
-        0x04, 0x00, 0x8a, 0xab, 0x70, 0x3a, 0x04, 0x6a,
-        0xe8, 0x09, 0x3c, 0x92, 0xd6, 0xa6, 0xdd, 0x5b,
-        0xa2, 0xa8, 0x4e, 0xbf, 0x8b, 0xb3, 0x72, 0x21,
-        0x1e, 0x8d, 0x60, 0xf7, 0xc9, 0x69, 0x3b, 0x52,
-        0x3d, 0x9a, 0x75, 0x1f, 0x32, 0x1d, 0xac, 0xa4,
-        0x07, 0x5d, 0xb5, 0xbf, 0x70, 0x9d, 0x0f, 0xa3,
-        0xb1, 0x19, 0x42, 0x34, 0x4e, 0xd9, 0xef, 0x56
+        0x0b, 0xb9, 0xa7, 0x11, 0xa6, 0x0f, 0x98, 0x97,
+        0x2d, 0x5a, 0xb5, 0x8b, 0xa2, 0xee, 0xcb, 0xec,
+        0x3f, 0x2a, 0x7f, 0x33, 0x14, 0x09, 0x90, 0xe2,
+        0xf5, 0x00, 0xd8, 0xfd, 0x49, 0x2b, 0x41, 0x19,
+        0x18, 0x6c, 0x2d, 0x86, 0xdd, 0x80, 0x61, 0x2b,
+        0x0a, 0x48, 0x2d, 0x4a, 0xf6, 0xdd, 0xd9, 0x44
     };
+    // 鍵スロット1(目印16+データ32)
+    __declspec(allocate(".lpk1"))
+    volatile std::uint8_t g_archiveKeySlot1[
+        LamaPon::Crypto::KeySlotSize] = {
+        0x73, 0x4f, 0x0a, 0xab, 0x3b, 0x42, 0x21, 0xae,
+        0xca, 0x1c, 0xad, 0xa0, 0xcb, 0x87, 0xbe, 0x5f,
+        0x5e, 0xc6, 0x0b, 0x7e, 0xbd, 0xf9, 0x0d, 0x43,
+        0x72, 0x80, 0xaf, 0xba, 0x96, 0x72, 0x4e, 0x23,
+        0x6e, 0x3a, 0xef, 0xd1, 0x66, 0xb8, 0xbe, 0xbc,
+        0x42, 0xe6, 0xa5, 0x5b, 0x74, 0xb3, 0xca, 0x40
+    };
+    // 鍵スロット2(目印16+データ32)
+    __declspec(allocate(".lpk2"))
+    volatile std::uint8_t g_archiveKeySlot2[
+        LamaPon::Crypto::KeySlotSize] = {
+        0x87, 0xe9, 0xa9, 0x4d, 0xa9, 0xdb, 0xde, 0x47,
+        0x01, 0x7d, 0xc3, 0xfe, 0x17, 0x35, 0x85, 0xdf,
+        0xe3, 0x50, 0xd8, 0xea, 0x2f, 0x58, 0xd0, 0x59,
+        0x0d, 0xb3, 0x57, 0x49, 0x9e, 0x9d, 0x1f, 0xc0,
+        0xc9, 0xa3, 0xd3, 0x0a, 0xce, 0xe1, 0x8c, 0xcb,
+        0x4d, 0x11, 0xcc, 0xbc, 0xe6, 0xdf, 0x27, 0x5c
+    };
+
+    // 未書き出し時に3スロットが合成する既定鍵。
+    // 合成結果がこれと一致する間は未書き出しとみなし、アンチデバッグを作動させません。
+    constexpr std::array<std::uint8_t, LamaPon::Crypto::AesKeySize>
+        kDefaultArchiveKey = {
+        0x82, 0xbc, 0xac, 0xa7, 0x86, 0xa8, 0x4d, 0xf8,
+        0x8a, 0x33, 0x20, 0x0e, 0x41, 0xc4, 0x10, 0xfa,
+        0xbf, 0xf5, 0x11, 0x5d, 0x75, 0xd9, 0x53, 0x5c,
+        0x05, 0xbf, 0x44, 0xad, 0x64, 0xb1, 0x34, 0x58
+    };
+
+    // 指定した分割スロットの先頭を返します(index: スロット番号)。
+    // スロットの位置を定数表へ出さず、参照をこの関数のコード内だけに留めます。
+    volatile std::uint8_t* KeySlotData(const std::size_t index)
+    {
+        switch (index)
+        {
+        case 0:
+            return g_archiveKeySlot0;
+        case 1:
+            return g_archiveKeySlot1;
+        default:
+            return g_archiveKeySlot2;
+        }
+    }
+
+    // 分割スロットのデータをXORして生の鍵を合成します（アンチデバッグ前）。
+    LamaPon::Crypto::AesKey ComposeArchiveKey()
+    {
+        // 合成するAES鍵
+        LamaPon::Crypto::AesKey key{};
+        // 鍵内の処理バイト位置
+        for (std::size_t index = 0; index < key.size(); ++index)
+        {
+            // 合成途中の鍵バイト
+            std::uint8_t value = 0;
+            // 全スロットのデータ部をXORして1バイトを合成します。
+            for (std::size_t slot = 0;
+                slot < LamaPon::Crypto::KeySlotCount;
+                ++slot)
+            {
+                value ^= KeySlotData(slot)[
+                    LamaPon::Crypto::KeySlotMarkerSize + index];
+            }
+            key[index] = value;
+        }
+        return key;
+    }
+
+    // 合成鍵が既定鍵（未書き出し）と一致するかを返します(key: 合成した鍵)。
+    bool ComposedKeyIsDefault(const LamaPon::Crypto::AesKey& key)
+    {
+        // 鍵内の照合バイト位置
+        for (std::size_t index = 0; index < key.size(); ++index)
+        {
+            if (key[index] != kDefaultArchiveKey[index])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     // ファイル暗号形式の識別バイト列
     constexpr std::array<std::uint8_t, 8> SealMagic{
@@ -390,21 +476,24 @@ namespace LamaPon::Crypto
 
     AesKey ArchiveKey()
     {
-        // 復元または生成するAES鍵
-        AesKey key{};
-        // 鍵内の処理バイト位置
-        for (std::size_t index = 0; index < key.size(); ++index)
+        // 分割スロットから合成した鍵
+        AesKey key = ComposeArchiveKey();
+        // 書き出し済みでデバッガが接続されていれば、鍵を撹乱して平文を得させません。
+        // 既定鍵のままなら未書き出しなので、開発とテストを壊さないようガードは作動させません。
+        if (!ComposedKeyIsDefault(key) && ::IsDebuggerPresent() != FALSE)
         {
-            // 鍵を隠すXORパッドのバイト
-            const auto pad =
-                g_archiveKeySlot[KeySlotMarkerSize + index];
-            // パッドとXORされた鍵のバイト
-            const auto stored =
-                g_archiveKeySlot[
-                    KeySlotMarkerSize + AesKeySize + index];
-            key[index] = static_cast<std::uint8_t>(stored ^ pad);
+            // 鍵内の撹乱バイト位置
+            for (auto& byte : key)
+            {
+                byte ^= 0xA5;
+            }
         }
         return key;
+    }
+
+    bool IsExportedArchiveKey()
+    {
+        return !ComposedKeyIsDefault(ComposeArchiveKey());
     }
 
     AesKey RandomKey()
@@ -423,33 +512,44 @@ namespace LamaPon::Crypto
         return iv;
     }
 
-    KeySlotMarker ExpectedKeySlotMarker()
+    KeySlotMarker ExpectedKeySlotMarker(const std::size_t index)
     {
         // 実行中の鍵スロットの目印
         KeySlotMarker marker{};
+        // 対象スロットの先頭
+        volatile std::uint8_t* const slot = KeySlotData(index);
         // 目印内の読み取り位置
-        for (std::size_t index = 0; index < marker.size(); ++index)
+        for (std::size_t position = 0; position < marker.size(); ++position)
         {
-            marker[index] = g_archiveKeySlot[index];
+            marker[position] = slot[position];
         }
         return marker;
     }
 
-    KeySlot MakeKeySlot(const AesKey& key)
+    std::array<KeySlot, KeySlotCount> MakeKeySlots(const AesKey& key)
     {
-        // バイナリに埋め込む鍵スロット
-        KeySlot slot{};
-        // 配布物から目印を消すため、目印とパッドを乱数で置換します。
-        FillRandom(slot.data(), KeySlotMarkerSize + AesKeySize);
+        // バイナリに埋め込む分割鍵スロット群
+        std::array<KeySlot, KeySlotCount> slots{};
+        // 先行スロットは目印とデータを乱数で満たします。
+        for (std::size_t slot = 0; slot + 1 < KeySlotCount; ++slot)
+        {
+            FillRandom(slots[slot].data(), KeySlotSize);
+        }
+        // 最終スロットの目印も乱数にします。
+        FillRandom(slots[KeySlotCount - 1].data(), KeySlotMarkerSize);
         // 鍵内の処理バイト位置
         for (std::size_t index = 0; index < key.size(); ++index)
         {
-            // 鍵を隠すXORパッドのバイト
-            const auto pad = slot[KeySlotMarkerSize + index];
-            slot[KeySlotMarkerSize + AesKeySize + index] =
-                static_cast<std::uint8_t>(key[index] ^ pad);
+            // 先行スロットのデータXORと鍵の合成値
+            std::uint8_t accumulated = key[index];
+            // 先行スロットのデータをXORして最終スロットのデータを決めます。
+            for (std::size_t slot = 0; slot + 1 < KeySlotCount; ++slot)
+            {
+                accumulated ^= slots[slot][KeySlotMarkerSize + index];
+            }
+            slots[KeySlotCount - 1][KeySlotMarkerSize + index] = accumulated;
         }
-        return slot;
+        return slots;
     }
 
     std::vector<std::uint8_t> AesEncrypt(
