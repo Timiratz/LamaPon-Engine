@@ -2,6 +2,7 @@ import binascii
 import struct
 import unittest
 import zlib
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests import AndroidEmulatorSmoke
@@ -58,6 +59,26 @@ def screenshot_header(width: int, height: int) -> bytes:
 
 
 class AndroidScreenshotTests(unittest.TestCase):
+    def test_prepares_interactive_emulator_before_game_launch(self):
+        with patch.object(AndroidEmulatorSmoke, "adb",
+                          return_value=SimpleNamespace(stdout="1\n")) as adb:
+            AndroidEmulatorSmoke.prepare_headless_emulator()
+        commands = [call.args for call in adb.call_args_list]
+        self.assertLess(commands.index(("shell", "input", "keyevent", "KEYCODE_WAKEUP")),
+                        commands.index(("shell", "wm", "dismiss-keyguard")))
+        self.assertIn(("shell", "svc", "power", "stayon", "true"), commands)
+
+    def test_diagnostic_failure_preserves_original_smoke_error(self):
+        original = RuntimeError("scene never rendered")
+        with patch.object(AndroidEmulatorSmoke, "run_smoke", side_effect=original), \
+                patch.object(AndroidEmulatorSmoke, "collect_failure_diagnostics",
+                             side_effect=OSError("disk full")), \
+                patch.object(AndroidEmulatorSmoke, "adb") as adb:
+            with self.assertRaises(RuntimeError) as caught:
+                AndroidEmulatorSmoke.main()
+        self.assertIs(caught.exception, original)
+        adb.assert_called_once_with("shell", "wm", "size", "reset", check=False)
+
     def test_decodes_all_png_filters_and_counts_rgba_green_marker(self):
         rows = []
         for y in range(10):

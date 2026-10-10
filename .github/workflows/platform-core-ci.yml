@@ -180,6 +180,14 @@ jobs:
           emulator-options: -no-window -gpu software -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: python3 -B tests/AndroidEmulatorSmoke.py
+      - name: Upload Android emulator failure diagnostics
+        if: failure() && matrix.abi == 'x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-emulator-failure-${{ github.event_name }}-${{ github.run_attempt }}
+          path: test-output/platform-core/android-smoke-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7
       # The APK runs in a 16 KB Android emulator; device-specific behavior still needs hardware validation.
   linux-game-smoke:
     runs-on: ubuntu-24.04

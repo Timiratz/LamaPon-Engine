@@ -164,10 +164,13 @@ static SDL_AppResult ProcessGameEvent(void* appstate, SDL_Event* event)
         if (event->type == SDL_EVENT_WINDOW_RESTORED) game->minimized = false;
         if (!wasSuspended && game->Suspended())
         {
+            SDL_Log("LamaPon native runtime suspended (event=%u, backgrounded=%d, minimized=%d)",
+                static_cast<unsigned>(event->type), game->backgrounded, game->minimized);
             game->input.Reset(); LamaPon::Native::SuspendAudio(true);
         }
         if (wasSuspended && !game->Suspended())
         {
+            SDL_Log("LamaPon native runtime resumed (event=%u)", static_cast<unsigned>(event->type));
             if (!SDL_GL_MakeCurrent(game->window, game->context)) Fail("Cannot restore graphics context");
             game->accumulator = 0; game->lastTime = SDL_GetTicksNS();
             LamaPon::Native::SuspendAudio(false);
@@ -270,6 +273,8 @@ SDL_AppResult SDL_AppIterate(void* appstate)
             if (game->probe && glGetError() != GL_NO_ERROR) throw std::runtime_error("Native rendering produced an OpenGL error");
             if (!SDL_GL_SwapWindow(game->window)) Fail("Cannot present frame");
             ++game->frames;
+            if (game->frames == 1)
+                SDL_Log("LamaPon native first frame presented (%dx%d)", width, height);
         }
         game->input.EndFrame();
         if (game->frameLimit > 0 && game->frames >= game->frameLimit)

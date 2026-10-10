@@ -16,6 +16,7 @@ APK = ROOT / "test-output/platform-core/android-apk-build-x86_64/app/outputs/apk
 INITIAL_DISPLAY_SIZE = "720x1560"
 RESIZED_DISPLAY_SIZE = "600x1300"
 SCREENSHOT_WAIT_SECONDS = 90
+DIAGNOSTICS = ROOT / "test-output/platform-core/android-smoke-diagnostics"
 
 
 def adb(*arguments, check=True):
@@ -100,7 +101,8 @@ def startup_diagnostics():
     activity = " | ".join(line.strip() for line in activity_lines
                           if PACKAGE in line or "mResumedActivity" in line
                           or "topResumedActivity" in line)
-    log_result = adb("logcat", "-d", "-t", "600", check=False)
+    # Filter after reading: emulator noise can otherwise hide the startup logs.
+    log_result = adb("logcat", "-d", check=False)
     log_lines = (log_result.stdout + log_result.stderr).splitlines()
     markers = ("lamapon", "sdl", "androidruntime", "fatal signal", "linker",
                "crash", "anr", "libgame")
@@ -110,6 +112,32 @@ def startup_diagnostics():
     return "pid={!r}, activity={!r}, logcat={!r}, adb={!r}".format(
         game_pid(), activity, relevant_logs[-80:],
         (devices.stdout + devices.stderr).strip())
+
+
+def collect_failure_diagnostics():
+    """Capture before emulator-runner shuts down, preserving the original failure."""
+    DIAGNOSTICS.mkdir(parents=True, exist_ok=True)
+    commands = {
+        "logcat.txt": ("logcat", "-d"),
+        "activity.txt": ("shell", "dumpsys", "activity", "activities"),
+        "window.txt": ("shell", "dumpsys", "window"),
+        "power.txt": ("shell", "dumpsys", "power"),
+        "surfaceflinger.txt": ("shell", "dumpsys", "SurfaceFlinger"),
+        "saves.txt": ("shell", "run-as", PACKAGE, "cat", "files/values.json"),
+    }
+    for filename, arguments in commands.items():
+        try:
+            result = adb(*arguments, check=False)
+            (DIAGNOSTICS / filename).write_text(result.stdout + result.stderr, encoding="utf-8")
+        except Exception as error:
+            print("Android diagnostic {} failed: {}".format(filename, error), file=sys.stderr)
+    try:
+        capture = subprocess.run(["adb", "exec-out", "screencap", "-p"],
+                                 capture_output=True, timeout=10)
+        if capture.stdout:
+            (DIAGNOSTICS / "failure.png").write_bytes(capture.stdout)
+    except Exception as error:
+        print("Android failure screenshot could not be captured: " + str(error), file=sys.stderr)
 
 
 def prepare_headless_emulator():
@@ -126,6 +154,10 @@ def prepare_headless_emulator():
             "Android emulator setup did not complete: device_provisioned={!r}, "
             "user_setup_complete={!r}; {}".format(
                 device_provisioned, user_setup_complete, startup_diagnostics()))
+    # A resumed Activity alone does not establish that the display is awake/unlocked.
+    adb("shell", "svc", "power", "stayon", "true")
+    adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    adb("shell", "wm", "dismiss-keyguard")
 
 
 def screenshot_render():
@@ -256,6 +288,12 @@ def run_smoke():
 def main():
     try:
         run_smoke()
+    except Exception:
+        try:
+            collect_failure_diagnostics()
+        except Exception as error:
+            print("Android failure diagnostics could not be saved: " + str(error), file=sys.stderr)
+        raise
     finally:
         adb("shell", "wm", "size", "reset", check=False)
 
