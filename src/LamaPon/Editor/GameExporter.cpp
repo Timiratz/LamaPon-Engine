@@ -8,6 +8,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/ProjectSettings.h"
+#include "LamaPon/Core/RuntimeIntegrity.h"
 #include "LamaPon/Editor/ExeIconTool.h"
 #include "LamaPon/Editor/GameModuleBuilder.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
@@ -2923,6 +2924,21 @@ namespace LamaPon
             }
             // 鍵とアイコンの変更・配置後に署名を検証し、成功するまで既存の配布先を置き換えません。
             SignExportedBinaries(options.signing, ownedBinaries);
+
+            // 署名まで含めた最終バイトに対し、ランタイムとGame Moduleの改ざん検知用マニフェストを残します。
+            // 照合する相対ファイル名
+            std::vector<std::wstring> integrityTargets{
+                runtimeLibrary.filename().wstring()
+            };
+            if (std::filesystem::is_regular_file(gameModule))
+            {
+                integrityTargets.push_back(
+                    gameModule.filename().wstring());
+            }
+            LamaPon::RuntimeIntegrity::WriteManifest(
+                stagingDirectory,
+                integrityTargets,
+                archiveKey);
         }
         catch (...)
         {

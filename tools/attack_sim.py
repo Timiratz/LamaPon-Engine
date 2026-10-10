@@ -560,6 +560,36 @@ def find_dist_files(dist: Path) -> tuple[Optional[Path], Optional[Path]]:
     return tpak, runtime
 
 
+# scan_integrity_manifest(report: 集計先, runtime_path: RuntimeのDLLパス): 改ざん検知マニフェストの有無を調べる。
+def scan_integrity_manifest(report: Report, runtime_path: Path) -> None:
+    # manifest は配布物に置く整合性マニフェスト。
+    manifest = runtime_path.parent / "integrity.dat"
+    if not manifest.is_file():
+        report.add(
+            "runtime-integrity-manifest",
+            "ランタイム/モジュールの改ざん検知",
+            "FAIL",
+            "integrity.datが無い。ランタイムやGame Moduleを差し替えても検知されない。",
+        )
+        return
+    # head はマニフェスト先頭の識別子。
+    head = manifest.read_bytes()[: len(SEAL_MAGIC)]
+    if head != SEAL_MAGIC:
+        report.add(
+            "runtime-integrity-manifest",
+            "ランタイム/モジュールの改ざん検知",
+            "FAIL",
+            "integrity.datが封印形式でない。改ざん検知が機能しない可能性。",
+        )
+        return
+    report.add(
+        "runtime-integrity-manifest",
+        "ランタイム/モジュールの改ざん検知",
+        "PASS",
+        "封印済みintegrity.datがある。起動時にランタイムとGame Moduleのハッシュを照合する。",
+    )
+
+
 # run_diagnostics(tpak_path: アーカイブのパス, runtime_path: RuntimeのDLLパス): 一連の攻撃を実行して結果を返す。
 def run_diagnostics(tpak_path: Optional[Path], runtime_path: Optional[Path]) -> Report:
     # report は集計結果。
@@ -574,6 +604,7 @@ def run_diagnostics(tpak_path: Optional[Path], runtime_path: Optional[Path]) -> 
         # dll はRuntimeのバイト列。
         dll = runtime_path.read_bytes()
         scan_default_marker(report, dll)
+        scan_integrity_manifest(report, runtime_path)
         if header is not None:
             # recovered は静的抽出で得られた鍵(なければNone)。
             recovered = bruteforce_key(report, dll, header)

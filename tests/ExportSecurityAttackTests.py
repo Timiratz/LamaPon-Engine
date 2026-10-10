@@ -218,6 +218,31 @@ class ExportSecurityAttackTests(unittest.TestCase):
         paths = {entry["path"] for entry in index["entries"]}
         self.assertEqual(paths, {"scenes/main.scene", "audio/bgm.ogg"})
 
+    # test_integrity_manifest_detection(self: テストケース): 改ざん検知マニフェストの有無・形式を正しく判定することを確認する。
+    def test_integrity_manifest_detection(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            # dist は配布物を模した一時フォルダ。
+            dist = Path(directory)
+            # runtime はダミーのRuntime DLL。
+            runtime = dist / "LamaPonRuntime.dll"
+            runtime.write_bytes(os.urandom(64))
+            # manifest が無ければFAIL。
+            report = SIM.Report()
+            SIM.scan_integrity_manifest(report, runtime)
+            self.assertEqual(status_of(report, "runtime-integrity-manifest"), "FAIL")
+            # 封印済みmanifestがあればPASS。
+            (dist / "integrity.dat").write_bytes(SIM.SEAL_MAGIC + os.urandom(96))
+            report = SIM.Report()
+            SIM.scan_integrity_manifest(report, runtime)
+            self.assertEqual(status_of(report, "runtime-integrity-manifest"), "PASS")
+            # 封印形式でないmanifestはFAIL。
+            (dist / "integrity.dat").write_bytes(b"NOTSEAL0" + os.urandom(96))
+            report = SIM.Report()
+            SIM.scan_integrity_manifest(report, runtime)
+            self.assertEqual(status_of(report, "runtime-integrity-manifest"), "FAIL")
+
 
 if __name__ == "__main__":
     unittest.main()

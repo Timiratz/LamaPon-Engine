@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/GltfImporter.h"
 #include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Core/RuntimeIntegrity.h"
 #include "LamaPon/Editor/ExeIconTool.h"
 #include "LamaPon/Editor/GameExporter.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
@@ -1575,7 +1576,7 @@ int main(const int argumentCount, char** const arguments)
         }
         Require(
             CountExportedFilesExcludingShaderCache(
-                outputDirectory) == 9,
+                outputDirectory) == 10,
             "Unexpected exported file count.");
         // 実行ファイルはゲーム名を反映した名前になります。
         Require(
@@ -2175,7 +2176,7 @@ int main(const int argumentCount, char** const arguments)
             });
         Require(
             CountExportedFilesExcludingShaderCache(
-                outputDirectory) == 9,
+                outputDirectory) == 10,
             "Re-export produced an unexpected file count.");
         Require(
             !std::filesystem::exists(
@@ -3225,6 +3226,76 @@ int main(const int argumentCount, char** const arguments)
                 strippedOutput / L"日本語ゲーム.exe",
                 strippedOutput,
                 L"--shader-cache-probe");
+        }
+
+        // 整合性マニフェストの作成・照合・改ざん検知を確認します。
+        {
+            // 整合性テスト用の一時フォルダー
+            const auto integrityRoot =
+                std::filesystem::temp_directory_path()
+                / L"lamapon-integrity-test";
+            std::filesystem::remove_all(integrityRoot);
+            std::filesystem::create_directories(integrityRoot);
+            // 保護対象として置くダミーのランタイムとモジュール
+            WriteBytes(
+                integrityRoot / L"LamaPonRuntime.dll",
+                std::vector<std::uint8_t>{ 1, 2, 3, 4, 5 });
+            WriteBytes(
+                integrityRoot / L"LamaPonGameModule.dll",
+                std::vector<std::uint8_t>{ 9, 8, 7, 6 });
+            // この書き出しを模したアーカイブ鍵
+            const auto integrityKey = LamaPon::Crypto::RandomKey();
+            LamaPon::RuntimeIntegrity::WriteManifest(
+                integrityRoot,
+                { L"LamaPonRuntime.dll", L"LamaPonGameModule.dll" },
+                integrityKey);
+            Require(
+                std::filesystem::is_regular_file(
+                    integrityRoot
+                    / LamaPon::RuntimeIntegrity::ManifestFileName),
+                "Integrity manifest file was not written.");
+            // 照合の失敗理由
+            std::string integrityReason;
+            Require(
+                LamaPon::RuntimeIntegrity::VerifyManifest(
+                    integrityRoot, integrityKey, integrityReason),
+                "Untampered distribution must pass integrity"
+                " verification.");
+            // 別配布物の鍵では認証が通らないことを確認します。
+            Require(
+                !LamaPon::RuntimeIntegrity::VerifyManifest(
+                    integrityRoot,
+                    LamaPon::Crypto::RandomKey(),
+                    integrityReason),
+                "Integrity manifest must not authenticate with a"
+                " different key.");
+            // モジュールを1バイト改変すると検知されることを確認します。
+            WriteBytes(
+                integrityRoot / L"LamaPonGameModule.dll",
+                std::vector<std::uint8_t>{ 9, 8, 7, 0 });
+            Require(
+                !LamaPon::RuntimeIntegrity::VerifyManifest(
+                    integrityRoot, integrityKey, integrityReason),
+                "A modified protected file must fail integrity"
+                " verification.");
+            // 保護対象が欠落しても検知されることを確認します。
+            std::filesystem::remove(
+                integrityRoot / L"LamaPonGameModule.dll");
+            Require(
+                !LamaPon::RuntimeIntegrity::VerifyManifest(
+                    integrityRoot, integrityKey, integrityReason),
+                "A missing protected file must fail integrity"
+                " verification.");
+            // マニフェストが無い場合も検知されることを確認します。
+            std::filesystem::remove(
+                integrityRoot
+                / LamaPon::RuntimeIntegrity::ManifestFileName);
+            Require(
+                !LamaPon::RuntimeIntegrity::VerifyManifest(
+                    integrityRoot, integrityKey, integrityReason),
+                "A missing integrity manifest must fail"
+                " verification.");
+            std::filesystem::remove_all(integrityRoot);
         }
 
         std::cout << "Game exporter tests passed.\n";

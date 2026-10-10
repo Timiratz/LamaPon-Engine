@@ -204,6 +204,43 @@ namespace
         }
     }
 
+    // 分割スロットのデータをXORして生の鍵を合成します（アンチデバッグ前）。
+    LamaPon::Crypto::AesKey ComposeArchiveKey()
+    {
+        // 合成するAES鍵
+        LamaPon::Crypto::AesKey key{};
+        // 鍵内の処理バイト位置
+        for (std::size_t index = 0; index < key.size(); ++index)
+        {
+            // 合成途中の鍵バイト
+            std::uint8_t value = 0;
+            // 全スロットのデータ部をXORして1バイトを合成します。
+            for (std::size_t slot = 0;
+                slot < LamaPon::Crypto::KeySlotCount;
+                ++slot)
+            {
+                value ^= KeySlotData(slot)[
+                    LamaPon::Crypto::KeySlotMarkerSize + index];
+            }
+            key[index] = value;
+        }
+        return key;
+    }
+
+    // 合成鍵が既定鍵（未書き出し）と一致するかを返します(key: 合成した鍵)。
+    bool ComposedKeyIsDefault(const LamaPon::Crypto::AesKey& key)
+    {
+        // 鍵内の照合バイト位置
+        for (std::size_t index = 0; index < key.size(); ++index)
+        {
+            if (key[index] != kDefaultArchiveKey[index])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // ファイル暗号形式の識別バイト列
     constexpr std::array<std::uint8_t, 8> SealMagic{
         'T', 'R', 'D', 'N', 'S', 'E', 'A', 'L'
@@ -439,35 +476,11 @@ namespace LamaPon::Crypto
 
     AesKey ArchiveKey()
     {
-        // 復元または生成するAES鍵
-        AesKey key{};
-        // 鍵内の処理バイト位置
-        for (std::size_t index = 0; index < key.size(); ++index)
-        {
-            // 合成途中の鍵バイト
-            std::uint8_t value = 0;
-            // 全スロットのデータ部をXORして1バイトを合成します。
-            for (std::size_t slot = 0; slot < KeySlotCount; ++slot)
-            {
-                value ^= KeySlotData(slot)[KeySlotMarkerSize + index];
-            }
-            key[index] = value;
-        }
-
-        // 既定鍵のままなら未書き出しなので、開発とテストを壊さないようガードは作動させません。
-        // 既定鍵と一致するか
-        bool isDefaultKey = true;
-        // 鍵内の照合バイト位置
-        for (std::size_t index = 0; index < key.size(); ++index)
-        {
-            if (key[index] != kDefaultArchiveKey[index])
-            {
-                isDefaultKey = false;
-                break;
-            }
-        }
+        // 分割スロットから合成した鍵
+        AesKey key = ComposeArchiveKey();
         // 書き出し済みでデバッガが接続されていれば、鍵を撹乱して平文を得させません。
-        if (!isDefaultKey && ::IsDebuggerPresent() != FALSE)
+        // 既定鍵のままなら未書き出しなので、開発とテストを壊さないようガードは作動させません。
+        if (!ComposedKeyIsDefault(key) && ::IsDebuggerPresent() != FALSE)
         {
             // 鍵内の撹乱バイト位置
             for (auto& byte : key)
@@ -476,6 +489,11 @@ namespace LamaPon::Crypto
             }
         }
         return key;
+    }
+
+    bool IsExportedArchiveKey()
+    {
+        return !ComposedKeyIsDefault(ComposeArchiveKey());
     }
 
     AesKey RandomKey()

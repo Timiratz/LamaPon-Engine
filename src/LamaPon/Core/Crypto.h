@@ -77,6 +77,10 @@ namespace LamaPon::Crypto
     // 配布バイナリに鍵を含むため、実行ファイルの解析に対する秘密性は保証しません。
     [[nodiscard]] AesKey ArchiveKey();
 
+    // 書き出し済み配布物の鍵（既定鍵と異なる）かを返します。
+    // 鍵スロットが乱数へ置換済みのとき真。開発・テストの既定鍵では偽。
+    [[nodiscard]] bool IsExportedArchiveKey();
+
     // CNGの乱数でAES-256鍵を生成します。
     [[nodiscard]] AesKey RandomKey();
     // CNGの乱数でAES初期化ベクトルを生成します。
