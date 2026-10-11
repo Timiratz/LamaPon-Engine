@@ -4,6 +4,7 @@
 
 ### Windowsインストーラー
 
+- 完成済みのSetup.exeを`installers/`へ同梱し、READMEとインストールガイドからダウンロードできるようにした。配布ファイルのサイズとSHA-256を記載。
 - Engine、Hub、ランタイムDLL、Game Module SDKをまとめて配置する日本語のSetup.exeを追加。スタートメニューと任意のデスクトップショートカットから、Engine、Hub、エンジン本体の自動ビルドを起動できる。
 - 自動ビルド環境の診断とMicrosoft公式Build Toolsの導入画面を追加。不足時だけ案内し、ダウンロードした起動用ファイルのMicrosoft署名を検証する。
 - 自動ビルドは利用者自身のソースフォルダーとインストール先を使用。Visual Studio同梱CMakeを利用し、インストール先が未作成でも配置できる。

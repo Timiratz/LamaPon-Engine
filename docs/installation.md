@@ -4,6 +4,8 @@ Windows 10/11でx64アプリを実行できるPC向けです。
 
 ## 配布する人
 
+[ブランチに同梱したSetup.exe](../installers/LamaPon-0.1.0-windows-x64-Setup.exe?raw=1)をダウンロードできます。ファイルのサイズとSHA-256は[配布ファイルの情報](../installers/README.md)を確認してください。
+
 `LamaPon-<version>-windows-x64-Setup.exe`を渡してください。受け取る側はエンジンをビルドする必要はありません。実行ファイルだけを抜き出すと、DLL、SDK、シェーダーなどが不足します。
 
 ## 初めて使う人
