@@ -41,6 +41,10 @@ install(FILES tools/export_web.py tools/editor_web_export.py tools/embed_web_ass
     tools/editor_linux_export.py tools/editor_linux_build.py tools/native_android.py
     tools/native_windows.py tools/native_linux.py DESTINATION tools)
 install(FILES cmake/LamaPonWeb.cmake cmake/LamaPonNative.cmake DESTINATION cmake)
+# インストール先から環境導入とソース再ビルドを起動する。
+install(FILES tools/SetupBuildEnvironment.ps1 tools/StartAutoBuild.ps1
+    tools/RebuildAndInstallEditor.ps1 tools/RebuildAndInstallEditor.bat
+    DESTINATION tools)
 install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable src/LamaPon/Native
     DESTINATION src/LamaPon)
 install(FILES third_party/cgltf/cgltf.h third_party/cgltf/LICENSE.txt DESTINATION third_party/cgltf)
