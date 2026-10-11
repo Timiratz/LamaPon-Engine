@@ -1137,6 +1137,9 @@ if(BUILD_TESTING)
     # 配布一覧とZip内容を検査します。
     add_test(NAME PackageIndex
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
+    # 書き出し保護の自己診断ツールに対する既知攻撃の判定を固定します。
+    add_test(NAME ExportSecurityAttack
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ExportSecurityAttackTests.py")
     add_executable(LamaPonGameExportDialogTests tests/GameExportDialogTests.cpp)
     target_link_libraries(LamaPonGameExportDialogTests PRIVATE LamaPonEditor DearImGui)
     target_compile_options(LamaPonGameExportDialogTests PRIVATE

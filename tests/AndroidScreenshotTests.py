@@ -65,6 +65,7 @@ class AndroidScreenshotTests(unittest.TestCase):
         with patch.object(AndroidEmulatorSmoke, "adb",
                           return_value=SimpleNamespace(stdout=focused)) as adb:
             self.assertTrue(AndroidEmulatorSmoke.dismiss_emulator_launcher_anr())
+        self.assertEqual(adb.call_args_list[0].args, ("shell", "dumpsys", "window"))
         self.assertEqual(adb.call_args.args,
                          ("shell", "am", "force-stop", AndroidEmulatorSmoke.EMULATOR_LAUNCHER))
 

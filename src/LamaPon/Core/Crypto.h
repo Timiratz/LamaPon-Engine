@@ -77,6 +77,10 @@ namespace LamaPon::Crypto
     // 配布バイナリに鍵を含むため、実行ファイルの解析に対する秘密性は保証しません。
     [[nodiscard]] AesKey ArchiveKey();
 
+    // 書き出し済み配布物の鍵（既定鍵と異なる）かを返します。
+    // 鍵スロットが乱数へ置換済みのとき真。開発・テストの既定鍵では偽。
+    [[nodiscard]] bool IsExportedArchiveKey();
+
     // CNGの乱数でAES-256鍵を生成します。
     [[nodiscard]] AesKey RandomKey();
     // CNGの乱数でAES初期化ベクトルを生成します。
@@ -84,20 +88,25 @@ namespace LamaPon::Crypto
 
     // 鍵スロットを探す目印のバイト数
     inline constexpr std::size_t KeySlotMarkerSize = 16;
-    // 目印とパッドと隠した鍵の全長
-    // スロットは[0,16)が目印、[16,48)がパッド、[48,80)が鍵XORパッドで構成します。
+    // 鍵を分割して埋め込むスロットの数
+    // 各スロットは目印の後ろにデータを持ち、実行時に全データのXORで鍵を合成します。
+    inline constexpr std::size_t KeySlotCount = 3;
+    // 1スロットの全長(目印16とデータ32)
+    // スロットは[0,16)が目印、[16,48)がデータで構成します。
     inline constexpr std::size_t KeySlotSize =
-        KeySlotMarkerSize + AesKeySize + AesKeySize;
+        KeySlotMarkerSize + AesKeySize;
 
     using KeySlot = std::array<std::uint8_t, KeySlotSize>;
     using KeySlotMarker = std::array<std::uint8_t, KeySlotMarkerSize>;
 
-    // 実行バイナリから書き出し対象の鍵スロットの目印を読み取ります。
+    // 実行バイナリから指定スロットの目印を読み取ります(index: 0からKeySlotCount-1)。
     // 目印を別の定数へ複製すると検索先が重複するため、必ずスロット自身から読みます。
-    [[nodiscard]] KeySlotMarker ExpectedKeySlotMarker();
+    [[nodiscard]] KeySlotMarker ExpectedKeySlotMarker(std::size_t index);
 
-    // 目印を乱数で置換した鍵スロットを組み立てます(key: 埋め込むアーカイブ鍵)。
-    [[nodiscard]] KeySlot MakeKeySlot(const AesKey& key);
+    // 目印を乱数で置換した分割鍵スロット群を組み立てます(key: 埋め込むアーカイブ鍵)。
+    // 鍵は全スロットのデータのXORへ分割され、どの単一スロットからも復元できません。
+    [[nodiscard]] std::array<KeySlot, KeySlotCount>
+        MakeKeySlots(const AesKey& key);
 
     // AES-256-CBCとPKCS#7で暗号化します(data: 平文先頭, size: 平文バイト数, key: 暗号鍵, iv: 初期化ベクトル)。
     // 入力はULONGの範囲内に限り、CNGの失敗には例外を送出します。

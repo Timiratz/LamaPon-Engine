@@ -8,6 +8,7 @@
 #include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Core/Profiler.h"
+#include "LamaPon/Core/RuntimeIntegrity.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -287,7 +288,19 @@ namespace LamaPon
 
         m_gameModule =
             std::make_unique<GameModuleHost>();
-        if (!m_gameModule->Load(
+        // 配布物の改ざん検知結果の理由
+        std::string integrityReason;
+        // 書き出し済み配布物では、ランタイムとGame Moduleの整合性を検証してから読み込みます。
+        if (!RuntimeIntegrity::VerifyExportedArtifacts(
+                executableDirectory,
+                integrityReason))
+        {
+            Logger::Instance().Warning(
+                "配布物の整合性検証に失敗したため、"
+                "Game Moduleを読み込みません: "
+                + integrityReason);
+        }
+        else if (!m_gameModule->Load(
                 executableDirectory
                     / L"LamaPonGameModule.dll"))
         {

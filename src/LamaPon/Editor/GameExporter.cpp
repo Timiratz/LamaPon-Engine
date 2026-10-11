@@ -8,6 +8,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/ProjectSettings.h"
+#include "LamaPon/Core/RuntimeIntegrity.h"
 #include "LamaPon/Editor/ExeIconTool.h"
 #include "LamaPon/Editor/GameModuleBuilder.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
@@ -42,7 +43,7 @@ namespace
     {
         // ファイル全体の入力ストリーム
         std::ifstream input(
-            path,
+            LamaPon::ExtendedLengthPath(path),
             std::ios::binary | std::ios::ate);
         if (!input)
         {
@@ -86,7 +87,7 @@ namespace
     {
         // ファイル全体の出力ストリーム
         std::ofstream output(
-            path,
+            LamaPon::ExtendedLengthPath(path),
             std::ios::binary | std::ios::trunc);
         if (!output)
         {
@@ -124,50 +125,51 @@ namespace
         const auto buildTime = std::filesystem::last_write_time(runtimeLibrary);
         // 読込済みのファイル全体
         auto bytes = ReadAllBytes(runtimeLibrary);
-        // 鍵スロットの検出用バイト列
-        const auto marker =
-            LamaPon::Crypto::ExpectedKeySlotMarker();
-        // Runtimeバイト列の先頭
-        const auto begin = bytes.begin();
-        // 読込サイズまたはDLL内容の終端
-        const auto end = bytes.end();
-
-        // 検出した鍵スロットの位置
-        auto found = std::search(
-            begin,
-            end,
-            marker.begin(),
-            marker.end());
-        if (found == end)
+        // 新しい鍵を分割した埋め込みスロット群
+        const auto slots = LamaPon::Crypto::MakeKeySlots(key);
+        // 分割スロットの処理位置
+        for (std::size_t index = 0;
+            index < LamaPon::Crypto::KeySlotCount;
+            ++index)
         {
-            throw std::runtime_error(
-                "LamaPonRuntime.dll has no archive key slot. "
-                "The engine installation is older than this "
-                "editor; update it and export again.");
-        }
-        // 誤った領域を書き換えないよう、鍵スロットが複数あるRuntimeは拒否します。
-        if (std::search(
-                found + 1,
-                end,
+            // このスロットの検出用目印
+            const auto marker =
+                LamaPon::Crypto::ExpectedKeySlotMarker(index);
+            // 検出した鍵スロットの位置
+            auto found = std::search(
+                bytes.begin(),
+                bytes.end(),
                 marker.begin(),
-                marker.end())
-            != end)
-        {
-            throw std::runtime_error(
-                "LamaPonRuntime.dll has more than one archive "
-                "key slot; refusing to patch it.");
+                marker.end());
+            if (found == bytes.end())
+            {
+                throw std::runtime_error(
+                    "LamaPonRuntime.dll has no archive key slot. "
+                    "The engine installation is older than this "
+                    "editor; update it and export again.");
+            }
+            // 誤った領域を書き換えないよう、同じ目印が複数あるRuntimeは拒否します。
+            if (std::search(
+                    found + 1,
+                    bytes.end(),
+                    marker.begin(),
+                    marker.end())
+                != bytes.end())
+            {
+                throw std::runtime_error(
+                    "LamaPonRuntime.dll has more than one archive "
+                    "key slot; refusing to patch it.");
+            }
+            if (static_cast<std::size_t>(
+                    std::distance(found, bytes.end()))
+                < slots[index].size())
+            {
+                throw std::runtime_error(
+                    "LamaPonRuntime.dll is truncated around its "
+                    "archive key slot.");
+            }
+            std::copy(slots[index].begin(), slots[index].end(), found);
         }
-
-        // 新しい鍵を含むスロット内容
-        const auto slot = LamaPon::Crypto::MakeKeySlot(key);
-        if (static_cast<std::size_t>(std::distance(found, end))
-            < slot.size())
-        {
-            throw std::runtime_error(
-                "LamaPonRuntime.dll is truncated around its "
-                "archive key slot.");
-        }
-        std::copy(slot.begin(), slot.end(), found);
         WriteAllBytes(runtimeLibrary, bytes);
         std::filesystem::last_write_time(runtimeLibrary, buildTime);
     }
@@ -187,9 +189,10 @@ namespace
         // 暗号化して検証済みのファイル数
         std::size_t sealed{};
         // 走査するファイルまたはJSON要素
+        // 拡張長パスで走査し、各エントリーのパスにも接頭辞を引き継がせます。
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
-                directory))
+                LamaPon::ExtendedLengthPath(directory)))
         {
             if (!entry.is_regular_file())
             {
@@ -2930,6 +2933,21 @@ namespace LamaPon
             }
             // 鍵とアイコンの変更・配置後に署名を検証し、成功するまで既存の配布先を置き換えません。
             SignExportedBinaries(options.signing, ownedBinaries);
+
+            // 署名まで含めた最終バイトに対し、ランタイムとGame Moduleの改ざん検知用マニフェストを残します。
+            // 照合する相対ファイル名
+            std::vector<std::wstring> integrityTargets{
+                runtimeLibrary.filename().wstring()
+            };
+            if (std::filesystem::is_regular_file(gameModule))
+            {
+                integrityTargets.push_back(
+                    gameModule.filename().wstring());
+            }
+            LamaPon::RuntimeIntegrity::WriteManifest(
+                stagingDirectory,
+                integrityTargets,
+                archiveKey);
         }
         catch (...)
         {
