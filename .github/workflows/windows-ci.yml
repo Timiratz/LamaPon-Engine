@@ -84,6 +84,18 @@ jobs:
         if: matrix.configuration == 'Release'
         run: cmake --build build-ci --target package
 
+      - name: Build Windows installer
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: ./tools/BuildInstaller.ps1 -BuildDir build-ci
+
+      - name: Verify Windows installer
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          ./tests/BuildEnvironmentTests.ps1
+          ./tests/InstallerSmokeTests.ps1 -InstallerPath (Get-Item out/installer/*-Setup.exe).FullName
+
       - name: Upload game package
         # PRではパッケージ生成までを検証し、成果物は保存しません。
         # 通常pushと手動実行だけ保存してActionsの容量超過を避けます。
@@ -100,7 +112,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: LamaPon-windows-x64
-          path: build-ci/LamaPon-*-windows-x64.zip
+          path: |
+            build-ci/LamaPon-*-windows-x64.zip
+            out/installer/*-Setup.exe
           if-no-files-found: error
           retention-days: 14
 

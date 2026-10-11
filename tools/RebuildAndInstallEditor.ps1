@@ -1,4 +1,7 @@
-﻿# ErrorActionPreference: 予期しないPowerShellエラーを停止理由にする。
+﻿# SourceRoot: 再ビルド元、InstallRoot: 更新する配布先。
+param([string]$SourceRoot = '', [string]$InstallRoot = '')
+
+# ErrorActionPreference: 予期しないPowerShellエラーを停止理由にする。
 $ErrorActionPreference = "Stop"
 # NonInteractive: CI実行時に入力待ちを省略する。
 $NonInteractive = $args -contains "-NonInteractive"
@@ -7,12 +10,12 @@ $NonInteractive = $args -contains "-NonInteractive"
 # OutputEncoding: 外部コマンドへUTF-8を渡す。
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# repoDir: スクリプトが属するrepository root。
-$repoDir = Split-Path -Parent $PSScriptRoot
+# repoDir: 指定または既定のソース。
+$repoDir = if ($SourceRoot) { [IO.Path]::GetFullPath($SourceRoot) } else { Split-Path -Parent $PSScriptRoot }
 # buildDir: Release buildの出力先。
 $buildDir = Join-Path $repoDir "build-release"
 # installDir: ユーザー向けengineの配置先。
-$installDir = Join-Path $env:LOCALAPPDATA "Programs\LamaPon"
+$installDir = if ($InstallRoot) { [IO.Path]::GetFullPath($InstallRoot) } else { Join-Path $env:LOCALAPPDATA "Programs\LamaPon" }
 
 # Fail(message: エラー説明): エラーを表示してスクリプトを終了する。
 function Fail([string]$message) {
@@ -26,6 +29,11 @@ function Fail([string]$message) {
         Read-Host "終了するには Enter キーを押してください"
     }
     exit 1
+}
+
+if (-not (Test-Path -LiteralPath (Join-Path $repoDir 'src\LamaPon\LamaPon.h')) -or
+    -not (Test-Path -LiteralPath (Join-Path $repoDir 'CMakeLists.txt'))) {
+    Fail "LamaPon-Engineのソースフォルダーを指定してください: $repoDir"
 }
 
 # CloseRunningLamaPonProcesses: 指定時だけ既存LamaPon processを終了する。
@@ -212,7 +220,7 @@ if (-not (Test-Path $vswhere)) {
 }
 
 # vsPath: MSBuildを備えたVisual Studioのpath。
-$vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath
 # Visual Studioの検出結果を確認する。
 if (-not $vsPath) {
     Fail "Visual Studio のインストール先を特定できませんでした。"
@@ -227,6 +235,11 @@ if (-not (Test-Path $vcvars)) {
 
 # ninja: Visual Studio同梱Ninjaのpath。
 $ninja = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+# cmake: VS同梱の構成ツール。
+$cmake = Join-Path $vsPath "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+if (-not (Test-Path -LiteralPath $cmake)) {
+    Fail "CMakeが見つかりません。自動ビルド環境セットアップを実行してください。"
+}
 
 # vcvars64.batをcmdで実行し、設定された環境変数を取り込む。
 # cmdOutput: 初期化後のcmd環境変数一覧。
@@ -255,7 +268,15 @@ if (-not $usingNinja) {
     Write-Host "（初回のみ時間がかかります）"
     # 既存キャッシュを含むビルドフォルダーを削除する。
     if (Test-Path $buildDir) {
-        Remove-Item $buildDir -Recurse -Force
+        # checkedBuildDir: 削除前の絶対パス。
+        $checkedBuildDir = [IO.Path]::GetFullPath($buildDir)
+        # expectedBuildDir: 許可する削除対象。
+        $expectedBuildDir = [IO.Path]::GetFullPath((Join-Path $repoDir 'build-release'))
+        if ($checkedBuildDir -ne $expectedBuildDir -or
+            -not $checkedBuildDir.StartsWith([IO.Path]::GetFullPath($repoDir).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            Fail "ビルドフォルダーの削除対象がソース内ではありません。"
+        }
+        Remove-Item -LiteralPath $checkedBuildDir -Recurse -Force
     }
     New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 
@@ -267,7 +288,7 @@ if (-not $usingNinja) {
     Push-Location $buildDir
     # Ninja構成を作成し、終了時は必ず作業場所を戻す。
     try {
-        & cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="$ninja" $repoDir
+        & $cmake -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_MAKE_PROGRAM="$ninja" $repoDir
         # configureResult: CMake configureの終了code。
         $configureResult = $LASTEXITCODE
     }
@@ -285,7 +306,7 @@ if (-not $usingNinja) {
 Push-Location $buildDir
 # CMake構成を更新し、終了時は作業場所を戻す。
 try {
-    & cmake .
+    & $cmake .
     # configureResult: CMake reconfigureの終了code。
     $configureResult = $LASTEXITCODE
 }
@@ -304,14 +325,14 @@ Push-Location $buildDir
 # cleanとビルド後に作業場所を戻す。
 try {
     # 古いオブジェクトによるABI不一致を避けるためcleanする。
-    & cmake --build . --target clean
+    & $cmake --build . --target clean
     # buildResult: cleanまたはbuildの終了code。
     $buildResult = $LASTEXITCODE
     # cleanに成功した場合だけ必要な配布ターゲットを生成する。
     if ($buildResult -eq 0) {
         # cmake --install対象をすべて生成する。
         # ターゲット追加時はinstall規則とこの一覧をそろえる。
-        & cmake --build . --target `
+        & $cmake --build . --target `
             LamaPonRuntime LamaPonEditorApp LamaPonHub `
             LamaPonGame LamaPonCli
         # 配布ターゲットのビルド終了コード
@@ -330,13 +351,11 @@ if ($buildResult -ne 0) {
 
 Write-Host ""
 Write-Host "[2/3] インストール先へコピーしています..."
-# インストール先フォルダーの存在を確認する。
-if (-not (Test-Path $installDir)) {
-    Fail "インストール先フォルダが見つかりません: $installDir"
-}
+# 初回はインストール先を作成する。
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
 # Runtime、CLI、公開ヘッダーなどをinstall規則で更新する。
-& cmake --install $buildDir --prefix $installDir
+& $cmake --install $buildDir --prefix $installDir
 # CMake installの失敗を検出する。
 if ($LASTEXITCODE -ne 0) {
     Fail "インストールに失敗しました。上のログを確認してください。"

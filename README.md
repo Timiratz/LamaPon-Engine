@@ -21,6 +21,8 @@ C++20、DirectX 11、DirectXTK11、`GameObject + Component`、ランタイムと
 
 ## 開発環境の構築
 
+ビルド済みの配布版は、`LamaPon-<version>-windows-x64-Setup.exe`を実行すると、Engine、Hub、SDK、起動ショートカットをまとめてインストールできます。完了画面の「C++自動ビルドに必要なソフトを確認・セットアップする」から、不足するビルドツールも導入できます。詳しくは[インストールガイド](docs/installation.md)を参照してください。
+
 LamaPonのソースコードはMITライセンスで公開しています。ビルド済みの開発環境はリポジトリへ含めず、Visual Studioとビルドツールは各開発者のPCへ用意する構成です。
 
 対応環境はWindows 10/11（x64）です。Visual Studio InstallerからVisual Studio 2022以降の「C++によるデスクトップ開発」を導入し、次を利用できる状態にしてください。
