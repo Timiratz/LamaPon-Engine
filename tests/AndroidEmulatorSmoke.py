@@ -164,7 +164,9 @@ def prepare_headless_emulator():
 def dismiss_emulator_launcher_anr():
     # Cold boot on the software-rendered CI device can leave a launcher ANR dialog
     # above the resumed game. Close only that process; never dismiss a game ANR.
-    windows = adb("shell", "dumpsys", "window", "windows").stdout.splitlines()
+    # The "windows" subcommand omits the display's mCurrentFocus section on API 35.
+    # Use the complete dump, matching the failure diagnostic that identified this dialog.
+    windows = adb("shell", "dumpsys", "window").stdout.splitlines()
     if any("mCurrentFocus=" in line
            and "Application Not Responding: " + EMULATOR_LAUNCHER + "}" in line
            for line in windows):
