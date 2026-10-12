@@ -966,6 +966,7 @@ namespace LamaPon
     // 再生中以外に履歴の位置を戻して主シーンを復元します。
     void EditorLayer::Undo()
     {
+        FinishUIRectEdit();
         if (!CanUndo() || m_playing)
         {
             return;
@@ -979,6 +980,7 @@ namespace LamaPon
     // 再生中以外に履歴の位置を進めて主シーンを復元します。
     void EditorLayer::Redo()
     {
+        FinishUIRectEdit();
         if (!CanRedo() || m_playing)
         {
             return;
@@ -992,6 +994,10 @@ namespace LamaPon
     // 主シーンの履歴を復元して追加シーンを読み直し、消えた選択対象を解除します。
     void EditorLayer::RestoreHistoryState()
     {
+        // 復元後の同じIDへ、復元前のドラッグを適用しないよう解除します。
+        m_uiEditHandle = -1;
+        m_uiEditObjectId = {};
+        m_uiEditChanged = false;
         try
         {
             if (m_animationTimelineOpen)
