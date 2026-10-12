@@ -27,7 +27,9 @@ OutputDir={#OutputDir}
 OutputBaseFilename=LamaPon-{#AppVersion}-windows-x64-Setup
 SetupIconFile=..\..\assets\icons\LamaPon.ico
 UninstallDisplayIcon={app}\LamaPonHub.exe
-LicenseFile=..\..\LICENSE
+LicenseFile=License.ja.txt
+ShowLanguageDialog=no
+LanguageDetectionMethod=none
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -37,7 +39,6 @@ SetupLogging=yes
 
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
-Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
 japanese.DesktopIcons=デスクトップに起動ショートカットを作成する
@@ -46,12 +47,6 @@ japanese.AutoBuild=LamaPon 自動ビルド
 japanese.SetupBuildEnvironment=C++自動ビルドに必要なソフトを確認・セットアップする（不足時はダウンロードと管理者権限が必要）
 japanese.LaunchHub=LamaPon Hubを起動する
 japanese.InstallHelp=インストールと使い方
-english.DesktopIcons=Create desktop shortcuts
-english.BuildEnvironment=Set up build environment
-english.AutoBuild=LamaPon Auto Build
-english.SetupBuildEnvironment=Check and set up C++ build tools (downloads and administrator access may be required)
-english.LaunchHub=Launch LamaPon Hub
-english.InstallHelp=Installation and usage
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopIcons}"
