@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 project(LamaPonProjectGameModule LANGUAGES CXX)
 
+# LAMAPON_MODULE_FAST_BUILD: 編集時のコンパイルとリンクを短縮するか。
+option(LAMAPON_MODULE_FAST_BUILD "Use fast builds for editor iteration" OFF)
+
 # Windows/MSVC以外のtargetはまだサポートしません。
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "LamaPon project modules currently require MSVC on Windows.")
@@ -191,14 +194,33 @@ target_compile_options(LamaPonGameModule PRIVATE
     /permissive-
     /utf-8
     $<$<CONFIG:Release>:/Gy>
-    $<$<CONFIG:Release>:/GL>
 )
 target_link_options(LamaPonGameModule PRIVATE
-    $<$<CONFIG:Release>:/OPT:REF>
-    $<$<CONFIG:Release>:/OPT:ICF>
-    $<$<CONFIG:Release>:/LTCG>
     $<$<CONFIG:Release>:/PDBALTPATH:LamaPonGameModule.pdb>
 )
+if(LAMAPON_MODULE_FAST_BUILD)
+    # configuration: 編集時に最適化を省く構成。
+    foreach(configuration RELEASE RELWITHDEBINFO MINSIZEREL)
+        string(REGEX REPLACE "(^|[ \t])[/-]O[12xs]([ \t]|$)" "\\1\\2"
+            CMAKE_CXX_FLAGS_${configuration} "${CMAKE_CXX_FLAGS_${configuration}}")
+        string(REGEX REPLACE "(^|[ \t])[/-]Ob[123]([ \t]|$)" "\\1\\2"
+            CMAKE_CXX_FLAGS_${configuration} "${CMAKE_CXX_FLAGS_${configuration}}")
+    endforeach()
+    # RuntimeとのABIを維持し、Scriptだけ最適化を省きます。
+    target_compile_options(LamaPonGameModule PRIVATE /Od /Ob0)
+    target_precompile_headers(LamaPonGameModule PRIVATE
+        "${LAMAPON_ENGINE_ROOT}/src/LamaPon/LamaPon.h")
+    target_link_options(LamaPonGameModule PRIVATE
+        /DEBUG:FULL /INCREMENTAL /OPT:NOREF /OPT:NOICF)
+else()
+    target_compile_options(LamaPonGameModule PRIVATE
+        $<$<CONFIG:Release>:/GL>)
+    target_link_options(LamaPonGameModule PRIVATE
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG>)
+endif()
+
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
 
 # LAMAPON_PACKAGE_INCLUDE_DIRECTORIESだけをinclude search pathへ追加します。

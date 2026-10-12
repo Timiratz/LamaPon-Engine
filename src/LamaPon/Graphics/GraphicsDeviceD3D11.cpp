@@ -217,6 +217,14 @@ namespace LamaPon::Detail
         // 描画サービスをネイティブ描画状態より先に解放する。
         renderServices.reset();
         spriteShaderCallback = {};
+        spriteMeshVertexShader.Reset();
+        spriteMeshPixelShader.Reset();
+        spriteMeshInputLayout.Reset();
+        spriteMeshViewportBuffer.Reset();
+        spriteMeshVertexBuffer.Reset();
+        spriteMeshIndexBuffer.Reset();
+        spriteMeshVertexCapacity = 0;
+        spriteMeshIndexCapacity = 0;
         spriteBatchOwner = D3D11SpriteBatchOwner::None;
         spriteBatchToken = 0;
         spriteBatchNativeBegun = false;

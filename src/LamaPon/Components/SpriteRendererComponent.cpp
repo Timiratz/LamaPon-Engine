@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Components/FrameDebugDescription.h"
+#include "LamaPon/Components/SpriteMeshDeformer.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -317,6 +318,105 @@ namespace LamaPon
             }
         }
 
+        if (UsesMesh())
+        {
+            // ワールド2Dの画面補正量
+            const XMFLOAT2 offset = m_graphics != nullptr
+                ? m_graphics->Sprite2DOffset()
+                : XMFLOAT2{};
+            // 通常画像だけ部分領域を使い、カメラ出力と単色は全体を使います。
+            // 格子へ割り当てる正規化UV矩形
+            const XMFLOAT4 uvRect =
+                !renderTextureView && m_texture != nullptr
+                    ? m_sourceRect
+                    : XMFLOAT4{ 0.0f, 0.0f, 1.0f, 1.0f };
+            // 描画する格子頂点のローカル位置
+            const auto localPositions = DeformedMeshPositions();
+            m_meshVertices.resize(localPositions.size());
+            // 格子の頂点番号
+            for (std::size_t index = 0;
+                index < localPositions.size();
+                ++index)
+            {
+                // 格子内の列番号
+                const auto column =
+                    static_cast<int>(index)
+                    % (m_meshColumns + 1);
+                // 格子内の行番号
+                const auto row =
+                    static_cast<int>(index)
+                    / (m_meshColumns + 1);
+                // 頂点のローカル位置
+                const auto& local = localPositions[index];
+                m_meshVertices[index] = {
+                    {
+                        local.x * world._11
+                            + local.y * world._21
+                            + world._41
+                            + offset.x,
+                        local.x * world._12
+                            + local.y * world._22
+                            + world._42
+                            + offset.y
+                    },
+                    {
+                        uvRect.x
+                            + uvRect.z
+                                * static_cast<float>(column)
+                                / static_cast<float>(m_meshColumns),
+                        uvRect.y
+                            + uvRect.w
+                                * static_cast<float>(row)
+                                / static_cast<float>(m_meshRows)
+                    },
+                    premultipliedColor
+                };
+            }
+            if (m_meshIndices.empty())
+            {
+                m_meshIndices.reserve(
+                    static_cast<std::size_t>(
+                        m_meshColumns * m_meshRows * 6));
+                // 三角形を作る格子の行
+                for (int row = 0; row < m_meshRows; ++row)
+                {
+                    // 三角形を作る格子の列
+                    for (int column = 0;
+                        column < m_meshColumns;
+                        ++column)
+                    {
+                        // 区画の左上の頂点番号
+                        const auto topLeft =
+                            static_cast<std::uint16_t>(
+                                row * (m_meshColumns + 1) + column);
+                        // 区画の左下の頂点番号
+                        const auto bottomLeft =
+                            static_cast<std::uint16_t>(
+                                topLeft + m_meshColumns + 1);
+                        m_meshIndices.insert(
+                            m_meshIndices.end(),
+                            {
+                                topLeft,
+                                static_cast<std::uint16_t>(topLeft + 1),
+                                bottomLeft,
+                                bottomLeft,
+                                static_cast<std::uint16_t>(topLeft + 1),
+                                static_cast<std::uint16_t>(bottomLeft + 1)
+                            });
+                    }
+                }
+            }
+            // 画像と格子頂点の描画要求
+            SpriteMeshDrawRequest meshRequest;
+            meshRequest.texture = renderTextureView
+                ? renderTextureView
+                : textureView;
+            meshRequest.vertices = m_meshVertices;
+            meshRequest.indices = m_meshIndices;
+            static_cast<void>(sprites.DrawMesh(meshRequest));
+            return;
+        }
+
         // 画像・姿勢・色の描画要求
         SpriteDrawRequest request;
         request.texture = renderTextureView
@@ -332,12 +432,156 @@ namespace LamaPon
         static_cast<void>(sprites.Draw(request));
     }
 
+    void SpriteRendererComponent::SetMeshGrid(
+        const int columns,
+        const int rows)
+    {
+        // 1〜64へ収めた横の分割数
+        const int nextColumns = std::clamp(columns, 1, 64);
+        // 1〜64へ収めた縦の分割数
+        const int nextRows = std::clamp(rows, 1, 64);
+        if (nextColumns == m_meshColumns && nextRows == m_meshRows)
+        {
+            return;
+        }
+        m_meshColumns = nextColumns;
+        m_meshRows = nextRows;
+        m_meshIndices.clear();
+        if (!m_meshDeformation.empty()
+            && m_meshDeformation.size() != MeshVertexCount())
+        {
+            m_meshDeformation.clear();
+        }
+    }
+
+    std::vector<DirectX::XMFLOAT2>
+        SpriteRendererComponent::MeshRestPositions() const
+    {
+        // 上の行から並べる静止頂点
+        std::vector<DirectX::XMFLOAT2> positions;
+        positions.reserve(MeshVertexCount());
+        // 頂点の行番号
+        for (int row = 0; row <= m_meshRows; ++row)
+        {
+            // 頂点の列番号
+            for (int column = 0; column <= m_meshColumns; ++column)
+            {
+                positions.push_back({
+                    (static_cast<float>(column)
+                            / static_cast<float>(m_meshColumns)
+                        - m_pivot.x)
+                        * m_size.x,
+                    (static_cast<float>(row)
+                            / static_cast<float>(m_meshRows)
+                        - m_pivot.y)
+                        * m_size.y });
+            }
+        }
+        return positions;
+    }
+
+    bool SpriteRendererComponent::SetMeshDeformation(
+        std::vector<DirectX::XMFLOAT2> positions)
+    {
+        // 格子と同数で全座標が有限か
+        const bool valid =
+            positions.size() == MeshVertexCount()
+            && std::all_of(
+                positions.begin(),
+                positions.end(),
+                // 有限の座標か判定します(position: 確認する頂点)。
+                [](const DirectX::XMFLOAT2& position)
+                {
+                    return std::isfinite(position.x)
+                        && std::isfinite(position.y);
+                });
+        if (!valid)
+        {
+            m_meshDeformation.clear();
+            return positions.empty();
+        }
+        m_meshDeformation = std::move(positions);
+        return true;
+    }
+
+    bool SpriteRendererComponent::UsesMesh() const
+    {
+        if (Owner().GetComponent<UIRectTransformComponent>() != nullptr)
+        {
+            return false;
+        }
+        if (m_meshColumns * m_meshRows > 1
+            || !m_meshDeformation.empty())
+        {
+            return true;
+        }
+        // 変形部品を探す同じGameObjectの部品
+        for (const auto& component : Owner().Components())
+        {
+            // 頂点を変形する部品
+            const auto* deformer =
+                dynamic_cast<const SpriteMeshDeformer*>(
+                    component.get());
+            if (deformer != nullptr
+                && deformer->IsEnabled()
+                && deformer->DeformsSpriteMesh())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<DirectX::XMFLOAT2>
+        SpriteRendererComponent::DeformedMeshPositions(
+            const SpriteMeshDeformer* const skipped) const
+    {
+        // 変形を重ねる格子頂点
+        auto positions = m_meshDeformation.empty()
+            ? MeshRestPositions()
+            : m_meshDeformation;
+        // 変形部品を探す同じGameObjectの部品
+        for (const auto& component : Owner().Components())
+        {
+            // 頂点を変形する部品
+            auto* const deformer =
+                dynamic_cast<SpriteMeshDeformer*>(component.get());
+            if (deformer == nullptr
+                || deformer == skipped
+                || !deformer->IsEnabled())
+            {
+                continue;
+            }
+            // 変形前の頂点数
+            const auto count = positions.size();
+            deformer->DeformSpriteMesh(*this, positions);
+            // 変形後の全頂点が有限か
+            const bool finite = std::all_of(
+                positions.begin(),
+                positions.end(),
+                // 有限の座標か判定します(position: 確認する頂点)。
+                [](const DirectX::XMFLOAT2& position)
+                {
+                    return std::isfinite(position.x)
+                        && std::isfinite(position.y);
+                });
+            if (positions.size() != count || !finite)
+            {
+                return m_meshDeformation.empty()
+                    ? MeshRestPositions()
+                    : m_meshDeformation;
+            }
+        }
+        return positions;
+    }
+
     bool SpriteRendererComponent::DescribeDrawEvent(
         FrameDebugDrawDescription& description) const
     {
         return Detail::DescribeTexturedDraw(
             description,
-            "スプライト " + Detail::FrameDebugNumber(Size().x) + "x"
+            std::string(UsesMesh() ? "スプライトメッシュ " : "スプライト ")
+                + Detail::FrameDebugNumber(Size().x) + "x"
                 + Detail::FrameDebugNumber(Size().y),
             TexturePath(),
             RenderSortOrder());

@@ -48,6 +48,10 @@ namespace LamaPon
             PropertiesSchemaJson() const noexcept;
         // JSONを検証して旧実体を破棄し、新しいプロパティで再生成する(propertiesJson: 64KiB以下のJSONオブジェクト)。
         void SetPropertiesJson(std::string propertiesJson);
+        // Apply an opted-in script's values without recreating its instance or calling Start.
+        // LoadProperties must validate before modifying script state.
+        void ApplyPropertiesJsonLive(std::string propertiesJson);
+
         // 登録型がホストに見つかるか確認する。
         [[nodiscard]] bool IsResolved() const noexcept;
         // 実体をGame Module側で基底Scriptへ変換し、未生成や変換未対応ならnullptrを返す。

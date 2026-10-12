@@ -7,10 +7,13 @@
 #include <SpriteBatch.h>
 
 #include <DirectXMath.h>
+#include <d3dcompiler.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -256,6 +259,278 @@ namespace
             throw;
         }
         resources.uiScissorStack.swap(nextScissors);
+    }
+
+    // 2DメッシュのGPU頂点です。
+    struct SpriteMeshGpuVertex final
+    {
+        // 画素位置と層深度
+        DirectX::XMFLOAT3 position;
+        // RGBAの乗算色
+        DirectX::XMFLOAT4 color;
+        // 画像のUV座標
+        DirectX::XMFLOAT2 textureCoordinate;
+    };
+
+    // VSのb0へ渡す画素変換定数です。
+    struct SpriteMeshViewportConstants final
+    {
+        // 画素をNDCへ移すXY倍率と予約
+        DirectX::XMFLOAT4 viewportScale;
+    };
+
+    // SpriteBatchと同じ変換・入出力順で描く2DメッシュのHLSL
+    constexpr char SpriteMeshShaderSource[] = R"(
+// VSのb0へ渡す画素変換倍率
+cbuffer SpriteMeshViewport : register(b0)
+{
+    // 画素をNDCへ移すXY倍率と予約
+    float4 ViewportScale;
+};
+
+// t0の主入力画像
+Texture2D SpriteTexture : register(t0);
+// s0の線形端固定サンプラー
+SamplerState SpriteSampler : register(s0);
+
+struct VertexInput
+{
+    // 画面内の画素座標と層深度
+    float3 position : POSITION;
+    // 頂点のRGBA色
+    float4 color : COLOR;
+    // 入力画像のUV座標
+    float2 textureCoordinate : TEXCOORD;
+};
+
+// 外部PSMainとの互換のためCOLOR0・TEXCOORD0・SV_Positionの順を維持します。
+struct PixelInput
+{
+    // 頂点のRGBA色
+    float4 color : COLOR0;
+    // 入力画像のUV座標
+    float2 textureCoordinate : TEXCOORD0;
+    // 頂点のクリップ座標
+    float4 position : SV_Position;
+};
+
+// 画素位置をクリップ座標へ変換して色とUVを渡します(input: 画素位置・RGBA色・UV)。
+PixelInput SpriteMeshVertexShader(VertexInput input)
+{
+    // 画素段へ渡す頂点出力
+    PixelInput output;
+    output.position = float4(
+        input.position.x * ViewportScale.x - 1.0f,
+        1.0f - input.position.y * ViewportScale.y,
+        input.position.z,
+        1.0f);
+    output.color = input.color;
+    output.textureCoordinate = input.textureCoordinate;
+    return output;
+}
+
+// 主画像に頂点色を掛けたRGBAを返します(input: 色・UV・射影位置)。
+float4 SpriteMeshPixelShader(PixelInput input) : SV_Target0
+{
+    return SpriteTexture.Sample(SpriteSampler, input.textureCoordinate)
+        * input.color;
+}
+)";
+
+    // 失敗したHRESULTを操作名付きの例外にします(result: 結果, operation: 操作名)。
+    void ThrowIfFailed(
+        const HRESULT result,
+        const char* const operation)
+    {
+        if (FAILED(result))
+        {
+            throw std::runtime_error(
+                std::string(operation)
+                + " failed with HRESULT "
+                + std::to_string(static_cast<unsigned long>(result)));
+        }
+    }
+
+    // 埋め込みHLSLをコンパイルし、診断を例外にします(entryPoint: 入口関数名, target: シェーダー形式)。
+    [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob> CompileSpriteMeshShader(
+        const char* const entryPoint,
+        const char* const target)
+    {
+        // コンパイル済みシェーダー
+        Microsoft::WRL::ComPtr<ID3DBlob> bytecode;
+        // コンパイラーの診断文字列
+        Microsoft::WRL::ComPtr<ID3DBlob> errors;
+        // コンパイル結果
+        const HRESULT result = D3DCompile(
+            SpriteMeshShaderSource,
+            sizeof(SpriteMeshShaderSource) - 1u,
+            "LamaPonD3D11SpriteMesh",
+            nullptr,
+            nullptr,
+            entryPoint,
+            target,
+            D3DCOMPILE_ENABLE_STRICTNESS
+                | D3DCOMPILE_OPTIMIZATION_LEVEL3,
+            0,
+            bytecode.GetAddressOf(),
+            errors.GetAddressOf());
+        if (FAILED(result))
+        {
+            // 例外へ渡すコンパイル診断
+            std::string message =
+                std::string("D3DCompile(") + entryPoint + ") failed";
+            if (errors != nullptr && errors->GetBufferSize() > 0)
+            {
+                message += ": ";
+                message.append(
+                    static_cast<const char*>(errors->GetBufferPointer()),
+                    errors->GetBufferSize());
+            }
+            throw std::runtime_error(message);
+        }
+        return bytecode;
+    }
+
+    // 未作成のメッシュ用シェーダー・入力配置・定数を作ります(resources: 所有先, device: 作成デバイス)。
+    void EnsureSpriteMeshPipeline(
+        SpriteResources& resources,
+        ID3D11Device* const device)
+    {
+        if (resources.spriteMeshVertexShader != nullptr)
+        {
+            return;
+        }
+        // 頂点シェーダーのバイトコード
+        const auto vertexCode =
+            CompileSpriteMeshShader("SpriteMeshVertexShader", "vs_5_0");
+        // 画素シェーダーのバイトコード
+        const auto pixelCode =
+            CompileSpriteMeshShader("SpriteMeshPixelShader", "ps_5_0");
+        // 作成途中の頂点シェーダー
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+        ThrowIfFailed(
+            device->CreateVertexShader(
+                vertexCode->GetBufferPointer(),
+                vertexCode->GetBufferSize(),
+                nullptr,
+                vertexShader.GetAddressOf()),
+            "ID3D11Device::CreateVertexShader(sprite mesh)");
+        // 作成途中の画素シェーダー
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+        ThrowIfFailed(
+            device->CreatePixelShader(
+                pixelCode->GetBufferPointer(),
+                pixelCode->GetBufferSize(),
+                nullptr,
+                pixelShader.GetAddressOf()),
+            "ID3D11Device::CreatePixelShader(sprite mesh)");
+        // 頂点の入力要素
+        const D3D11_INPUT_ELEMENT_DESC elements[]{
+            {
+                "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
+                offsetof(SpriteMeshGpuVertex, position),
+                D3D11_INPUT_PER_VERTEX_DATA, 0
+            },
+            {
+                "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                offsetof(SpriteMeshGpuVertex, color),
+                D3D11_INPUT_PER_VERTEX_DATA, 0
+            },
+            {
+                "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+                offsetof(SpriteMeshGpuVertex, textureCoordinate),
+                D3D11_INPUT_PER_VERTEX_DATA, 0
+            }
+        };
+        // 作成途中の入力配置
+        Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+        ThrowIfFailed(
+            device->CreateInputLayout(
+                elements,
+                static_cast<UINT>(std::size(elements)),
+                vertexCode->GetBufferPointer(),
+                vertexCode->GetBufferSize(),
+                inputLayout.GetAddressOf()),
+            "ID3D11Device::CreateInputLayout(sprite mesh)");
+        // 画素変換定数の仕様
+        D3D11_BUFFER_DESC constantDescription{};
+        constantDescription.ByteWidth =
+            sizeof(SpriteMeshViewportConstants);
+        constantDescription.Usage = D3D11_USAGE_DYNAMIC;
+        constantDescription.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        constantDescription.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        // 作成途中の画素変換定数
+        Microsoft::WRL::ComPtr<ID3D11Buffer> viewportBuffer;
+        ThrowIfFailed(
+            device->CreateBuffer(
+                &constantDescription,
+                nullptr,
+                viewportBuffer.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(sprite mesh viewport)");
+
+        resources.spriteMeshVertexShader = std::move(vertexShader);
+        resources.spriteMeshPixelShader = std::move(pixelShader);
+        resources.spriteMeshInputLayout = std::move(inputLayout);
+        resources.spriteMeshViewportBuffer = std::move(viewportBuffer);
+    }
+
+    // 必要数が入る動的バッファを用意します(device: 作成デバイス, buffer: 所有先, capacity: 現在の要素数, required: 必要な要素数, elementSize: 1要素のバイト数, bindFlags: 結合先)。
+    void EnsureDynamicBuffer(
+        ID3D11Device* const device,
+        Microsoft::WRL::ComPtr<ID3D11Buffer>& buffer,
+        UINT& capacity,
+        const std::size_t required,
+        const std::size_t elementSize,
+        const UINT bindFlags)
+    {
+        if (buffer != nullptr && capacity >= required)
+        {
+            return;
+        }
+        // 2の累乗へ切り上げた要素数
+        UINT nextCapacity = 256u;
+        while (nextCapacity < required)
+        {
+            nextCapacity *= 2u;
+        }
+        // 動的バッファの仕様
+        D3D11_BUFFER_DESC description{};
+        description.ByteWidth =
+            static_cast<UINT>(nextCapacity * elementSize);
+        description.Usage = D3D11_USAGE_DYNAMIC;
+        description.BindFlags = bindFlags;
+        description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        // 作成途中のバッファ
+        Microsoft::WRL::ComPtr<ID3D11Buffer> created;
+        ThrowIfFailed(
+            device->CreateBuffer(
+                &description,
+                nullptr,
+                created.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(sprite mesh)");
+        buffer = std::move(created);
+        capacity = nextCapacity;
+    }
+
+    // 動的バッファの内容を置き換えます(context: 即時命令のコンテキスト, buffer: 書き込み先, data: 書き込む内容, size: バイト数)。
+    void WriteDynamicBuffer(
+        ID3D11DeviceContext* const context,
+        ID3D11Buffer* const buffer,
+        const void* const data,
+        const std::size_t size)
+    {
+        // 書き込み先の割り当て
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        ThrowIfFailed(
+            context->Map(
+                buffer,
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                &mapped),
+            "ID3D11DeviceContext::Map(sprite mesh)");
+        std::memcpy(mapped.pData, data, size);
+        context->Unmap(buffer, 0);
     }
 }
 
@@ -511,6 +786,190 @@ namespace LamaPon
         catch (...)
         {
             // 描画失敗後も開始済み状態を保持し、Abortで一度だけ安全なEndを試みます。
+            PoisonSpriteBatch(resources);
+            throw;
+        }
+        return true;
+    }
+
+    // 待機中の画像を送信してから検証済みのメッシュを描けたか返します(token: パス識別番号, request: 画像と頂点・索引)。
+    bool GraphicsDevice::DrawD3D11SpriteMesh(
+        const std::uint64_t token,
+        const SpriteMeshDrawRequest& request)
+    {
+        // 現在のD3D11スプライト資源
+        auto& resources = RequireD3D11ApiResources();
+        RequireSpriteOwner(
+            resources,
+            SpriteOwner::Neutral,
+            token);
+
+        // 保持して描画する入力ビュー
+        const auto& texture = request.texture
+            ? request.texture
+            : m_state->m_whiteTextureView;
+        // 入力画像のD3D11 SRV
+        auto* const view =
+            TryResolveD3D11ShaderResourceView(texture);
+        if (view == nullptr)
+        {
+            return false;
+        }
+
+        // バッチを止める前に作成・転送の失敗を確定させ、失敗時もパスを続けられるようにします。
+        EnsureSpriteMeshPipeline(resources, Device());
+        EnsureDynamicBuffer(
+            Device(),
+            resources.spriteMeshVertexBuffer,
+            resources.spriteMeshVertexCapacity,
+            request.vertices.size(),
+            sizeof(SpriteMeshGpuVertex),
+            D3D11_BIND_VERTEX_BUFFER);
+        EnsureDynamicBuffer(
+            Device(),
+            resources.spriteMeshIndexBuffer,
+            resources.spriteMeshIndexCapacity,
+            request.indices.size(),
+            sizeof(std::uint16_t),
+            D3D11_BIND_INDEX_BUFFER);
+        // 転送するGPU頂点
+        std::vector<SpriteMeshGpuVertex> vertices;
+        vertices.reserve(request.vertices.size());
+        // 変換する頂点
+        for (const auto& vertex : request.vertices)
+        {
+            vertices.push_back({
+                { vertex.position.x, vertex.position.y, request.layerDepth },
+                vertex.color,
+                vertex.textureCoordinate });
+        }
+
+        // 描画順を保つため、先に積んだ画像を送信します。
+        try
+        {
+            resources.spriteBatch->End();
+            resources.spriteBatchNativeBegun = false;
+        }
+        catch (...)
+        {
+            resources.spriteBatchNativeBegun = false;
+            PoisonSpriteBatch(resources);
+            throw;
+        }
+
+        // 即時命令のコンテキスト
+        auto* const context = Context();
+        try
+        {
+            WriteDynamicBuffer(
+                context,
+                resources.spriteMeshVertexBuffer.Get(),
+                vertices.data(),
+                vertices.size() * sizeof(SpriteMeshGpuVertex));
+            WriteDynamicBuffer(
+                context,
+                resources.spriteMeshIndexBuffer.Get(),
+                request.indices.data(),
+                request.indices.size_bytes());
+
+            // SpriteBatchと同じく先頭のビューポートの寸法で画素を変換します。
+            // 現在のビューポート
+            D3D11_VIEWPORT viewport{};
+            // 取得するビューポート数
+            UINT viewportCount = 1;
+            context->RSGetViewports(&viewportCount, &viewport);
+            // 画素をNDCへ移す定数
+            const SpriteMeshViewportConstants constants{ {
+                viewport.Width > 0.0f ? 2.0f / viewport.Width : 0.0f,
+                viewport.Height > 0.0f ? 2.0f / viewport.Height : 0.0f,
+                0.0f,
+                0.0f } };
+            WriteDynamicBuffer(
+                context,
+                resources.spriteMeshViewportBuffer.Get(),
+                &constants,
+                sizeof(constants));
+
+            // 頂点の間隔
+            const UINT stride = sizeof(SpriteMeshGpuVertex);
+            // 頂点バッファの先頭
+            const UINT offset = 0;
+            // 結合する頂点バッファ
+            ID3D11Buffer* const vertexBuffer =
+                resources.spriteMeshVertexBuffer.Get();
+            // 結合する画素変換定数
+            ID3D11Buffer* const viewportBuffer =
+                resources.spriteMeshViewportBuffer.Get();
+            // 結合する線形端固定サンプラー
+            ID3D11SamplerState* const sampler =
+                resources.commonStates->LinearClamp();
+            context->IASetInputLayout(
+                resources.spriteMeshInputLayout.Get());
+            context->IASetPrimitiveTopology(
+                D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context->IASetVertexBuffers(
+                0,
+                1,
+                &vertexBuffer,
+                &stride,
+                &offset);
+            context->IASetIndexBuffer(
+                resources.spriteMeshIndexBuffer.Get(),
+                DXGI_FORMAT_R16_UINT,
+                0);
+            context->VSSetShader(
+                resources.spriteMeshVertexShader.Get(),
+                nullptr,
+                0);
+            context->VSSetConstantBuffers(0, 1, &viewportBuffer);
+            context->GSSetShader(nullptr, nullptr, 0);
+            context->HSSetShader(nullptr, nullptr, 0);
+            context->DSSetShader(nullptr, nullptr, 0);
+            context->PSSetShader(
+                resources.spriteMeshPixelShader.Get(),
+                nullptr,
+                0);
+            context->PSSetShaderResources(0, 1, &view);
+            context->PSSetSamplers(0, 1, &sampler);
+            context->OMSetBlendState(
+                resources.spriteBlendState,
+                nullptr,
+                0xffffffff);
+            context->OMSetDepthStencilState(
+                resources.commonStates->DepthNone(),
+                0);
+            // メッシュは反転しても見えるよう両面を描きます。
+            context->RSSetState(
+                resources.uiScissorStack.empty()
+                    ? resources.commonStates->CullNone()
+                    : resources.uiScissorRasterizer.Get());
+            // 独自シェーダーは既定の画素シェーダーと定数を上書きします。
+            if (resources.spriteShaderCallback)
+            {
+                resources.spriteShaderCallback();
+            }
+            context->DrawIndexed(
+                static_cast<UINT>(request.indices.size()),
+                0,
+                0);
+        }
+        catch (...)
+        {
+            PoisonSpriteBatch(resources);
+            throw;
+        }
+
+        try
+        {
+            BeginNativeSpriteBatch(
+                resources,
+                resources.uiScissorStack.empty()
+                    ? nullptr
+                    : resources.uiScissorRasterizer.Get());
+        }
+        catch (...)
+        {
+            resources.spriteBatchNativeBegun = false;
             PoisonSpriteBatch(resources);
             throw;
         }

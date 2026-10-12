@@ -6,15 +6,16 @@
   <title>LamaPon Web Game</title>
   <style>
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    body { background: #0b1220; color: #e5eefc; }
+    body { background: #0b1220; color: #e5eefc; overscroll-behavior: none; }
     #stage {
       position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px;
-      transform-origin: center; overflow: hidden; background: #b9a18a;
+      transform-origin: center; overflow: hidden; background: #b9a18a; touch-action: none;
     }
     #canvas, #software-canvas, #software3d, #hud {
       position: absolute; inset: 0; width: 1280px; height: 720px;
     }
-    #canvas, #software-canvas { display: block; outline: none; }
+    #canvas, #software-canvas { display: block; outline: none; touch-action: none; }
+    #software3d { touch-action: none; }
     #software-canvas, #software3d { display: none; }
     #hud { pointer-events: none; overflow: hidden; }
     #help {
@@ -23,6 +24,11 @@
       font: 14px/1.4 system-ui, sans-serif; pointer-events: none;
     }
     body[data-lamapon-status="running"] #help { opacity: 0; }
+    #controls { position: fixed; right: max(12px, env(safe-area-inset-right));
+      bottom: max(12px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
+    #controls button { padding: 8px 12px; border: 1px solid #60718d; border-radius: 8px;
+      background: rgba(4, 10, 20, .78); color: #e5eefc; cursor: pointer;
+      font: 14px/1.4 system-ui, sans-serif; touch-action: manipulation; }
   </style>
 </head>
 <body data-lamapon-status="loading">
@@ -32,7 +38,11 @@
     <svg id="software3d" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" tabindex="0" aria-label="Software 3D fallback"></svg>
     <section id="hud" aria-label="Game HUD"></section>
   </main>
-  <p id="help">Loading LamaPon Web game…</p>
+  <p id="help" role="status" aria-live="polite">Loading LamaPon Web game…</p>
+  <nav id="controls" aria-label="Game controls">
+    <button id="fullscreen" type="button">Fullscreen</button>
+    <button id="reload" type="button" hidden>Reload game</button>
+  </nav>
   <script>
     // Stage layout初期化: resize handlerを登録し初回表示を更新します。
     (() => {
@@ -48,6 +58,8 @@
         const scale = Math.min(width / 1280, height / 720);
         // stage: 拡縮・中央配置するDOM element。
         const stage = document.getElementById("stage");
+        stage.style.left = ((viewport?.offsetLeft || 0) + width / 2) + "px";
+        stage.style.top = ((viewport?.offsetTop || 0) + height / 2) + "px";
         stage.style.transform =
           "translate(-50%, -50%) scale(" + scale + ")";
         document.body.dataset.lamaponStageScale = scale.toFixed(6);
@@ -55,8 +67,51 @@
       };
       addEventListener("resize", resize, { passive: true });
       window.visualViewport?.addEventListener("resize", resize, { passive: true });
+      window.visualViewport?.addEventListener("scroll", resize, { passive: true });
       resize();
     })();
+    const help = document.getElementById("help");
+    const fullscreen = document.getElementById("fullscreen");
+    const reload = document.getElementById("reload");
+    const fail = message => {
+      document.body.dataset.lamaponStatus = "failed";
+      document.body.dataset.lamaponError = message;
+      help.textContent = message;
+      help.style.color = "#ffd0d0";
+      reload.hidden = false;
+    };
+    reload.addEventListener("click", () => location.reload());
+    fullscreen.hidden = !document.fullscreenEnabled;
+    fullscreen.addEventListener("click", async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await document.documentElement.requestFullscreen();
+        document.getElementById("canvas").focus();
+      } catch (error) { console.warn("Fullscreen unavailable:", error); }
+    });
+    document.addEventListener("fullscreenchange", () => {
+      fullscreen.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+    });
+    document.getElementById("canvas").addEventListener("webglcontextlost", event => {
+      event.preventDefault();
+      document.__lamaponContextLost = true;
+      document.body.dataset.lamaponStatus = "recovering";
+      document.body.dataset.lamaponGraphicsRecovery = "pending";
+      help.textContent = "Restoring graphics…";
+      const recovery = document.__lamaponRecoveryGeneration = (document.__lamaponRecoveryGeneration || 0) + 1;
+      setTimeout(() => {
+        if (document.__lamaponContextLost && recovery === document.__lamaponRecoveryGeneration)
+          fail("Graphics could not be restored. Reload the game to restart.");
+      }, 10000);
+    });
+    var Module = {
+      canvas: document.getElementById("canvas"),
+      setStatus: message => {
+        if (document.body.dataset.lamaponStatus === "loading" && message)
+          help.textContent = message;
+      },
+      onAbort: reason => fail("Game startup failed: " + String(reason))
+    };
   </script>
   {{{ SCRIPT }}}
 </body>

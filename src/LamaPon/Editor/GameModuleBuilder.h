@@ -20,7 +20,15 @@ namespace LamaPon
         std::filesystem::path buildDirectory;
         // ローカルのビルドキャッシュか
         bool usesLocalBuildCache{};
+        // 同時に実行するビルド数
+        std::uint32_t parallelJobs{ 1 };
     };
+
+    // CPUと空きメモリから1～2並列を選びます(logicalProcessors: 論理CPU数, availablePhysicalMemory: 空き物理メモリ・byte, availableCommitMemory: 空きコミット容量・byte)。
+    [[nodiscard]] std::uint32_t SelectGameModuleBuildParallelJobs(
+        std::uint32_t logicalProcessors,
+        std::uint64_t availablePhysicalMemory,
+        std::uint64_t availableCommitMemory) noexcept;
 
     struct GameModuleBuildState final
     {
@@ -46,13 +54,14 @@ namespace LamaPon
         const std::filesystem::path& projectRoot) noexcept;
 
 
-    // 前提を検証し、依存設定を出力してビルド用のコマンドを構築します(projectRoot: プロジェクトの基準パス, engineRoot: エンジンのソース基準パス, runtimeDirectory: Runtime.libの保存先, configuration: CMakeのビルド構成名)。
+    // ビルドコマンドを構築します(projectRoot: プロジェクトルート, engineRoot: SDKルート, runtimeDirectory: Runtimeの配置先, configuration: ビルド構成, fastBuild: 編集用の高速ビルドか)。
     [[nodiscard]] GameModuleBuildCommand
         MakeGameModuleBuildCommand(
             const std::filesystem::path& projectRoot,
             const std::filesystem::path& engineRoot,
             const std::filesystem::path& runtimeDirectory,
-            const std::string& configuration);
+            const std::string& configuration,
+            bool fastBuild = false);
 
 
     // 例外時は0を返しますが、既に変更した更新時刻は元に戻しません。

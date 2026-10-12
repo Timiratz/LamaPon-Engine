@@ -21,6 +21,10 @@
 #define LAMAPON_WEB_AUDIO_ENABLED 0
 #endif
 
+#if defined(LAMAPON_WEB_TEXTURE_PROBE)
+void LamaPonWebTextureProbe(LamaPon::Web::Renderer3D& renderer);
+#endif
+
 namespace
 {
     using namespace LamaPon::Web;
@@ -61,6 +65,9 @@ namespace
             {
                 return false;
             }
+#if defined(LAMAPON_WEB_TEXTURE_PROBE)
+            LamaPonWebTextureProbe(m_renderer);
+#endif
 #if LAMAPON_WEB_AUDIO_ENABLED
             m_audio.Initialize();
 #endif

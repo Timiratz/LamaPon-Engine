@@ -10,7 +10,7 @@
 
 namespace LamaPon
 {
-    enum class GameExportTarget { Windows, Web };
+    enum class GameExportTarget { Windows, Web, LinuxBuildProject, AndroidBuildProject, AndroidApk };
 
     // 描画中だけ借用するパス・設定のsnapshotと、UIスレッドで呼ぶ保存・通知・参照処理。
     struct GameExportDialogContext final
@@ -33,7 +33,7 @@ namespace LamaPon
         std::function<std::optional<std::filesystem::path>(const std::filesystem::path&)> browse;
     };
 
-    // EditorLayerを保持せず入力・診断結果・Web出力jobを所有する。
+    // EditorLayerを保持せず入力・診断結果・出力jobを所有する。
     class GameExportDialog final
     {
     public:
@@ -53,7 +53,7 @@ namespace LamaPon
         void Start(const GameExportDialogContext& context);
         // 指定パスを出力先入力のUTF8バッファへ移す(path: 設定する出力フォルダー)。
         void SetPath(const std::filesystem::path& path);
-        // 選択中のWindows・Web出力形式
+        // 選択中のゲーム出力またはネイティブビルド設定の形式
         GameExportTarget m_target{GameExportTarget::Windows};
         // 既定出力先を求めるprojectルート
         std::filesystem::path m_projectRoot;
@@ -63,6 +63,10 @@ namespace LamaPon
         std::array<char, 4096> m_emsdk{};
         // Python実行パスのUTF8入力
         std::array<char, 4096> m_python{};
+        std::array<char, 4096> m_androidSdk{}, m_javaHome{}, m_gradleHome{}, m_sdlSource{};
+        std::array<char, 256> m_wslDistribution{};
+        bool m_androidDownloads{};
+        bool m_buildLinuxWithWsl{};
         // SignTool実行パスのUTF8入力
         std::array<char, 4096> m_signTool{};
         // 署名証明書の40桁SHA1拇印
@@ -81,7 +85,7 @@ namespace LamaPon
         std::string m_success;
         // 出力完了したフォルダーのパス
         std::filesystem::path m_completedOutput;
-        // 非同期Web出力processの所有先
+        // 非同期Web出力／ネイティブビルド設定生成processの所有先
         WebExportJob m_web;
     };
 }

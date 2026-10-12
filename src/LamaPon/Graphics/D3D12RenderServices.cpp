@@ -35,7 +35,9 @@ namespace
     using LamaPon::PrimitiveRenderVertex;
 
     // 標準照明とインスタンス描画のHLSL
-    constexpr char PrimitiveShaderSource[] = R"(
+    constexpr char PrimitiveShaderSource[] =
+        // MSVCの単一リテラルの長さ制限を避け、同じHLSLを連結します。
+        R"(
 // C++の2448バイト定数と同じb0配置
 cbuffer PrimitiveConstants : register(b0)
 {
@@ -242,7 +244,8 @@ float3 ApplyBoxProjection(
     const float3 secondPlane =
         (boxCenter - boxExtents - worldPosition) / reflection;
     // 各軸で遠い側の交点比率
-    const float3 furthest = max(firstPlane, secondPlane);
+)"
+        R"(    const float3 furthest = max(firstPlane, secondPlane);
     // 箱の出口までのレイ比率
     const float distance = min(min(furthest.x, furthest.y), furthest.z);
     // 箱との交点のワールド位置
@@ -473,7 +476,8 @@ float EvaluateDirectionalShadow(
             visibility = lerp(
                 visibility,
                 SampleDirectionalShadowCascade(
-                    worldPosition,
+)"
+        R"(                    worldPosition,
                     normal,
                     cascadeIndex + 1u),
                 blend);
@@ -704,7 +708,8 @@ float4 EvaluateScreenSpaceReflection(
     for (int axis = 0; axis < 2; ++axis)
     {
         // 対象軸のUV進行量
-        const float direction = axis == 0 ? deltaUv.x : deltaUv.y;
+)"
+        R"(        const float direction = axis == 0 ? deltaUv.x : deltaUv.y;
         // 対象軸の始点UV
         const float origin = axis == 0 ? startUv.x : startUv.y;
         if (abs(direction) > 1e-6f)
@@ -898,7 +903,8 @@ float4 EvaluateScreenSpaceReflection(
             // カメラに戻る反射の度合い
             const float towardCamera = saturate(
                 dot(reflection, viewDirection));
-            // 裏面へ向かう反射の減衰率
+)"
+        R"(            // 裏面へ向かう反射の減衰率
             const float directionFade = saturate(
                 (1.0f - towardCamera) / 0.5f);
             // 粗さ上限に近い反射の減衰率
@@ -1123,7 +1129,8 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             cross(positionDy, normal) * uvDx.y
             + cross(normal, positionDx) * uvDy.y;
         // 接線基底の共通長さの逆数
-        const float inverseScale = rsqrt(max(
+)"
+        R"(        const float inverseScale = rsqrt(max(
             max(dot(tangentUnscaled, tangentUnscaled),
                 dot(bitangentUnscaled, bitangentUnscaled)),
             0.000001f));
@@ -1331,7 +1338,8 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             SourceSpecularEnergy(environmentRoughness, angularRadius));
     }
 
-    if (ClusteredParameters.w >= 0.5f)
+)"
+        R"(    if (ClusteredParameters.w >= 0.5f)
     {
         // クラスタの横方向分割数
         const uint gridX = (uint)ClusteredParameters.x;
@@ -1525,7 +1533,8 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
                 * coneAttenuation
                 * coneAttenuation
                 * shadow);
-    }
+)"
+        R"(    }
     }
     result += emissiveSample * EmissiveFactor.rgb;
     // 画像と頂点色を掛けた透過度

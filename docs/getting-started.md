@@ -6,6 +6,8 @@
 
 ## 0. 準備
 
+インストーラー版は`LamaPon-<version>-windows-x64-Setup.exe`を実行します。完了画面でC++自動ビルド環境のセットアップを実行し、スタートメニューまたはデスクトップの「LamaPon Hub」から起動します。詳しくは[インストールガイド](installation.md)を参照してください。
+
 配布ZIPを使う場合は、展開して`LamaPonHub.exe`を起動します。エンジン本体をビルドする必要はありません。
 
 C++ Scriptを変更してビルドする段階では、Windows 10/11とVisual Studio 2022以降の「C++によるデスクトップ開発」が必要です。まだ入っていなくても、学習SceneのWASD移動、Inspectorでの改造、企画・デザイン課題までは試せます。

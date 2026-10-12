@@ -6,10 +6,29 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <exception>
 
 namespace
 {
     using namespace LamaPon::Web;
+
+    // RAFが停止する非表示期間も記録し、復帰フレームの時間差を捨てる。
+    EM_JS(void, InitializeVisibilityState, (), {
+        if (document.__lamaponVisibility) return;
+        document.__lamaponVisibility = { changed: false };
+        document.addEventListener('visibilitychange', () => {
+            document.__lamaponVisibility.changed = true;
+        });
+    });
+    EM_JS(int, ReadVisibilityState, (), {
+        if (document.hidden || document.__lamaponContextLost) return 2;
+        const state = document.__lamaponVisibility;
+        if (state && state.changed) {
+            state.changed = false;
+            return 1;
+        }
+        return 0;
+    });
 
     // 初期化失敗を画面とコンソールへ表示する(message: UTF-8の説明)。
     EM_JS(void, ReportWebApplicationError, (const char* message), {
@@ -21,6 +40,8 @@ namespace
             help.textContent = text;
             help.style.color = "#ffd0d0";
         }
+        const reload = document.getElementById("reload");
+        if (reload) reload.hidden = false;
         if (document.body) {
             document.body.dataset.lamaponStatus = "failed";
             document.body.dataset.lamaponError = text;
@@ -70,6 +91,14 @@ namespace
         {
             // フレーム処理開始時刻（ms）
             const double tickStartedMilliseconds = emscripten_get_now();
+            const int visibility = ReadVisibilityState();
+            if (visibility != 0)
+            {
+                lastFrameSeconds = tickStartedMilliseconds * 0.001;
+                fixedAccumulator = 0.0f;
+                runtime.Input().Reset();
+                if (visibility == 2) return;
+            }
             runtime.Input().BeginFrame();
 
             // 現在の実時刻（秒）
@@ -148,7 +177,20 @@ namespace
         // 登録したゲームループを進める(userData: 借用するループ状態)。
         static void Callback(void* userData)
         {
-            static_cast<ApplicationLoop*>(userData)->Tick();
+            auto& loop = *static_cast<ApplicationLoop*>(userData);
+            try { loop.Tick(); }
+            catch (const std::exception& error)
+            {
+                emscripten_cancel_main_loop();
+                loop.runtime.Input().Reset();
+                ReportWebApplicationError(error.what());
+            }
+            catch (...)
+            {
+                emscripten_cancel_main_loop();
+                loop.runtime.Input().Reset();
+                ReportWebApplicationError("The Web game stopped after an unexpected error.");
+            }
         }
     };
 
@@ -167,6 +209,8 @@ namespace LamaPon::Web
         if (config.name == nullptr || config.name[0] == '\0'
             || config.canvasSelector == nullptr
             || config.canvasSelector[0] == '\0'
+            || !std::isfinite(config.fixedDeltaTime)
+            || !std::isfinite(config.maximumFrameDeltaTime)
             || config.fixedDeltaTime <= 0.0f
             || config.maximumFrameDeltaTime < config.fixedDeltaTime
             || config.maximumCatchUpSteps == 0)
@@ -181,7 +225,19 @@ namespace LamaPon::Web
                 "The browser input backend could not be initialized.");
             return 1;
         }
-        if (!application.Initialize(runtime))
+        bool initialized{};
+        try { initialized = application.Initialize(runtime); }
+        catch (const std::exception& error)
+        {
+            ReportWebApplicationError(error.what());
+            return 1;
+        }
+        catch (...)
+        {
+            ReportWebApplicationError(config.initializationError);
+            return 1;
+        }
+        if (!initialized)
         {
             ReportWebApplicationError(config.initializationError);
             return 1;
@@ -189,6 +245,7 @@ namespace LamaPon::Web
 
         // 現在の実時刻（秒）
         const double nowSeconds = emscripten_get_now() * 0.001;
+        InitializeVisibilityState();
         ActiveLoop = std::make_unique<ApplicationLoop>(ApplicationLoop{
             application,
             runtime,

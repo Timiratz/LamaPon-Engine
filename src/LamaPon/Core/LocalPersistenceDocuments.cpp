@@ -1341,13 +1341,33 @@ namespace
         {
             ThrowPersistenceFailure();
         }
-        if (MoveFileExW(
-                stagePath.c_str(),
-                targetPath.c_str(),
-                MOVEFILE_WRITE_THROUGH
-                    | (replaceExisting ? MOVEFILE_REPLACE_EXISTING : 0u))
-            == FALSE)
+        constexpr DWORD SharingViolationRetryCount = 4u;
+        constexpr DWORD SharingViolationRetryBaseMilliseconds = 10u;
+        for (DWORD retry = 0u; ; ++retry)
         {
+            // 公開時の一時的な共有違反を再現する検査用失敗点
+            BOOL published = FALSE;
+            if (ConsumeFailPoint(
+                    LamaPon::Detail::LocalPersistenceTestFailPoint::
+                        BeforePublishSharingViolation))
+            {
+                SetLastError(ERROR_SHARING_VIOLATION);
+            }
+            else
+            {
+                published = MoveFileExW(
+                    stagePath.c_str(),
+                    targetPath.c_str(),
+                    MOVEFILE_WRITE_THROUGH
+                        | (replaceExisting
+                            ? MOVEFILE_REPLACE_EXISTING
+                            : 0u));
+            }
+            if (published != FALSE)
+            {
+                break;
+            }
+
             // 直前のWin32エラー番号
             const auto error = GetLastError();
             if (!replaceExisting
@@ -1356,6 +1376,14 @@ namespace
             {
                 return false;
             }
+            if (error == ERROR_SHARING_VIOLATION
+                && retry < SharingViolationRetryCount)
+            {
+                // 一時的な共有ロックだけを短時間再試行します。
+                Sleep(SharingViolationRetryBaseMilliseconds << retry);
+                continue;
+            }
+            SetLastError(error);
             ThrowPersistenceFailure();
         }
         return true;

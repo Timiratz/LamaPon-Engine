@@ -11,6 +11,7 @@
 #include "LamaPon/Assets/TextureCache.h"
 #include "LamaPon/Assets/TextureLoader.h"
 #include "LamaPon/Assets/VboImporter.h"
+#include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
@@ -637,12 +638,24 @@ namespace
             });
     }
 
+    // 先読みキャッシュの復号済みバイトを消す(entry: 対象の共有バイト列)。
+    // 使用中のバイトを壊さないよう、ほかに保持者がいない唯一保持のときだけ消す。
+    void SecureErasePrefetchEntry(
+        const std::shared_ptr<const std::vector<std::uint8_t>>& entry)
+    {
+        if (entry && entry.use_count() == 1)
+        {
+            LamaPon::Crypto::SecureErase(
+                const_cast<std::vector<std::uint8_t>&>(*entry));
+        }
+    }
+
     // 準備済み画像の全ミップを生成して公開する(asset: 公開先, backend: 描画Backend, data: 転送用ミップ列)。
     template <typename Asset>
     void CreatePreparedTextureResources(
         Asset& asset,
         LamaPon::GraphicsBackend& backend,
-        const LamaPon::TextureLoader::PreparedTextureData& data)
+        LamaPon::TextureLoader::PreparedTextureData& data)
     {
         // 画像資源の生成設定
         const auto description = MakeTextureDescription(data);
@@ -652,6 +665,11 @@ namespace
         auto texture = backend.CreateTexture2D(
             description,
             subresources);
+        // GPUへ転送し終えた復号済みピクセルをメモリから消す。
+        for (auto& level : data.levels)
+        {
+            LamaPon::Crypto::SecureErase(level.bytes);
+        }
         // 画像を参照する描画ビュー
         auto view = backend.CreateShaderResourceView(
             texture,
@@ -1470,6 +1488,11 @@ namespace LamaPon
             // 先読みキャッシュの排他
             std::scoped_lock lock(m_prefetchMutex);
             ++m_prefetchEpoch;
+            // 破棄前に復号済みバイトを消す。
+            for (auto& [key, entry] : m_prefetchedBytes)
+            {
+                SecureErasePrefetchEntry(entry);
+            }
             m_prefetchedBytes.clear();
             m_prefetchedByteCount = 0;
         }
@@ -1699,7 +1722,7 @@ namespace LamaPon
             return {};
         }
         // 転送用の画像データ
-        const auto prepared = isDds
+        auto prepared = isDds
             ? TextureLoader::PrepareDdsTextureData(bytes)
             : TextureLoader::PrepareTextureData(
                 TextureLoader::GenerateMipChain(
@@ -1714,6 +1737,11 @@ namespace LamaPon
         auto texture = m_backend->CreateTexture2D(
             description,
             subresources);
+        // GPUへ転送し終えた復号済みピクセルをメモリから消す。
+        for (auto& level : prepared.levels)
+        {
+            Crypto::SecureErase(level.bytes);
+        }
         return m_backend->CreateShaderResourceView(
             texture,
             GraphicsTextureViewDescription{
@@ -2031,6 +2059,11 @@ namespace LamaPon
 
             if (pending.asset.use_count() == 1)
             {
+                // 転送せず捨てる未転送の復号済みピクセルを消す。
+                for (auto& level : pending.data.levels)
+                {
+                    Crypto::SecureErase(level.bytes);
+                }
                 m_pendingUploads.pop_front();
                 continue;
             }
@@ -2164,9 +2197,11 @@ namespace LamaPon
                 levelIndex > nextLevelAfterBatch;
                 --levelIndex)
             {
-                pending.data.levels[
-                    static_cast<std::size_t>(levelIndex)]
-                        .bytes = {};
+                // GPUへ転送し終えた復号済みピクセルをメモリから消す。
+                Crypto::SecureErase(
+                    pending.data.levels[
+                        static_cast<std::size_t>(levelIndex)]
+                            .bytes);
             }
             pending.nextLevel = nextLevelAfterBatch;
             uploadedBytes += batchBytes;
@@ -3433,7 +3468,20 @@ namespace LamaPon
             ++m_prefetchEpoch;
             m_texturePathGenerations.clear();
             m_textureCache.clear();
+            // 未転送のミップに残る復号済みピクセルを消してから破棄する。
+            for (auto& pending : m_pendingUploads)
+            {
+                for (auto& level : pending.data.levels)
+                {
+                    Crypto::SecureErase(level.bytes);
+                }
+            }
             m_pendingUploads.clear();
+            // 破棄前に復号済みバイトを消す。
+            for (auto& [key, entry] : m_prefetchedBytes)
+            {
+                SecureErasePrefetchEntry(entry);
+            }
             m_prefetchedBytes.clear();
             m_prefetchedByteCount = 0;
         }
@@ -3498,12 +3546,22 @@ namespace LamaPon
                 std::erase_if(
                     m_pendingUploads,
                     [&cacheKey](
-                        const PendingTextureUpload& pending)
+                        PendingTextureUpload& pending)
                     {
-                        return pending.asset != nullptr
+                        // このパスの待機画像か
+                        const bool match = pending.asset != nullptr
                             && MakeCacheKey(
                                 pending.asset->sourcePath)
                                 == cacheKey;
+                        if (match)
+                        {
+                            // 除く前に未転送の復号済みピクセルを消す。
+                            for (auto& level : pending.data.levels)
+                            {
+                                Crypto::SecureErase(level.bytes);
+                            }
+                        }
+                        return match;
                     });
                 // ディスクまたは先読みの結果
                 if (const auto cached =
@@ -3517,6 +3575,8 @@ namespace LamaPon
                                 m_prefetchedByteCount,
                                 cached->second->size());
                     }
+                    // 破棄前に復号済みバイトを消す。
+                    SecureErasePrefetchEntry(cached->second);
                     m_prefetchedBytes.erase(cached);
                 }
             }

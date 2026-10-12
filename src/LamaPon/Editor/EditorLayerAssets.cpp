@@ -1424,11 +1424,20 @@ namespace LamaPon
                     projectRoot,
                     m_engineRoot,
                     executableDirectory,
-                    m_buildConfiguration);
-            // 更新時刻で見逃すWebDAVの変更は、内容ハッシュで検出してビルド前に時刻を進めます。
-            static_cast<void>(RefreshStaleGameModuleSources(
-                projectRoot,
-                buildCommand.buildDirectory));
+                    m_buildConfiguration,
+                    true);
+            // ネットワーク保存先で時刻が動かない変更だけ内容ハッシュで補います。
+            if (buildCommand.usesLocalBuildCache)
+            {
+                static_cast<void>(RefreshStaleGameModuleSources(
+                    projectRoot,
+                    buildCommand.buildDirectory));
+            }
+            // 自分で進めた時刻を変更検知から除き、二重ビルドを防ぎます。
+            m_lastSeenScriptWriteTime = LatestScriptWriteTime();
+            m_scriptWriteTimeInitialized = true;
+            m_scriptChangeDetectedAt = 0.0;
+            m_scriptRebuildQueued = false;
             m_gameModuleBuildLogPath =
                 buildCommand.logPath;
             // cmd.exeへ渡すビルド引数
@@ -1461,7 +1470,9 @@ namespace LamaPon
             m_gameModuleBuildStartedAt =
                 ImGui::GetTime();
             SetStatus(
-                "Game Moduleをバックグラウンドでビルドしています");
+                "Game Moduleをビルドしています（最大"
+                + std::to_string(buildCommand.parallelJobs)
+                + "並列）");
             return true;
         }
         // ビルド開始処理の例外

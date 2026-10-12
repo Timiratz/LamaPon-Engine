@@ -12,12 +12,49 @@
 #include "LamaPon/Components/UIScrollViewComponent.h"
 #include <imgui.h>
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <exception>
 #include <iterator>
 
 using namespace LamaPon;
 using namespace LamaPon::EditorDetail;
+
+void LamaPon::ApplyUIRectDrag(UIRectTransformComponent& transform,
+    const UIRectDragState& start, const int handle, const DirectX::XMFLOAT2& delta)
+{
+    if (handle < 0 || handle > 8)
+        return;
+    const float scale = std::max(start.canvasScale, 0.0001f);
+    auto position = start.position;
+    auto size = start.sizeDelta;
+    if (handle == 8)
+    {
+        position.x += delta.x / scale;
+        position.y += delta.y / scale;
+    }
+    else
+    {
+        auto low = start.rect.minimum;
+        auto high = start.rect.maximum;
+        if (handle == 0 || handle == 6 || handle == 7)
+            low.x = std::min(low.x + delta.x, high.x - scale);
+        if (handle == 2 || handle == 3 || handle == 4)
+            high.x = std::max(high.x + delta.x, low.x + scale);
+        if (handle == 0 || handle == 1 || handle == 2)
+            low.y = std::min(low.y + delta.y, high.y - scale);
+        if (handle == 4 || handle == 5 || handle == 6)
+            high.y = std::max(high.y + delta.y, low.y + scale);
+        const float deltaWidth = (high.x - low.x) - start.rect.Size().x;
+        const float deltaHeight = (high.y - low.y) - start.rect.Size().y;
+        position.x += (low.x - start.rect.minimum.x + deltaWidth * start.pivot.x) / scale;
+        position.y += (low.y - start.rect.minimum.y + deltaHeight * start.pivot.y) / scale;
+        size.x += deltaWidth / scale;
+        size.y += deltaHeight / scale;
+    }
+    transform.SetAnchoredPosition(position);
+    transform.SetSizeDelta(size);
+}
 
 namespace
 {

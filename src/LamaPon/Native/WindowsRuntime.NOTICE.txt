@@ -1,0 +1,19 @@
+Microsoft Visual C++ runtime components
+
+This Windows output may include release runtime DLLs copied from the
+redistribution directory of the Visual Studio toolchain used to build it.
+These are Microsoft components. LamaPon's MIT license does not relicense them.
+Redistribution is governed by the applicable Microsoft Software License Terms.
+
+Only release runtime components are staged. Debug runtimes are not supported
+for distributable game output. The Universal CRT is supplied by Windows;
+this output targets Windows 10 or later.
+
+App-local DLLs must be updated when the application's runtime toolchain is
+updated. Microsoft recommends central deployment for independent servicing.
+
+Official deployment and redistribution documentation:
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
+https://learn.microsoft.com/en-us/cpp/windows/choosing-a-deployment-method
+
+This notice describes the deployment and is not a copy of Microsoft's license.

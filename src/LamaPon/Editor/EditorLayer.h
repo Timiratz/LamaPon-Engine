@@ -177,6 +177,8 @@ namespace LamaPon
         }
 
     private:
+        // インスペクターのパネルID
+        static constexpr std::string_view InspectorPanelId{ "inspector" };
         // コンソールのパネルID
         static constexpr std::string_view ConsolePanelId{ "console" };
         // 性能表示のパネルID
@@ -477,6 +479,10 @@ namespace LamaPon
         [[nodiscard]] std::string InspectorFloatFormat() const;
         // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
         void DrawGameViewport();
+        // ゲーム画像上でUI矩形を選択し、移動・リサイズします。
+        void DrawUIRectEditor(const DirectX::XMFLOAT2& origin,
+            const DirectX::XMFLOAT2& displaySize, bool hovered);
+        void FinishUIRectEdit();
         // 固定解像度と描画倍率のPopupを描画します。
         void DrawGameViewResolutionSettings();
         // 選択対象の変換を操作し、複数選択へ差分を適用して操作終了時に履歴を確定します。
@@ -496,7 +502,9 @@ namespace LamaPon
         // 有効な選択対象の境界を描画し、主選択と追加選択の色を分けます。
         void DrawSelectionHighlight();
         // 選択中のGameObjectまたはアセットのInspectorを描画します。
-        void DrawInspector();
+        void DrawInspector(bool& open);
+        // シーン環境と物理設定の補助ウィンドウを描画します。
+        void DrawSceneSettingsPanels();
         // Material設定とShaderパラメーターを編集します。
         void DrawMaterialAssetInspector();
         // 選択中Materialの編集バッファを読み込みます。
@@ -579,6 +587,9 @@ namespace LamaPon
         void CreateChildGameObject();
         // Canvasコンポーネントを持つ対象を作成します。
         void CreateUICanvasGameObject();
+        enum class UIElementKind { Button, Image, Text };
+        void CreateUIElement(UIElementKind kind);
+        void DrawUICreationMenu(bool defer);
         // 選択対象をIDで再確認しながら階層ごと削除し、選択解除と履歴記録を行います。
         void DeleteSelectedGameObject();
         // 編集中の選択階層を同じ親へ複製し、複製した対象を選択して履歴へ記録します。
@@ -966,6 +977,9 @@ namespace LamaPon
             CreateRoot,
             CreateChild,
             CreateUICanvas,
+            CreateUIButton,
+            CreateUIImage,
+            CreateUIText,
             Cut,
             Copy,
             Paste,
@@ -1370,6 +1384,14 @@ namespace LamaPon
         int m_gameViewResolutionHeight{ 1080 };
         // ゲームビューの描画倍率
         float m_gameViewResolutionScale{ 1.0f };
+        bool m_uiEditMode{};
+        bool m_uiFocusGameView{};
+        GameObjectId m_uiEditObjectId{};
+        int m_uiEditHandle{ -1 };
+        bool m_uiEditChanged{};
+        DirectX::XMFLOAT2 m_uiEditMouseStart{};
+        UIRectDragState m_uiEditStart{};
+        DirectX::XMFLOAT2 m_uiEditTargetSize{};
         // Scriptが表示サイズを変えたか
         bool m_scriptGameViewSizeChanged{};
         // 復元用の固定解像度フラグ
@@ -1408,6 +1430,8 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_viewportSize{};
         // 選択中のビューポート
         ViewportMode m_activeViewport{ ViewportMode::None };
+        // カメラ操作を開始したボタン。離すまでドラッグを保持します。
+        int m_sceneNavigationMouseButton{ -1 };
         // ギズモの操作種別
         GizmoOperation m_gizmoOperation{ GizmoOperation::Translate };
         // グリッドの間隔

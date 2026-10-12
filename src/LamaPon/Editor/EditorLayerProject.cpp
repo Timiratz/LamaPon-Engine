@@ -784,6 +784,67 @@ namespace LamaPon
         ImGui::EndDisabled();
         ImGui::EndChild();
 
+        ImGui::BeginChild(
+            "LinuxBuildProfile",
+            ImVec2{ profileWidth, 235.0f },
+            ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted("Linux / Steam Deck");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Linux用のビルド設定を出力します。既存のWSL環境が"
+            "あれば、Linuxゲームまでビルドできます。");
+        ImGui::Spacing();
+        ImGui::TextDisabled("出力: dist/LamaPonLinuxBuild");
+        ImGui::TextDisabled("環境: Linux / SDL3 / CMake / C++");
+        ImGui::TextWrapped("Steam Deck実機での動作は別途確認が必要です。");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!hasSavedScene);
+        if (ImGui::Button(
+            "設定して書き出す##Linux",
+            ImVec2{ -1.0f, 0.0f })
+            && SaveProjectSettingsDraft())
+        {
+            RequestGameExportDialog(GameExportTarget::LinuxBuildProject);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+        ImGui::BeginChild(
+            "AndroidBuildProfile",
+            ImVec2{ profileWidth, 235.0f },
+            ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted("Android");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Android用のビルド設定を出力するか、既存のビルド環境で"
+            "端末確認用のdebug APKを作成します。");
+        ImGui::Spacing();
+        ImGui::TextDisabled("出力: dist/LamaPonAndroidApk");
+        ImGui::TextDisabled("環境: Android SDK / NDK / JDK / Gradle / SDL3");
+        ImGui::TextWrapped("ストア配布用の署名は別途必要です。");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!hasSavedScene);
+        if (ImGui::Button(
+            "debug APKの設定を開く##Android",
+            ImVec2{ -1.0f, 0.0f })
+            && SaveProjectSettingsDraft())
+        {
+            RequestGameExportDialog(GameExportTarget::AndroidApk);
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::Button(
+            "ビルド設定を書き出す##Android",
+            ImVec2{ -1.0f, 0.0f })
+            && SaveProjectSettingsDraft())
+        {
+            RequestGameExportDialog(GameExportTarget::AndroidBuildProject);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
         if (!hasSavedScene)
         {
             ImGui::Spacing();
@@ -2394,6 +2455,7 @@ namespace LamaPon
     // 編集状態を保存し、遷移・通信・粒子・音声・時計を初期化して再生を開始します。
     void EditorLayer::StartPlaying()
     {
+        FinishUIRectEdit();
         try
         {
             if (m_animationTimelineOpen)

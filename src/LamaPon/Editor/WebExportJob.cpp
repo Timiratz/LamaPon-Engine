@@ -84,7 +84,16 @@ namespace
             // ストア起動用のエイリアスは、ビルド用Pythonとして使いません。
             if (candidate.wstring().find(L"WindowsApps") == std::wstring::npos) return candidate;
         }
-        throw std::runtime_error("Python 3.11以降が見つかりません。「Webビルド環境」でPythonまたはEmscripten SDKを指定してください。");
+        throw std::runtime_error("Python 3.11以降が見つかりません。出力設定でPython実行ファイルを指定してください。");
+    }
+
+    bool IsInside(const std::filesystem::path& path, const std::filesystem::path& root)
+    {
+        const auto relative = path.lexically_relative(root);
+        if (relative.empty() || relative.is_absolute()) return false;
+        for (const auto& part : relative)
+            if (part == L"..") return false;
+        return true;
     }
 }
 
@@ -142,22 +151,68 @@ namespace LamaPon
         const std::filesystem::path& projectFile,
         const std::filesystem::path& output, const WebExportTools& tools)
     {
-        if (Running()) throw std::logic_error("Web出力は既に実行中です。");
+        StartProcess(engineRoot, projectFile, output, tools, {});
+    }
+
+    void WebExportJob::StartNativeBuildProject(const std::filesystem::path& engineRoot,
+        const std::filesystem::path& projectFile, const std::filesystem::path& output,
+        const WebExportTools& tools, const std::string& platform)
+    {
+        if (platform != "linux" && platform != "android")
+            throw std::invalid_argument("Native build project target must be linux or android");
+        StartProcess(engineRoot, projectFile, output, tools, platform);
+    }
+
+    void WebExportJob::StartAndroidApk(const std::filesystem::path& engineRoot,
+        const std::filesystem::path& projectFile, const std::filesystem::path& output,
+        const WebExportTools& tools, const AndroidExportTools& android)
+    {
+        for (const auto* path : {&android.sdk, &android.javaHome, &android.gradleHome, &android.sdlSource})
+            if (path->empty() || !std::filesystem::is_directory(*path))
+                throw std::invalid_argument("既存のAndroid SDK・JDK・Gradle・SDL3のフォルダーを指定してください。");
+        StartProcess(engineRoot, projectFile, output, tools, "android", &android);
+    }
+
+    void WebExportJob::StartLinuxBuild(const std::filesystem::path& engineRoot,
+        const std::filesystem::path& projectFile, const std::filesystem::path& output,
+        const WebExportTools& tools, const LinuxExportTools& linux)
+    {
+        if (linux.sdlSource.empty() || !std::filesystem::is_directory(linux.sdlSource))
+            throw std::invalid_argument("既存のSDL3ソースフォルダーを指定してください。");
+        StartProcess(engineRoot, projectFile, output, tools, "linux", nullptr, &linux);
+    }
+
+    void WebExportJob::StartProcess(const std::filesystem::path& engineRoot,
+        const std::filesystem::path& projectFile,
+        const std::filesystem::path& output, const WebExportTools& tools, const std::string& platform,
+        const AndroidExportTools* android, const LinuxExportTools* linux)
+    {
+        if (Running()) throw std::logic_error("出力処理は既に実行中です。");
         m_succeeded = false;
         m_htmlPath.clear();
+        m_buildProjectDirectory.clear();
+        m_nativeArtifactPath.clear();
+        m_androidApk = android != nullptr;
+        m_linuxBuild = linux != nullptr;
+        m_expectedApk = m_androidApk ? std::filesystem::absolute(output / L"build/app/outputs/apk/debug/app-debug.apk")
+            : std::filesystem::path{};
+        m_expectedLinuxOutput = m_linuxBuild ? std::filesystem::absolute(output) : std::filesystem::path{};
+        m_nativePlatform = platform;
         m_logPath.clear();
         m_resultPath.clear();
         m_message.clear();
         // 検出・指定したPython実行パス
         const auto python = FindPython(tools);
         // エディター用Web出力スクリプト
-        const auto script = engineRoot / L"tools" / L"editor_web_export.py";
+        const auto script = engineRoot / L"tools" / (platform.empty() ? L"editor_web_export.py"
+            : m_linuxBuild ? L"editor_linux_export.py" : L"editor_native_export.py");
         if (!std::filesystem::is_regular_file(python))
             throw std::runtime_error("指定したPython実行ファイルが見つかりません。");
         if (!std::filesystem::is_regular_file(script))
-            throw std::runtime_error("Web出力ツールが見つかりません。LamaPon SDKを更新してください。");
+            throw std::runtime_error("出力ツールが見つかりません。LamaPon SDKを更新してください。");
         // 今回のログ・結果文書の保存先
-        const auto directory = projectFile.parent_path() / L"web-export-jobs"
+        const auto directory = std::filesystem::absolute(projectFile).parent_path()
+            / (platform.empty() ? L"web-export-jobs" : L"native-export-jobs")
             / (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(directory);
         m_logPath = directory / L"build.log";
@@ -173,12 +228,12 @@ namespace LamaPon
         // 子孫ごと管理するjobのhandle
         Handle job{CreateJobObjectW(nullptr, nullptr)};
         if (log.value == INVALID_HANDLE_VALUE || input.value == INVALID_HANDLE_VALUE || !job.value)
-            throw std::runtime_error("Webビルドのログまたはプロセスを準備できませんでした。");
+            throw std::runtime_error("ゲーム出力のログまたはプロセスを準備できませんでした。");
         // jobを閉じると子孫を終了する設定
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
-            throw std::runtime_error("Webビルドのプロセス管理を設定できませんでした。");
+            throw std::runtime_error("ゲーム出力のプロセス管理を設定できませんでした。");
 
         // 非表示起動と標準IOの設定
         STARTUPINFOEXW startup{};
@@ -195,7 +250,7 @@ namespace LamaPon
         std::vector<unsigned char> attributes(bytes);
         startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
         if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &bytes))
-            throw std::runtime_error("Webビルドの起動属性を準備できませんでした。");
+            throw std::runtime_error("ゲーム出力の起動属性を準備できませんでした。");
         // 起動属性リストを解放する番人
         struct AttributesGuard final
         {
@@ -208,18 +263,35 @@ namespace LamaPon
         HANDLE inherited[]{log.value, input.value};
         if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             inherited, sizeof(inherited), nullptr, nullptr))
-            throw std::runtime_error("Webビルドのログ接続を準備できませんでした。");
+            throw std::runtime_error("ゲーム出力のログ接続を準備できませんでした。");
         // Pythonへ直接渡す引用済み起動引数
-        std::wstring command = Quote(python) + L" -X utf8 -u " + Quote(script)
-            + L" --project " + Quote(projectFile) + L" --output " + Quote(output)
+        std::wstring command = Quote(python) + L" -B -X utf8 -u " + Quote(script)
+            + L" --project " + Quote(std::filesystem::absolute(projectFile))
+            + L" --output " + Quote(std::filesystem::absolute(output))
             + L" --result " + Quote(m_resultPath);
-        if (!tools.emsdk.empty()) command += L" --emsdk " + Quote(tools.emsdk);
+        if (!platform.empty()) command += L" --platform " + Quote(PathFromUtf8(platform));
+        else if (!tools.emsdk.empty()) command += L" --emsdk " + Quote(tools.emsdk);
+        if (android)
+        {
+            command += L" --build-apk --android-sdk " + Quote(std::filesystem::absolute(android->sdk))
+                + L" --java-home " + Quote(std::filesystem::absolute(android->javaHome))
+                + L" --gradle-home " + Quote(std::filesystem::absolute(android->gradleHome))
+                + L" --sdl-source-directory " + Quote(std::filesystem::absolute(android->sdlSource));
+            if (android->allowDependencyDownloads) command += L" --allow-downloads";
+        }
+        if (linux)
+        {
+            command += L" --engine-root " + Quote(std::filesystem::absolute(engineRoot))
+                + L" --sdl-source-directory " + Quote(std::filesystem::absolute(linux->sdlSource));
+            if (!linux->distribution.empty())
+                command += L" --distribution " + Quote(PathFromUtf8(linux->distribution));
+        }
         // 起動したPythonのhandle情報
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(python.c_str(), command.data(), nullptr, nullptr, TRUE,
             CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
             nullptr, engineRoot.c_str(), &startup.StartupInfo, &process))
-            throw std::runtime_error("Pythonを起動できませんでした。Webビルド環境を確認してください。");
+            throw std::runtime_error("Pythonを起動できませんでした。Pythonの実行環境を確認してください。");
         // 起動完了後に解放するthread handle
         Handle thread{process.hThread};
         // 成功後に引き継ぐprocess handle
@@ -229,13 +301,17 @@ namespace LamaPon
             || ResumeThread(process.hThread) == static_cast<DWORD>(-1))
         {
             TerminateProcess(process.hProcess, 1);
-            throw std::runtime_error("Webビルドを開始できませんでした。");
+            throw std::runtime_error("ゲーム出力を開始できませんでした。");
         }
         m_process = processHandle.value;
         processHandle.value = nullptr;
         m_job = job.value;
         job.value = nullptr;
-        m_message = "Web互換性を検査し、HTMLをビルドしています。初回は数分かかる場合があります。";
+        m_message = platform.empty()
+            ? "Web互換性を検査し、HTMLをビルドしています。初回は数分かかる場合があります。"
+            : "ネイティブ出力の互換性を検査し、ビルド設定を生成しています。";
+        if (m_androidApk) m_message = "Android互換性を検査し、debug APKをビルドしています。ログで進行状況を確認できます。";
+        if (m_linuxBuild) m_message = "WSL内でLinuxゲームをビルドし、実行形式と同梱依存を検査しています。ログで進行状況を確認できます。";
     }
 
     bool WebExportJob::Poll()
@@ -253,12 +329,51 @@ namespace LamaPon
             // 引用済みパスまたは終了結果JSON
             const auto result = nlohmann::json::parse(input);
             m_succeeded = code == 0 && result.value("ok", false);
-            m_message = result.value("message", std::string{"Web出力に失敗しました。"});
+            m_message = result.value("message", std::string{"ゲーム出力に失敗しました。"});
             if (m_succeeded)
             {
-                m_htmlPath = PathFromUtf8(result.at("htmlPath").get<std::string>());
-                if (!std::filesystem::is_regular_file(m_htmlPath))
-                    throw std::runtime_error("出力されたHTMLが見つかりません。ログを確認してください。");
+                if (m_nativePlatform.empty())
+                {
+                    m_htmlPath = PathFromUtf8(result.at("htmlPath").get<std::string>());
+                    if (!std::filesystem::is_regular_file(m_htmlPath))
+                        throw std::runtime_error("出力されたHTMLが見つかりません。ログを確認してください。");
+                }
+                else
+                {
+                    if (result.value("platform", std::string{}) != m_nativePlatform)
+                        throw std::runtime_error("出力の対象OSが一致しません。");
+                    m_buildProjectDirectory = PathFromUtf8(result.at("buildProjectPath").get<std::string>());
+                    if (!std::filesystem::is_regular_file(m_buildProjectDirectory / L"CMakeLists.txt")
+                        || !std::filesystem::is_regular_file(m_buildProjectDirectory / L"native-inspection.json"))
+                        throw std::runtime_error("生成したビルド設定が見つかりません。ログを確認してください。");
+                    if (m_androidApk)
+                    {
+                        const auto artifact = PathFromUtf8(result.at("artifactPath").get<std::string>());
+                        if (!result.value("built", false) || !result.value("artifactChecksPassed", false)
+                            || std::filesystem::weakly_canonical(artifact) != std::filesystem::weakly_canonical(m_expectedApk)
+                            || !std::filesystem::is_regular_file(artifact) || !std::filesystem::file_size(artifact))
+                            throw std::runtime_error("APKのビルド結果または出力ファイルを確認できませんでした。");
+                        m_nativeArtifactPath = artifact;
+                    }
+                    if (m_linuxBuild)
+                    {
+                        const auto artifact = PathFromUtf8(result.at("artifactPath").get<std::string>());
+                        const auto absoluteArtifact = std::filesystem::weakly_canonical(artifact);
+                        const auto absoluteOutput = std::filesystem::weakly_canonical(m_expectedLinuxOutput);
+                        if (!result.value("built", false) || !result.value("artifactChecksPassed", false)
+                            || std::filesystem::weakly_canonical(m_buildProjectDirectory) != absoluteOutput
+                            || !IsInside(absoluteArtifact, absoluteOutput)
+                            || !std::filesystem::is_regular_file(absoluteArtifact)
+                            || std::filesystem::file_size(absoluteArtifact) < 4)
+                            throw std::runtime_error("Linuxゲームのビルド結果または出力ファイルを確認できませんでした。");
+                        std::ifstream artifactStream(absoluteArtifact, std::ios::binary);
+                        std::array<char, 4> magic{};
+                        if (!artifactStream.read(magic.data(), static_cast<std::streamsize>(magic.size()))
+                            || magic != std::array<char, 4>{'\x7f', 'E', 'L', 'F'})
+                            throw std::runtime_error("出力されたゲームはLinux ELF実行ファイルではありません。");
+                        m_nativeArtifactPath = absoluteArtifact;
+                    }
+                }
             }
         }
         // 結果の取得・検証で通知された失敗

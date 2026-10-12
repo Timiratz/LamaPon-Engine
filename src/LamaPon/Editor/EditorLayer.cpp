@@ -27,6 +27,8 @@
 #include "LamaPon/Components/PointLightComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
+#include "LamaPon/Components/UIRectTransformComponent.h"
+#include "LamaPon/Components/TextRendererComponent.h"
 #include "LamaPon/Components/UIButtonComponent.h"
 #include "LamaPon/Components/UILayoutGroupComponent.h"
 #include "LamaPon/Components/RigidbodyComponent.h"
@@ -2014,7 +2016,7 @@ namespace LamaPon
         DrawProjectPanels();
         DrawHierarchy();
         DrawViewport();
-        DrawInspector();
+        DrawSceneSettingsPanels();
         DrawPackageBuildDialog();
         DrawAnimationTimeline();
         DrawAnimatorControllerGraph();
@@ -3392,14 +3394,7 @@ namespace LamaPon
                     CreateBuiltInGameObject(
                         BuiltInGameObjectKind::Camera);
                 }
-                if (ImGui::BeginMenu("UI", !m_playing))
-                {
-                    if (ImGui::MenuItem("Canvas"))
-                    {
-                        CreateUICanvasGameObject();
-                    }
-                    ImGui::EndMenu();
-                }
+                DrawUICreationMenu(false);
                 ImGui::Separator();
                 if (ImGui::MenuItem(
                     "選択オブジェクトを削除",
@@ -3426,6 +3421,9 @@ namespace LamaPon
                 {
                     // アセット選択を解除して、GameObjectのInspectorへ追加ピッカーを予約します。
                     m_selectedAsset.clear();
+                    static_cast<void>(m_editorExtensions.SetPanelOpen(
+                        InspectorPanelId,
+                        true));
                     m_addComponentPickerRequested = true;
                 }
                 ImGui::EndMenu();
@@ -6378,6 +6376,7 @@ namespace LamaPon
                 m_hierarchyContextAction =
                     HierarchyContextAction::CreateChild;
             }
+            DrawUICreationMenu(true);
             ImGui::Separator();
             if (ImGui::MenuItem("切り取り", "Ctrl+X"))
             {
@@ -6594,15 +6593,7 @@ namespace LamaPon
             m_hierarchyContextAction =
                 HierarchyContextAction::CreateRoot;
         }
-        if (ImGui::BeginMenu("UI"))
-        {
-            if (ImGui::MenuItem("Canvas"))
-            {
-                m_hierarchyContextAction =
-                    HierarchyContextAction::CreateUICanvas;
-            }
-            ImGui::EndMenu();
-        }
+        DrawUICreationMenu(true);
         if (ImGui::MenuItem(
             "貼り付け",
             "Ctrl+V",
@@ -6629,6 +6620,15 @@ namespace LamaPon
             break;
         case HierarchyContextAction::CreateUICanvas:
             CreateUICanvasGameObject();
+            break;
+        case HierarchyContextAction::CreateUIButton:
+            CreateUIElement(UIElementKind::Button);
+            break;
+        case HierarchyContextAction::CreateUIImage:
+            CreateUIElement(UIElementKind::Image);
+            break;
+        case HierarchyContextAction::CreateUIText:
+            CreateUIElement(UIElementKind::Text);
             break;
         case HierarchyContextAction::Cut:
             CutSelectedGameObject();
@@ -6810,9 +6810,101 @@ namespace LamaPon
             BuiltInGameObjectKind::UICanvas);
     }
 
+    void EditorLayer::DrawUICreationMenu(const bool defer)
+    {
+        if (!ImGui::BeginMenu("UI", !m_playing))
+        {
+            return;
+        }
+        if (ImGui::MenuItem("Canvas"))
+        {
+            if (defer)
+                m_hierarchyContextAction = HierarchyContextAction::CreateUICanvas;
+            else
+                CreateUICanvasGameObject();
+        }
+        const char* labels[]{ "ボタン", "画像", "テキスト" };
+        const UIElementKind kinds[]{ UIElementKind::Button, UIElementKind::Image, UIElementKind::Text };
+        const HierarchyContextAction actions[]{ HierarchyContextAction::CreateUIButton,
+            HierarchyContextAction::CreateUIImage, HierarchyContextAction::CreateUIText };
+        for (int index = 0; index < 3; ++index)
+        {
+            if (ImGui::MenuItem(labels[index]))
+            {
+                if (defer)
+                    m_hierarchyContextAction = actions[index];
+                else
+                    CreateUIElement(kinds[index]);
+            }
+        }
+        ImGui::EndMenu();
+    }
+
+    void EditorLayer::CreateUIElement(const UIElementKind kind)
+    {
+        if (m_playing)
+        {
+            return;
+        }
+        FinishUIRectEdit();
+        auto* parent = m_scene.FindGameObject(m_selectedObjectId);
+        bool underCanvas = false;
+        for (auto* ancestor = parent; ancestor != nullptr; ancestor = ancestor->Parent())
+        {
+            if (ancestor->GetComponent<UICanvasComponent>() != nullptr)
+            {
+                underCanvas = true;
+                break;
+            }
+        }
+        if (!underCanvas)
+        {
+            parent = nullptr;
+            for (const auto& candidate : m_scene.GameObjects())
+            {
+                if (candidate->GetComponent<UICanvasComponent>() != nullptr
+                    && candidate->SourceScene() == Scene::PrimarySceneHandle()
+                    && candidate->IsActiveInHierarchy())
+                {
+                    parent = candidate.get();
+                    break;
+                }
+            }
+            if (parent == nullptr)
+            {
+                parent = &m_scene.CreateGameObject("Canvas");
+                parent->AddComponent<UICanvasComponent>();
+            }
+        }
+        const char* name = kind == UIElementKind::Button ? "ボタン"
+            : kind == UIElementKind::Image ? "画像" : "テキスト";
+        auto& element = m_scene.CreateGameObject(name);
+        element.SetParent(parent);
+        auto& rect = element.AddComponent<UIRectTransformComponent>();
+        switch (kind)
+        {
+        case UIElementKind::Button:
+            element.AddComponent<UIButtonComponent>();
+            break;
+        case UIElementKind::Image:
+            rect.SetSizeDelta({ 160.0f, 160.0f });
+            element.AddComponent<UIImageComponent>();
+            break;
+        case UIElementKind::Text:
+            element.AddComponent<TextRendererComponent>("テキスト");
+            break;
+        }
+        SelectObject(element.Id(), false);
+        m_uiEditMode = true;
+        m_uiFocusGameView = true;
+        RecordHistory();
+        SetStatus(std::string{ name } + "を作成しました。ゲームビューの「UI編集」で配置できます。");
+    }
+
     // 選択対象をIDで再確認しながら階層ごと削除し、選択解除と履歴記録を行います。
     void EditorLayer::DeleteSelectedGameObject()
     {
+        FinishUIRectEdit();
         // 削除前の選択対象一覧
         const auto selection = SelectedObjects();
         if (selection.empty())
@@ -8323,6 +8415,7 @@ namespace LamaPon
     // 未保存確認をせず編集中のシーンを初期カメラと太陽光へ置き換え、保存先と履歴を初期化します。
     void EditorLayer::NewScene()
     {
+        FinishUIRectEdit();
         if (m_playing)
         {
             return;
@@ -8408,6 +8501,7 @@ namespace LamaPon
     // ファイル選択後に未保存確認をせずシーンを開き、履歴と保存基準を初期化します。
     void EditorLayer::OpenScene()
     {
+        FinishUIRectEdit();
         if (m_playing)
         {
             return;

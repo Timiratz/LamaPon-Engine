@@ -23,6 +23,9 @@
 #include "LamaPon/Components/SphereCollider3DComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
+#include "LamaPon/Components/UICanvasComponent.h"
+#include "LamaPon/Components/UIRectTransformComponent.h"
+#include "LamaPon/Components/UILayoutGroupComponent.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
@@ -338,15 +341,21 @@ namespace LamaPon
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("ゲーム"))
+            if (ImGui::BeginTabItem("ゲーム", nullptr,
+                    m_uiFocusGameView ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
             {
                 drawGameViewport = true;
+                m_uiFocusGameView = false;
                 ImGui::EndTabItem();
             }
 
             ImGui::EndTabBar();
         }
         ImGui::PopStyleColor(6);
+        if (!drawGameViewport || m_playing)
+        {
+            FinishUIRectEdit();
+        }
 
         // タブ見出しの登録後に共通の描画リストへ画像とオーバーレイを追加します。
         if (drawSceneViewport)
@@ -358,6 +367,11 @@ namespace LamaPon
         {
             m_activeViewport = ViewportMode::Game;
             DrawGameViewport();
+        }
+
+        if (!drawSceneViewport)
+        {
+            m_sceneNavigationMouseButton = -1;
         }
 
         if (m_activeViewport != ViewportMode::Scene && m_gizmoWasUsing)
@@ -464,6 +478,20 @@ namespace LamaPon
         viewportToolbarHovered =
             viewportToolbarHovered || ImGui::IsItemHovered();
         DrawSceneCameraSettings();
+
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::SmallButton("操作ガイド");
+        viewportToolbarHovered =
+            viewportToolbarHovered || ImGui::IsItemHovered();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "F: 選択対象へフォーカス\nW / E / R: 移動 / 回転 / 拡縮\n"
+                "右ドラッグ: 視点回転、WASD / QE: 移動、Shift: 加速\n"
+                "ホイール: ズーム\n"
+                "オービット操作: Alt+左ドラッグで回転、中ドラッグ / Alt+Ctrl+左ドラッグでパン、Alt+右ドラッグでズーム\n"
+                "2D: 右ドラッグでパン");
+        }
 
         // 選択中のオブジェクト
         const auto* selected =
@@ -591,6 +619,9 @@ namespace LamaPon
 
         if (m_sceneViewportHovered
             && !ImGui::IsMouseDown(ImGuiMouseButton_Right)
+            && m_sceneNavigationMouseButton < 0
+            && !IsOrbitViewportNavigationMouseInput(
+                m_projectSettings.viewport.navigationPreset)
             && !ImGui::GetIO().WantTextInput)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_F, false))
@@ -1367,7 +1398,7 @@ namespace LamaPon
                 (mouse.x - imageMinimum.x) * scaleX,
                 (mouse.y - imageMinimum.y) * scaleY
             };
-            pointer.valid = valid;
+            pointer.valid = valid && m_playing;
             pointer.delta = {
                 inputOutput.MouseDelta.x * scaleX,
                 inputOutput.MouseDelta.y * scaleY
@@ -1384,7 +1415,7 @@ namespace LamaPon
                 ++button)
             {
                 pointer.buttons[button].down =
-                    valid
+                    valid && m_playing
                     && ImGui::IsMouseDown(
                         static_cast<int>(button));
             }
@@ -1401,7 +1432,182 @@ namespace LamaPon
         {
             ImGui::OpenPopup("GameViewResolution");
         }
+        bool toolbarHovered = ImGui::IsItemHovered();
         DrawGameViewResolutionSettings();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(m_playing);
+        ImGui::Checkbox("UI編集", &m_uiEditMode);
+        toolbarHovered = toolbarHovered || ImGui::IsItemHovered();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("UIをクリックして選択、内側をドラッグして移動。\n辺と四隅のハンドルをドラッグしてサイズを変更します。");
+        }
+        ImGui::EndDisabled();
+        if (m_uiEditMode && !m_playing)
+        {
+            DrawUIRectEditor({ imageMinimum.x, imageMinimum.y },
+                { displaySize.x, displaySize.y },
+                valid && !toolbarHovered && !ImGui::IsPopupOpen("GameViewResolution"));
+        }
+        else
+        {
+            FinishUIRectEdit();
+        }
+    }
+
+    void EditorLayer::FinishUIRectEdit()
+    {
+        if (m_uiEditChanged)
+        {
+            RecordHistory();
+        }
+        m_uiEditObjectId = {};
+        m_uiEditHandle = -1;
+        m_uiEditChanged = false;
+    }
+
+    void EditorLayer::DrawUIRectEditor(const DirectX::XMFLOAT2& origin,
+        const DirectX::XMFLOAT2& displaySize, const bool hovered)
+    {
+        const float width = static_cast<float>(m_gameRenderTarget.Width());
+        const float height = static_cast<float>(m_gameRenderTarget.Height());
+        if (width <= 0.0f || height <= 0.0f || displaySize.x <= 0.0f || displaySize.y <= 0.0f)
+        {
+            FinishUIRectEdit();
+            return;
+        }
+        const auto& io = ImGui::GetIO();
+        if (m_uiEditHandle >= 0
+            && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || io.AppFocusLost
+                || m_selectedObjectId != m_uiEditObjectId
+                || width != m_uiEditTargetSize.x || height != m_uiEditTargetSize.y))
+        {
+            FinishUIRectEdit();
+        }
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const DirectX::XMFLOAT2 point{
+            (mouse.x - origin.x) * width / displaySize.x,
+            (mouse.y - origin.y) * height / displaySize.y };
+        const auto toScreen = [&](const DirectX::XMFLOAT2& value)
+        {
+            return ImVec2{ origin.x + value.x * displaySize.x / width,
+                origin.y + value.y * displaySize.y / height };
+        };
+        auto* selected = m_scene.FindGameObject(m_selectedObjectId);
+        auto* transform = selected != nullptr
+            ? selected->GetComponent<UIRectTransformComponent>() : nullptr;
+        const auto handlePoints = [&](const UIRect& rect)
+        {
+            const auto low = toScreen(rect.minimum);
+            const auto high = toScreen(rect.maximum);
+            const float midX = (low.x + high.x) * 0.5f;
+            const float midY = (low.y + high.y) * 0.5f;
+            return std::array<ImVec2, 8>{ ImVec2{ low.x, low.y }, ImVec2{ midX, low.y },
+                ImVec2{ high.x, low.y }, ImVec2{ high.x, midY }, ImVec2{ high.x, high.y },
+                ImVec2{ midX, high.y }, ImVec2{ low.x, high.y }, ImVec2{ low.x, midY } };
+        };
+        int hoverHandle = -1;
+        if (hovered && transform != nullptr && transform->IsEnabled()
+            && selected->IsActiveInHierarchy())
+        {
+            const auto handles = handlePoints(transform->Resolve(width, height));
+            for (int index = 0; index < 8; ++index)
+            {
+                if (std::abs(mouse.x - handles[index].x) <= 6.0f
+                    && std::abs(mouse.y - handles[index].y) <= 6.0f)
+                {
+                    hoverHandle = index;
+                    break;
+                }
+            }
+        }
+        if (hovered && !io.WantTextInput && !io.AppFocusLost
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            if (hoverHandle < 0)
+            {
+                GameObject* hit = nullptr;
+                int hitOrder = std::numeric_limits<int>::min();
+                for (const auto& candidate : m_scene.GameObjects())
+                {
+                    auto* rect = candidate->GetComponent<UIRectTransformComponent>();
+                    if (rect != nullptr && rect->IsEnabled() && candidate->IsActiveInHierarchy()
+                        && rect->Resolve(width, height).Contains(point)
+                        && candidate->Render2DSortOrder() >= hitOrder)
+                    {
+                        hit = candidate.get();
+                        hitOrder = candidate->Render2DSortOrder();
+                    }
+                }
+                SelectObject(hit != nullptr ? hit->Id() : GameObjectId{}, false);
+                selected = hit;
+                transform = hit != nullptr ? hit->GetComponent<UIRectTransformComponent>() : nullptr;
+            }
+            if (transform != nullptr)
+            {
+                const auto* layout = selected->Parent() != nullptr
+                    ? selected->Parent()->GetComponent<UILayoutGroupComponent>() : nullptr;
+                if (layout != nullptr && layout->IsEnabled())
+                {
+                    SetStatus("親のUI Layout Groupが配置を管理しています。手動で配置する場合は無効にしてください。");
+                }
+                else
+                {
+                    m_uiEditObjectId = selected->Id();
+                    m_uiEditHandle = hoverHandle >= 0 ? hoverHandle : 8;
+                    m_uiEditMouseStart = point;
+                    m_uiEditStart = { transform->Resolve(width, height),
+                        transform->AnchoredPosition(), transform->SizeDelta(), transform->Pivot(), 1.0f };
+                    m_uiEditTargetSize = { width, height };
+                    for (auto* ancestor = selected; ancestor != nullptr; ancestor = ancestor->Parent())
+                    {
+                        if (const auto* canvas = ancestor->GetComponent<UICanvasComponent>())
+                        {
+                            m_uiEditStart.canvasScale = canvas->ScaleFactor(width, height);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (m_uiEditHandle >= 0 && transform != nullptr)
+        {
+            const auto previousPosition = transform->AnchoredPosition();
+            const auto previousSize = transform->SizeDelta();
+            ApplyUIRectDrag(*transform, m_uiEditStart, m_uiEditHandle,
+                { point.x - m_uiEditMouseStart.x, point.y - m_uiEditMouseStart.y });
+            if (previousPosition.x != transform->AnchoredPosition().x
+                || previousPosition.y != transform->AnchoredPosition().y
+                || previousSize.x != transform->SizeDelta().x || previousSize.y != transform->SizeDelta().y)
+            {
+                m_uiEditChanged = true;
+            }
+        }
+        if (transform != nullptr && selected->IsActiveInHierarchy() && transform->IsEnabled())
+        {
+            const auto rect = transform->Resolve(width, height);
+            auto* drawList = ImGui::GetWindowDrawList();
+            drawList->PushClipRect({ origin.x, origin.y },
+                { origin.x + displaySize.x, origin.y + displaySize.y }, true);
+            const ImU32 color = IM_COL32(80, 190, 255, 255);
+            drawList->AddRect(toScreen(rect.minimum), toScreen(rect.maximum), color, 0.0f, 0, 2.0f);
+            for (const auto& handle : handlePoints(rect))
+            {
+                drawList->AddRectFilled({ handle.x - 4.0f, handle.y - 4.0f },
+                    { handle.x + 4.0f, handle.y + 4.0f }, color);
+            }
+            drawList->PopClipRect();
+        }
+        const int cursorHandle = m_uiEditHandle >= 0 ? m_uiEditHandle : hoverHandle;
+        if (cursorHandle >= 0)
+        {
+            const auto cursor = cursorHandle == 8 ? ImGuiMouseCursor_ResizeAll
+                : cursorHandle == 1 || cursorHandle == 5 ? ImGuiMouseCursor_ResizeNS
+                : cursorHandle == 3 || cursorHandle == 7 ? ImGuiMouseCursor_ResizeEW
+                : cursorHandle == 0 || cursorHandle == 4 ? ImGuiMouseCursor_ResizeNWSE
+                : ImGuiMouseCursor_ResizeNESW;
+            ImGui::SetMouseCursor(cursor);
+        }
     }
 
     // 固定解像度と描画倍率のPopupを描画します。
@@ -1649,6 +1855,7 @@ namespace LamaPon
         const bool useSnap = m_snapEnabled || ImGui::GetIO().KeyCtrl;
 
         ImGuizmo::PushID(selected);
+        ImGuizmo::Enable(m_sceneNavigationMouseButton < 0);
         // ギズモで変換が変わったか
         const bool changed = ImGuizmo::Manipulate(
             &viewMatrix._11,
@@ -1670,6 +1877,7 @@ namespace LamaPon
         m_transformGizmoHovered = isHovered;
         m_transformGizmoUsing = isUsing;
         ImGuizmo::PopID();
+        ImGuizmo::Enable(true);
 
         if (changed)
         {
@@ -1820,6 +2028,10 @@ namespace LamaPon
     // ビューキューブで視点を変更し、操作時は2D表示を解除してカメラ姿勢へ反映します。
     void EditorLayer::DrawViewCube()
     {
+        if (m_sceneNavigationMouseButton >= 0)
+        {
+            return;
+        }
         using namespace DirectX;
 
         // ビューキューブの表示サイズ
@@ -2492,13 +2704,61 @@ namespace LamaPon
     // ギズモ操作中を除き、マウスのOrbit・パン・ズームと右ドラッグ中の視点移動を適用します。
     void EditorLayer::UpdateSceneCamera()
     {
-        if (!m_sceneViewportHovered
-            || m_transformGizmoHovered
-            || m_transformGizmoUsing
+        const auto& io = ImGui::GetIO();
+        if (io.AppFocusLost
+            || (m_sceneNavigationMouseButton >= 0
+                && !ImGui::IsMouseDown(m_sceneNavigationMouseButton)))
+        {
+            m_sceneNavigationMouseButton = -1;
+        }
+        if (io.AppFocusLost || io.WantTextInput)
+        {
+            return;
+        }
+
+        // 実際に編集中のギズモを優先し、単なるホバーはカメラ操作を妨げません。
+        if (m_transformGizmoUsing
             || m_transformGizmoMouseCaptured
             || ImGuizmo::IsUsingViewManipulate())
         {
             return;
+        }
+
+        if (m_sceneNavigationMouseButton < 0)
+        {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            const bool overViewCube = m_viewCubeVisible
+                && mouse.x >= m_viewportPosition.x + m_viewportSize.x - 116.0f
+                && mouse.x <= m_viewportPosition.x + m_viewportSize.x - 8.0f
+                && mouse.y >= m_viewportPosition.y + 8.0f
+                && mouse.y <= m_viewportPosition.y + 116.0f;
+            if (!m_sceneViewportHovered || overViewCube)
+            {
+                return;
+            }
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            {
+                m_sceneNavigationMouseButton = ImGuiMouseButton_Right;
+            }
+            else if (IsOrbitViewportNavigationMouseInput(
+                m_projectSettings.viewport.navigationPreset))
+            {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+                {
+                    m_sceneNavigationMouseButton = ImGuiMouseButton_Middle;
+                }
+                else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    m_sceneNavigationMouseButton = ImGuiMouseButton_Left;
+                }
+            }
+            if (m_sceneNavigationMouseButton < 0
+                && (ImGui::IsMouseDown(ImGuiMouseButton_Left)
+                    || ImGui::IsMouseDown(ImGuiMouseButton_Middle)
+                    || ImGui::IsMouseDown(ImGuiMouseButton_Right)))
+            {
+                return;
+            }
         }
 
         // ImGuiの入力状態
@@ -2617,9 +2877,14 @@ namespace LamaPon
             orbitNavigation
             && altDown
             && leftMouseDown
+            && !inputOutput.KeyCtrl
             && !m_scene2DMode;
         // 中ドラッグでパンするか
-        const bool pan = orbitNavigation && middleMouseDown;
+        const bool pan = (orbitNavigation
+                && (middleMouseDown
+                    || (altDown && inputOutput.KeyCtrl && leftMouseDown)))
+            || (m_scene2DMode && rightMouseDown
+                && !(orbitNavigation && altDown));
         if (orbit)
         {
             // マウス差分の回転倍率

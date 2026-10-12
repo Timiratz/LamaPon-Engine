@@ -2681,8 +2681,27 @@ namespace LamaPon
             && !depthOnly
             && m_material.CustomParameter(4).w > 0.0f;
         // 上書きなしの骨格形式には部品の色・粗さ・金属度を渡す。
+        // 自作シェーダーの追加値は上書きの有無によらずRendererの設定を渡す。
         // 部品材質を転写する描画材質
         LitMaterial primitiveMaterial;
+        // 写す追加値の番号
+        for (std::size_t index{};
+             index < LitMaterial::CustomParameterCount;
+             ++index)
+        {
+            primitiveMaterial.SetCustomParameter(
+                index,
+                m_material.CustomParameter(index));
+        }
+        // 写す追加ベクトルの番号
+        for (std::size_t index{};
+             index < LitMaterial::CustomVectorCount;
+             ++index)
+        {
+            primitiveMaterial.SetCustomVector(
+                index,
+                m_material.CustomVector(index));
+        }
         // 半透明部品を描くフラグ
         for (const bool alphaPass : { false, true })
         {
@@ -3313,7 +3332,8 @@ namespace LamaPon
                     : nullptr,
                 depthOnly
                     && m_graphics->DepthPass()
-                        == DepthPassKind::Prepass);
+                        == DepthPassKind::Prepass,
+                &m_material);
             return;
         }
 

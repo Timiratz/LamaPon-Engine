@@ -3,6 +3,7 @@
 #include "LamaPon/Web/WebMath.h"
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -58,6 +59,19 @@ namespace LamaPon::Web
         float endDistance{ 520.0f };
     };
 
+    // 点光源と円錐光源。spot=falseの場合は方向・円錐角を使用しない。
+    struct LocalLight3D final
+    {
+        Vec3 position{};
+        Color color{ 1.0f, 1.0f, 1.0f, 1.0f };
+        float intensity{ 3.0f };
+        float range{ 8.0f };
+        Vec3 direction{ 0.0f, 0.0f, -1.0f };
+        float innerConeAngle{ 0.3926991f };
+        float outerConeAngle{ 0.6108652f };
+        bool spot{};
+    };
+
     struct Lighting3D final
     {
         // 環境光の色
@@ -70,6 +84,9 @@ namespace LamaPon::Web
         Color directionalColor{ 1.0f, 1.0f, 1.0f, 1.0f };
         // 平行光の強度
         float directionalIntensity{ 0.80f };
+        // WebGL1でも扱える固定上限。シーン内の有効な先頭8灯を使用する。
+        std::array<LocalLight3D, 8> localLights{};
+        std::uint32_t localLightCount{};
     };
 
     struct Sky3D final
@@ -104,6 +121,10 @@ namespace LamaPon::Web
             const char* canvasSelector = "#canvas",
             std::uint32_t width = 1280,
             std::uint32_t height = 720) noexcept;
+#if defined(LAMAPON_NATIVE_RUNTIME)
+        // SDLが新しいGL contextをcurrentにした後、CPUデータから同じMesh IDを再構築する。
+        [[nodiscard]] bool RestoreNativeGraphics() noexcept;
+#endif
         // 描画サイズを更新し、ソフトウェア描画は幅960以内に縮小する(width: 要求する幅, height: 要求する高さ)。
         void Resize(std::uint32_t width, std::uint32_t height) noexcept;
         // 描画先を背景色または空の階調で消去する(clearColor: 背景RGBA)。
@@ -117,6 +138,8 @@ namespace LamaPon::Web
         void SetFog(const Fog3D& fog) noexcept;
         // 強度を0以上・光の方向を単位ベクトルへ補正する(lighting: 環境光と平行光)。
         void SetLighting(const Lighting3D& lighting) noexcept;
+        // 毎フレームの点光源・円錐光源を更新する（最大8灯）。
+        void SetLocalLights(const std::vector<LocalLight3D>& lights) noexcept;
         // 背景に使う空の階調を設定する(sky: 空の表示設定)。
         void SetSky(const Sky3D& sky) noexcept;
 
@@ -128,6 +151,9 @@ namespace LamaPon::Web
         // 画像の非同期読込を予約し、開始不可なら0を返す(virtualPath: 仮想FS内の画像パス)。
         [[nodiscard]] TextureId CreateTexture(
             const char* virtualPath) noexcept;
+        // Copies encoded image bytes before returning. Web decoding remains asynchronous.
+        [[nodiscard]] TextureId CreateTextureEncoded(
+            const std::vector<unsigned char>& bytes) noexcept;
         // 既存Meshの全データを置き換える(mesh: 登録済みID, vertices: 頂点配列, indices: 三角形の頂点番号列)。
         void UpdateMesh(
             MeshId mesh,
@@ -169,6 +195,10 @@ namespace LamaPon::Web
         [[nodiscard]] bool UsesCanvas2DFallback() const noexcept;
 
     private:
+        void ConfigureGraphicsState() noexcept;
+#if !defined(LAMAPON_NATIVE_RUNTIME)
+        [[nodiscard]] bool RestoreWebGraphics() noexcept;
+#endif
         struct Impl;
         // バックエンドと描画資源の所有者
         std::unique_ptr<Impl> m_impl;

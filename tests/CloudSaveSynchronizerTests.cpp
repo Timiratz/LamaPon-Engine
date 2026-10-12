@@ -71,7 +71,7 @@ namespace
         const auto root = std::filesystem::absolute(
             std::filesystem::current_path()
             / L"test-output"
-            / L"cloud-save-synchronizer").lexically_normal();
+            / L"cloud-sync").lexically_normal();
         // 作業先がテスト出力配下にあることを確認します。
         Require(
             root.parent_path().filename() == L"test-output",

@@ -15,6 +15,8 @@
 #include "LamaPon/Components/RotatorComponent.h"
 
 #include <imgui.h>
+#include <array>
+#include <cmath>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <fstream>
@@ -31,6 +33,57 @@ namespace
     {
         // 条件違反を検出する
         if (!condition) throw std::runtime_error(message);
+    }
+
+    void TestUIRectDraggingPreservesOppositeEdges()
+    {
+        // 非中央Pivot・Stretch・入れ子・Canvas拡縮を組み合わせても、指定した辺だけが動くこと。
+        LamaPon::GameObject canvasObject(100, "Canvas");
+        auto& canvas = canvasObject.AddComponent<LamaPon::UICanvasComponent>();
+        LamaPon::GameObject panel(101, "Panel");
+        panel.SetParent(&canvasObject);
+        panel.AddComponent<LamaPon::UIRectTransformComponent>().SetSizeDelta({ 600.0f, 400.0f });
+        LamaPon::GameObject child(102, "UI");
+        child.SetParent(&panel);
+        auto& transform = child.AddComponent<LamaPon::UIRectTransformComponent>();
+        transform.SetAnchorMin({ 0.2f, 0.3f });
+        transform.SetAnchorMax({ 0.8f, 0.7f });
+        transform.SetPivot({ 0.25f, 0.75f });
+        transform.SetAnchoredPosition({ 12.0f, -7.0f });
+        transform.SetSizeDelta({ 80.0f, 60.0f });
+        for (const float factor : { 0.5f, 1.0f, 2.0f })
+        {
+            const float width = 1280.0f * factor;
+            const float height = 720.0f * factor;
+            const LamaPon::UIRectDragState start{ transform.Resolve(width, height),
+                transform.AnchoredPosition(), transform.SizeDelta(), transform.Pivot(),
+                canvas.ScaleFactor(width, height) };
+            // 期待する矩形の各辺の移動量（左・上・右・下）。
+            const std::array<DirectX::XMFLOAT4, 9> offsets{
+                DirectX::XMFLOAT4{ 20, 30, 0, 0 }, { 0, 30, 0, 0 }, { 0, 30, 20, 0 },
+                { 0, 0, 20, 0 }, { 0, 0, 20, 30 }, { 0, 0, 0, 30 },
+                { 20, 0, 0, 30 }, { 20, 0, 0, 0 }, { 20, 30, 20, 30 } };
+            for (int handle = 0; handle < 9; ++handle)
+            {
+                LamaPon::ApplyUIRectDrag(transform, start, handle, { 20.0f, 30.0f });
+                const auto result = transform.Resolve(width, height);
+                const auto expected = offsets[handle];
+                Require(std::abs(result.minimum.x - start.rect.minimum.x - expected.x) < 0.01f
+                    && std::abs(result.minimum.y - start.rect.minimum.y - expected.y) < 0.01f
+                    && std::abs(result.maximum.x - start.rect.maximum.x - expected.z) < 0.01f
+                    && std::abs(result.maximum.y - start.rect.maximum.y - expected.w) < 0.01f,
+                    "Drag must move only the requested edges in rendered pixels at every Canvas scale");
+            }
+            LamaPon::ApplyUIRectDrag(transform, start, 0, { 100000.0f, 100000.0f });
+            const auto minimum = transform.Resolve(width, height);
+            Require(minimum.Size().x >= factor - 0.01f && minimum.Size().y >= factor - 0.01f,
+                "Dragging past the opposite edge must preserve a positive size");
+            Require(std::abs(minimum.maximum.x - start.rect.maximum.x) < 0.01f
+                && std::abs(minimum.maximum.y - start.rect.maximum.y) < 0.01f,
+                "Minimum size clamp must preserve the opposite corner");
+            transform.SetAnchoredPosition(start.position);
+            transform.SetSizeDelta(start.sizeDelta);
+        }
     }
 
     // TestMalformedShaderPropertiesFallBackWithoutThrowing()は不正なProperty定義の安全な処理を検証する。
@@ -303,6 +356,7 @@ int main()
     try
     {
         TestMalformedShaderPropertiesFallBackWithoutThrowing();
+        TestUIRectDraggingPreservesOppositeEdges();
         TestManifestPropertyConversion();
         TestShaderAssetSelectionAndOpenRoutes();
         TestShaderPropertyEditCommitIsIndependentFromChange();

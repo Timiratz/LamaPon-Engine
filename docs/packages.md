@@ -101,8 +101,8 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 ## ネイティブライブラリを含むパッケージ
 
 外部SDK（Discordの Social SDK、Steamworks など）をパッケージから
-使えます。`package.json`へ`native`を書くと、Game Moduleのビルドと
-ゲームの書き出しへ自動で反映されます。
+使えます。従来の`native`はWindows Game Module向けです。Portableゲームの
+書き出しには、OS／CPU別の`nativeVariants`を使います。
 
 ```json
 {
@@ -126,9 +126,66 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 | `libraries` | Game Moduleへリンクする`.lib` |
 | `runtimeFiles` | 編集中のプレイと書き出したゲームへ同梱する`.dll` |
 | `defines` | Game Moduleのコンパイル時マクロ |
+| `nativeVariants.*.sources` | 選んだPortable出力だけへ追加コンパイルするC/C++ファイル |
 
 パスはすべて**パッケージフォルダーからの相対パス**です。4つとも
 省略できます。`native`が無いパッケージは今までどおり動きます。
+
+Portableゲームでは`nativeVariants`に出力ターゲットごとの宣言を追加できます。
+Windowsの既存`native`宣言は`windows-x86_64`の互換設定として使えます。
+Linux・Android向けのSDKバイナリをWindows用SDKから流用することはありません。
+選択中のターゲットまたはAndroid ABIの宣言がないパッケージは、出力設定の生成時に
+診断で止まります。
+
+```json
+{
+  "nativeVariants": {
+    "windows-x86_64": {
+      "includeDirectories": ["windows/include"],
+      "sources": ["windows/MySdkAdapter.cpp"],
+      "libraries": ["windows/lib/my_sdk.lib"],
+      "runtimeFiles": ["windows/bin/my_sdk.dll"],
+      "defines": ["MY_SDK_ENABLED"],
+      "licenseFiles": ["windows/LICENSE.txt"]
+    },
+    "linux-x86_64": {
+      "includeDirectories": ["linux/include"],
+      "sources": ["linux/MySdkAdapter.cpp"],
+      "libraries": ["linux/lib/libmy_sdk.so"],
+      "runtimeFiles": ["linux/lib/libmy_sdk.so"],
+      "defines": ["MY_SDK_ENABLED"],
+      "licenseFiles": ["linux/LICENSE.txt"]
+    },
+    "android-arm64-v8a": {
+      "includeDirectories": ["android/arm64/include"],
+      "sources": ["android/arm64/MySdkAdapter.cpp"],
+      "libraries": ["android/arm64/libmy_sdk.so"],
+      "runtimeFiles": ["android/arm64/libmy_sdk.so"],
+      "defines": ["MY_SDK_ENABLED"],
+      "licenseFiles": ["android/LICENSE.txt"]
+    },
+    "android-x86_64": {
+      "includeDirectories": ["android/x86_64/include"],
+      "sources": ["android/x86_64/MySdkAdapter.cpp"],
+      "libraries": ["android/x86_64/libmy_sdk.so"],
+      "runtimeFiles": ["android/x86_64/libmy_sdk.so"],
+      "defines": ["MY_SDK_ENABLED"],
+      "licenseFiles": ["android/LICENSE.txt"]
+    }
+  }
+}
+```
+
+対応ターゲットは`windows-x86_64`、`linux-x86_64`、`android-arm64-v8a`、
+`android-x86_64`です。Linux／Androidの`libraries`は`.a`または`.so`、
+Windowsは`.lib`です。`runtimeFiles`はWindowsの`.dll`、Linux／Androidの`.so`を
+指定します。Androidでは各ABI向け共有ライブラリをAPKへ入れ、`licenseFiles`は
+デスクトップ出力の`licenses/packages/`またはAPK内の同じパスへ配置します。
+全パスはパッケージ内の大文字小文字まで一致する相対パスでなければなりません。
+依存関係の参照、形式、名前の衝突は出力前に検査します。AndroidのABI間で同じライセンス保存先を共有する場合は、
+同一のライセンスファイルを指定してください。異なるファイルがAPK内で衝突する設定は生成前に拒否します。
+エディターでパッケージを作り直しても`nativeVariants`は保持されます。配布一覧には含めず、
+ZIP内の`package.json`を依存設定の正本として使います。
 
 ### 置き場所
 
