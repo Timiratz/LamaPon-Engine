@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Components/UIRectTransformComponent.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -9,6 +11,18 @@
 namespace LamaPon
 {
     class Component;
+
+    struct UIRectDragState final
+    {
+        UIRect rect;
+        DirectX::XMFLOAT2 position;
+        DirectX::XMFLOAT2 sizeDelta;
+        DirectX::XMFLOAT2 pivot;
+        float canvasScale{ 1.0f };
+    };
+    // handle: 左上から時計回りの8ハンドル、8は移動。deltaは描画先のピクセル差分。
+    void ApplyUIRectDrag(UIRectTransformComponent& transform,
+        const UIRectDragState& start, int handle, const DirectX::XMFLOAT2& delta);
 
     struct RenderTexturePickerResult final
     {

@@ -2455,6 +2455,7 @@ namespace LamaPon
     // 編集状態を保存し、遷移・通信・粒子・音声・時計を初期化して再生を開始します。
     void EditorLayer::StartPlaying()
     {
+        FinishUIRectEdit();
         try
         {
             if (m_animationTimelineOpen)

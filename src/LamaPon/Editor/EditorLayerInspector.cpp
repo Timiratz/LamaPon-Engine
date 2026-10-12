@@ -1,4 +1,4 @@
-﻿#include "LamaPon/Editor/EditorLayer.h"
+#include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
 #include "LamaPon/Editor/DataAssetSchema.h"
@@ -5254,14 +5254,31 @@ namespace LamaPon
         {
             // Inspectorの座標表示桁数
             const auto decimalsFormat = InspectorFloatFormat();
-            ImGui::InputFloat3(
+            const bool hasUIRect = selected->GetComponent<UIRectTransformComponent>() != nullptr;
+            if (hasUIRect)
+            {
+                ImGui::TextWrapped("UIの位置はUI Rect Transformで編集します。ゲームビューの「UI編集」で移動・リサイズできます。");
+            }
+            ImGui::BeginDisabled(hasUIRect);
+            ImGui::DragFloat3(
                 "位置",
                 &transform.position.x,
+                0.05f,
+                0.0f,
+                0.0f,
                 decimalsFormat.c_str());
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "左からX / Y / Z（ローカル座標）\n"
+                    "ドラッグで移動、Ctrl+クリックで数値入力\n"
+                    "Altで細かく、Shiftで大きく調整できます。");
+            }
             if (ImGui::IsItemDeactivatedAfterEdit())
             {
                 RecordHistory();
             }
+            ImGui::EndDisabled();
 
             // 回転の正本はクォータニオンなので、表示するオイラー角はそこから変換して作ります。
             // ただし同じ回転を表すオイラー角は複数あるため、変換した値をそのまま入力欄へ入れると編集中に数値が飛びます（90度付近で別の等価な組み合わせへ切り替わる）。
