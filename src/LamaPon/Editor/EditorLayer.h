@@ -686,6 +686,18 @@ namespace LamaPon
             bool restoreTransform);
         // 編集キーから現在時刻の変換を求め、対象の位置・回転・拡縮に適用します。
         void PreviewAnimationTimeline();
+        void GatherAnimationTimelineTracks();
+        void StoreAnimationTimelineTrack();
+        void SelectAnimationTimelineTrack(std::size_t index);
+        void RestoreAnimationTimelinePose();
+        void DrawAnimationTimelineTracks();
+        void RenderAnimationTimelinePreview();
+        void DrawAnimationPreviewTools(const DirectX::XMFLOAT2& position, const DirectX::XMFLOAT2& size);
+        void PushAnimationTimelineUndo();
+        void UndoAnimationTimeline(bool redo=false);
+        void RecordAnimationTimelinePose();
+        void CopyAnimationTimelineKey();
+        void PasteAnimationTimelineKey();
         // 同じMaterialを参照するメッシュとモデルを再読込します(materialAsset: 更新したMaterial参照)。
         void ReloadSharedMaterial(
             const std::filesystem::path& materialAsset);
@@ -1428,6 +1440,9 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_viewportPosition{};
         // シーン画像の表示サイズ
         DirectX::XMFLOAT2 m_viewportSize{};
+        // 各パネルの表示状態。同時表示にも対応します。
+        bool m_sceneViewportVisible{};
+        bool m_gameViewportVisible{};
         // 選択中のビューポート
         ViewportMode m_activeViewport{ ViewportMode::None };
         // カメラ操作を開始したボタン。離すまでドラッグを保持します。
@@ -1594,6 +1609,41 @@ namespace LamaPon
         bool m_animationTimelineOpen{};
         // アニメーションが未保存か
         bool m_animationTimelineDirty{};
+        struct AnimationTimelineTrack
+        {
+            GameObjectId target{};
+            Transform original;
+            std::filesystem::path path;
+            std::vector<TransformKeyframe> keys;
+            std::array<char,128> name{};
+            float duration{1.f};
+            bool loop{}, dirty{};
+        };
+        std::vector<AnimationTimelineTrack> m_animationTimelineTracks;
+        std::size_t m_animationTimelineTrack{};
+        bool m_animationTimelinePreviewPlaying{};
+        bool m_animationTimelinePreviewLoop{true};
+        float m_animationTimelinePreviewSpeed{1.f};
+        float m_animationTimelinePreviewZoom{1.f};
+        RenderTarget m_animationTimelineRenderTarget;
+        DirectX::XMFLOAT3 m_animationTimelinePreviewCenter{};
+        struct AnimationTimelineSnapshot
+        {
+            std::vector<AnimationTimelineTrack> tracks;
+            std::size_t track{}, key{};
+            float time{};
+        };
+        std::vector<AnimationTimelineSnapshot> m_animationTimelineUndo, m_animationTimelineRedo;
+        std::unordered_map<std::string,std::string> m_animationTimelineSaved;
+        std::optional<TransformAnimationSample> m_animationTimelineClipboard;
+        int m_animationTimelineTool{};
+        int m_animationTimelineFps{60};
+        bool m_animationTimelineAutoKey{true}, m_animationTimelineLocal{true}, m_animationTimelineSnap{true};
+        bool m_animationTimelineGizmoUsing{}, m_animationTimelineNumericEditing{};
+        int m_animationTimelineDraggingTrack{-1};
+        std::size_t m_animationTimelineDraggingKey{};
+        bool m_animationTimelineDragUndo{};
+        DirectX::XMFLOAT2 m_animationTimelinePan{};
         // 編集中の制御グラフのパス
         std::filesystem::path
             m_animatorGraphControllerPath;

@@ -639,7 +639,7 @@ namespace
         // ボタンの描画順
         auto buttonSortOrder =
             button.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順",
                 &buttonSortOrder))
         {
@@ -728,7 +728,7 @@ namespace
         // 画像の描画順
         auto imageSortOrder =
             image.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順##UIImage",
                 &imageSortOrder))
         {
@@ -817,7 +817,7 @@ namespace
         // トグルの描画順
         auto toggleSortOrder =
             toggle.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順##UIToggle",
                 &toggleSortOrder))
         {
@@ -924,7 +924,7 @@ namespace
         // スライダーの描画順
         auto sliderSortOrder =
             slider.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順##UISlider",
                 &sliderSortOrder))
         {
@@ -988,7 +988,7 @@ namespace
         // 入力文字数の上限
         int maxLength = static_cast<int>(
             inputField.MaxLength());
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "最大文字数",
                 &maxLength))
         {
@@ -1015,7 +1015,7 @@ namespace
         // テキスト欄の描画順
         auto fieldSortOrder =
             inputField.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順##UIInputField",
                 &fieldSortOrder))
         {
@@ -1176,7 +1176,7 @@ namespace
         // スクロール領域の描画順
         auto scrollSortOrder =
             scrollView.SortOrder();
-        if (ImGui::InputInt(
+        if (ImGui::DragInt(
                 "描画順##UIScrollView",
                 &scrollSortOrder))
         {

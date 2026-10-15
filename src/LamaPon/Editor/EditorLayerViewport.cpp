@@ -292,95 +292,57 @@ namespace
 
 namespace LamaPon
 {
-    // タブを登録してから選択中のビューを描画し、ビュー切替時にギズモ操作を履歴へ確定します。
+    // シーンとゲームを独立したドッキング可能なウィンドウとして描画します。
     void EditorLayer::DrawViewport()
     {
-        ImGui::SetNextWindowSize(
-            ImVec2{ 720.0f, 640.0f },
-            ImGuiCond_FirstUseEver);
-
-        // ビューポートのウィンドウ設定
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse
             | ImGuiWindowFlags_NoScrollbar
             | ImGuiWindowFlags_NoScrollWithMouse;
 
-        ImGui::Begin("ビューポート", nullptr, flags);
         m_activeViewport = ViewportMode::None;
         m_sceneViewportHovered = false;
-
-        // シーンタブが選択中か
-        bool drawSceneViewport = false;
-        // ゲームタブが選択中か
-        bool drawGameViewport = false;
-
-        ImGui::PushStyleColor(
-            ImGuiCol_Tab,
-            ImVec4{ 0.10f, 0.22f, 0.36f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabHovered,
-            ImVec4{ 0.18f, 0.42f, 0.68f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabSelected,
-            ImVec4{ 0.16f, 0.38f, 0.64f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabDimmed,
-            ImVec4{ 0.10f, 0.22f, 0.36f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabDimmedSelected,
-            ImVec4{ 0.16f, 0.38f, 0.64f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_Text,
-            ImVec4{ 0.92f, 0.95f, 1.0f, 1.0f });
-
-        if (ImGui::BeginTabBar("ViewportTabs"))
-        {
-            if (ImGui::BeginTabItem("シーン"))
-            {
-                drawSceneViewport = true;
-                ImGui::EndTabItem();
-            }
-
-            if (ImGui::BeginTabItem("ゲーム", nullptr,
-                    m_uiFocusGameView ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
-            {
-                drawGameViewport = true;
-                m_uiFocusGameView = false;
-                ImGui::EndTabItem();
-            }
-
-            ImGui::EndTabBar();
-        }
-        ImGui::PopStyleColor(6);
-        if (!drawGameViewport || m_playing)
-        {
-            FinishUIRectEdit();
-        }
-
-        // タブ見出しの登録後に共通の描画リストへ画像とオーバーレイを追加します。
-        if (drawSceneViewport)
+        m_viewCubeHovered = false;
+        ImGui::SetNextWindowSize(ImVec2{ 720.0f, 640.0f }, ImGuiCond_FirstUseEver);
+        m_sceneViewportVisible = ImGui::Begin("シーン", nullptr, flags);
+        if (m_sceneViewportVisible)
         {
             m_activeViewport = ViewportMode::Scene;
             DrawSceneViewport();
         }
-        else if (drawGameViewport)
-        {
-            m_activeViewport = ViewportMode::Game;
-            DrawGameViewport();
-        }
+        ImGui::End();
 
-        if (!drawSceneViewport)
+        if (!m_sceneViewportVisible)
         {
             m_sceneNavigationMouseButton = -1;
+            if (m_gizmoWasUsing)
+            {
+                RecordHistory();
+                m_gizmoWasUsing = false;
+            }
         }
 
-        if (m_activeViewport != ViewportMode::Scene && m_gizmoWasUsing)
+        ImGui::SetNextWindowSize(ImVec2{ 720.0f, 640.0f }, ImGuiCond_FirstUseEver);
+        if (m_uiFocusGameView)
         {
-            RecordHistory();
-            m_gizmoWasUsing = false;
+            ImGui::SetNextWindowFocus();
+            m_uiFocusGameView = false;
         }
-
+        m_gameViewportVisible = ImGui::Begin("ゲーム", nullptr, flags);
+        if (m_gameViewportVisible)
+        {
+            if (!m_sceneViewportVisible || ImGui::IsWindowFocused())
+            {
+                m_activeViewport = ViewportMode::Game;
+            }
+            DrawGameViewport();
+        }
         ImGui::End();
+
+        if (!m_gameViewportVisible || m_playing)
+        {
+            FinishUIRectEdit();
+        }
     }
 
     // シーン画像と操作UIを描画し、カメラ・ギズモ・タイル編集・選択入力を処理します。

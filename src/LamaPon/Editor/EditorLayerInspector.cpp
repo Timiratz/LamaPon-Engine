@@ -689,21 +689,21 @@ namespace
             }
             else if (count == 2)
             {
-                itemChanged = ImGui::InputFloat2(
+                itemChanged = ImGui::DragFloat2(
                     controlId.c_str(),
-                    value.data());
+                    value.data(), 0.01f);
             }
             else if (count == 3)
             {
-                itemChanged = ImGui::InputFloat3(
+                itemChanged = ImGui::DragFloat3(
                     controlId.c_str(),
-                    value.data());
+                    value.data(), 0.01f);
             }
             else
             {
-                itemChanged = ImGui::InputFloat4(
+                itemChanged = ImGui::DragFloat4(
                     controlId.c_str(),
-                    value.data());
+                    value.data(), 0.01f);
             }
             if (itemChanged)
             {
@@ -5252,6 +5252,9 @@ namespace LamaPon
                 "Transform",
                 ImGuiTreeNodeFlags_DefaultOpen))
         {
+            ImGui::TextDisabled("数値を左右ドラッグ / Ctrl+クリックで直接入力");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Altで細かく、Shiftで大きく調整できます。");
             // Inspectorの座標表示桁数
             const auto decimalsFormat = InspectorFloatFormat();
             const bool hasUIRect = selected->GetComponent<UIRectTransformComponent>() != nullptr;
@@ -5300,9 +5303,10 @@ namespace LamaPon
             {
                 rotationDegrees = m_rotationEditDegrees;
             }
-            if (ImGui::InputFloat3(
+            if (ImGui::DragFloat3(
                 "回転",
                 &rotationDegrees.x,
+                0.5f, 0.0f, 0.0f,
                 decimalsFormat.c_str()))
             {
                 m_rotationEditObjectId = selected->Id();
@@ -5329,9 +5333,10 @@ namespace LamaPon
                 m_rotationEditActive = false;
             }
 
-            ImGui::InputFloat3(
+            ImGui::DragFloat3(
                 "拡縮",
                 &transform.scale.x,
+                0.01f, 0.0f, 0.0f,
                 decimalsFormat.c_str());
             if (ImGui::IsItemDeactivatedAfterEdit())
             {
@@ -6393,7 +6398,7 @@ namespace LamaPon
             {
                 // Colliderまたは描画サイズ
                 auto size = collider2D->Size();
-                if (ImGui::InputFloat2("サイズ", &size.x))
+                if (ImGui::DragFloat2("サイズ", &size.x, 0.01f))
                 {
                     collider2D->SetSize(size);
                 }
@@ -6404,7 +6409,7 @@ namespace LamaPon
 
                 // Colliderの中心位置ずれ
                 auto offset = collider2D->Offset();
-                if (ImGui::InputFloat2("オフセット", &offset.x))
+                if (ImGui::DragFloat2("オフセット", &offset.x, 0.01f))
                 {
                     collider2D->SetOffset(offset);
                 }
@@ -6479,9 +6484,9 @@ namespace LamaPon
             {
                 // 円Colliderの半径
                 float circleRadius = circle2D->Radius();
-                if (ImGui::InputFloat(
+                if (ImGui::DragFloat(
                         "半径##Circle2D",
-                        &circleRadius))
+                        &circleRadius, 0.01f))
                 {
                     circle2D->SetRadius(circleRadius);
                 }
@@ -6491,9 +6496,9 @@ namespace LamaPon
                 }
                 // 円Colliderの位置ずれ
                 auto circleOffset = circle2D->Offset();
-                if (ImGui::InputFloat2(
+                if (ImGui::DragFloat2(
                         "オフセット##Circle2D",
-                        &circleOffset.x))
+                        &circleOffset.x, 0.01f))
                 {
                     circle2D->SetOffset(circleOffset);
                 }
@@ -6572,9 +6577,9 @@ namespace LamaPon
             {
                 // 多角形Colliderの位置ずれ
                 auto polygonOffset = polygon2D->Offset();
-                if (ImGui::InputFloat2(
+                if (ImGui::DragFloat2(
                         "オフセット##Polygon2D",
-                        &polygonOffset.x))
+                        &polygonOffset.x, 0.01f))
                 {
                     polygon2D->SetOffset(polygonOffset);
                 }
@@ -6701,7 +6706,7 @@ namespace LamaPon
             {
                 // Colliderまたは描画サイズ
                 auto size = collider3D->Size();
-                if (ImGui::InputFloat3("サイズ", &size.x))
+                if (ImGui::DragFloat3("サイズ", &size.x, 0.01f))
                 {
                     collider3D->SetSize(size);
                 }
@@ -6712,7 +6717,7 @@ namespace LamaPon
 
                 // Colliderの中心位置ずれ
                 auto offset = collider3D->Offset();
-                if (ImGui::InputFloat3("オフセット", &offset.x))
+                if (ImGui::DragFloat3("オフセット", &offset.x, 0.01f))
                 {
                     collider3D->SetOffset(offset);
                 }
@@ -6820,9 +6825,9 @@ namespace LamaPon
 
                 // Colliderの中心位置ずれ
                 auto offset = capsule->Offset();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "オフセット",
-                    &offset.x))
+                    &offset.x, 0.01f))
                 {
                     capsule->SetOffset(offset);
                 }
@@ -6914,9 +6919,9 @@ namespace LamaPon
 
                 // Colliderの中心位置ずれ
                 auto offset = sphere->Offset();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "オフセット",
-                    &offset.x))
+                    &offset.x, 0.01f))
                 {
                     sphere->SetOffset(offset);
                 }
@@ -6994,9 +6999,9 @@ namespace LamaPon
             {
                 // 凸包Colliderの位置ずれ
                 auto hullOffset = hull->Offset();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "オフセット",
-                    &hullOffset.x))
+                    &hullOffset.x, 0.01f))
                 {
                     hull->SetOffset(hullOffset);
                 }
@@ -7521,9 +7526,9 @@ namespace LamaPon
                 // Agentの経路目標位置
                 auto destination =
                     agent->Destination();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                         "目的地",
-                        &destination.x))
+                        &destination.x, 0.01f))
                 {
                     agent->SetPath(
                         destination,
@@ -7788,7 +7793,7 @@ namespace LamaPon
 
                 // 2D Particleの描画順
                 int sortOrder2D = particles2D->SortOrder();
-                if (ImGui::InputInt(
+                if (ImGui::DragInt(
                         "Sort Order##SpriteParticles2D",
                         &sortOrder2D))
                 {
@@ -10163,7 +10168,7 @@ namespace LamaPon
 
                 // Colliderまたは描画サイズ
                 auto size = sprite->Size();
-                if (ImGui::InputFloat2("サイズ", &size.x))
+                if (ImGui::DragFloat2("サイズ", &size.x, 0.01f))
                 {
                     sprite->SetSize(size);
                 }
@@ -10185,7 +10190,7 @@ namespace LamaPon
 
                 // Spriteの回転基準点
                 auto pivot = sprite->Pivot();
-                if (ImGui::InputFloat2("基準点", &pivot.x))
+                if (ImGui::DragFloat2("基準点", &pivot.x, 0.01f))
                 {
                     sprite->SetPivot(pivot);
                 }
@@ -10210,7 +10215,7 @@ namespace LamaPon
 
                 // SpriteまたはTilemapの描画順
                 auto sortOrder = sprite->SortOrder();
-                if (ImGui::InputInt("描画順", &sortOrder))
+                if (ImGui::DragInt("描画順", &sortOrder))
                 {
                     sprite->SetSortOrder(sortOrder);
                 }
@@ -10249,9 +10254,9 @@ namespace LamaPon
                 // 正規化ソース矩形（0～1）。
                 // Sprite画像の切り出し領域
                 auto sourceRect = sprite->SourceRect();
-                if (ImGui::InputFloat4(
+                if (ImGui::DragFloat4(
                         "切り出し矩形 (U, V, 幅, 高さ / 0～1)",
-                        &sourceRect.x))
+                        &sourceRect.x, 0.01f))
                 {
                     sprite->SetSourceRect(sourceRect);
                 }
@@ -10279,7 +10284,7 @@ namespace LamaPon
                 int meshGrid[2]{
                     sprite->MeshColumns(),
                     sprite->MeshRows() };
-                if (ImGui::InputInt2(
+                if (ImGui::DragInt2(
                         "メッシュ分割（列×行）",
                         meshGrid))
                 {
@@ -10497,12 +10502,12 @@ namespace LamaPon
 
                 // Sprite Maskの大きさ
                 auto maskSize = spriteMask->Size();
-                if (ImGui::InputFloat2(
+                if (ImGui::DragFloat2(
                         spriteMask->Shape()
                                 == SpriteMaskShape::Circle
                             ? "直径##SpriteMask"
                             : "サイズ##SpriteMask",
-                        &maskSize.x))
+                        &maskSize.x, 0.01f))
                 {
                     spriteMask->SetSize(maskSize);
                 }
@@ -10688,7 +10693,7 @@ namespace LamaPon
                 int grid[2]{
                     spriteAnimator->Columns(),
                     spriteAnimator->Rows() };
-                if (ImGui::InputInt2(
+                if (ImGui::DragInt2(
                         "シート分割（列×行）",
                         grid))
                 {
@@ -10825,7 +10830,7 @@ namespace LamaPon
                     int frameRange[2]{
                         clip.startFrame,
                         clip.frameCount };
-                    if (ImGui::InputInt2(
+                    if (ImGui::DragInt2(
                             "開始コマ / コマ数",
                             frameRange))
                     {
@@ -10911,7 +10916,7 @@ namespace LamaPon
                 // Tilemapの描画順
                 auto tilemapSortOrder =
                     tilemap->SortOrder();
-                if (ImGui::InputInt(
+                if (ImGui::DragInt(
                         "描画順##Tilemap",
                         &tilemapSortOrder))
                 {
@@ -10955,7 +10960,7 @@ namespace LamaPon
                         tilemap->
                             AtlasRows())
                 };
-                if (ImGui::InputInt2(
+                if (ImGui::DragInt2(
                         "Atlas 列 / 行",
                         atlasGrid))
                 {
@@ -11385,7 +11390,7 @@ namespace LamaPon
                 int blinkGrid[2]{
                     blinkSettings.columns,
                     blinkSettings.rows };
-                if (ImGui::InputInt2(
+                if (ImGui::DragInt2(
                     "シート分割（列×行）##Blink2D",
                     blinkGrid))
                 {
@@ -11394,15 +11399,15 @@ namespace LamaPon
                     blinkChanged = true;
                 }
                 trackBlinkEdit();
-                blinkChanged |= ImGui::InputInt(
+                blinkChanged |= ImGui::DragInt(
                     "開いた目のコマ##Blink2D",
                     &blinkSettings.openFrame);
                 trackBlinkEdit();
-                blinkChanged |= ImGui::InputInt(
+                blinkChanged |= ImGui::DragInt(
                     "閉じ始めのコマ##Blink2D",
                     &blinkSettings.closingStartFrame);
                 trackBlinkEdit();
-                blinkChanged |= ImGui::InputInt(
+                blinkChanged |= ImGui::DragInt(
                     "閉じるまでのコマ数##Blink2D",
                     &blinkSettings.closingFrameCount);
                 trackBlinkEdit();
@@ -11576,7 +11581,7 @@ namespace LamaPon
                         ImGui::GetID("SpriteSkin2DChainSway"),
                         true);
                 ImGui::SetNextItemWidth(120.0f);
-                if (ImGui::InputInt(
+                if (ImGui::DragInt(
                     "本##SpriteSkin2DChainCount",
                     chainCount))
                 {
@@ -12375,9 +12380,10 @@ namespace LamaPon
 
                 // テキスト領域の幅と高さ
                 auto layoutSize = text->LayoutSize();
-                if (ImGui::InputFloat2(
+                if (ImGui::DragFloat2(
                     "レイアウトサイズ",
                     &layoutSize.x,
+                    1.0f, 0.0f, 0.0f,
                     "%.0f px"))
                 {
                     text->SetLayoutSize(layoutSize);
@@ -12455,7 +12461,7 @@ namespace LamaPon
 
                 // Textの描画順
                 auto textSortOrder = text->SortOrder();
-                if (ImGui::InputInt("描画順", &textSortOrder))
+                if (ImGui::DragInt("描画順", &textSortOrder))
                 {
                     text->SetSortOrder(textSortOrder);
                 }
@@ -12585,7 +12591,7 @@ namespace LamaPon
             {
                 // RotatorまたはRigidbodyの速度
                 auto velocity = rotator->AngularVelocity();
-                if (ImGui::InputFloat3("回転速度", &velocity.x))
+                if (ImGui::DragFloat3("回転速度", &velocity.x, 0.01f))
                 {
                     rotator->SetAngularVelocity(velocity);
                 }
@@ -13323,7 +13329,7 @@ namespace LamaPon
 
                 // RotatorまたはRigidbodyの速度
                 auto velocity = rigidbody->Velocity();
-                if (ImGui::InputFloat3("速度", &velocity.x))
+                if (ImGui::DragFloat3("速度", &velocity.x, 0.01f))
                 {
                     rigidbody->SetVelocity(velocity);
                 }
@@ -13335,9 +13341,9 @@ namespace LamaPon
                 // 角速度
                 auto angularVelocity =
                     rigidbody->AngularVelocity();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "角速度 (rad/s)",
-                    &angularVelocity.x))
+                    &angularVelocity.x, 0.01f))
                 {
                     rigidbody->SetAngularVelocity(
                         angularVelocity);
@@ -13350,9 +13356,9 @@ namespace LamaPon
                 // ローカル重心
                 auto centerOfMass =
                     rigidbody->CenterOfMass();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "重心 (ローカル)",
-                    &centerOfMass.x))
+                    &centerOfMass.x, 0.01f))
                 {
                     rigidbody->SetCenterOfMass(
                         centerOfMass);
@@ -13583,9 +13589,9 @@ namespace LamaPon
 
                 // Jointのローカル接続位置
                 auto anchor = joint->Anchor();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "アンカー",
-                    &anchor.x))
+                    &anchor.x, 0.01f))
                 {
                     joint->SetAnchor(anchor);
                 }
@@ -13597,9 +13603,9 @@ namespace LamaPon
                 // 接続先のローカル位置
                 auto connectedAnchor =
                     joint->ConnectedAnchor();
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                     "接続先アンカー",
-                    &connectedAnchor.x))
+                    &connectedAnchor.x, 0.01f))
                 {
                     joint->SetConnectedAnchor(
                         connectedAnchor);
@@ -13613,9 +13619,9 @@ namespace LamaPon
                 {
                     // Billboardの前向き
                     auto axis = joint->Axis();
-                    if (ImGui::InputFloat3(
+                    if (ImGui::DragFloat3(
                         "回転軸",
-                        &axis.x))
+                        &axis.x, 0.01f))
                     {
                         joint->SetAxis(axis);
                     }

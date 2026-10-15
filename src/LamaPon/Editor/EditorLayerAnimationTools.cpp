@@ -8,10 +8,14 @@
 #include "LamaPon/Components/TransformAnimatorComponent.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Scene/Scene.h"
+#include "LamaPon/Physics/CollisionTypes.h"
+#include "LamaPon/Physics/Raycast.h"
 
 #include <commdlg.h>
 #include <imgui.h>
+#include <ImGuizmo.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -19,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -39,13 +44,14 @@ namespace LamaPon
 
         // タイムラインの表示状態
         bool windowOpen = true;
-        ImGui::SetNextWindowSize(
-            ImVec2{ 760.0f, 560.0f },
-            ImGuiCond_FirstUseEver);
+        const auto* viewport=ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x+12,viewport->WorkPos.y+72),ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x-24,viewport->WorkSize.y-88),ImGuiCond_Appearing);
+        ImGui::SetNextWindowBgAlpha(1.f);
         // 変更状態を含むウィンドウ名
         const std::string title =
             std::string{ "Animation Timeline" }
-            + (m_animationTimelineDirty
+            + ((m_animationTimelineDirty || std::ranges::any_of(m_animationTimelineTracks,[](const auto& track){return track.dirty;}))
                 ? " *"
                 : "")
             + "###AnimationTimeline";
@@ -71,6 +77,58 @@ namespace LamaPon
 
         if (visible)
         {
+            if(m_playing) m_animationTimelinePreviewPlaying=false;
+            if(m_animationTimelinePreviewPlaying)
+            {
+                m_animationTimelineTime+=std::min(ImGui::GetIO().DeltaTime,0.1f)*m_animationTimelinePreviewSpeed;
+                if(m_animationTimelineTime>m_animationTimelineDuration)
+                {
+                    if(m_animationTimelinePreviewLoop) m_animationTimelineTime=std::fmod(m_animationTimelineTime,m_animationTimelineDuration);
+                    else {m_animationTimelineTime=m_animationTimelineDuration;m_animationTimelinePreviewPlaying=false;}
+                }
+                PreviewAnimationTimeline();
+            }
+            const float previewWidth=std::clamp(ImGui::GetContentRegionAvail().x*.30f,240.f,480.f);
+            ImGui::BeginChild("AnimationPreview",ImVec2(previewWidth,0),ImGuiChildFlags_Borders);
+            ImGui::SeparatorText("全身プレビュー");
+            ImGui::TextDisabled("%zu 部位 / %d fps",m_animationTimelineTracks.size(),m_animationTimelineFps);
+            const char* tools[]={"選択 Q","移動 W","回転 E","拡縮 R"};
+            for(int tool=-1;tool<3;++tool)
+            {
+                if(tool>=0)ImGui::SameLine();
+                if(ImGui::Selectable(tools[tool+1],m_animationTimelineTool==tool,0,ImVec2(65,22)))m_animationTimelineTool=tool;
+            }
+            ImGui::Checkbox("自動キー",&m_animationTimelineAutoKey);ImGui::SameLine();
+            ImGui::Checkbox("ローカル",&m_animationTimelineLocal);
+            if(ImGui::Button("中央へ戻す F")){m_animationTimelinePan={};m_animationTimelinePreviewZoom=1.f;}
+            ImGui::TextDisabled("中ボタン: パン / ホイール: ズーム");
+            ImGui::SliderFloat("ズーム",&m_animationTimelinePreviewZoom,.5f,2.f,"%.2fx");
+            const auto space=ImGui::GetContentRegionAvail();
+            const auto imagePosition=ImGui::GetCursorScreenPos();
+            m_graphics.ResizeOffscreenTarget(m_animationTimelineRenderTarget,
+                static_cast<std::uint32_t>(std::max(1.f,space.x)),static_cast<std::uint32_t>(std::max(1.f,space.y)));
+            if(m_animationTimelineRenderTarget.IsValid())
+                ImGui::Image(m_editorGuiRenderer->DisplayTextureReference(m_animationTimelineRenderTarget),space);
+            DrawAnimationPreviewTools({imagePosition.x,imagePosition.y},{space.x,space.y});
+            ImGui::EndChild();ImGui::SameLine();
+            ImGui::BeginChild("AnimationControls",ImVec2(ImGui::GetContentRegionAvail().x*.66f,0));
+            target=m_scene.FindGameObject(m_animationTimelineTargetId);
+            if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput)
+            {
+                if(ImGui::IsKeyPressed(ImGuiKey_Q))m_animationTimelineTool=-1;
+                if(ImGui::IsKeyPressed(ImGuiKey_W))m_animationTimelineTool=0;
+                if(ImGui::IsKeyPressed(ImGuiKey_E))m_animationTimelineTool=1;
+                if(ImGui::IsKeyPressed(ImGuiKey_R))m_animationTimelineTool=2;
+                if(ImGui::IsKeyPressed(ImGuiKey_F)){m_animationTimelinePan={};m_animationTimelinePreviewZoom=1.f;}
+                if(ImGui::IsKeyPressed(ImGuiKey_Space))m_animationTimelinePreviewPlaying=!m_animationTimelinePreviewPlaying;
+                if(ImGui::GetIO().KeyCtrl)
+                {
+                    if(ImGui::IsKeyPressed(ImGuiKey_Z))UndoAnimationTimeline(ImGui::GetIO().KeyShift);
+                    if(ImGui::IsKeyPressed(ImGuiKey_Y))UndoAnimationTimeline(true);
+                    if(ImGui::IsKeyPressed(ImGuiKey_C))CopyAnimationTimelineKey();
+                    if(ImGui::IsKeyPressed(ImGuiKey_V))PasteAnimationTimelineKey();
+                }
+            }
             ImGui::TextWrapped(
                 "Clip: %s",
                 PathToUtf8(
@@ -87,6 +145,27 @@ namespace LamaPon
             }
 
             ImGui::BeginDisabled(m_playing);
+            if(ImGui::Button(m_animationTimelinePreviewPlaying?"一時停止":"プレビュー再生"))
+            {
+                if(m_animationTimelineTime>=m_animationTimelineDuration)m_animationTimelineTime=0;
+                m_animationTimelinePreviewPlaying=!m_animationTimelinePreviewPlaying;
+            }
+            ImGui::SameLine();
+            if(ImGui::Button("停止 / 先頭")){m_animationTimelinePreviewPlaying=false;m_animationTimelineTime=0;PreviewAnimationTimeline();}
+            ImGui::SameLine();
+            if(ImGui::Button("< 1フレーム")){m_animationTimelinePreviewPlaying=false;m_animationTimelineTime=std::max(0.f,m_animationTimelineTime-1.f/std::max(1,m_animationTimelineFps));PreviewAnimationTimeline();}
+            ImGui::SameLine();
+            if(ImGui::Button("1フレーム >")){m_animationTimelinePreviewPlaying=false;m_animationTimelineTime=std::min(m_animationTimelineDuration,m_animationTimelineTime+1.f/std::max(1,m_animationTimelineFps));PreviewAnimationTimeline();}
+            ImGui::SetNextItemWidth(140);
+            ImGui::SliderFloat("再生速度",&m_animationTimelinePreviewSpeed,.1f,2.f,"%.2fx");
+            ImGui::SameLine();ImGui::Checkbox("プレビューループ",&m_animationTimelinePreviewLoop);
+            ImGui::BeginDisabled(m_animationTimelineUndo.empty());
+            if(ImGui::Button("Undo Ctrl+Z"))UndoAnimationTimeline();ImGui::EndDisabled();
+            ImGui::SameLine();ImGui::BeginDisabled(m_animationTimelineRedo.empty());
+            if(ImGui::Button("Redo Ctrl+Y"))UndoAnimationTimeline(true);ImGui::EndDisabled();
+            ImGui::SameLine();if(ImGui::Button("キーをコピー"))CopyAnimationTimelineKey();
+            ImGui::SameLine();ImGui::BeginDisabled(!m_animationTimelineClipboard);
+            if(ImGui::Button("キーを貼付"))PasteAnimationTimelineKey();ImGui::EndDisabled();
             if (ImGui::Button("保存"))
             {
                 SaveAnimationTimeline();
@@ -113,16 +192,18 @@ namespace LamaPon
             if (ImGui::Button(
                 "プレビュー前のTransformへ戻す"))
             {
-                target->GetTransform() =
-                    m_animationTimelineOriginalTransform;
+                m_animationTimelinePreviewPlaying=false;
+                RestoreAnimationTimelinePose();
             }
 
+            if(ImGui::CollapsingHeader("クリップ設定"))
+            {
             if (ImGui::InputText(
                     "Clip名",
                     m_animationTimelineName.data(),
                     m_animationTimelineName.size()))
             {
-                m_animationTimelineDirty = true;
+                m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
             }
 
             // 最も遅いキーの時刻・秒
@@ -153,13 +234,14 @@ namespace LamaPon
                     std::min(
                         m_animationTimelineTime,
                         m_animationTimelineDuration);
-                m_animationTimelineDirty = true;
+                m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
             }
             if (ImGui::Checkbox(
                     "ループ",
                     &m_animationTimelineLoop))
             {
-                m_animationTimelineDirty = true;
+                m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
+            }
             }
 
             if (ImGui::SliderFloat(
@@ -169,10 +251,20 @@ namespace LamaPon
                     m_animationTimelineDuration,
                     "%.3f秒"))
             {
+                m_animationTimelinePreviewPlaying=false;
                 PreviewAnimationTimeline();
             }
 
-            ImGui::SeparatorText("Keyframe");
+            ImGui::SetNextItemWidth(80);ImGui::DragInt("FPS",&m_animationTimelineFps,1,1,120);
+            m_animationTimelineFps=std::clamp(m_animationTimelineFps,1,120);
+            ImGui::SameLine();ImGui::Checkbox("フレームにスナップ",&m_animationTimelineSnap);
+            ImGui::SeparatorText("部位トラック / 菱形をドラッグして時刻を移動");
+            DrawAnimationTimelineTracks();
+            target=m_scene.FindGameObject(m_animationTimelineTargetId);
+            const std::string keySelection=m_animationTimelineSelectedKey<m_animationTimelineKeyframes.size()
+                ?std::to_string(m_animationTimelineSelectedKey)+": "+std::to_string(m_animationTimelineKeyframes[m_animationTimelineSelectedKey].time)+"秒":"キー未選択";
+            if(ImGui::BeginCombo("選択キー",keySelection.c_str()))
+            {
             // 表示中のキー番号
             for (std::size_t index = 0;
                 index < m_animationTimelineKeyframes.size();
@@ -202,6 +294,8 @@ namespace LamaPon
                 }
                 ImGui::PopID();
             }
+            ImGui::EndCombo();
+            }
 
             if (ImGui::Button(
                     "現在時刻へKeyframe追加"))
@@ -225,6 +319,7 @@ namespace LamaPon
                 }
                 else
                 {
+                    PushAnimationTimelineUndo();
                     // 記録する対象のローカル変換
                     const auto& transform =
                         target->GetTransform();
@@ -258,7 +353,7 @@ namespace LamaPon
                             std::distance(
                                 m_animationTimelineKeyframes.begin(),
                                 selected));
-                    m_animationTimelineDirty = true;
+                    m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                     m_animationTimelineError.clear();
                 }
             }
@@ -295,6 +390,7 @@ namespace LamaPon
                 else
                 {
                     // 時刻を変更するキーのコピー
+                    PushAnimationTimelineUndo();
                     auto moved =
                         m_animationTimelineKeyframes[
                             m_animationTimelineSelectedKey];
@@ -327,7 +423,7 @@ namespace LamaPon
                             std::distance(
                                 m_animationTimelineKeyframes.begin(),
                                 selected));
-                    m_animationTimelineDirty = true;
+                    m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                     m_animationTimelineError.clear();
                 }
             }
@@ -336,6 +432,7 @@ namespace LamaPon
                 m_animationTimelineKeyframes.size() <= 1);
             if (ImGui::Button("選択Keyを削除"))
             {
+                PushAnimationTimelineUndo();
                 m_animationTimelineKeyframes.erase(
                     m_animationTimelineKeyframes.begin()
                     + static_cast<std::ptrdiff_t>(
@@ -345,11 +442,17 @@ namespace LamaPon
                         m_animationTimelineSelectedKey,
                         m_animationTimelineKeyframes.size()
                             - 1);
-                m_animationTimelineDirty = true;
+                m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                 PreviewAnimationTimeline();
             }
             ImGui::EndDisabled();
             ImGui::EndDisabled();
+
+            ImGui::EndDisabled();
+            ImGui::EndChild();ImGui::SameLine();
+            ImGui::BeginChild("AnimationProperties",ImVec2(0,0),ImGuiChildFlags_Borders);
+            ImGui::BeginDisabled(m_playing);
+            ImGui::TextWrapped("部位: %s",target->Name().c_str());
 
             if (validSelection
                 && m_animationTimelineSelectedKey
@@ -359,19 +462,22 @@ namespace LamaPon
                 auto& keyframe =
                     m_animationTimelineKeyframes[
                         m_animationTimelineSelectedKey];
+                ImGui::Text("キー %zu / %.3f秒",m_animationTimelineSelectedKey,keyframe.time);
                 ImGui::SeparatorText(
                     "選択KeyframeのTransform");
+                ImGui::TextDisabled("数値を左右ドラッグ / ダブルクリックで直接入力");
 
                 // 選択キーの位置の編集値
                 auto position =
                     keyframe.transform.position;
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                         "位置##AnimationKey",
-                        &position.x))
+                        &position.x,0.005f,0.f,0.f,"%.3f"))
                 {
+                    if(!m_animationTimelineNumericEditing)PushAnimationTimelineUndo();m_animationTimelineNumericEditing=ImGui::IsItemActive();
                     keyframe.transform.position =
                         position;
-                    m_animationTimelineDirty = true;
+                    m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                     PreviewAnimationTimeline();
                 }
 
@@ -384,10 +490,11 @@ namespace LamaPon
                     DirectX::XMConvertToDegrees(
                         keyframe.transform.rotation.z)
                 };
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                         "回転##AnimationKey",
-                        &rotationDegrees.x))
+                        &rotationDegrees.x,0.5f,0.f,0.f,"%.2f°"))
                 {
+                    if(!m_animationTimelineNumericEditing)PushAnimationTimelineUndo();m_animationTimelineNumericEditing=ImGui::IsItemActive();
                     keyframe.transform.rotation = {
                         DirectX::XMConvertToRadians(
                             rotationDegrees.x),
@@ -396,42 +503,35 @@ namespace LamaPon
                         DirectX::XMConvertToRadians(
                             rotationDegrees.z)
                     };
-                    m_animationTimelineDirty = true;
+                    m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                     PreviewAnimationTimeline();
                 }
 
                 // 選択キーの拡縮の編集値
                 auto scale =
                     keyframe.transform.scale;
-                if (ImGui::InputFloat3(
+                if (ImGui::DragFloat3(
                         "拡縮##AnimationKey",
-                        &scale.x))
+                        &scale.x,0.01f,0.01f,100.f,"%.3f"))
                 {
+                    if(!m_animationTimelineNumericEditing)PushAnimationTimelineUndo();m_animationTimelineNumericEditing=ImGui::IsItemActive();
                     keyframe.transform.scale =
                         scale;
-                    m_animationTimelineDirty = true;
+                    m_animationTimelineDirty = true; m_animationTimelinePreviewPlaying=false;
                     PreviewAnimationTimeline();
                 }
 
-                if (ImGui::Button(
-                        "現在のGameObject Transformを記録"))
-                {
-                    // 記録する対象のローカル変換
-                    const auto& transform =
-                        target->GetTransform();
-                    keyframe.transform = {
-                        transform.position,
-                        transform.EulerAngles(),
-                        transform.scale
-                    };
-                    m_animationTimelineDirty = true;
-                    PreviewAnimationTimeline();
-                }
+            }
+            if(ImGui::Button("現在のポーズを記録"))
+            {
+                PushAnimationTimelineUndo();RecordAnimationTimelinePose();PreviewAnimationTimeline();
             }
 
             ImGui::TextDisabled(
-                "Timelineを閉じるとプレビュー前のTransformへ戻ります。");
+                "自動キー: 現在時刻へ記録\nCtrl+Z: Undo / Ctrl+Y: Redo");
             ImGui::EndDisabled();
+            ImGui::EndChild();
+            if(!ImGui::IsAnyItemActive())m_animationTimelineNumericEditing=false;
         }
 
         ImGui::End();
@@ -439,6 +539,337 @@ namespace LamaPon
         {
             CloseAnimationTimeline(true);
         }
+    }
+
+    void EditorLayer::PushAnimationTimelineUndo()
+    {
+        StoreAnimationTimelineTrack();
+        m_animationTimelineUndo.push_back({m_animationTimelineTracks,m_animationTimelineTrack,m_animationTimelineSelectedKey,m_animationTimelineTime});
+        if(m_animationTimelineUndo.size()>100)m_animationTimelineUndo.erase(m_animationTimelineUndo.begin());
+        m_animationTimelineRedo.clear();
+    }
+
+    void EditorLayer::UndoAnimationTimeline(bool redo)
+    {
+        auto& source=redo?m_animationTimelineRedo:m_animationTimelineUndo;
+        auto& destination=redo?m_animationTimelineUndo:m_animationTimelineRedo;
+        if(source.empty())return;
+        StoreAnimationTimelineTrack();
+        destination.push_back({m_animationTimelineTracks,m_animationTimelineTrack,m_animationTimelineSelectedKey,m_animationTimelineTime});
+        auto snapshot=std::move(source.back());source.pop_back();
+        m_animationTimelineTracks=std::move(snapshot.tracks);
+        m_animationTimelineTrack=m_animationTimelineTracks.size();
+        m_animationTimelineTime=snapshot.time;SelectAnimationTimelineTrack(snapshot.track);
+        m_animationTimelineSelectedKey=snapshot.key;
+        for(auto& track:m_animationTimelineTracks)
+        {
+            try {track.dirty=AnimationClip::Create(track.name.data(),track.duration,track.loop,track.keys).SerializeToJson()!=m_animationTimelineSaved[track.path.generic_string()];}
+            catch(const std::exception&) {track.dirty=true;}
+        }
+        m_animationTimelineDirty=m_animationTimelineTracks[m_animationTimelineTrack].dirty;m_animationTimelinePreviewPlaying=false;
+        PreviewAnimationTimeline();
+    }
+
+    void EditorLayer::RecordAnimationTimelinePose()
+    {
+        auto* object=m_scene.FindGameObject(m_animationTimelineTargetId);if(!object)return;
+        const auto& transform=object->GetTransform();
+        auto rotation=transform.EulerAngles();
+        if(!m_animationTimelineKeyframes.empty())
+        {
+            const auto reference=AnimationClip::Create(m_animationTimelineName.data(),m_animationTimelineDuration,m_animationTimelineLoop,m_animationTimelineKeyframes).Sample(m_animationTimelineTime).rotation;
+            constexpr float turn=DirectX::XM_2PI;
+            rotation={reference.x+std::remainder(rotation.x-reference.x,turn),reference.y+std::remainder(rotation.y-reference.y,turn),reference.z+std::remainder(rotation.z-reference.z,turn)};
+        }
+        TransformAnimationSample pose{transform.position,rotation,transform.scale};
+        auto key=std::ranges::find_if(m_animationTimelineKeyframes,[&](const auto& item){return std::abs(item.time-m_animationTimelineTime)<.0001f;});
+        if(key==m_animationTimelineKeyframes.end())
+        {
+            m_animationTimelineKeyframes.push_back({m_animationTimelineTime,pose});
+            std::ranges::sort(m_animationTimelineKeyframes,{},&TransformKeyframe::time);
+        }
+        else key->transform=pose;
+        for(std::size_t i=0;i<m_animationTimelineKeyframes.size();++i)
+            if(std::abs(m_animationTimelineKeyframes[i].time-m_animationTimelineTime)<.0001f)m_animationTimelineSelectedKey=i;
+        m_animationTimelineDirty=true;m_animationTimelinePreviewPlaying=false;StoreAnimationTimelineTrack();
+    }
+
+    void EditorLayer::CopyAnimationTimelineKey()
+    {
+        if(m_animationTimelineSelectedKey<m_animationTimelineKeyframes.size())
+            m_animationTimelineClipboard=m_animationTimelineKeyframes[m_animationTimelineSelectedKey].transform;
+    }
+
+    void EditorLayer::PasteAnimationTimelineKey()
+    {
+        if(!m_animationTimelineClipboard)return;PushAnimationTimelineUndo();
+        auto* object=m_scene.FindGameObject(m_animationTimelineTargetId);if(!object)return;
+        auto& transform=object->GetTransform();const auto& pose=*m_animationTimelineClipboard;
+        transform.position=pose.position;transform.scale=pose.scale;
+        transform.SetRotationVector(DirectX::XMQuaternionRotationRollPitchYaw(pose.rotation.x,pose.rotation.y,pose.rotation.z));
+        RecordAnimationTimelinePose();PreviewAnimationTimeline();
+    }
+
+    void EditorLayer::DrawAnimationPreviewTools(const DirectX::XMFLOAT2& position,const DirectX::XMFLOAT2& size)
+    {
+        if(m_playing||size.x<1||size.y<1)return;
+        using namespace DirectX;
+        const bool hovered=ImGui::IsItemHovered();
+        auto& io=ImGui::GetIO();const float height=4.7f/std::max(.1f,m_animationTimelinePreviewZoom);
+        if(hovered && io.MouseWheel!=0)m_animationTimelinePreviewZoom=std::clamp(m_animationTimelinePreviewZoom*std::exp(io.MouseWheel*.12f),.5f,2.f);
+        if(hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
+        {
+            m_animationTimelinePan.x-=io.MouseDelta.x*height/size.y;
+            m_animationTimelinePan.y+=io.MouseDelta.y*height/size.y;
+        }
+        const auto center=XMVectorAdd(XMLoadFloat3(&m_animationTimelinePreviewCenter),XMVectorSet(m_animationTimelinePan.x,m_animationTimelinePan.y,0,0));
+        const auto view=XMMatrixLookAtRH(XMVectorAdd(center,XMVectorSet(0,0,8,0)),center,XMVectorSet(0,1,0,0));
+        const auto projection=XMMatrixPerspectiveFovRH(2*std::atan(height/16),size.x/size.y,.1f,100.f);
+        auto* object=m_scene.FindGameObject(m_animationTimelineTargetId);
+        bool usingGizmo=false,overGizmo=false;
+        if(object && m_animationTimelineTool>=0 && !m_animationTimelinePreviewPlaying)
+        {
+            ImGuizmo::PushID(9173);ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+            ImGuizmo::SetRect(position.x,position.y,size.x,size.y);ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetGizmoSizeClipSpace(.16f);
+            XMFLOAT4X4 v,p,world;XMStoreFloat4x4(&v,view);XMStoreFloat4x4(&p,projection);XMStoreFloat4x4(&world,object->WorldMatrix());
+            const auto operation=m_animationTimelineTool==0?static_cast<ImGuizmo::OPERATION>(ImGuizmo::TRANSLATE_X|ImGuizmo::TRANSLATE_Y):m_animationTimelineTool==1?ImGuizmo::ROTATE_Z:static_cast<ImGuizmo::OPERATION>(ImGuizmo::SCALE_X|ImGuizmo::SCALE_Y);
+            const float snapUnit=m_animationTimelineTool==1?15.f:.1f;
+            std::array<float,3> snap{snapUnit,snapUnit,snapUnit};
+            const bool changed=ImGuizmo::Manipulate(&v._11,&p._11,operation,m_animationTimelineLocal?ImGuizmo::LOCAL:ImGuizmo::WORLD,&world._11,nullptr,io.KeyCtrl?snap.data():nullptr);
+            usingGizmo=ImGuizmo::IsUsing();overGizmo=ImGuizmo::IsOver();
+            if(usingGizmo&&!m_animationTimelineGizmoUsing)PushAnimationTimelineUndo();
+            if(changed)
+            {
+                auto local=XMLoadFloat4x4(&world);
+                if(object->Parent())local*=XMMatrixInverse(nullptr,object->Parent()->WorldMatrix());
+                XMVECTOR scale,rotation,translation;
+                if(XMMatrixDecompose(&scale,&rotation,&translation,local))
+                {
+                    auto& transform=object->GetTransform();XMStoreFloat3(&transform.position,translation);XMStoreFloat3(&transform.scale,scale);transform.SetRotationVector(rotation);
+                    if(m_animationTimelineAutoKey){RecordAnimationTimelinePose();PreviewAnimationTimeline();}
+                }
+            }
+            ImGuizmo::PopID();
+        }
+        m_animationTimelineGizmoUsing=usingGizmo;
+        if(hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&!usingGizmo&&!overGizmo)
+        {
+            const auto nearPoint=XMVector3Unproject(XMVectorSet(io.MousePos.x-position.x,io.MousePos.y-position.y,0,1),0,0,size.x,size.y,0,1,projection,view,XMMatrixIdentity());
+            const auto farPoint=XMVector3Unproject(XMVectorSet(io.MousePos.x-position.x,io.MousePos.y-position.y,1,1),0,0,size.x,size.y,0,1,projection,view,XMMatrixIdentity());
+            const auto direction=XMVector3Normalize(XMVectorSubtract(farPoint,nearPoint));float nearest=std::numeric_limits<float>::max();std::size_t picked=m_animationTimelineTracks.size();
+            for(const auto& image:m_scene.GameObjects())
+            {
+                auto* model=image->GetComponent<ModelRendererComponent>();Bounds3D bounds;
+                if(!model||!image->IsActiveInHierarchy()||!model->TryGetLocalBounds(bounds))continue;
+                std::size_t track=m_animationTimelineTracks.size();
+                for(auto* parent=image.get();parent;parent=parent->Parent())
+                {
+                    for(std::size_t i=0;i<m_animationTimelineTracks.size();++i)if(m_animationTimelineTracks[i].target==parent->Id()){track=i;break;}
+                    if(track<m_animationTimelineTracks.size())break;
+                }
+                if(track==m_animationTimelineTracks.size())continue;
+                const auto inverse=XMMatrixInverse(nullptr,image->WorldMatrix());Ray ray;
+                XMStoreFloat3(&ray.origin,XMVector3TransformCoord(nearPoint,inverse));
+                XMStoreFloat3(&ray.direction,XMVector3Normalize(XMVector3TransformNormal(direction,inverse)));
+                bounds.minimum.z-=.001f;bounds.maximum.z+=.001f;float distance;
+                if(RayIntersectsBounds(ray,bounds,distance))
+                {
+                    const auto hit=XMVector3TransformCoord(XMVectorAdd(XMLoadFloat3(&ray.origin),XMVectorScale(XMLoadFloat3(&ray.direction),distance)),image->WorldMatrix());
+                    const float worldDistance=XMVectorGetX(XMVector3Length(XMVectorSubtract(hit,nearPoint)));
+                    if(worldDistance<nearest){nearest=worldDistance;picked=track;}
+                }
+            }
+            if(picked<m_animationTimelineTracks.size()){SelectAnimationTimelineTrack(picked);m_animationTimelinePreviewPlaying=false;}
+        }
+    }
+
+    void EditorLayer::StoreAnimationTimelineTrack()
+    {
+        if(m_animationTimelineTrack>=m_animationTimelineTracks.size())return;
+        auto& track=m_animationTimelineTracks[m_animationTimelineTrack];
+        track.keys=m_animationTimelineKeyframes;track.name=m_animationTimelineName;
+        track.duration=m_animationTimelineDuration;track.loop=m_animationTimelineLoop;
+        track.dirty=m_animationTimelineDirty;
+    }
+
+    void EditorLayer::SelectAnimationTimelineTrack(const std::size_t index)
+    {
+        if(index>=m_animationTimelineTracks.size())return;
+        StoreAnimationTimelineTrack();m_animationTimelineTrack=index;
+        const auto& track=m_animationTimelineTracks[index];
+        m_animationTimelineTargetId=track.target;m_selectedObjectId=track.target;
+        m_animationTimelineOriginalTransform=track.original;
+        m_animationTimelineClipPath=track.path;m_animationTimelineKeyframes=track.keys;
+        m_animationTimelineName=track.name;m_animationTimelineDuration=track.duration;
+        m_animationTimelineLoop=track.loop;m_animationTimelineDirty=track.dirty;
+        m_animationTimelineSelectedKey=0;
+        m_animationTimelineTime=std::min(m_animationTimelineTime,track.duration);
+        for(std::size_t key=1;key<track.keys.size();++key)
+            if(std::abs(track.keys[key].time-m_animationTimelineTime)<std::abs(track.keys[m_animationTimelineSelectedKey].time-m_animationTimelineTime))m_animationTimelineSelectedKey=key;
+    }
+
+    void EditorLayer::GatherAnimationTimelineTracks()
+    {
+        auto* root=m_scene.FindGameObject(m_animationTimelineTargetId);if(!root)return;
+        for(auto* parent=root->Parent();parent;parent=parent->Parent())
+            if(parent->GetComponent<TransformAnimatorComponent>())root=parent;
+        m_animationTimelineTracks.clear();m_animationTimelineTrack=0;
+        m_animationTimelineSaved.clear();
+        const auto selected=m_animationTimelineTargetId;
+        const auto directory=m_animationTimelineClipPath.parent_path();
+        const bool backward=PathToUtf8(m_animationTimelineClipPath.filename()).find("Backward")!=std::string::npos;
+        std::function<void(GameObject&)> collect=[&](GameObject& object)
+        {
+            if(auto* animator=object.GetComponent<TransformAnimatorComponent>();animator&&!animator->ClipPath().empty())
+            {
+                auto path=animator->ClipPath();
+                if(path.parent_path()==directory)
+                {
+                    auto text=path.generic_string();
+                    const std::string from=backward?"Forward":"Backward",to=backward?"Backward":"Forward";
+                    const auto suffix=text.rfind(from+".anim.json");
+                    if(suffix!=std::string::npos)
+                    {
+                        auto candidate=text;candidate.replace(suffix,from.size(),to);
+                        if(std::filesystem::exists(m_graphics.Assets().ResolvePath(candidate)))path=candidate;
+                    }
+                    const auto clip=AnimationClip::LoadFromFile(m_graphics.Assets().ResolvePath(path));
+                    if(object.Id()==selected || (std::abs(clip.Duration()-m_animationTimelineDuration)<.001f && clip.Loop()==m_animationTimelineLoop))
+                    {
+                        AnimationTimelineTrack track;track.target=object.Id();track.original=object.GetTransform();
+                        m_animationTimelineSaved[path.generic_string()]=clip.SerializeToJson();
+                        track.path=path;track.keys=clip.Keyframes();track.duration=clip.Duration();track.loop=clip.Loop();
+                        strncpy_s(track.name.data(),track.name.size(),clip.Name().c_str(),_TRUNCATE);
+                        m_animationTimelineTracks.push_back(std::move(track));
+                    }
+                }
+            }
+            for(auto* child:object.Children())collect(*child);
+        };
+        collect(*root);
+        for(std::size_t i=0;i<m_animationTimelineTracks.size();++i)
+            if(m_animationTimelineTracks[i].target==selected){m_animationTimelineTrack=i;break;}
+        DirectX::XMStoreFloat3(&m_animationTimelinePreviewCenter,root->WorldMatrix().r[3]);
+        m_animationTimelinePreviewPlaying=false;
+    }
+
+    void EditorLayer::RestoreAnimationTimelinePose()
+    {
+        for(const auto& track:m_animationTimelineTracks)
+            if(auto* object=m_scene.FindGameObject(track.target))object->GetTransform()=track.original;
+        if(m_animationTimelineTracks.empty())
+            if(auto* object=m_scene.FindGameObject(m_animationTimelineTargetId))object->GetTransform()=m_animationTimelineOriginalTransform;
+    }
+
+    void EditorLayer::DrawAnimationTimelineTracks()
+    {
+        StoreAnimationTimelineTrack();
+        ImGui::BeginChild("AnimationTracks",ImVec2(0,std::max(140.f,ImGui::GetContentRegionAvail().y-110)),ImGuiChildFlags_Borders);
+        const float labelWidth=175.f;
+        const float width=std::max(100.f,ImGui::GetContentRegionAvail().x-labelWidth-12);
+        const float duration=std::max(.01f,m_animationTimelineDuration);
+        auto* draw=ImGui::GetWindowDrawList();
+        if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))m_animationTimelineDraggingTrack=-1;
+        const auto ruler=ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(labelWidth+width,20));
+        for(int tick=0;tick<=5;++tick)
+        {
+            char time[32];std::snprintf(time,sizeof(time),"%.2fs",duration*tick/5);
+            draw->AddText(ImVec2(ruler.x+labelWidth+width*tick/5-10,ruler.y),IM_COL32(190,198,210,255),time);
+        }
+        for(std::size_t i=0;i<m_animationTimelineTracks.size();++i)
+        {
+            auto& track=m_animationTimelineTracks[i];auto* object=m_scene.FindGameObject(track.target);if(!object)continue;
+            ImGui::PushID(static_cast<int>(i));
+            std::string label=object->Name();
+            // Shared rig prefixes and the joint suffix obscure the useful part name.
+            if(label.ends_with(" Joint"))label.resize(label.size()-6);
+            const auto firstSpace=label.find(' ');
+            if(firstSpace!=std::string::npos)
+            {
+                const auto prefix=label.substr(0,firstSpace+1);
+                const bool shared=std::ranges::all_of(m_animationTimelineTracks,[&](const auto& other){const auto* part=m_scene.FindGameObject(other.target);return part&&part->Name().starts_with(prefix);});
+                if(shared)label.erase(0,prefix.size());
+            }
+            label+=(track.dirty?" *":"");
+            if(ImGui::Selectable(label.c_str(),i==m_animationTimelineTrack,0,ImVec2(labelWidth,24)))SelectAnimationTimelineTrack(i);
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",object->Name().c_str());
+            ImGui::SameLine();const auto pos=ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("Keys",ImVec2(width,24));
+            draw->AddRectFilled(pos,ImVec2(pos.x+width,pos.y+24),IM_COL32(24,30,42,255));
+            for(int division=0;division<=10;++division)
+            {
+                const float x=pos.x+width*division/10;
+                draw->AddLine(ImVec2(x,pos.y),ImVec2(x,pos.y+24),IM_COL32(65,76,93,255));
+            }
+            for(std::size_t key=0;key<track.keys.size();++key)
+            {
+                const float x=pos.x+width*std::clamp(track.keys[key].time/duration,0.f,1.f),y=pos.y+12;
+                const auto color=i==m_animationTimelineTrack&&key==m_animationTimelineSelectedKey?IM_COL32(255,206,70,255):IM_COL32(100,187,241,255);
+                draw->AddQuadFilled(ImVec2(x,y-5),ImVec2(x+5,y),ImVec2(x,y+5),ImVec2(x-5,y),color);
+            }
+            const float playhead=pos.x+width*std::clamp(m_animationTimelineTime/duration,0.f,1.f);
+            draw->AddLine(ImVec2(playhead,pos.y),ImVec2(playhead,pos.y+24),IM_COL32(255,110,85,255),2);
+            if(ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                m_animationTimelinePreviewPlaying=false;
+                const float mouseTime=std::clamp((ImGui::GetIO().MousePos.x-pos.x)/width,0.f,1.f)*duration;
+                if(ImGui::IsItemActivated())
+                {
+                SelectAnimationTimelineTrack(i);
+                float nearest=8.f;std::size_t picked=static_cast<std::size_t>(-1);
+                for(std::size_t key=0;key<m_animationTimelineKeyframes.size();++key)
+                {
+                    const float distance=std::abs(pos.x+width*m_animationTimelineKeyframes[key].time/duration-ImGui::GetIO().MousePos.x);
+                    if(distance<nearest){nearest=distance;picked=key;}
+                }
+                m_animationTimelineSelectedKey=picked;
+                if(picked<m_animationTimelineKeyframes.size())
+                {
+                    m_animationTimelineTime=m_animationTimelineKeyframes[picked].time;
+                    m_animationTimelineDragUndo=false;m_animationTimelineDraggingTrack=static_cast<int>(i);m_animationTimelineDraggingKey=picked;
+                }
+                }
+                if(m_animationTimelineDraggingTrack==static_cast<int>(i))
+                {
+                    if(ImGui::IsMouseDragging(ImGuiMouseButton_Left,6.f))
+                    {
+                        if(!m_animationTimelineDragUndo){PushAnimationTimelineUndo();m_animationTimelineDragUndo=true;}
+                        const float time=m_animationTimelineSnap?std::clamp(std::round(mouseTime*m_animationTimelineFps)/m_animationTimelineFps,0.f,duration):mouseTime;
+                        const bool duplicate=std::ranges::any_of(m_animationTimelineKeyframes,[&](const auto& key){return &key!=&m_animationTimelineKeyframes[m_animationTimelineDraggingKey]&&std::abs(key.time-time)<.0001f;});
+                        if(!duplicate)
+                        {
+                            auto key=m_animationTimelineKeyframes[m_animationTimelineDraggingKey];key.time=time;
+                            m_animationTimelineKeyframes.erase(m_animationTimelineKeyframes.begin()+m_animationTimelineDraggingKey);m_animationTimelineKeyframes.push_back(key);
+                            std::ranges::sort(m_animationTimelineKeyframes,{},&TransformKeyframe::time);
+                            for(std::size_t k=0;k<m_animationTimelineKeyframes.size();++k)if(std::abs(m_animationTimelineKeyframes[k].time-time)<.0001f)m_animationTimelineDraggingKey=m_animationTimelineSelectedKey=k;
+                            m_animationTimelineTime=time;m_animationTimelineDirty=true;
+                        }
+                    }
+                }
+                else m_animationTimelineTime=m_animationTimelineSnap?std::clamp(std::round(mouseTime*m_animationTimelineFps)/m_animationTimelineFps,0.f,duration):mouseTime;
+                PreviewAnimationTimeline();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+
+    void EditorLayer::RenderAnimationTimelinePreview()
+    {
+        if(!m_animationTimelineOpen || !m_animationTimelineRenderTarget.IsValid())return;
+        using namespace DirectX;
+        const auto center=XMVectorAdd(XMLoadFloat3(&m_animationTimelinePreviewCenter),XMVectorSet(m_animationTimelinePan.x,m_animationTimelinePan.y,0,0));
+        const auto view=XMMatrixLookAtRH(XMVectorAdd(center,XMVectorSet(0,0,8,0)),center,XMVectorSet(0,1,0,0));
+        const float height=4.7f/std::max(.1f,m_animationTimelinePreviewZoom);
+        const auto projection=XMMatrixPerspectiveFovRH(2.f*std::atan(height/16.f),
+            m_animationTimelineRenderTarget.AspectRatio(),.1f,100.f);
+        constexpr float color[]={.055f,.07f,.095f,1};
+        m_graphics.SetUIViewportSize(m_animationTimelineRenderTarget.Width(),m_animationTimelineRenderTarget.Height());
+        m_graphics.BeginOffscreenTarget(m_animationTimelineRenderTarget,color);
+        m_scene.RenderWithMatrices(view,projection,false,false,&m_animationTimelineRenderTarget);
+        m_graphics.PublishOffscreenTarget(m_animationTimelineRenderTarget);
     }
 
     // 状態・遷移・ブレンド・イベントを編集し、閉じる時の保存失敗では画面を開いたままにします。
@@ -2410,6 +2841,7 @@ namespace LamaPon
                 gameObject->GetTransform();
             LoadAnimationTimeline(
                 animator->ClipPath());
+            GatherAnimationTimelineTracks();
             m_animationTimelineOpen = true;
             PreviewAnimationTimeline();
             SetStatus(
@@ -2654,6 +3086,25 @@ namespace LamaPon
         }
         try
         {
+            StoreAnimationTimelineTrack();
+            // Validate all tracks before writing any file.
+            std::vector<AnimationClip> clips;
+            for(const auto& track:m_animationTimelineTracks)
+                clips.push_back(AnimationClip::Create(track.name.data(),track.duration,track.loop,track.keys));
+            for(std::size_t i=0;i<m_animationTimelineTracks.size();++i)
+            {
+                auto& track=m_animationTimelineTracks[i];if(!track.dirty)continue;
+                clips[i].SaveToFile(m_graphics.Assets().ResolvePath(track.path));
+                m_animationTimelineSaved[track.path.generic_string()]=clips[i].SerializeToJson();
+                track.dirty=false;
+                if(i==m_animationTimelineTrack)m_animationTimelineDirty=false;
+                m_graphics.Assets().Invalidate(track.path);
+                static_cast<void>(m_graphics.Assets().ReloadAnimationClip(track.path));
+                for(const auto& object:m_scene.GameObjects())
+                    if(auto* animator=object->GetComponent<TransformAnimatorComponent>();animator&&animator->ClipPath()==track.path)animator->ReloadClip();
+            }
+            if(m_animationTimelineTracks.empty())
+            {
             // 編集値から作成する保存Clip
             const auto clip =
                 AnimationClip::Create(
@@ -2669,6 +3120,7 @@ namespace LamaPon
                     : m_graphics.Assets().ResolvePath(
                         m_animationTimelineClipPath);
             clip.SaveToFile(resolvedPath);
+            m_graphics.Assets().Invalidate(m_animationTimelineClipPath);
 
             // 保存Clipを利用する対象
             if (auto* target =
@@ -2684,7 +3136,9 @@ namespace LamaPon
                     animator->ReloadClip();
                 }
             }
+            }
             m_animationTimelineDirty = false;
+            PreviewAnimationTimeline();
             m_animationTimelineError.clear();
             RefreshAssets();
             SetStatus(
@@ -2707,6 +3161,7 @@ namespace LamaPon
     {
         if (restoreTransform)
         {
+            RestoreAnimationTimelinePose();
             // 元の変換を復元する対象
             if (auto* target =
                     m_scene.FindGameObject(
@@ -2716,7 +3171,7 @@ namespace LamaPon
                     m_animationTimelineOriginalTransform;
             }
         }
-        if (m_animationTimelineDirty)
+        if (m_animationTimelineDirty || std::ranges::any_of(m_animationTimelineTracks,[](const auto& track){return track.dirty;}))
         {
             SetStatus(
                 "未保存のAnimation Timeline変更を破棄しました");
@@ -2729,6 +3184,9 @@ namespace LamaPon
             static_cast<std::size_t>(-1);
         m_animationTimelineError.clear();
         m_animationTimelineDirty = false;
+        m_animationTimelineTracks.clear();
+        m_animationTimelinePreviewPlaying=false;
+        m_animationTimelineUndo.clear();m_animationTimelineRedo.clear();m_animationTimelinePan={};
     }
 
     // 編集キーから現在時刻の変換を求め、対象の位置・回転・拡縮に適用します。
@@ -2783,6 +3241,18 @@ namespace LamaPon
                 DirectX::XMLoadFloat4(&rotation));
             transform.scale =
                 sample.scale;
+            StoreAnimationTimelineTrack();
+            for(const auto& track:m_animationTimelineTracks)
+            {
+                if(track.target==m_animationTimelineTargetId)continue;
+                if(auto* object=m_scene.FindGameObject(track.target))
+                {
+                    const auto clip=AnimationClip::Create(track.name.data(),track.duration,track.loop,track.keys);
+                    const auto pose=clip.Sample(m_animationTimelineTime);
+                    auto& other=object->GetTransform();other.position=pose.position;other.scale=pose.scale;
+                    const auto q=clip.SampleRotationQuaternion(m_animationTimelineTime);other.SetRotationVector(DirectX::XMLoadFloat4(&q));
+                }
+            }
             m_animationTimelineError.clear();
         }
         // アニメーション操作時の例外
