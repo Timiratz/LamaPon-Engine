@@ -30,7 +30,7 @@ namespace LamaPon
         layer->SetSafeMode(safeMode);
         if (screenshot != nullptr
             && (!screenshot->imagePath.empty()
-                || !screenshot->remoteDirectory.empty()))
+                || !screenshot->remoteDirectory.empty() || !screenshot->show.empty()))
         {
             layer->SetScreenshotRequest(*screenshot);
         }
