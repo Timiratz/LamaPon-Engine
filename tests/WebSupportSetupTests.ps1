@@ -22,7 +22,8 @@ if (-not $installed.ready -or -not (Test-Path -LiteralPath (Join-Path $Root 'web
 if ($installed.emsdk -ne $ready.emsdk) { throw 'Existing SDK should be reused without copying it.' }
 }
 
-# Corrupt archives must be rejected before extraction or activation.
+# Corrupt archives must be rejected even when Get-FileHash is unavailable.
+function Get-FileHash { throw 'Get-FileHash must not be required.' }
 $AllowDownloads=$true
 function Invoke-WebRequest { param([switch]$UseBasicParsing,$Uri,$OutFile); [IO.File]::WriteAllText($OutFile,'corrupt') }
 $caught=$false

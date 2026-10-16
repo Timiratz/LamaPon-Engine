@@ -117,7 +117,16 @@ function Install-WebArchive([string]$Url, [string]$Sha256, [string]$Destination,
     Write-Host "$Name をダウンロードしています..."
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $archive
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $Sha256) { throw "$Name の検証に失敗しました。再試行してください。" }
+    # 取得ZIPの読み取りストリーム
+    $archiveStream = [IO.File]::OpenRead($archive)
+    # 標準.NETのSHA-256計算器
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        # 検証用の16進ハッシュ
+        $actualHash = [BitConverter]::ToString($hasher.ComputeHash($archiveStream)).Replace('-', '')
+    }
+    finally { $hasher.Dispose(); $archiveStream.Dispose() }
+    if ($actualHash -ne $Sha256) { throw "$Name の検証に失敗しました。再試行してください。" }
     New-Item -ItemType Directory -Path $resolved -Force | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($archive)
