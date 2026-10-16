@@ -27,7 +27,7 @@ $AllowDownloads=$true
 function Invoke-WebRequest { param([switch]$UseBasicParsing,$Uri,$OutFile); [IO.File]::WriteAllText($OutFile,'corrupt') }
 $caught=$false
 try { Install-WebArchive 'https://example.invalid/tools.zip' ('0'*64) (Join-Path $Root 'untrusted') 'corrupt' }
-catch { $caught=$_.Exception.Message -match '検証に失敗' }
+catch { if ($_.Exception.Message -notmatch '検証に失敗') { throw }; $caught=$true }
 if (-not $caught -or (Test-Path -LiteralPath (Join-Path $Root 'untrusted'))) {
     throw 'A corrupt archive must not be extracted.'
 }

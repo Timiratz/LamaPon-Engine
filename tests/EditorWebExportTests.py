@@ -101,7 +101,7 @@ class EditorWebExportTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         # 日本語と空白を含むプロジェクトルート
-        self.root = Path(self.temporary.name) / "日本語 & project"
+        self.root = Path(self.temporary.name).resolve() / "日本語 & project"
         # エクスポーターが要求するプロジェクト設定
         self.project = self.root / ".lamapon" / "project.json"
         self.project.parent.mkdir(parents=True)
