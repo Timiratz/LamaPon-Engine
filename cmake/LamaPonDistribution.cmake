@@ -42,7 +42,7 @@ install(FILES tools/export_web.py tools/editor_web_export.py tools/embed_web_ass
     tools/native_windows.py tools/native_linux.py DESTINATION tools)
 install(FILES cmake/LamaPonWeb.cmake cmake/LamaPonNative.cmake DESTINATION cmake)
 # インストール先から環境導入とソース再ビルドを起動する。
-install(FILES tools/SetupBuildEnvironment.ps1 tools/StartAutoBuild.ps1
+  install(FILES tools/SetupBuildEnvironment.ps1 tools/SetupWebSupport.ps1 tools/StartAutoBuild.ps1
     tools/RebuildAndInstallEditor.ps1 tools/RebuildAndInstallEditor.bat
     DESTINATION tools)
 install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable src/LamaPon/Native

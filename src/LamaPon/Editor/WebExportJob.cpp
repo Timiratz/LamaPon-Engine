@@ -4,6 +4,8 @@
 #include <Windows.h>
 #include <nlohmann/json.hpp>
 #include <array>
+#include <algorithm>
+#include <cwctype>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
@@ -56,35 +58,151 @@ namespace
         return result + L'\"';
     }
 
-    // 指定exe・SDK内・PATHの順にPythonを探しWindowsAppsのaliasを除く(tools: PythonとSDKの指定情報)。
+    bool IsWindowsAlias(const std::filesystem::path& path)
+    {
+        for (const auto& part : path)
+        {
+            auto name = part.wstring();
+            std::transform(name.begin(), name.end(), name.begin(),
+                [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+            if (name == L"windowsapps") return true;
+        }
+        return false;
+    }
+
+    // 実際に起動して版と実体パスを確認する。シェル・一時ファイルは使わない。
+    std::filesystem::path ProbePython(const std::filesystem::path& executable,
+        bool launcher = false)
+    {
+        std::error_code error;
+        if (executable.empty() || IsWindowsAlias(executable)
+            || !std::filesystem::is_regular_file(executable, error)) return {};
+        SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE read{}, write{};
+        if (!CreatePipe(&read, &write, &security, 4096)) return {};
+        Handle reader{read}, writer{write};
+        if (!SetHandleInformation(reader.value, HANDLE_FLAG_INHERIT, 0)) return {};
+        Handle input{CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+        if (input.value == INVALID_HANDLE_VALUE) return {};
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = SW_HIDE;
+        startup.StartupInfo.hStdInput = input.value;
+        startup.StartupInfo.hStdOutput = writer.value;
+        startup.StartupInfo.hStdError = writer.value;
+        SIZE_T bytes{};
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        std::vector<unsigned char> storage(bytes);
+        startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+        if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &bytes)) return {};
+        struct Guard final { LPPROC_THREAD_ATTRIBUTE_LIST value;
+            ~Guard() { DeleteProcThreadAttributeList(value); } } guard{startup.lpAttributeList};
+        HANDLE inherited[]{writer.value, input.value};
+        if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), nullptr, nullptr)) return {};
+        auto command = Quote(executable) + (launcher ? L" -3" : L"")
+            + L" -I -S -c \"import sys; sys.stdout.buffer.write(sys.executable.encode('utf-8')); "
+              L"sys.exit(0 if sys.version_info >= (3,11) else 1)\"";
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
+                CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+                &startup.StartupInfo, &process)) return {};
+        Handle child{process.hProcess}, thread{process.hThread};
+        if (WaitForSingleObject(child.value, 3000) != WAIT_OBJECT_0)
+        {
+            TerminateProcess(child.value, 1);
+            WaitForSingleObject(child.value, 1000);
+            return {};
+        }
+        DWORD code{1};
+        if (!GetExitCodeProcess(child.value, &code) || code != 0) return {};
+        DWORD available{};
+        if (!PeekNamedPipe(reader.value, nullptr, 0, nullptr, &available, nullptr)
+            || available == 0 || available > 32768) return {};
+        std::string output(available, '\0');
+        DWORD received{};
+        if (!ReadFile(reader.value, output.data(), available, &received, nullptr)) return {};
+        output.resize(received);
+        try
+        {
+            const auto resolved = LamaPon::PathFromUtf8(output);
+            return !IsWindowsAlias(resolved) && std::filesystem::is_regular_file(resolved, error)
+                ? resolved : std::filesystem::path{};
+        }
+        catch (...) { return {}; }
+    }
+
+    // PATH全体を列挙し、先頭のWindowsApps aliasで探索を打ち切らない。
+    std::vector<std::filesystem::path> PathExecutables(const wchar_t* name)
+    {
+        std::vector<std::filesystem::path> results;
+        const auto value = EnvironmentPath(L"PATH").wstring();
+        std::size_t offset{};
+        while (offset < value.size())
+        {
+            const auto end = value.find(L';', offset);
+            auto directory = value.substr(offset, end == std::wstring::npos ? end : end-offset);
+            if (directory.size() >= 2 && directory.front() == L'"' && directory.back() == L'"')
+                directory = directory.substr(1, directory.size()-2);
+            if (!directory.empty()) results.emplace_back(std::filesystem::path(directory) / name);
+            if (end == std::wstring::npos) break;
+            offset = end+1;
+        }
+        return results;
+    }
+
+    // 指定exe・SDK・PATH・py launcher・標準配置先を確認する。
     std::filesystem::path FindPython(const LamaPon::WebExportTools& tools)
     {
-        if (!tools.python.empty()) return tools.python;
-        // SDK内のPython配置フォルダー
-        const auto sdkPython = tools.emsdk / L"python";
-        // SDK内のPython探索エラー
-        std::error_code error;
-        if (!tools.emsdk.empty() && std::filesystem::is_directory(sdkPython, error))
+        if (!tools.python.empty())
         {
-            // SDK内のPythonの版フォルダー
-            for (const auto& version : std::filesystem::directory_iterator(sdkPython))
+            if (auto found = ProbePython(tools.python); !found.empty()) return found;
+            throw std::runtime_error("指定したPythonは起動できないか、3.11未満です。空欄にすると自動検出します。");
+        }
+        std::vector<std::filesystem::path> candidates;
+        const auto addChildren = [&](const std::filesystem::path& directory)
+        {
+            if (directory.empty()) return;
+            std::error_code error;
+            std::vector<std::filesystem::path> children;
+            for (std::filesystem::directory_iterator it(directory, error), end;
+                 !error && it != end; it.increment(error)) children.push_back(it->path());
+            std::sort(children.rbegin(), children.rend());
+            for (const auto& child : children) candidates.push_back(child / L"python.exe");
+        };
+        auto sdk = tools.emsdk.empty() ? EnvironmentPath(L"EMSDK") : tools.emsdk;
+        if (!sdk.empty()) addChildren(sdk / L"python");
+        if (auto configured = EnvironmentPath(L"EMSDK_PYTHON"); !configured.empty()) candidates.push_back(configured);
+        const auto onPath = PathExecutables(L"python.exe");
+        candidates.insert(candidates.end(), onPath.begin(), onPath.end());
+        for (const auto& candidate : candidates)
+            if (auto found = ProbePython(candidate); !found.empty()) return found;
+        auto launchers = PathExecutables(L"py.exe");
+        const auto local = EnvironmentPath(L"LOCALAPPDATA");
+        const auto windows = EnvironmentPath(L"WINDIR");
+        if (!local.empty()) launchers.push_back(local / L"Programs/Python/Launcher/py.exe");
+        if (!windows.empty()) launchers.push_back(windows / L"py.exe");
+        for (const auto& launcher : launchers)
+            if (auto found = ProbePython(launcher, true); !found.empty()) return found;
+        candidates.clear();
+        if (!local.empty()) addChildren(local / L"Programs/Python");
+        for (const auto* variable : {L"ProgramFiles", L"ProgramFiles(x86)"})
+        {
+            const auto directory = EnvironmentPath(variable);
+            if (directory.empty()) continue;
+            std::error_code error;
+            for (std::filesystem::directory_iterator it(directory, error), end;
+                 !error && it != end; it.increment(error))
             {
-                // SDK内で探すPython実行パス
-                const auto executable = version.path() / L"python.exe";
-                if (std::filesystem::is_regular_file(executable)) return executable;
+                const auto name = it->path().filename().wstring();
+                if (name.starts_with(L"Python")) candidates.push_back(it->path() / L"python.exe");
             }
         }
-        // PATH検索結果のワイド文字バッファ
-        std::array<wchar_t, 32768> found{};
-        if (SearchPathW(nullptr, L"python.exe", nullptr,
-            static_cast<DWORD>(found.size()), found.data(), nullptr))
-        {
-            // PATHから得たPython実行パス
-            const std::filesystem::path candidate(found.data());
-            // ストア起動用のエイリアスは、ビルド用Pythonとして使いません。
-            if (candidate.wstring().find(L"WindowsApps") == std::wstring::npos) return candidate;
-        }
-        throw std::runtime_error("Python 3.11以降が見つかりません。出力設定でPython実行ファイルを指定してください。");
+        for (const auto& candidate : candidates)
+            if (auto found = ProbePython(candidate); !found.empty()) return found;
+        throw std::runtime_error("Python 3.11以降を自動検出できませんでした。PythonまたはEmscripten SDKをインストールしてください。インストール済みの場合はWebビルド環境でPythonを指定できます。");
     }
 
     bool IsInside(const std::filesystem::path& path, const std::filesystem::path& root)
@@ -99,6 +217,24 @@ namespace
 
 namespace LamaPon
 {
+    std::filesystem::path WebSupportRoot()
+    { return EnvironmentPath(L"LOCALAPPDATA") / L"LamaPon/toolchains/web"; }
+
+    bool WebSupportReady() noexcept
+    {
+        try
+        {
+            std::ifstream input(WebSupportRoot() / L"web-support.json");
+            if (!input) return false;
+            const auto state = nlohmann::json::parse(input);
+            if (state.value("format", "") != "lamapon.web-support" || !state.value("ready", false)) return false;
+            for (const auto* key : {"python", "cmake", "ninja"})
+                if (!std::filesystem::is_regular_file(PathFromUtf8(state.value(key, "")))) return false;
+            return std::filesystem::is_regular_file(PathFromUtf8(state.value("emsdk", "")) / L".emscripten");
+        }
+        catch (...) { return false; }
+    }
+
     WebExportTools LoadWebExportTools()
     {
         // 保存設定と環境変数から得るツール
@@ -114,6 +250,13 @@ namespace LamaPon
             // 保存設定にあるSDKのUTF8パス
             const auto sdk = settings.value("emsdk", std::string{});
             if (!sdk.empty()) tools.emsdk = PathFromUtf8(sdk);
+        }
+        if (WebSupportReady())
+        {
+            std::ifstream managed(WebSupportRoot() / L"web-support.json");
+            const auto state = nlohmann::json::parse(managed);
+            if (tools.python.empty()) tools.python = PathFromUtf8(state.at("python").get<std::string>());
+            if (tools.emsdk.empty()) tools.emsdk = PathFromUtf8(state.at("emsdk").get<std::string>());
         }
         return tools;
     }
@@ -153,6 +296,10 @@ namespace LamaPon
     {
         StartProcess(engineRoot, projectFile, output, tools, {});
     }
+
+    void WebExportJob::StartWebSupport(const std::filesystem::path& engineRoot,
+        const std::filesystem::path& projectFile)
+    { StartProcess(engineRoot, projectFile, {}, {}, "web-support"); }
 
     void WebExportJob::StartNativeBuildProject(const std::filesystem::path& engineRoot,
         const std::filesystem::path& projectFile, const std::filesystem::path& output,
@@ -202,9 +349,19 @@ namespace LamaPon
         m_resultPath.clear();
         m_message.clear();
         // 検出・指定したPython実行パス
-        const auto python = FindPython(tools);
+        const bool setup = platform == "web-support";
+        auto resolvedTools = tools;
+        if (!setup && resolvedTools.python.empty() && WebSupportReady())
+        {
+            std::ifstream managed(WebSupportRoot() / L"web-support.json");
+            const auto state = nlohmann::json::parse(managed);
+            resolvedTools.python = PathFromUtf8(state.at("python").get<std::string>());
+            if (resolvedTools.emsdk.empty()) resolvedTools.emsdk = PathFromUtf8(state.at("emsdk").get<std::string>());
+        }
+        const auto python = setup ? EnvironmentPath(L"SystemRoot") / L"System32/WindowsPowerShell/v1.0/powershell.exe"
+            : FindPython(resolvedTools);
         // エディター用Web出力スクリプト
-        const auto script = engineRoot / L"tools" / (platform.empty() ? L"editor_web_export.py"
+        const auto script = engineRoot / L"tools" / (setup ? L"SetupWebSupport.ps1" : platform.empty() ? L"editor_web_export.py"
             : m_linuxBuild ? L"editor_linux_export.py" : L"editor_native_export.py");
         if (!std::filesystem::is_regular_file(python))
             throw std::runtime_error("指定したPython実行ファイルが見つかりません。");
@@ -212,7 +369,7 @@ namespace LamaPon
             throw std::runtime_error("出力ツールが見つかりません。LamaPon SDKを更新してください。");
         // 今回のログ・結果文書の保存先
         const auto directory = std::filesystem::absolute(projectFile).parent_path()
-            / (platform.empty() ? L"web-export-jobs" : L"native-export-jobs")
+            / (setup ? L"web-support-jobs" : platform.empty() ? L"web-export-jobs" : L"native-export-jobs")
             / (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(directory);
         m_logPath = directory / L"build.log";
@@ -265,12 +422,16 @@ namespace LamaPon
             inherited, sizeof(inherited), nullptr, nullptr))
             throw std::runtime_error("ゲーム出力のログ接続を準備できませんでした。");
         // Pythonへ直接渡す引用済み起動引数
-        std::wstring command = Quote(python) + L" -B -X utf8 -u " + Quote(script)
+        std::wstring command;
+        if (setup)
+            command = Quote(python) + L" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script)
+                + L" -Install -AllowDownloads -ResultPath " + Quote(m_resultPath);
+        else command = Quote(python) + L" -B -X utf8 -u " + Quote(script)
             + L" --project " + Quote(std::filesystem::absolute(projectFile))
             + L" --output " + Quote(std::filesystem::absolute(output))
             + L" --result " + Quote(m_resultPath);
-        if (!platform.empty()) command += L" --platform " + Quote(PathFromUtf8(platform));
-        else if (!tools.emsdk.empty()) command += L" --emsdk " + Quote(tools.emsdk);
+        if (!platform.empty() && !setup) command += L" --platform " + Quote(PathFromUtf8(platform));
+        else if (!setup && !resolvedTools.emsdk.empty()) command += L" --emsdk " + Quote(resolvedTools.emsdk);
         if (android)
         {
             command += L" --build-apk --android-sdk " + Quote(std::filesystem::absolute(android->sdk))
@@ -312,6 +473,7 @@ namespace LamaPon
             : "ネイティブ出力の互換性を検査し、ビルド設定を生成しています。";
         if (m_androidApk) m_message = "Android互換性を検査し、debug APKをビルドしています。ログで進行状況を確認できます。";
         if (m_linuxBuild) m_message = "WSL内でLinuxゲームをビルドし、実行形式と同梱依存を検査しています。ログで進行状況を確認できます。";
+        if (setup) m_message = "Web出力サポートを準備しています。初回のダウンロードには数分かかる場合があります。";
     }
 
     bool WebExportJob::Poll()
@@ -332,7 +494,11 @@ namespace LamaPon
             m_message = result.value("message", std::string{"ゲーム出力に失敗しました。"});
             if (m_succeeded)
             {
-                if (m_nativePlatform.empty())
+                if (IsWebSupportSetup())
+                {
+                    if (!WebSupportReady()) throw std::runtime_error("Web出力サポートの確認に失敗しました。準備を再実行してください。");
+                }
+                else if (m_nativePlatform.empty())
                 {
                     m_htmlPath = PathFromUtf8(result.at("htmlPath").get<std::string>());
                     if (!std::filesystem::is_regular_file(m_htmlPath))

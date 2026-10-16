@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -78,6 +79,61 @@ def validate_output(project: Path, output: Path, engine: Path) -> Path:
     return output
 
 
+def managed_web_tools() -> dict:
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return {}
+    manifest = Path(local) / "LamaPon" / "toolchains" / "web" / "web-support.json"
+    try:
+        state = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        if state.get("format") == "lamapon.web-support" and state.get("ready") is True:
+            return state
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def find_emsdk(emsdk: Path | None) -> Path | None:
+    """Find an activated SDK without requiring shell activation or user paths."""
+    def ready(path: Path) -> bool:
+        entry = path / "upstream" / "emscripten" / "emcmake"
+        return (path / ".emscripten").is_file() and (entry.is_file() or entry.with_suffix(".py").is_file())
+    if emsdk is not None:
+        explicit = emsdk.expanduser().resolve()
+        if not ready(explicit):
+            raise ValueError("指定したEmscripten SDKは未設定です。emsdk install / activateを済ませたフォルダーを指定してください。")
+        return explicit
+    candidates: list[Path] = []
+    managed = managed_web_tools()
+    if managed.get("emsdk"):
+        candidates.append(Path(managed["emsdk"]))
+    for name in ("EMSDK",):
+        if os.environ.get(name):
+            candidates.append(Path(os.environ[name]))
+    if os.environ.get("EM_CONFIG"):
+        candidates.append(Path(os.environ["EM_CONFIG"]).parent)
+    found = shutil.which("emcmake")
+    if found:
+        entry = Path(found).resolve()
+        if entry.parent.name == "emscripten" and entry.parent.parent.name == "upstream":
+            candidates.append(entry.parent.parent.parent)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    if home is not None:
+        candidates.extend((home / "Tools" / "emsdk", home / "emsdk", home / "Dev" / "emsdk"))
+    if os.environ.get("LOCALAPPDATA"):
+        local = Path(os.environ["LOCALAPPDATA"])
+        candidates.extend((local / "Programs" / "emsdk", local / "Programs" / "Emscripten" / "emsdk"))
+    candidates.append(Path(__file__).resolve().parent.parent / "tools" / "emsdk")
+    for path in candidates:
+        path = path.expanduser().resolve()
+        if ready(path):
+            return path
+    return None
+
+
 # build_environment(emsdk: 任意のSDK位置)はビルド環境とemcmakeを返します。
 def build_environment(emsdk: Path | None) -> tuple[dict[str, str], Path]:
     # 子プロセスに渡す環境
@@ -85,6 +141,15 @@ def build_environment(emsdk: Path | None) -> tuple[dict[str, str], Path]:
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     env["EMSDK_PYTHON"] = sys.executable
+    managed = managed_web_tools()
+    directories = []
+    for tool in ("cmake", "ninja"):
+        value = managed.get(tool)
+        if isinstance(value, str) and Path(value).is_file():
+            directories.append(str(Path(value).parent))
+    if directories:
+        env["PATH"] = os.pathsep.join(directories + [env.get("PATH", "")])
+    emsdk = find_emsdk(emsdk)
     # SDKを明示指定した場合の実行パスを組み立てる
     if emsdk:
         # 絶対化したEmscripten SDKルート
@@ -160,6 +225,54 @@ def publish_package(stage: Path, output: Path) -> None:
             print_status(f"以前の出力を保持しました: {backup}: {error}")
 
 
+def project_build_script(project: Path) -> Path | None:
+    """An explicit project adapter may supplement the standard Portable runtime.
+
+    Never discover or execute arbitrary scripts merely because they exist.
+    The saved project must opt in, and the entry point must remain in tools/.
+    """
+    document = json.loads(project.read_text(encoding="utf-8"))
+    web = document.get("export", {}).get("web", {})
+    if web.get("buildSystem") != "project-script":
+        return None
+    relative = web.get("buildScript")
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise ValueError("export.web.buildScriptにはtools/内のPythonスクリプトを相対パスで指定してください。")
+    root = project.parent.parent if project.parent.name == ".lamapon" else project.parent
+    tools = (root / "tools").resolve()
+    script = (root / relative).resolve()
+    if root.resolve() not in tools.parents or tools not in script.parents or script.suffix.lower() != ".py" or not script.is_file():
+        raise ValueError("Webビルドスクリプトはプロジェクトのtools/内の.pyファイルである必要があります。")
+    return script
+
+
+def validate_project_package(stage: Path) -> tuple[dict, Path]:
+    """Check adapter output before it can replace an existing package."""
+    manifest_path = stage / "web-export-manifest.json"
+    if manifest_path.is_symlink():
+        raise ValueError("Webマニフェストにシンボリックリンクは使えません。")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != "lamapon.web-export-manifest":
+        raise ValueError("Webビルドスクリプトの出力マニフェスト形式が不正です。")
+    name = manifest.get("html")
+    if not isinstance(name, str) or Path(name).name != name or not name.startswith("LamaPonWebGL-") or not name.endswith(".html"):
+        raise ValueError("WebビルドスクリプトのHTMLファイル名が不正です。")
+    page = stage / name
+    if not page.is_file() or page.is_symlink():
+        raise ValueError("WebビルドスクリプトがHTMLを出力していません。")
+    content = page.read_bytes()
+    if not content or len(content) != manifest.get("bytes") or hashlib.sha256(content).hexdigest() != manifest.get("sha256"):
+        raise ValueError("WebビルドスクリプトのHTML検証に失敗しました。")
+    maximum = manifest.get("maximumHtmlBytes")
+    if maximum is not None and (type(maximum) is not int or maximum <= 0 or len(content) > maximum):
+        raise ValueError("Webパッケージの容量制限を超えています。")
+    if b"<canvas" not in content.lower():
+        raise ValueError("WebパッケージにゲームCanvasがありません。")
+    if any(path.is_symlink() for path in stage.rglob("*")):
+        raise ValueError("Webパッケージにシンボリックリンクは含められません。")
+    return manifest, page
+
+
 # export(project: プロジェクト設定, output: 出力先, result_path: 実行結果, emsdk: 任意のSDK位置)はWeb出力結果を返します。
 def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -> dict:
     # LamaPonエンジンルート
@@ -173,11 +286,28 @@ def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -
     output = validate_output(project, output, engine)
     # 出力プロセスの環境とemcmake
     env, emcmake = build_environment(emsdk)
+    adapter = project_build_script(project)
     output.parent.mkdir(parents=True, exist_ok=True)
     # 出力と同じ親に用意するビルドステージ
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}-web-", dir=output.parent))
     # ステージを使ってWebパッケージをビルドする
     try:
+        if adapter is not None:
+            print_status(f"プロジェクト設定のWebビルドを実行しています: {adapter.name}")
+            command = [sys.executable, "-B", "-X", "utf8", "-u", str(adapter),
+                       "--output", str(stage), "--engine", str(engine)]
+            resolved_sdk = env.get("EMSDK")
+            if resolved_sdk:
+                command += ["--emsdk", resolved_sdk]
+            completed = subprocess.run(command, env=env, check=False)
+            if completed.returncode:
+                raise ValueError("プロジェクトのWebビルドに失敗しました。既存の出力は保持しています。ログを確認してください。")
+            manifest, page = validate_project_package(stage)
+            name = page.name
+            publish_package(stage, output)
+            return {"ok": True, "outputDirectory": str(output), "htmlPath": str(output / name),
+                    "message": "Web（HTML）形式での出力が完了しました。",
+                    "manifest": "web-export-manifest.json", "singleFile": True, "warningCount": 0}
         # Web出力スクリプトの実行引数
         command = [sys.executable, "-X", "utf8", "-u", str(engine / "tools" / "export_web.py"),
                    str(project), "--output", str(stage), "--emcmake", str(emcmake)]

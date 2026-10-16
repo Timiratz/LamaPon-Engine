@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -20,6 +21,79 @@ SPEC.loader.exec_module(EXPORT)
 
 
 class EditorWebExportTests(unittest.TestCase):
+    def configure_adapter(self):
+        script = self.root / "tools" / "ExportWeb.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("# explicit adapter", encoding="utf-8")
+        self.project.write_text(json.dumps({"format": "LamaPonProject", "export": {"web": {
+            "buildSystem": "project-script", "buildScript": "tools/ExportWeb.py"}}}), encoding="utf-8")
+        return script
+
+    def test_project_adapter_is_explicit_and_stays_inside_tools(self):
+        script = self.configure_adapter()
+        self.assertEqual(EXPORT.project_build_script(self.project), script)
+        for name in ("../outside.py", "assets/untrusted.py", str(script.resolve()), "tools/missing.py"):
+            document = json.loads(self.project.read_text(encoding="utf-8"))
+            document["export"]["web"]["buildScript"] = name
+            self.project.write_text(json.dumps(document), encoding="utf-8")
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                EXPORT.project_build_script(self.project)
+        self.project.write_text('{"format":"LamaPonProject"}', encoding="utf-8")
+        self.assertIsNone(EXPORT.project_build_script(self.project))
+
+    def test_project_adapter_publishes_verified_output(self):
+        script = self.configure_adapter()
+        self.previous_output()
+        def build(command, **kwargs):
+            self.assertEqual(command[4], "-u")
+            self.assertEqual(Path(command[5]), script)
+            self.assertIn("--engine", command)
+            stage = Path(command[command.index("--output") + 1])
+            page = stage / "LamaPonWebGL-Game.html"
+            content = b"<canvas></canvas>"
+            page.write_bytes(content)
+            (stage / "web-export-manifest.json").write_text(json.dumps({
+                "format": "lamapon.web-export-manifest", "html": page.name,
+                "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                "maximumHtmlBytes": 20_000_000}), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+        with mock.patch.object(EXPORT, "build_environment", return_value=(os.environ.copy(), Path("emcmake"))), \
+             mock.patch.object(EXPORT.subprocess, "run", side_effect=build):
+            result = EXPORT.export(self.project, self.output, self.result, None)
+        self.assertTrue(result["ok"])
+        self.assertTrue(Path(result["htmlPath"]).is_file())
+        self.assertFalse((self.output / "game.html").exists())
+
+    def test_adapter_failed_or_corrupt_output_preserves_old_package(self):
+        self.configure_adapter()
+        self.previous_output()
+        for code in (1, 0):
+            def build(command, **kwargs):
+                stage = Path(command[command.index("--output") + 1])
+                (stage / "LamaPonWebGL-Game.html").write_text("<canvas></canvas>", encoding="utf-8")
+                (stage / "web-export-manifest.json").write_text(json.dumps({
+                    "format":"lamapon.web-export-manifest", "html":"LamaPonWebGL-Game.html",
+                    "bytes": 1, "sha256": "invalid"}), encoding="utf-8")
+                return subprocess.CompletedProcess(command, code)
+            with self.subTest(code=code), \
+                 mock.patch.object(EXPORT, "build_environment", return_value=(os.environ.copy(), Path("emcmake"))), \
+                 mock.patch.object(EXPORT.subprocess, "run", side_effect=build), self.assertRaises(ValueError):
+                EXPORT.export(self.project, self.output, self.result, None)
+            self.assertEqual((self.output / "game.html").read_text(), "previous")
+
+    def test_adapter_package_rejects_path_escape_and_size_overflow(self):
+        stage = self.root / "stage"
+        stage.mkdir()
+        content = b"<canvas></canvas>"
+        (stage / "LamaPonWebGL-Game.html").write_bytes(content)
+        valid = {"format":"lamapon.web-export-manifest", "html":"LamaPonWebGL-Game.html",
+                 "bytes":len(content), "sha256":hashlib.sha256(content).hexdigest()}
+        for change in ({"html":"../LamaPonWebGL-Game.html"}, {"maximumHtmlBytes":1},
+                       {"maximumHtmlBytes":True}, {"sha256":"bad"}):
+            (stage / "web-export-manifest.json").write_text(json.dumps(valid | change), encoding="utf-8")
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                EXPORT.validate_project_package(stage)
+
     # self: テストケース
     # UTF-8パスを含む一時プロジェクトを用意します。
     def setUp(self):
@@ -81,6 +155,69 @@ class EditorWebExportTests(unittest.TestCase):
         self.assertTrue(found.samefile(entry))
         self.assertTrue(Path(env["EM_CONFIG"]).samefile(sdk / ".emscripten"))
         self.assertEqual(env["PYTHONUTF8"], "1")
+
+    def make_sdk(self, directory):
+        entry = directory / "upstream" / "emscripten" / "emcmake.py"
+        entry.parent.mkdir(parents=True)
+        entry.touch()
+        (directory / ".emscripten").touch()
+        return entry
+
+    def test_managed_tools_work_without_path_or_sdk_environment(self):
+        sdk = self.root / "managed SDK"
+        entry = self.make_sdk(sdk)
+        cmake = self.root / "cmake" / "cmake.exe"
+        ninja = self.root / "ninja" / "ninja.exe"
+        for path in (cmake, ninja):
+            path.parent.mkdir(); path.touch()
+        manifest = self.root / "LamaPon" / "toolchains" / "web" / "web-support.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({"format":"lamapon.web-support", "ready":True,
+            "emsdk":str(sdk), "cmake":str(cmake), "ninja":str(ninja)}), encoding="utf-8")
+        def which(name, **kwargs):
+            if name == "cmake":
+                self.assertIn(str(cmake.parent), kwargs["path"])
+                self.assertIn(str(ninja.parent), kwargs["path"])
+                return str(cmake)
+            return None
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA":str(self.root)}, clear=True), \
+             mock.patch.object(EXPORT.shutil, "which", side_effect=which):
+            env, found = EXPORT.build_environment(None)
+            self.assertEqual(found, entry)
+            self.assertEqual(env["EMSDK"], str(sdk))
+            self.assertNotIn("PATH", os.environ)
+
+    def test_sdk_auto_detection_without_environment_or_path(self):
+        sdk = self.root / "Tools" / "emsdk"
+        entry = self.make_sdk(sdk)
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(EXPORT.Path, "home", return_value=self.root), \
+             mock.patch.object(EXPORT.shutil, "which", side_effect=lambda name, **kw: "cmake" if name == "cmake" else None):
+            env, found = EXPORT.build_environment(None)
+        self.assertEqual(found, entry)
+        self.assertEqual(Path(env["EMSDK"]), sdk)
+        self.assertEqual(Path(env["EM_CONFIG"]), sdk / ".emscripten")
+
+    def test_sdk_auto_detection_from_path_and_config(self):
+        sdk = self.root / "custom sdk"
+        entry = self.make_sdk(sdk)
+        for environment, on_path in (({}, str(entry)), ({"EM_CONFIG":str(sdk / ".emscripten")}, None)):
+            with self.subTest(environment=environment), mock.patch.dict(os.environ, environment, clear=True), \
+                 mock.patch.object(EXPORT.Path, "home", return_value=self.root), \
+                 mock.patch.object(EXPORT.shutil, "which", side_effect=lambda name, **kw: on_path if name == "emcmake" else "cmake"):
+                env, found = EXPORT.build_environment(None)
+                self.assertEqual(Path(env["EMSDK"]), sdk)
+                self.assertEqual(found, entry)
+
+    def test_stale_environment_falls_back_but_explicit_invalid_sdk_is_rejected(self):
+        sdk = self.root / "Tools" / "emsdk"
+        self.make_sdk(sdk)
+        with mock.patch.dict(os.environ, {"EMSDK":str(self.root / "gone")}, clear=True), \
+             mock.patch.object(EXPORT.Path, "home", return_value=self.root), \
+             mock.patch.object(EXPORT.shutil, "which", return_value=None):
+            self.assertEqual(EXPORT.find_emsdk(None), sdk)
+            with self.assertRaises(ValueError):
+                EXPORT.find_emsdk(self.root / "explicit missing")
 
     # self: テストケース
     # UTF-8表示に失敗する端末で出力を復旧することを検査します。

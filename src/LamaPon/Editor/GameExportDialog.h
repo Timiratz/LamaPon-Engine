@@ -75,6 +75,7 @@ namespace LamaPon
         std::array<char, 512> m_timestampUrl{};
         // 次の描画でダイアログを開くか
         bool m_requested{};
+        bool m_webSupportReady{}, m_confirmWebSupport{};
         // 配布用ZIPも作成するか
         bool m_createZip{};
         // WindowsのEXEとDLLへ署名するか

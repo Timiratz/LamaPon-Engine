@@ -1131,6 +1131,10 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
     add_test(NAME EditorWebExport
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
+    add_test(NAME WebSupportSetup
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebSupportSetupTests.ps1"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/test-output")
     add_test(NAME NativeOutputTools
         COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "Native*ToolTests.py")
