@@ -2,6 +2,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include <Windows.h>
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +10,22 @@
 
 namespace
 {
+    struct EnvironmentGuard final
+    {
+        std::wstring name, value;
+        bool present{};
+        explicit EnvironmentGuard(const wchar_t* key) : name(key)
+        {
+            const auto size = GetEnvironmentVariableW(key, nullptr, 0);
+            present = size != 0;
+            if (present)
+            {
+                value.resize(size);
+                value.resize(GetEnvironmentVariableW(key, value.data(), size));
+            }
+        }
+        ~EnvironmentGuard() { SetEnvironmentVariableW(name.c_str(), present ? value.c_str() : nullptr); }
+    };
     // 条件不成立ならテストを失敗させます。
     // Require(condition: 成立条件, message: 失敗理由)
     void Require(bool condition, const char* message)
@@ -101,6 +118,46 @@ raise SystemExit(0 if ok else 2)
             "UTF-8 paths and successful output must survive the process boundary.");
         // 完了結果を一度だけ受け取れることを確認
         Require(!job.Poll(), "Completion must only be delivered once.");
+        {
+            EnvironmentGuard local(L"LOCALAPPDATA"), path(L"PATH");
+            SetEnvironmentVariableW(L"LOCALAPPDATA", root.c_str());
+            const auto support = LamaPon::WebSupportRoot();
+            std::filesystem::create_directories(support / L"sdk");
+            std::ofstream(support / L"sdk/.emscripten") << "test";
+            Require(!LamaPon::WebSupportReady(), "Missing support manifest must not be ready.");
+            const auto pythonPath = LamaPon::PathToUtf8(std::filesystem::path(argv[1]));
+            std::ofstream(support / L"web-support.json") << nlohmann::json{
+                {"format", "lamapon.web-support"}, {"ready", true}, {"python", pythonPath},
+                {"cmake", pythonPath}, {"ninja", pythonPath}, {"emsdk", LamaPon::PathToUtf8(support / L"sdk")}};
+            Require(LamaPon::WebSupportReady(), "Valid support manifest must be reusable.");
+            std::ofstream(engine / L"tools/SetupWebSupport.ps1") << R"PS(
+param([switch]$Install,[switch]$AllowDownloads,[string]$ResultPath)
+if (-not $Install -or -not $AllowDownloads) {exit 1}
+[IO.File]::WriteAllText($ResultPath,'{"ok":true,"message":"ready"}')
+)PS";
+            SetEnvironmentVariableW(L"PATH", L"");
+            job.StartWebSupport(engine, project);
+            Wait(job);
+            Require(job.Succeeded() && job.IsWebSupportSetup(), "Support setup must work without Python on PATH.");
+            std::filesystem::remove(support / L"web-support.json");
+        }
+        {
+            EnvironmentGuard path(L"PATH"), sdk(L"EMSDK"), sdkPython(L"EMSDK_PYTHON"), local(L"LOCALAPPDATA");
+            const auto aliases = root / L"WindowsApps";
+            std::filesystem::create_directories(aliases);
+            std::ofstream(aliases / L"python.exe") << "not an interpreter";
+            SetEnvironmentVariableW(L"PATH", (aliases.wstring() + L";" + std::filesystem::path(argv[1]).parent_path().wstring()).c_str());
+            SetEnvironmentVariableW(L"EMSDK", nullptr);
+            SetEnvironmentVariableW(L"EMSDK_PYTHON", nullptr);
+            SetEnvironmentVariableW(L"LOCALAPPDATA", root.c_str());
+            job.Start(engine, project, output, {});
+            Wait(job);
+            Require(job.Succeeded(), "Auto detection must continue past a WindowsApps alias to a real Python later on PATH.");
+            bool rejected{};
+            try { job.Start(engine, project, output, {aliases / L"python.exe", {}}); }
+            catch (const std::runtime_error&) { rejected = true; }
+            Require(rejected && !job.Running(), "Explicit invalid Python must fail before starting an export.");
+        }
         job.Start(engine, project.parent_path() / L"fail.json", output, tools);
         Wait(job);
         // 失敗結果で直前の成功状態が置き換わることを確認

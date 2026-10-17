@@ -52,7 +52,7 @@ $buildInfo = Get-Content -LiteralPath (Join-Path $payloadRoot 'build-info.json')
 $version = [string]$buildInfo.engineVersion
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'build-info.jsonの版数が不正です。' }
 # requiredPath: 起動と自動ビルドの必須ファイル。
-foreach ($requiredPath in @('vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'tools\ProjectGameModule\CMakeLists.txt', 'src\LamaPon\LamaPon.h', 'docs\installation.md')) {
+foreach ($requiredPath in @('vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\SetupWebSupport.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'tools\ProjectGameModule\CMakeLists.txt', 'src\LamaPon\LamaPon.h', 'docs\installation.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $requiredPath))) { throw "配布ファイルが不足しています: $requiredPath" }
 }
 & $Compiler /Qp "/DPayloadDir=$payloadRoot" "/DOutputDir=$outputRoot" "/DAppVersion=$version" (Join-Path $PSScriptRoot 'installer\LamaPon.iss')
