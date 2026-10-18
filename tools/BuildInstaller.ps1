@@ -35,7 +35,7 @@ if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'CMakeCache.txt') -Pa
     throw '配布用インストーラーはReleaseビルドから作成してください。'
 }
 # fileName: 配布に必要な成果物。
-foreach ($fileName in @('LamaPonEditor.exe', 'LamaPonHub.exe', 'LamaPonCli.exe', 'LamaPonGame.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib')) {
+foreach ($fileName in @('LamaPonEditor.exe', 'LamaPonHub.exe', 'LamaPonCli.exe', 'LamaPonGame.exe', 'LamaPonGameLauncher.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib')) {
     if (-not (Test-Path -LiteralPath (Join-Path $buildRoot $fileName))) { throw "ビルド成果物が不足しています: $fileName" }
 }
 # 不要な古いファイルを再配布しないため、新しい出力先を要求する。

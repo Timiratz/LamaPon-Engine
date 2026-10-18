@@ -37,7 +37,7 @@ namespace
         PROCESS_INFORMATION process{};
         Require(CreateProcessW(executable.c_str(), command.data(),
             nullptr, nullptr, FALSE, 0, nullptr,
-            executable.parent_path().c_str(), &startup, &process) != FALSE,
+            executable.parent_path().parent_path().c_str(), &startup, &process) != FALSE,
             "Could not start exported game.");
         CloseHandle(process.hThread);
         // 起動検証プロセスの完了状態
@@ -97,7 +97,11 @@ int main()
             runtime / "LamaPonGameModule.dll" };
         // モジュール同梱パッケージの出力結果
         auto result = LamaPon::ExportGamePackage(options);
-        Require(std::filesystem::last_write_time(result.outputDirectory / "LamaPonRuntime.dll")
+        const auto dataName = L"Startup Regression_Data";
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "The export root must contain only the launcher and Data directory.");
+        Require(std::filesystem::last_write_time(result.outputDirectory / dataName / "LamaPonRuntime.dll")
                 == std::filesystem::last_write_time(runtime / "LamaPonRuntime.dll"),
             "Archive-key embedding must preserve runtime build time.");
         // name: 配布物へ同梱する各依存ライセンス
@@ -106,11 +110,14 @@ int main()
         {
             // 配布元からの相対ライセンスパス
             const auto relative = std::filesystem::path("licenses") / (std::string(name) + ".txt");
-            Require(std::filesystem::file_size(result.outputDirectory / relative)
+            Require(std::filesystem::file_size(result.outputDirectory / dataName / relative)
                 == std::filesystem::file_size(runtime / relative),
                 "Exported license text is missing or truncated.");
         }
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
 
         // モジュールなしの起動にも対応
         std::ofstream(assets / settings.startupScene, std::ios::trunc)
@@ -119,9 +126,12 @@ int main()
         options.outputDirectory = root / "without-module";
         // モジュールを含まない出力結果
         result = LamaPon::ExportGamePackage(options);
-        Require(!std::filesystem::exists(result.outputDirectory / "LamaPonGameModule.dll"),
+        Require(!std::filesystem::exists(result.outputDirectory / dataName / "LamaPonGameModule.dll"),
             "A project without a module must not acquire the sample module.");
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
 
         // DirectX 12 ExperimentalでシーンのText/Imageを描画
         std::ofstream(assets / settings.startupScene, std::ios::trunc)
@@ -143,9 +153,12 @@ int main()
         result = LamaPon::ExportGamePackage(options);
         // 配布先ゲームのRuntimeログ
         const auto runtimeLog =
-            result.executablePath.parent_path() / "LamaPon.log";
+            result.outputDirectory / dataName / "LamaPon.log";
         std::filesystem::remove(runtimeLog);
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
         // 起動後のRuntimeログファイル
         std::ifstream runtimeLogFile(runtimeLog, std::ios::binary);
         // Runtimeログ全体

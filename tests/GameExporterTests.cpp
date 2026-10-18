@@ -941,10 +941,10 @@ int main(const int argumentCount, char** const arguments)
                 / "dist" / "MyGame";
             // key: archive暗号化key。
             const auto key = ReadEmbeddedArchiveKey(
-                output / "LamaPonRuntime.dll");
+                output / L"日本語ゲーム_Data" / "LamaPonRuntime.dll");
             // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
-                output / "assets.tpak", key);
+                output / L"日本語ゲーム_Data" / "assets.tpak", key);
             Require(archive->EntryCount() > 0
                 && archive->TryRead("data/custom.lpdata")
                     == std::vector<std::uint8_t>{
@@ -969,6 +969,7 @@ int main(const int argumentCount, char** const arguments)
         const auto assetDirectory = root / "project" / "assets";
         // outputDirectory: exportされたgame directory。
         const auto outputDirectory = root / "dist" / "MyGame";
+        const auto dataDirectory = outputDirectory / L"日本語ゲーム_Data";
         // startupScene: projectのstartup scene path。
         const auto startupScene =
             std::filesystem::path(L"scenes/日本語.scene.json");
@@ -1343,6 +1344,9 @@ int main(const int argumentCount, char** const arguments)
         std::filesystem::copy_file(
             SelfExecutablePath(),
             runtimeDirectory / "LamaPonGame.exe");
+        std::filesystem::copy_file(
+            SelfExecutablePath().parent_path() / "LamaPonGameLauncher.exe",
+            runtimeDirectory / "LamaPonGameLauncher.exe");
         WriteFakeRuntimeLibrary(
             runtimeDirectory / "LamaPonRuntime.dll");
         WriteFile(
@@ -1585,7 +1589,7 @@ int main(const int argumentCount, char** const arguments)
         }
         Require(
             CountExportedFilesExcludingShaderCache(
-                outputDirectory) == 10,
+                outputDirectory) == 11,
             "Unexpected exported file count.");
         // 実行ファイルはゲーム名を反映した名前になります。
         Require(
@@ -1603,31 +1607,31 @@ int main(const int argumentCount, char** const arguments)
         RequireEmbeddedIcon(first.executablePath, 2);
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory / "vcruntime140.dll")
+                dataDirectory / "vcruntime140.dll")
                 && std::filesystem::is_regular_file(
-                    outputDirectory / "msvcp140.dll"),
+                    dataDirectory / "msvcp140.dll"),
             "VC++ runtime DLLs were not bundled.");
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory / "LamaPonRuntime.dll"),
+                dataDirectory / "LamaPonRuntime.dll"),
             "Runtime DLL was not exported.");
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory / "xaudio2_9redist.dll"),
+                dataDirectory / "xaudio2_9redist.dll"),
             "XAudio2 Redistributable was not exported.");
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory
+                dataDirectory
                     / "LamaPonGameModule.dll"),
             "Game Module was not exported.");
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory / "middleware.dll"),
+                dataDirectory / "middleware.dll"),
             "Project-local runtime DLL was not exported.");
         {
             // moduleInput: project module読込stream。
             std::ifstream moduleInput(
-                outputDirectory / "LamaPonGameModule.dll",
+                dataDirectory / "LamaPonGameModule.dll",
                 std::ios::binary);
             // moduleContents: module file本文。
             const std::string moduleContents{
@@ -1640,12 +1644,12 @@ int main(const int argumentCount, char** const arguments)
         }
         Require(
             std::filesystem::is_regular_file(
-                outputDirectory / "assets.tpak"),
+                dataDirectory / "assets.tpak"),
             "Encrypted asset archive was not exported.");
         // 書き出しごとに配布物固有の鍵を生成し、配布用のLamaPonRuntime.dllへ埋め込みます。
         // 以降はその鍵を取り出して検証します。
         const auto exportedRuntime =
-            outputDirectory / "LamaPonRuntime.dll";
+            dataDirectory / "LamaPonRuntime.dll";
         // embeddedKey: runtime DLLに埋め込まれたarchive key。
         const auto embeddedKey =
             ReadEmbeddedArchiveKey(exportedRuntime);
@@ -1653,7 +1657,7 @@ int main(const int argumentCount, char** const arguments)
             // 事前コンパイル済みシェーダーの同梱。
             // 無いと、プレイヤーの初回起動で全部コンパイルすることになります。
             const auto shaderCache =
-                outputDirectory / "shader-cache";
+                dataDirectory / "shader-cache";
             Require(
                 std::filesystem::is_directory(shaderCache),
                 "Precompiled shader cache was not exported.");
@@ -1734,7 +1738,7 @@ int main(const int argumentCount, char** const arguments)
         }
         Require(
             !std::filesystem::exists(
-                outputDirectory / "assets"),
+                dataDirectory / "assets"),
             "Loose assets were exported instead of the encrypted archive.");
         // 書き出しごとの配布物固有鍵が埋め込まれることを確認します。
         Require(
@@ -1754,7 +1758,7 @@ int main(const int argumentCount, char** const arguments)
             {
                 static_cast<void>(
                     LamaPon::AssetArchive::Open(
-                        outputDirectory / "assets.tpak"));
+                        dataDirectory / "assets.tpak"));
             }
             // exception: 期待する拒否経路で発生した理由。
             catch (const std::exception&)
@@ -1772,7 +1776,7 @@ int main(const int argumentCount, char** const arguments)
                 outputDirectory.parent_path() / "tampered.tpak";
             // bytes: fileまたはarchiveのbinary内容。
             auto bytes = ReadBytes(
-                outputDirectory / "assets.tpak");
+                dataDirectory / "assets.tpak");
             // headerSize: probe file header長。
             constexpr std::size_t headerSize = 8 + 8 + 16 + 32;
             Require(
@@ -1804,7 +1808,7 @@ int main(const int argumentCount, char** const arguments)
         {
             // 同梱した事前コンパイル済みシェーダーが暗号化されていること（HLSLを外してもDXBCが素で置いてあれば読めます）。
             const auto index = ReadBytes(
-                outputDirectory / "shader-cache" / "index.txt");
+                dataDirectory / "shader-cache" / "index.txt");
             Require(
                 LamaPon::Crypto::IsSealed(
                     index.data(),
@@ -1814,7 +1818,7 @@ int main(const int argumentCount, char** const arguments)
         {
             // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
-                outputDirectory / "assets.tpak",
+                dataDirectory / "assets.tpak",
                 embeddedKey);
             Require(
                 archive != nullptr,
@@ -1861,7 +1865,7 @@ int main(const int argumentCount, char** const arguments)
 
             // rawArchive: export archiveの入力stream。
             std::ifstream rawArchive(
-                outputDirectory / "assets.tpak",
+                dataDirectory / "assets.tpak",
                 std::ios::binary);
             // rawArchiveBytes: export archiveのbinary内容。
             const std::string rawArchiveBytes{
@@ -1912,7 +1916,7 @@ int main(const int argumentCount, char** const arguments)
         {
             // input: file読込stream。
             std::ifstream input(
-                outputDirectory / "LamaPonGame.json",
+                dataDirectory / "LamaPonGame.json",
                 std::ios::binary);
             input >> settings;
         }
@@ -1995,7 +1999,7 @@ int main(const int argumentCount, char** const arguments)
         // loadedSettings: JSONから読み込んだexport settings。
         const auto loadedSettings =
             LamaPon::LoadProjectSettings(
-                outputDirectory / "LamaPonGame.json");
+                dataDirectory / "LamaPonGame.json");
         Require(
             loadedSettings.gameName == projectSettings.gameName
                 && loadedSettings.windowWidth == 1600
@@ -2185,7 +2189,7 @@ int main(const int argumentCount, char** const arguments)
             });
         Require(
             CountExportedFilesExcludingShaderCache(
-                outputDirectory) == 10,
+                outputDirectory) == 11,
             "Re-export produced an unexpected file count.");
         Require(
             !std::filesystem::exists(
@@ -2793,13 +2797,13 @@ int main(const int argumentCount, char** const arguments)
 
             // strippedKey: stripped export runtimeのkey。
             const auto strippedKey = ReadEmbeddedArchiveKey(
-                strippedOutput / "LamaPonRuntime.dll");
+                (strippedOutput / L"日本語ゲーム_Data") / "LamaPonRuntime.dll");
             Require(
                 strippedKey != embeddedKey,
                 "Every export must get a fresh archive key.");
             // archive: 開いたtpak archive。
             const auto archive = LamaPon::AssetArchive::Open(
-                strippedOutput / "assets.tpak",
+                (strippedOutput / L"日本語ゲーム_Data") / "assets.tpak",
                 strippedKey);
             Require(
                 archive != nullptr,
@@ -2876,7 +2880,7 @@ int main(const int argumentCount, char** const arguments)
             // ソースが無いとハッシュからキーを作れないので、パスから引ける索引が要ります。
             Require(
                 std::filesystem::is_regular_file(
-                    strippedOutput
+                    (strippedOutput / L"日本語ゲーム_Data")
                     / "shader-cache"
                     / "index.txt"),
                 "A stripped export must ship the shader cache"
@@ -2884,7 +2888,7 @@ int main(const int argumentCount, char** const arguments)
                     " looked up at runtime.");
             // cacheIndex: shader-cache index path。
             const auto cacheIndex = ReadSealedText(
-                strippedOutput / "shader-cache" / "index.txt",
+                (strippedOutput / L"日本語ゲーム_Data") / "shader-cache" / "index.txt",
                 strippedKey);
             Require(
                 cacheIndex.find(
@@ -3070,7 +3074,7 @@ int main(const int argumentCount, char** const arguments)
             // 配布先processではDLL内の鍵で自動復号されます。
             // 別鍵で既存cacheを開封してsource無しlookupを行い、新規作業fileを作らないことを確認します。
             const auto shaderCacheDirectory =
-                strippedOutput / "shader-cache";
+                (strippedOutput / L"日本語ゲーム_Data") / "shader-cache";
             // exportされたcache fileを順に検証します。
             for (const auto& cacheFile :
                 std::filesystem::directory_iterator(
@@ -3241,8 +3245,7 @@ int main(const int argumentCount, char** const arguments)
         {
             // 整合性テスト用の一時フォルダー
             const auto integrityRoot =
-                std::filesystem::temp_directory_path()
-                / L"lamapon-integrity-test";
+                root / "integrity-test";
             std::filesystem::remove_all(integrityRoot);
             std::filesystem::create_directories(integrityRoot);
             // 保護対象として置くダミーのランタイムとモジュール

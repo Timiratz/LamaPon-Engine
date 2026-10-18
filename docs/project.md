@@ -312,14 +312,22 @@ VSyncを切ると、スワップチェーンのティアリング許可（`DXGI_
 ```text
 LamaPonGame/
 ├─ <ゲーム名>.exe
-├─ LamaPonRuntime.dll
-├─ LamaPonGameModule.dll
-├─ xaudio2_9redist.dll
-├─ vcruntime140.dll などVC++ランタイム
-├─ LamaPonGame.json
-├─ assets.tpak
-└─ shader-cache/
+└─ <ゲーム名>_Data/
+   ├─ LamaPonGame.exe
+   ├─ LamaPonRuntime.dll
+   ├─ LamaPonGameModule.dll
+   ├─ xaudio2_9redist.dll
+   ├─ vcruntime140.dll などVC++ランタイム
+   ├─ LamaPonGame.json
+   ├─ integrity.dat
+   ├─ assets.tpak
+   ├─ shader-cache/
+   ├─ licenses/
+   └─ THIRD_PARTY_NOTICES.md
 ```
+
+配布ルートの`<ゲーム名>.exe`から起動します。`<ゲーム名>_Data`はexeと一緒に配布してください。
+ログとクラッシュ記録もDataフォルダー内に作成されます。exeの名前を変更するときは、Dataフォルダーの名前も対応させてください。
 
 `assets.tpak`（アセット一式）と`shader-cache`（事前コンパイル済みシェーダー）は
 **書き出しごとに作る鍵で暗号化**され、その鍵は同梱の`LamaPonRuntime.dll`へ
