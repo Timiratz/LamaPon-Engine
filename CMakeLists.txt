@@ -898,6 +898,7 @@ add_executable(LamaPonGameLauncher WIN32
 set_target_properties(LamaPonGameLauncher PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
+target_link_libraries(LamaPonGameLauncher PRIVATE shell32)
 target_compile_options(LamaPonGameLauncher PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>

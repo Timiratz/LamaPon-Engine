@@ -50,15 +50,14 @@ int WINAPI wWinMain(
     PWSTR,
     int)
 {
-    // Startup例外のCrash診断出力先を設定します。
-    LamaPon::CrashReporter::Install(
-        LamaPon::ExecutableDirectory() / L"Crashes",
-        "LamaPonGame");
     // Startup検証モードの指定
     const bool validateStartup = HasCommandLineFlag(L"--validate-startup");
     // 起動時例外を診断ファイルへ記録します。
     try
     {
+        // 診断の準備自体の例外も捕捉します。
+        LamaPon::CrashReporter::Install(
+            LamaPon::ExecutableDirectory() / L"Crashes", "LamaPonGame");
         // GPUの代わりにWARPで描画します。
         if (HasCommandLineFlag(L"--warp"))
         {
@@ -224,16 +223,18 @@ int WINAPI wWinMain(
             LamaPon::CrashReporter::WriteDiagnostic(
                 exception.what()));
         // 例外の詳細をログファイルへ保存します。
-        std::ofstream log("LamaPonGame.log", std::ios::trunc);
+        std::ofstream log(LamaPon::ExecutableDirectory() / L"LamaPonGame.log", std::ios::trunc);
         log << exception.what() << '\n';
 
         // 無人検証以外では利用者へエラーを表示します。
         if (!validateStartup)
         {
-            MessageBoxA(
+            // 日本語の例外をUnicodeで表示
+            const auto message = LamaPon::Utf8ToWide(exception.what());
+            MessageBoxW(
                 nullptr,
-                exception.what(),
-                "LamaPon Game error",
+                message.empty() ? L"ゲームの起動に失敗しました。診断ログを確認してください。" : message.c_str(),
+                L"LamaPon Game error",
                 MB_OK | MB_ICONERROR);
         }
         // 起動失敗を終了コードへ返します。
