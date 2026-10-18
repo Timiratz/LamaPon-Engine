@@ -5179,6 +5179,9 @@ namespace
         graphicsSettings.vSyncEnabled = false;
         graphics.SetGraphicsSettings(graphicsSettings);
         graphics.SetAsyncShaderCompilationEnabled(false);
+        // --inputはproject settingsのActionで解決するため、Scriptが読む
+        // Actionも同じ定義にします（未設定だと既定Actionしか反応しません）。
+        graphics.Input().SetActions(settings.inputActions);
         LamaPon::SetActivePhysicsSettings(settings.physics);
         // gameModule: projectのNativeScript DLLを管理するhost。
         LamaPon::GameModuleHost gameModule;

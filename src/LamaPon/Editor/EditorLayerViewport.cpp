@@ -1233,6 +1233,42 @@ namespace LamaPon
     }
 
     // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
+    void EditorLayer::ReleaseGameMouseLock() const
+    {
+        if (!m_gameMouseLocked) return;
+        RECT current{};
+        // 別の機能が設定した制限を解除しないよう、所有する矩形だけを戻します。
+        if (GetClipCursor(&current) && EqualRect(&current, &m_gameMouseClip))
+            ClipCursor(nullptr);
+        m_gameMouseLocked = false;
+    }
+
+    void EditorLayer::UpdateGameMouseLock()
+    {
+        DWORD process{};
+        GetWindowThreadProcessId(GetForegroundWindow(), &process);
+        if (!m_gameMouseLockVisible || !m_playing || m_paused
+            || m_gameModuleBuildProcess != nullptr
+            || process != GetCurrentProcessId()
+            || ImGui::IsKeyDown(ImGuiKey_Escape)
+            || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)
+            || ImGui::IsAnyItemActive())
+        {
+            ReleaseGameMouseLock();
+            return;
+        }
+        if (!m_gameMouseLocked) return;
+        // 毎フレーム更新するため、ドッキング・解像度・DPI変更にも追従します。
+        if (m_gameMouseBounds.right <= m_gameMouseBounds.left
+            || m_gameMouseBounds.bottom <= m_gameMouseBounds.top
+            || !ClipCursor(&m_gameMouseBounds))
+        {
+            ReleaseGameMouseLock();
+            return;
+        }
+        m_gameMouseClip = m_gameMouseBounds;
+    }
+
     void EditorLayer::DrawGameViewport()
     {
         // ゲーム画像の表示可能サイズ
@@ -1341,6 +1377,22 @@ namespace LamaPon
         // マウスがゲーム画像内か
         const bool valid =
             ImGui::IsItemHovered();
+        m_gameMouseLockVisible = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        POINT origin{};
+        // ImGuiの複数ウィンドウが無効な場合だけ、クライアント座標から変換します。
+        if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+            ClientToScreen(m_window, &origin);
+        m_gameMouseBounds = {
+            static_cast<LONG>(std::ceil(imageMinimum.x)) + origin.x,
+            static_cast<LONG>(std::ceil(imageMinimum.y)) + origin.y,
+            static_cast<LONG>(std::floor(imageMinimum.x + displaySize.x)) + origin.x,
+            static_cast<LONG>(std::floor(imageMinimum.y + displaySize.y)) + origin.y
+        };
+        if (m_playing && !m_paused && valid
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+            && !ImGui::IsKeyDown(ImGuiKey_Escape))
+            m_gameMouseLocked = true;
+
         {
             // 表示から描画へのX座標倍率
             const float scaleX =
