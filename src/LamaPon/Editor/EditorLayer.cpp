@@ -501,6 +501,7 @@ namespace LamaPon
     // パッケージ処理を待ち、設定保存と拡張終了後にImGuiを破棄します。
     EditorLayer::~EditorLayer()
     {
+        ReleaseGameMouseLock();
         // 借用サービスを参照するパッケージ処理を、編集状態の破棄前に終了させます。
         JoinPackageWorker();
 
@@ -552,6 +553,12 @@ namespace LamaPon
         const WPARAM wParam,
         const LPARAM lParam) const
     {
+        if ((message == WM_ACTIVATEAPP && !wParam)
+            || message == WM_KILLFOCUS
+            || (message == WM_KEYDOWN && wParam == VK_ESCAPE)
+            || (message == WM_SIZE && wParam == SIZE_MINIMIZED))
+            ReleaseGameMouseLock();
+
         if (message == WM_DROPFILES)
         {
             // 解放が必要なドロップ情報
@@ -1973,6 +1980,7 @@ namespace LamaPon
     // 更新と編集画面を描画し、GameModuleのビルド中は入力とUI操作を止めます。
     void EditorLayer::Draw()
     {
+        m_gameMouseLockVisible = false;
         UpdateGameModuleBuild();
         UpdateExternalSceneFile();
         UpdateExternalProjectSettings();
@@ -2046,6 +2054,7 @@ namespace LamaPon
         ImGui::EndDisabled();
 
         DrawGameModuleBuildOverlay();
+        UpdateGameMouseLock();
     }
 
     // ビルド中に操作を覆う画面へ回転表示と経過時間を描画します。

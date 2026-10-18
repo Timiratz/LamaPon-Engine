@@ -479,6 +479,9 @@ namespace LamaPon
         [[nodiscard]] std::string InspectorFloatFormat() const;
         // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
         void DrawGameViewport();
+        // ゲーム画像のクリックでカーソルを制限し、Escや他の項目への移動で解除します。
+        void UpdateGameMouseLock();
+        void ReleaseGameMouseLock() const;
         // ゲーム画像上でUI矩形を選択し、移動・リサイズします。
         void DrawUIRectEditor(const DirectX::XMFLOAT2& origin,
             const DirectX::XMFLOAT2& displaySize, bool hovered);
@@ -1398,6 +1401,10 @@ namespace LamaPon
         float m_gameViewResolutionScale{ 1.0f };
         bool m_uiEditMode{};
         bool m_uiFocusGameView{};
+        bool m_gameMouseLockVisible{};
+        mutable bool m_gameMouseLocked{};
+        RECT m_gameMouseBounds{};
+        mutable RECT m_gameMouseClip{};
         GameObjectId m_uiEditObjectId{};
         int m_uiEditHandle{ -1 };
         bool m_uiEditChanged{};

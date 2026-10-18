@@ -3,9 +3,15 @@
 import argparse
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+# リポジトリ直下のtoolsをimportできるようにする
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.check_android_screenshot import decode_android_png
 
 
 class SceneCommandTests(unittest.TestCase):
@@ -39,12 +45,12 @@ class SceneCommandTests(unittest.TestCase):
         path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
         return path
 
-    # cli(self: 検証ケース, arguments: CLI引数, code: 期待終了コード)
+    # cli(self: 検証ケース, arguments: CLI引数, code: 期待終了コード, timeout: 待機秒数)
     # CLIを実行し、JSON応答と終了状態を検査します。
-    def cli(self, *arguments, code=0):
+    def cli(self, *arguments, code=0, timeout=30):
         # CLIのプロセス結果
         process = subprocess.run([str(EXECUTABLE), *map(str, arguments)],
-                                 capture_output=True, encoding="utf-8", timeout=30)
+                                 capture_output=True, encoding="utf-8", timeout=timeout)
         self.assertEqual(process.returncode, code, process.stdout + process.stderr)
         # json.loadsは余分な進行文や2個目のJSONも拒否します。
         report = json.loads(process.stdout)
@@ -143,6 +149,47 @@ class SceneCommandTests(unittest.TestCase):
         self.assertIn("inside the project", report["error"])
         self.assertEqual(self.scene.read_bytes(), before)
         self.assertFalse((self.root.parent / "outside.scene").exists())
+
+    # self: 検証ケース
+    # renderの--inputが、project独自のActionを実行中のComponentへ届けることを検査します。
+    def test_render_input_reaches_project_actions(self):
+        # 既定には無いAction「Slide」をLキーだけに割り当てる
+        self.write(".lamapon/project.json", {
+            "format": "LamaPonProject", "version": 1, "startupScene": "scenes/input.scene",
+            "inputActions": [{"name": "Slide", "bindings": [{"control": "KeyboardL", "scale": 1.0}]}]})
+        # 描画に必要な標準Shader（新規projectへ配る物と同じ）
+        shutil.copytree(Path(__file__).resolve().parents[1] / "assets" / "shaders",
+                        self.root / "assets" / "shaders")
+        # Slideで右へ動く緑の四角（2Dは1単位＝1ピクセル、左上(16, 16)から開始）
+        self.write("assets/scenes/input.scene", {
+            "format": "LamaPonScene", "version": 1, "mainCamera": 1,
+            "objects": [
+                {"id": 1, "name": "Camera", "parent": None,
+                 "transform": {"position": [0, 0, -5], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+                 "components": [{"type": "Camera"}]},
+                {"id": 2, "name": "滑る四角", "parent": None,
+                 "transform": {"position": [16, 16, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+                 "components": [
+                     {"type": "SpriteRenderer", "size": [32, 32], "color": [0, 1, 0, 1], "texture": ""},
+                     {"type": "InputMover", "horizontalAction": "Slide",
+                      "verticalAction": "Unused", "speed": 240}]}]})
+        # 撮影したPNGの出力先
+        image = self.root / "input.png"
+        # 0.5秒Slideを押してから撮影したrender応答
+        report = self.cli("render", "--project", self.root, "--out", image,
+                          "--width", 256, "--height", 64, "--warp",
+                          "--input", "Slide@0:0.5", "--simulate", 0.75, timeout=180)
+        self.assertEqual([event["action"] for event in report["inputEvents"]], ["Slide"])
+        # 撮影結果の幅・1画素のbyte数・画素列
+        width, _, channels, pixels = decode_android_png(image.read_bytes())
+        # 緑の四角が写っている列
+        columns = {
+            (offset // channels) % width
+            for offset in range(0, len(pixels), channels)
+            if pixels[offset] < 48 and pixels[offset + 1] > 160 and pixels[offset + 2] < 48}
+        self.assertTrue(columns, "the green square was not rendered")
+        # 240単位/秒×0.5秒で約120ピクセル右へ動く。Actionが届かないと16のまま
+        self.assertGreater(min(columns), 80)
 
 
 # 直接実行時だけテストCLIの引数解析を行う
