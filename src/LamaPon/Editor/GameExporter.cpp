@@ -1810,6 +1810,12 @@ namespace LamaPon
         // 元のゲーム実行ファイル
         const auto gameExecutable =
             runtimeDirectory / L"LamaPonGame.exe";
+        const auto gameLauncher =
+            runtimeDirectory / L"LamaPonGameLauncher.exe";
+        if (!std::filesystem::is_regular_file(gameLauncher))
+        {
+            throw ExportError("LamaPonGameLauncher.exe was not found", gameLauncher);
+        }
         // 元のRuntime DLL
         const auto runtimeLibrary =
             runtimeDirectory / L"LamaPonRuntime.dll";
@@ -2948,6 +2954,26 @@ namespace LamaPon
                 stagingDirectory,
                 integrityTargets,
                 archiveKey);
+
+            // 起動に必要なファイルをまとめ、配布ルートには起動exeだけを残します。
+            // 走査中の移動を避けるため、元の直下エントリーを先に列挙します。
+            std::vector<std::filesystem::path> packageEntries;
+            for (const auto& entry : std::filesystem::directory_iterator(stagingDirectory))
+                packageEntries.push_back(entry.path());
+            const auto dataDirectory = stagingDirectory
+                / (std::filesystem::path(exportedExecutableName).stem().wstring() + L"_Data");
+            std::filesystem::create_directory(dataDirectory);
+            for (const auto& entry : packageEntries)
+            {
+                std::filesystem::rename(entry, dataDirectory
+                    / (entry.filename() == exportedExecutableName
+                        ? std::filesystem::path(L"LamaPonGame.exe") : entry.filename()));
+            }
+            const auto launcherPath = stagingDirectory / exportedExecutableName;
+            std::filesystem::copy_file(gameLauncher, launcherPath);
+            if (!gameIconSource.empty())
+                ReplaceExecutableIcon(launcherPath, BuildIcoFromImageFile(gameIconSource));
+            SignExportedBinaries(options.signing, { launcherPath });
         }
         catch (...)
         {

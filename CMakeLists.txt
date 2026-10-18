@@ -890,6 +890,21 @@ target_compile_options(LamaPonHub
 lamapon_enable_release_symbols(LamaPonHub)
 add_dependencies(LamaPonHub LamaPonEditorApp)
 
+# 配布ルートの起動exeは、Data内のVC++ DLLがなくても起動できるよう静的CRTを使います。
+add_executable(LamaPonGameLauncher WIN32
+    samples/Game/Launcher.cpp
+    ${LAMAPON_WINDOWS_RESOURCES}
+)
+set_target_properties(LamaPonGameLauncher PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+target_link_libraries(LamaPonGameLauncher PRIVATE shell32)
+target_compile_options(LamaPonGameLauncher PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+)
+add_dependencies(LamaPonEditor LamaPonGameLauncher)
+
 add_executable(LamaPonGame WIN32
     samples/Game/Main.cpp
     ${LAMAPON_WINDOWS_RESOURCES}
@@ -1038,30 +1053,34 @@ add_custom_target(LamaPonGamePackage
     COMMAND ${CMAKE_COMMAND} -E rm -rf
         "${LAMAPON_GAME_EXPORT_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        "${LAMAPON_GAME_EXPORT_DIR}"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:LamaPonGame>"
+        "$<TARGET_FILE:LamaPonGameLauncher>"
         "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame.exe"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:LamaPonGame>"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGame.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:LamaPonRuntime>"
-        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonRuntime.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonRuntime.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:LamaPonGameModule>"
-        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGameModule.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGameModule.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${LAMAPON_XAUDIO2_REDIST_DLL}"
-        "${LAMAPON_GAME_EXPORT_DIR}/xaudio2_9redist.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/xaudio2_9redist.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "${LAMAPON_GAME_EXPORT_DIR}/assets"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_BINARY_DIR}/generated/build-info.json"
-        "${LAMAPON_GAME_EXPORT_DIR}/build-info.json"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/build-info.json"
     COMMAND ${CMAKE_COMMAND}
         "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/.lamapon/project.json"
-        "-DOUTPUT=${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame.json"
+        "-DOUTPUT=${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGame.json"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteGameSettings.cmake"
     DEPENDS
+        LamaPonGameLauncher
         LamaPonGame
         LamaPonGameModule
         LamaPonRuntime
@@ -2504,6 +2523,7 @@ install(
         LamaPonHub
         LamaPonGame
         LamaPonCli
+        LamaPonGameLauncher
     RUNTIME DESTINATION "."
     LIBRARY DESTINATION "."
     ARCHIVE DESTINATION "."

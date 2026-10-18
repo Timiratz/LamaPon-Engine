@@ -34,7 +34,7 @@ try {
     # payloadRoot: 比較元の配布一式。
     $payloadRoot = Join-Path (Split-Path -Parent $executable) 'payload'
     # relativePath: コピーの完全性を調べるファイル。
-    foreach ($relativePath in @('LamaPonHub.exe', 'LamaPonEditor.exe', 'LamaPonGame.exe', 'LamaPonCli.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib', 'vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'src\LamaPon\LamaPon.h', 'tools\ProjectGameModule\CMakeLists.txt', 'docs\installation.md', 'licenses\LamaPon.txt')) {
+    foreach ($relativePath in @('LamaPonHub.exe', 'LamaPonEditor.exe', 'LamaPonGame.exe', 'LamaPonGameLauncher.exe', 'LamaPonCli.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib', 'vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'src\LamaPon\LamaPon.h', 'tools\ProjectGameModule\CMakeLists.txt', 'docs\installation.md', 'licenses\LamaPon.txt')) {
         if ((Get-FileHash -LiteralPath (Join-Path $installRoot $relativePath)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $payloadRoot $relativePath)).Hash) { throw "配置ファイルの内容が異なります: $relativePath" }
     }
     # cliOutput: ランタイム読込を伴う版数表示。

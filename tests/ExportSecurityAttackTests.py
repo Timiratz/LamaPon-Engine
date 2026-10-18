@@ -117,6 +117,21 @@ def status_of(report, ident: str) -> str:
 
 # 自己診断ツールの攻撃判定を検証する。
 class ExportSecurityAttackTests(unittest.TestCase):
+    def test_find_dist_files_supports_data_and_legacy_layouts(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            dist = Path(directory)
+            data = dist / "日本語 Game_Data"
+            data.mkdir()
+            (dist / "日本語 Game.exe").write_bytes(b"launcher")
+            archive = data / "assets.tpak"
+            runtime = data / "LamaPonRuntime.dll"
+            archive.write_bytes(b"archive")
+            runtime.write_bytes(b"runtime")
+            self.assertEqual(SIM.find_dist_files(dist), (archive, runtime))
+            self.assertEqual(SIM.find_dist_files(data), (archive, runtime))
+
     # test_index_is_not_plaintext(self: テストケース): 正常tpakの索引が平文露出しないことを確認する。
     def test_index_is_not_plaintext(self):
         # key はこの配布物の鍵。

@@ -553,6 +553,12 @@ def dump_asset_names(report: Report, key: bytes, header: TpakHeader) -> None:
 
 # find_dist_files(dist: 配布フォルダ): tpakとRuntime DLLを探す。
 def find_dist_files(dist: Path) -> tuple[Optional[Path], Optional[Path]]:
+    # 新しい配布構成では、起動exeと対になるDataフォルダーを調べます。
+    for data in sorted(dist.glob("*_Data")):
+        if data.is_dir() and (dist / (data.name[:-5] + ".exe")).is_file():
+            tpak, runtime = find_dist_files(data)
+            if tpak is not None or runtime is not None:
+                return tpak, runtime
     # tpak は見つかったアセットアーカイブ。
     tpak = next(iter(sorted(dist.glob("*.tpak"))), None)
     # runtime は見つかったRuntime DLL。
