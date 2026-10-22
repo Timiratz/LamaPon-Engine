@@ -150,6 +150,15 @@ namespace LamaPon
                         "公式パッケージの一覧を取得しています");
                 }
             }
+            if (ImGui::MenuItem(
+                    "Live2Dをはじめる...",
+                    nullptr,
+                    false,
+                    !m_playing))
+            {
+                packagePanel->open = true;
+                OpenLive2DSetupWizard();
+            }
             ImGui::Separator();
             if (ImGui::MenuItem(
                     "Zipから読み込む...",
@@ -195,6 +204,24 @@ namespace LamaPon
         }
 
         RegisterAnalysisExtension();
+
+    }
+
+    // 安全モードでない場合にEngineパッケージの外部Editor拡張を読み込みます。
+    void EditorLayer::LoadExternalEditorExtensions()
+    {
+        if (m_safeMode || m_externalEditorExtensionsLoaded)
+        {
+            return;
+        }
+        m_externalEditorExtensionsLoaded = true;
+        // インストール済みのEngineパッケージから外部Editor拡張を読み込みます。
+        for (const auto& diagnostic : m_externalEditorExtensions.LoadInstalled(
+                 m_graphics.Assets().AssetRoot(),
+                 m_editorExtensions))
+        {
+            Logger::Instance().Warning(diagnostic);
+        }
     }
 
     // グループ無しのパネルを先に、グループ付きは登録順のサブメニューに並べます。

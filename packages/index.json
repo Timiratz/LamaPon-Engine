@@ -39,6 +39,19 @@
       "sha256": "f4a7f629b3dedbd791b5c0ec0c211292198a2059aed8a9ddbfad643d36d40873"
     },
     {
+      "name": "live2d-cubism",
+      "displayName": "Live2D Cubism Runtime",
+      "description": "公式Cubism Coreを使ってLive2Dモデルを読み込み、2D描画とパラメータ操作を行うプロジェクト拡張です。Cubism SDK本体は含みません。",
+      "author": "LamaPon Community",
+      "version": "0.1.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Immediate",
+      "target": "Project",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/live2d-cubism-0.1.0.zip",
+      "sizeBytes": 13964,
+      "sha256": "c19aa08a227261e67d418264ab4a77951f4cc112f84b6c70443a5ab86d9023b2"
+    },
+    {
       "name": "network-session-workflow",
       "displayName": "Network Session Workflow",
       "description": "通信設定アセットとSceneの管理Script。P2Pの接続条件とホスト・参加・退出をゲームごとに組み合わせます。",

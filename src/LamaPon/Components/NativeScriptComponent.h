@@ -8,6 +8,7 @@
 namespace LamaPon
 {
     class GameModuleHost;
+    class SpriteDrawContext;
     struct NativeScriptTypeDescriptor;
 
     // Game Moduleの実体を所有し、更新コールバックの失敗後は再生成まで通常の更新・接触通知を抑止する。
@@ -87,6 +88,8 @@ namespace LamaPon
         void OnTriggerExit(const CollisionEvent& event) override;
         // 実体の有効状態を変更して通知する(active: 新しい有効状態)。
         void OnActiveStateChanged(bool active) override;
+        // 実体へ2D描画窓口を渡します(sprites: 現在の2D描画窓口)。
+        void OnRender2D(const SpriteDrawContext& sprites) override;
 
     private:
         friend class GameModuleHost;

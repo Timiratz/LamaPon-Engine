@@ -523,6 +523,7 @@ namespace LamaPon
         }
 
         // 拡張機能の終了処理はImGuiコンテキストが有効なうちに行います。
+        m_externalEditorExtensions.Shutdown();
         m_editorExtensions.Shutdown();
 
         if (m_editorGuiRenderer)
@@ -648,6 +649,7 @@ namespace LamaPon
         }
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
+        LoadExternalEditorExtensions();
 
         ProcessPendingAssetImports();
 

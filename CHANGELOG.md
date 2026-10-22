@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Editor外部拡張
+
+- EngineパッケージのC ABI DLLからEditorパネルを登録し、初期化・更新・終了を呼べるようにした。ABI、最低エンジン版、再起動指定とDLLパスを検査し、安全モードでは外部DLLをロードしない。
+- C++ Game Module Scriptから2D描画窓口を使えるようにし、Cubism Coreを利用するLive2Dモデル・パラメータ操作パッケージと導入サンプルを追加した。Cubism SDK本体は同梱しない。
+- 外部Editor DLLのビルドサンプル、Game Module描画callbackの回帰検証、Live2DパッケージのZIPとSHA-256一覧を追加した。
+- Live2D導入ウィザードを追加し、公式SDKの案内、Coreのx64/API検査、プロジェクトへの配置、Game Module再ビルド、model3素材の取り込みとシーンへのScript追加を一つの画面から進められるようにした。
+
 ### エンジンの境界処理
 
 - アセット走査とインポートでシンボリックリンクを誤って資産として扱う経路を修正。

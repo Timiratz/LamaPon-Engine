@@ -1646,6 +1646,16 @@ namespace LamaPon
             return;
         }
 
+        const auto recordLive2DBuildFailure = [this](
+            const std::string& message)
+        {
+            if (m_live2DSdkBuildPending)
+            {
+                m_live2DSdkBuildFailed = true;
+                m_live2DSetupMessage = message;
+            }
+        };
+
         // ビルドプロセスの終了コード
         DWORD exitCode{};
         if (!GetExitCodeProcess(
@@ -1659,6 +1669,9 @@ namespace LamaPon
             SetStatus(
                 "Game Moduleのビルド結果を確認できませんでした",
                 true);
+            recordLive2DBuildFailure(
+                "Game Moduleのビルド結果を確認できませんでした。"
+                "ログを開いて状況を確認してください。");
             return;
         }
         if (exitCode == STILL_ACTIVE)
@@ -1681,6 +1694,9 @@ namespace LamaPon
                 "C++ Scriptのビルドに失敗しました。ログ: "
                 + PathToUtf8(m_gameModuleBuildLogPath),
                 true);
+            recordLive2DBuildFailure(
+                "Cubism Coreを使うGame Moduleのビルドに失敗しました。ログ: "
+                + PathToUtf8(m_gameModuleBuildLogPath));
             return;
         }
 
@@ -1700,7 +1716,18 @@ namespace LamaPon
             SetStatus(
                 diagnostic,
                 true);
+            recordLive2DBuildFailure(
+                "Cubism Coreを使うGame Moduleの再読み込みに失敗しました: "
+                + diagnostic);
             return;
+        }
+
+        if (m_live2DSdkBuildPending)
+        {
+            m_live2DSdkBuildPending = false;
+            m_live2DSdkBuildFailed = false;
+            m_live2DSetupMessage =
+                "Cubism Coreを使うGame Moduleのビルドと読み込みが完了しました。";
         }
 
         if (m_pendingScriptAttachments.empty())

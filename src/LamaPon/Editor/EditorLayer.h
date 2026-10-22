@@ -4,6 +4,7 @@
 #include "LamaPon/Editor/ServiceDiagnosticsPanel.h"
 
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
+#include "LamaPon/Editor/EditorExtensionModuleManager.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
 #include "LamaPon/Core/ApplicationLayer.h"
@@ -229,6 +230,8 @@ namespace LamaPon
         void DrawDockSpace();
         // 標準パネルとパッケージ管理を登録して解析拡張を追加します。
         void RegisterBuiltInEditorExtensions();
+        // 安全モードでない場合にEngineパッケージの外部Editor拡張を読み込みます。
+        void LoadExternalEditorExtensions();
         // 解析パネルを生成し、描画・記録同期・終了処理を登録します。
         void RegisterAnalysisExtension();
         // プロジェクト内の解析記録先を返し、資産の基準パスが無ければ空を返します(name: 記録用途のサブフォルダー名)。
@@ -721,6 +724,10 @@ namespace LamaPon
         void ReloadScene();
         // 配布一覧と導入状態を表示し、エンジン互換性を確認して操作を提供します(open: パネルの表示状態)。
         void DrawPackagesPanel(bool& open);
+        // SDK導入と最初のモデル表示を案内するLive2Dウィザードを表示します。
+        void DrawLive2DSetupWizard();
+        // Live2Dセットアップウィザードを開きます。
+        void OpenLive2DSetupWizard();
         // 作成用入力と前回結果を初期化してダイアログ表示を要求します。
         void OpenPackageBuildDialog();
         // 配布情報を入力してZIPを作り、配布一覧用のJSONを表示します。
@@ -1236,6 +1243,28 @@ namespace LamaPon
         // 導入済みの名前とバージョン
         std::unordered_map<std::string, std::string>
             m_installedPackageVersions;
+        // Live2Dウィザードを開く要求
+        bool m_live2DSetupOpen{};
+        // Live2Dウィザードのポップアップを開く要求
+        bool m_live2DSetupPopupRequested{};
+        // 選択したCubism SDKの展開先
+        std::filesystem::path m_live2DSdkSource;
+        // 選択済みCubism SDKの検査結果
+        bool m_live2DSdkSourceValid{};
+        // プロジェクト内に導入済みのCoreを検査したか
+        bool m_live2DSdkStatusChecked{};
+        // プロジェクト内のCoreが有効か
+        bool m_live2DSdkInstalledValid{};
+        // プロジェクト内Coreの検査結果
+        std::string m_live2DSdkInstalledError;
+        // SDK導入後のGame Module再ビルド待ち
+        bool m_live2DSdkBuildPending{};
+        // SDK導入後のGame Moduleビルド失敗
+        bool m_live2DSdkBuildFailed{};
+        // SDKの検査結果または導入案内
+        std::string m_live2DSetupMessage;
+        // ウィザードで表示するLive2D model3 JSONの相対パス
+        std::string m_live2DImportedModelPath;
         // パッケージ出力の開く要求
         bool m_packageBuildDialogRequested{};
         // パッケージ内部名の編集欄
@@ -1703,6 +1732,10 @@ namespace LamaPon
         std::string m_skyboxValidationError;
         // エディター拡張の登録一覧
         EditorExtensionRegistry m_editorExtensions;
+        // Engineパッケージからロードした外部Editor拡張
+        EditorExtensionModuleManager m_externalEditorExtensions;
+        // 外部Editor拡張の初回走査が完了したか
+        bool m_externalEditorExtensionsLoaded{};
         // コンソールへフォーカスする要求
         bool m_focusConsoleRequested{};
         // ToolbarからInspectorへPopup表示を依頼するフラグ

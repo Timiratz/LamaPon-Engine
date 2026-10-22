@@ -365,6 +365,7 @@ PORTABLE_SCRIPT_CLASS_TOKEN = re.compile(
 PORTABLE_UNSUPPORTED_SCRIPT_METHODS = (
     "Invoke", "InvokeRepeating", "CancelInvoke", "CancelAllInvokes",
     "StartCoroutine", "StopCoroutine", "StopAllCoroutines",
+    "OnRender2D",
     "SetWindowSize", "WindowSize", "LoadDataAsset",
     "SignInWithDiscord", "CancelDiscordSignIn", "Network", "IsNetworkHost",
     "CreateGameObject", "HostNetwork", "JoinNetwork", "JoinDirectNetwork", "JoinNetworkRoom",

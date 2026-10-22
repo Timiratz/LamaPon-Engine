@@ -581,8 +581,11 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/ServiceDiagnosticsPanel.h
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
+    src/LamaPon/Editor/EditorExtensionApi.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
     src/LamaPon/Editor/EditorExtensionRegistry.h
+    src/LamaPon/Editor/EditorExtensionModuleManager.cpp
+    src/LamaPon/Editor/EditorExtensionModuleManager.h
     src/LamaPon/Editor/EditorGuiRenderer.cpp
     src/LamaPon/Editor/EditorGuiRenderer.h
     src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
@@ -615,6 +618,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerShared.h
     src/LamaPon/Editor/EditorLayerViewport.cpp
     src/LamaPon/Editor/EditorLayerPackages.cpp
+    src/LamaPon/Editor/Live2DCubismSetup.cpp
+    src/LamaPon/Editor/Live2DCubismSetup.h
     src/LamaPon/Editor/ExeIconTool.cpp
     src/LamaPon/Editor/ExeIconTool.h
     src/LamaPon/Editor/BgmLoopPanel.cpp
@@ -1160,6 +1165,35 @@ if(BUILD_TESTING)
     # 配布一覧とZip内容を検査します。
     add_test(NAME PackageIndex
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
+    add_library(LamaPonEditorExtensionSample SHARED
+        examples/editor-extension-sample/SampleEditorExtension.cpp
+    )
+    target_include_directories(LamaPonEditorExtensionSample PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_compile_features(LamaPonEditorExtensionSample PRIVATE cxx_std_20)
+    target_compile_options(LamaPonEditorExtensionSample PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_executable(LamaPonLive2DPackageStubTests
+        tests/Live2DPackageStubTests.cpp
+        packages/src/live2d-cubism/src/Live2DModel.cpp
+        tools/ProjectGameModule/ScriptRegistry.cpp
+    )
+    target_include_directories(LamaPonLive2DPackageStubTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/src/live2d-cubism/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann"
+    )
+    target_link_libraries(LamaPonLive2DPackageStubTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonLive2DPackageStubTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME Live2DPackageWithoutCubismCore
+        COMMAND LamaPonLive2DPackageStubTests)
     # 書き出し保護の自己診断ツールに対する既知攻撃の判定を固定します。
     add_test(NAME ExportSecurityAttack
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ExportSecurityAttackTests.py")
@@ -1945,6 +1979,30 @@ if(BUILD_TESTING)
     set_tests_properties(
         PackageNativeDependencies
         PROPERTIES LABELS "packages;native"
+    )
+
+    add_executable(LamaPonLive2DCubismSetupTests
+        tests/Live2DCubismSetupTests.cpp
+    )
+    target_link_libraries(
+        LamaPonLive2DCubismSetupTests
+        PRIVATE
+            LamaPonEditor
+    )
+    target_compile_options(
+        LamaPonLive2DCubismSetupTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME Live2DCubismSetup
+        COMMAND LamaPonLive2DCubismSetupTests
+            "${CMAKE_BINARY_DIR}/test-output/live2d-cubism-setup"
+    )
+    set_tests_properties(
+        Live2DCubismSetup
+        PROPERTIES LABELS "packages;live2d"
     )
 
     add_executable(LamaPonDiscordPresenceTests

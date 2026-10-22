@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -88,7 +89,8 @@ namespace
     // フォルダー自体を階層に含めず、内容をZIPへ書き出します(directory: ZIPへ含める基準パス, zipPath: 出力するZIPパス)。
     void CreateZipFromDirectoryContents(
         const std::filesystem::path& directory,
-        const std::filesystem::path& zipPath)
+        const std::filesystem::path& zipPath,
+        const std::vector<std::filesystem::path>& excludedDirectories = {})
     {
         // ZIP削除の失敗状態
         std::error_code removeError;
@@ -116,8 +118,14 @@ namespace
         // tarへ渡すコマンドライン
         std::wstring commandLine =
             L"\"" + tarPath.wstring() + L"\" -a -c -f \""
-            + zipPath.wstring() + L"\" -C \""
-            + directory.wstring() + L"\" .";
+            + zipPath.wstring() + L"\"";
+        for (const auto& excluded : excludedDirectories)
+        {
+            commandLine += L" --exclude=\"./"
+                + excluded.generic_wstring()
+                + L"\"";
+        }
+        commandLine += L" -C \"" + directory.wstring() + L"\" .";
 
         // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
@@ -167,6 +175,175 @@ namespace
                 .count());
         return parent
             / ("pkg-staging-" + name + "-" + suffix);
+    }
+
+    // manifest内のuserDataDirectoriesを検証し、保持用の相対パス一覧を返します(manifest: 検査するパッケージmanifest, packageName: エラー表示用のパッケージ名)。
+    [[nodiscard]] std::vector<std::filesystem::path>
+        ParseUserDataDirectories(
+            const nlohmann::json& manifest,
+            const std::string_view packageName)
+    {
+        if (!manifest.is_object()
+            || !manifest.contains("userDataDirectories"))
+        {
+            return {};
+        }
+        const auto& entries = manifest.at("userDataDirectories");
+        if (!entries.is_array() || entries.size() > 32)
+        {
+            throw std::invalid_argument(
+                "packages/" + std::string{ packageName }
+                + "/package.json の userDataDirectories は"
+                  "32件以下のJSON配列で指定してください。");
+        }
+
+        std::vector<std::filesystem::path> result;
+        for (const auto& entry : entries)
+        {
+            if (!entry.is_string())
+            {
+                throw std::invalid_argument(
+                    "userDataDirectoriesの各項目は文字列にしてください。");
+            }
+            const std::string value = entry.get<std::string>();
+            if (value.empty() || value.size() > 256
+                || value.find(':') != std::string::npos
+                || value.find('*') != std::string::npos
+                || value.find('?') != std::string::npos
+                || value.front() == '/'
+                || value.front() == '\\')
+            {
+                throw std::invalid_argument(
+                    "userDataDirectoriesにはパッケージ内の相対フォルダーを"
+                    "指定してください: " + value);
+            }
+            for (const unsigned char character : value)
+            {
+                if (character < 0x20u)
+                {
+                    throw std::invalid_argument(
+                        "userDataDirectoriesに制御文字は使えません。");
+                }
+            }
+            const auto relative = LamaPon::PathFromUtf8(value);
+            if (relative.is_absolute() || relative.has_root_name()
+                || relative.has_root_directory())
+            {
+                throw std::invalid_argument(
+                    "userDataDirectoriesに絶対パスは使えません: "
+                    + value);
+            }
+            for (const auto& component : relative)
+            {
+                if (component == L".." || component == L".")
+                {
+                    throw std::invalid_argument(
+                        "userDataDirectoriesはパッケージ内に限定してください: "
+                        + value);
+                }
+            }
+            const auto normalized = relative.lexically_normal();
+            if (normalized.empty()
+                || std::ranges::find(result, normalized) != result.end())
+            {
+                throw std::invalid_argument(
+                    "userDataDirectoriesのパスが空か重複しています: "
+                    + value);
+            }
+            result.push_back(normalized);
+        }
+        return result;
+    }
+
+    // 保持対象フォルダーから既存ユーザーデータをリンクを辿らず複製します(source: 既存パッケージ内のユーザーデータ, destination: 新版の展開先)。
+    void CopyUserDataDirectory(
+        const std::filesystem::path& source,
+        const std::filesystem::path& destination)
+    {
+        namespace fs = std::filesystem;
+        std::error_code error;
+        const auto rootStatus = fs::symlink_status(source, error);
+        if (error || fs::is_symlink(rootStatus)
+            || !fs::is_directory(rootStatus))
+        {
+            throw std::runtime_error(
+                "保持対象のユーザーデータフォルダーを安全に読み取れません: "
+                + LamaPon::PathToUtf8(source));
+        }
+        fs::create_directories(destination, error);
+        if (error)
+        {
+            throw std::runtime_error(
+                "更新後のパッケージへユーザーデータを保持できません: "
+                + LamaPon::PathToUtf8(destination));
+        }
+
+        for (fs::recursive_directory_iterator iterator{
+                source,
+                fs::directory_options::skip_permission_denied,
+                error };
+            !error && iterator != fs::recursive_directory_iterator{};
+            iterator.increment(error))
+        {
+            const auto status = iterator->symlink_status(error);
+            if (error)
+            {
+                break;
+            }
+            if (fs::is_symlink(status))
+            {
+                throw std::runtime_error(
+                    "保持対象のユーザーデータにシンボリックリンクがあり、"
+                    "安全に更新できません: "
+                    + LamaPon::PathToUtf8(iterator->path()));
+            }
+            const auto relative =
+                iterator->path().lexically_relative(source);
+            const auto target = destination / relative;
+            if (fs::is_directory(status))
+            {
+                fs::create_directories(target, error);
+            }
+            else if (fs::is_regular_file(status))
+            {
+                fs::create_directories(target.parent_path(), error);
+                if (!error)
+                {
+                    fs::copy_file(
+                        iterator->path(),
+                        target,
+                        fs::copy_options::none,
+                        error);
+                }
+            }
+            if (error)
+            {
+                break;
+            }
+        }
+        if (error)
+        {
+            throw std::runtime_error(
+                "保持対象のユーザーデータをコピーできません: "
+                + LamaPon::PathToUtf8(source));
+        }
+    }
+
+    // ZIPへ含めない相対ファイルが保持用フォルダーの内側かを返します(file: packageルートからの相対ファイル, directories: ZIPに含めない相対フォルダー)。
+    [[nodiscard]] bool IsUserDataFile(
+        const std::filesystem::path& file,
+        const std::vector<std::filesystem::path>& directories)
+    {
+        return std::ranges::any_of(
+            directories,
+            [&file](const std::filesystem::path& directory)
+            {
+                const auto relative = file.lexically_relative(directory);
+                return relative.empty()
+                    ? file == directory
+                    : !relative.is_absolute()
+                        && *relative.begin() != L"..";
+            });
     }
 }
 
@@ -547,6 +724,19 @@ namespace LamaPon
                 output << manifest.dump(2) << '\n';
             }
 
+            // SDKなど利用者が追加したユーザーデータの保持先
+            std::vector<std::filesystem::path> userDataDirectories;
+            {
+                std::ifstream manifestInput(
+                    manifestPath,
+                    std::ios::binary);
+                const auto manifest =
+                    nlohmann::json::parse(manifestInput);
+                userDataDirectories = ParseUserDataDirectories(
+                    manifest,
+                    package.name);
+            }
+
             // 配置前にnative宣言を検証し、不正な設定を拒否します。
             {
                 // 配置前に検証するmanifestの入力
@@ -565,13 +755,30 @@ namespace LamaPon
                         package.name));
             }
 
+            // SDKを配布物に含めず、更新前のユーザーデータだけ新版へ移します。
+            const auto destination = PackageInstallDirectory(
+                assetRoot,
+                package.name);
+            for (const auto& relative : userDataDirectories)
+            {
+                const auto stagedData = staging / relative;
+                const auto previousData = destination / relative;
+                if (std::filesystem::exists(stagedData))
+                {
+                    throw std::runtime_error(
+                        "パッケージZIPにuserDataDirectoriesの中身が含まれています。"
+                        "利用者データを配布ZIPへ含めないでください: "
+                        + PathToUtf8(relative));
+                }
+                if (std::filesystem::exists(previousData))
+                {
+                    CopyUserDataDirectory(
+                        previousData,
+                        stagedData);
+                }
+            }
 
             // 旧版は重複コンパイルを防ぐためassetsの外へ一世代残し、新版の配置失敗時は復元します。
-            // インストール済みパッケージのパス
-            const auto destination =
-                PackageInstallDirectory(
-                    assetRoot,
-                    package.name);
             // 旧版の退避先・assetsの外
             const auto backupRoot =
                 assetRoot.parent_path()
@@ -744,6 +951,10 @@ namespace LamaPon
                 {
                     package.target = PackageTarget::Engine;
                 }
+                if (manifest.contains("editorExtension"))
+                {
+                    package.target = PackageTarget::Engine;
+                }
             }
             // 展開物やZIPの片付け失敗状態
             std::error_code cleanupError;
@@ -853,6 +1064,10 @@ namespace LamaPon
         bool hasNativeVariants = false;
         // 保持する描画バックエンド設定
         nlohmann::json graphicsBackendSection;
+        // 保持する外部Editor拡張設定
+        nlohmann::json editorExtensionSection;
+        // 更新後も保持し、配布ZIPから除外する利用者データの相対パス
+        std::vector<std::filesystem::path> userDataDirectories;
         // 作者指定を優先する反映時期
         auto activation = package.activation;
         // 作者指定を優先する追加先
@@ -873,6 +1088,9 @@ namespace LamaPon
                     manifestText,
                     source,
                     package.name));
+            userDataDirectories = ParseUserDataDirectories(
+                nlohmann::json::parse(manifestText),
+                package.name);
             try
             {
                 // 既存manifestのJSON
@@ -903,7 +1121,19 @@ namespace LamaPon
                         previous.at("graphicsBackend");
                     target = PackageTarget::Engine;
                 }
+                if (previous.is_object()
+                    && previous.contains("editorExtension"))
+                {
+                    editorExtensionSection =
+                        previous.at("editorExtension");
+                    target = PackageTarget::Engine;
+                    if (activation == PackageActivation::Immediate)
+                    {
+                        activation = PackageActivation::Restart;
+                    }
+                }
                 else if (previous.is_object()
+                    && !previous.contains("graphicsBackend")
                     && previous.contains("target"))
                 {
                     target = PackageTargetFromName(
@@ -955,6 +1185,21 @@ namespace LamaPon
             manifest["graphicsBackend"] =
                 std::move(graphicsBackendSection);
         }
+        if (!editorExtensionSection.is_null())
+        {
+            manifest["editorExtension"] =
+                std::move(editorExtensionSection);
+        }
+        if (!userDataDirectories.empty())
+        {
+            manifest["userDataDirectories"] =
+                nlohmann::json::array();
+            for (const auto& directory : userDataDirectories)
+            {
+                manifest["userDataDirectories"].push_back(
+                    PathToUtf8(directory));
+            }
+        }
         {
             // manifestの出力ストリーム
             std::ofstream output(
@@ -976,7 +1221,10 @@ namespace LamaPon
             / PathFromUtf8(
                 package.name + "-" + package.version
                 + ".zip");
-        CreateZipFromDirectoryContents(source, zipPath);
+        CreateZipFromDirectoryContents(
+            source,
+            zipPath,
+            userDataDirectories);
 
         // 書き出したパッケージの情報
         PackageBuildResult result;
@@ -989,7 +1237,10 @@ namespace LamaPon
             std::filesystem::recursive_directory_iterator(
                 source))
         {
-            if (entry.is_regular_file())
+            if (entry.is_regular_file()
+                && !IsUserDataFile(
+                    entry.path().lexically_relative(source),
+                    userDataDirectories))
             {
                 ++result.fileCount;
             }
@@ -1002,6 +1253,8 @@ namespace LamaPon
         indexEntry.erase("native");
         indexEntry.erase("nativeVariants");
         indexEntry.erase("graphicsBackend");
+        indexEntry.erase("editorExtension");
+        indexEntry.erase("userDataDirectories");
         indexEntry["downloadUrl"] =
             "https://example.com/packages/"
             + PathToUtf8(zipPath.filename());

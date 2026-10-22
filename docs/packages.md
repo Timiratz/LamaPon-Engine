@@ -20,8 +20,9 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 - 導入済みのパッケージには「導入済み」と表示され、新しい版があれば
   「**更新する**」ボタンに変わります。
   「**削除**」でフォルダーごと取り除けます。
-- パッケージは**ソースコードのまま**プロジェクトへ入るため、中の
-  `.cpp` を開いてそのまま学習・改造できます。
+- ゲーム用C++スクリプトは**ソースコードのまま**プロジェクトへ入るため、
+  `.cpp`を開いて学習・改造できます。Engine拡張DLLはパッケージ内の別フォルダーへ
+  配置し、対応する拡張機構からだけ読み込みます。
   削除・改造してもエンジン本体には影響しません。
 
 パッケージには有効化タイミングがあります。通常は導入後に使えますが、
@@ -35,6 +36,8 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 省略した既存パッケージは`Project`として扱います。追加先は再起動の要否とは
 別の情報です。DirectX 12 Rendererは`Engine`です。
 `graphicsBackend`を持つパッケージは、作成し直しても`Engine`として扱われます。
+`editorExtension`を持つパッケージも`Engine`として扱われ、Editor起動時に外部DLLを
+読み込みます。DLL登録とAPIの詳細は[Editor拡張](editor-extensions.md)を参照してください。
 
 作者は`package.json`と一覧へ`activation`を指定できます。値は`Immediate`、
 `Restart`、`RestartAndRebuild`です。省略した既存パッケージと不明な値は、互換性を
@@ -47,6 +50,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 | **Scene Transition Showcase**（`scene-transition-showcase`） | ワイプ、アイリス、タイル、シェーダーの模様など16種類の編集可能な遷移プリセット（データアセット）。エンジンは覆う絵を描かないため、覆いはパッケージのSpriteとシェーダーが描きます。[使い方](../packages/src/scene-transition-showcase/README.md) |
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
 | **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
+| **Live2D Cubism Runtime**（`live2d-cubism`） | Cubism Coreでmodel3 JSONとMOC3を読み込み、2D描画とパラメータ操作を行うC++ Game Module拡張。「拡張機能」→「Live2Dをはじめる...」からSDKの検査・導入と最初のモデル追加を案内します。SDK本体は同梱せず、利用者が公式SDKを取得します。[手順と制限](../packages/src/live2d-cubism/README.md) |
 | **DirectX 12 Renderer**（`directx12-renderer`） | DirectX 12 Experimental描画バックエンド。導入後、Project Settingsの「グラフィック」で`DirectX 12 Experimental`を選び、エディターまたはゲームを再起動すると有効になります |
 | **Ollama AI (Local LLM)**（`ollama-ai`） | このPCで動く[Ollama](https://ollama.com/)のローカルモデルと、ゲームの中で会話するScriptと設定アセット。接続先はこのPCに固定で、Ollama Cloud・APIキー・サインインは使いません。Windows専用です。[使い方](../packages/src/ollama-ai/README.md) |
 
@@ -130,6 +134,11 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 
 パスはすべて**パッケージフォルダーからの相対パス**です。4つとも
 省略できます。`native`が無いパッケージは今までどおり動きます。
+
+利用者が追加するSDKなどを更新時に保持し、配布ZIPから除外する場合は、
+`package.json`に`"userDataDirectories": ["sdk"]`のような相対フォルダー一覧を指定します。
+この指定先はパッケージZIPへ含めないでください。更新時に旧フォルダーから新しい
+パッケージへコピーされ、エディターでZIPを作り直す場合もアーカイブから除外されます。
 
 Portableゲームでは`nativeVariants`に出力ターゲットごとの宣言を追加できます。
 Windowsの既存`native`宣言は`windows-x86_64`の互換設定として使えます。

@@ -812,6 +812,94 @@ namespace
                 == LamaPon::GraphicsBackendPackageState::Ready,
             "the packaged D3D12 ABI provider must load successfully");
     }
+
+    // TestUserDataDirectoriesSurviveUpdatesAndAreNotPackaged(): SDKなどの利用者データを更新後も保持し、配布物から除外する。
+    void TestUserDataDirectoriesSurviveUpdatesAndAreNotPackaged()
+    {
+        // CTestの作業ディレクトリ内に置くテスト出力
+        const auto root = std::filesystem::current_path()
+            / "test-output"
+            / "package-user-data";
+        std::filesystem::remove_all(root);
+        // インストール先のアセットルート
+        const auto assetRoot = root / "assets";
+        std::filesystem::create_directories(assetRoot);
+        // ZIP内にはSDKを含めないパッケージmanifestと通常ファイル
+        const auto source = root / "source";
+        WriteFile(
+            source / "package.json",
+            R"({"name":"live2d-cubism","version":"1.0.0",)"
+            R"("userDataDirectories":["sdk"]})");
+        WriteFile(source / "Live2DModel.cpp", "// package source");
+
+        LamaPon::PackageInfo package;
+        package.name = "live2d-cubism";
+        package.displayName = "Live2D Cubism Runtime";
+        package.version = "1.0.0";
+        package.minimumEngineVersion = "0.1.0";
+        package.sha256 = Sha256Of(ZipDirectory(
+            source,
+            root / "live2d-v1.zip"));
+        const auto firstZip = [&]()
+        {
+            std::ifstream input(root / "live2d-v1.zip", std::ios::binary);
+            return std::vector<std::uint8_t>(
+                std::istreambuf_iterator<char>{ input },
+                std::istreambuf_iterator<char>{});
+        }();
+        LamaPon::InstallPackage(assetRoot, package, firstZip);
+
+        // 利用者が公式SDKから配置したCoreの代替fixture
+        const auto installed = LamaPon::PackageInstallDirectory(
+            assetRoot,
+            package.name);
+        const auto retainedCore =
+            installed / "sdk" / "Core" / "ProprietaryCore.dll";
+        WriteFile(retainedCore, "user supplied SDK fixture");
+
+        // SDKを含まないパッケージの新版を作成
+        WriteFile(
+            source / "package.json",
+            R"({"name":"live2d-cubism","version":"1.1.0",)"
+            R"("userDataDirectories":["sdk"]})");
+        WriteFile(source / "Live2DModel.cpp", "// updated source");
+        const auto secondZip = ZipDirectory(
+            source,
+            root / "live2d-v2.zip");
+        package.version = "1.1.0";
+        package.sha256 = Sha256Of(secondZip);
+        LamaPon::InstallPackage(assetRoot, package, secondZip);
+        Require(
+            ReadFile(retainedCore) == "user supplied SDK fixture",
+            "package updates must retain user supplied SDK files");
+
+        // エディターから再パッケージしてもSDK/Coreを配布しない。
+        const auto built = LamaPon::BuildPackage(
+            assetRoot,
+            package,
+            root / "dist");
+        const auto rebuiltManifest = nlohmann::json::parse(
+            ReadFile(installed / "package.json"));
+        Require(
+            rebuiltManifest.at("userDataDirectories")
+                    .at(0).get<std::string>() == "sdk"
+                && built.fileCount == 2,
+            "rebuilding must preserve user data metadata and exclude its files");
+        const auto listingPath = root / "archive-list.txt";
+        const std::wstring listCommand = L"tar -tf \""
+            + built.zipPath.wstring() + L"\" > \""
+            + listingPath.wstring() + L"\"";
+        Require(
+            _wsystem(listCommand.c_str()) == 0,
+            "tar must list the rebuilt package archive");
+        const auto listing = ReadFile(listingPath);
+        Require(
+            listing.find("Live2DModel.cpp") != std::string::npos
+                && listing.find("ProprietaryCore.dll") == std::string::npos
+                && !nlohmann::json::parse(built.indexEntryJson)
+                    .contains("userDataDirectories"),
+            "the rebuilt archive and package index must omit proprietary SDK files");
+    }
 }
 
 // main(): パッケージ管理とnative依存テストを実行する。
@@ -824,6 +912,7 @@ int main()
         TestValidation();
         TestInstallRoundTrip();
         TestNativeManifestIsValidatedOnInstall();
+        TestUserDataDirectoriesSurviveUpdatesAndAreNotPackaged();
         TestGraphicsBackendPackageInspection();
         std::cout << "Package manager tests passed.\n";
         return 0;
