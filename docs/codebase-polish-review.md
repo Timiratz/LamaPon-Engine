@@ -64,6 +64,20 @@
 - `PlayLoop` と `PlayWav` は同じ内部処理を使い、ループ指定をそれぞれの登録時に渡します。公開APIと `Voice` の共有場所は変えていません。
 - `PlayClip` は内部でのみ使うため、匿名名前空間に置いて外部公開していません。音声の読み込みや設定の責務は既存の音声ランタイムに残しています。
 
+### 入力スナップショットの非有限値
+
+**コード上の事実**
+
+- `InputSnapshot::Set` の契約は、入力値を -1〜1 に制限することです。
+- `std::clamp` は NaN を有限範囲へ変換せず、その値を後続へ渡します。`UpdateFromSnapshot` からアクションを計算すると、NaN がアクション値へ伝播していました。
+- Portable 入力状態のゲームパッド軸は、非有限値を0へ変換しています。
+
+**修正と設計判断**
+
+- `InputSnapshot::Set` で有限値だけを既存どおり -1〜1 に制限し、NaN と無限大は0にします。
+- 状態の保存先と更新タイミングは従来どおり `InputSnapshot` 内です。API、アクション計算、公開範囲は変更していません。
+- NaN と正の無限大がスナップショットおよびアクション状態へ残らないことを `InputSystemTests.cpp` で確認します。
+
 ## ファイル一覧
 
 変更した既存ファイル:
@@ -71,9 +85,11 @@
 - `src/LamaPon/Assets/AssetDatabase.cpp`
 - `src/LamaPon/Assets/AssetImporter.cpp`
 - `src/LamaPon/Core/JobSystem.cpp`
+- `src/LamaPon/Input/InputSystem.cpp`
 - `src/LamaPon/Native/NativeAudio.cpp`
 - `tests/AssetDatabaseTests.cpp`
 - `tests/AssetImporterTests.cpp`
+- `tests/InputSystemTests.cpp`
 - `tests/SceneSerializationTests.cpp`
 
 新規ファイル:
@@ -88,7 +104,8 @@
 - インポートでは、リンク入力とリンク保存先を除外・拒否し、通常ファイルや通常フォルダーのコピー経路は維持します。
 - 並列処理では通常サイズの区間数は変わらず、加算オーバーフローが起きる範囲の計算を修正します。
 - ネイティブ音声では、ワンショット・ループの区別を共有状態へ登録する前に確定します。
-- 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Scene と AssetImporter のテストターゲットも両構成でコンパイル済みです。
+- 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
+- `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。Input テストは一時ファイルや一時フォルダーを使いません。
 - Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
 - CTestは未実行です。リポジトリの `AGENTS.md` がテスト用一時フォルダー・ファイルの作成前に明示許可を求めており、確認待ちです。ビルド成功を実行時テストの成功とは扱いません。
