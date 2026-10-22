@@ -10,7 +10,7 @@
 
 namespace LamaPon
 {
-    enum class GameExportTarget { Windows, Web, LinuxBuildProject, AndroidBuildProject, AndroidApk };
+    enum class GameExportTarget { Windows, Web, LinuxBuildProject, AndroidBuildProject, AndroidApk, IosBuildProject };
 
     // 描画中だけ借用するパス・設定のsnapshotと、UIスレッドで呼ぶ保存・通知・参照処理。
     struct GameExportDialogContext final

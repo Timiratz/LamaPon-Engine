@@ -15,10 +15,11 @@ import sys
 
 import export_web as portable
 import native_android
+import native_ios
 
 
 NATIVE_MODULES = ["core", "input", "renderer2d", "renderer3d", "physics3d", "audio", "particles3d"]
-NATIVE_PLATFORMS = ("windows", "linux", "android")
+NATIVE_PLATFORMS = ("windows", "linux", "android", "ios")
 ASSET_EXTENSIONS = {".json", ".glb", ".gltf", ".bin", ".png", ".jpg", ".jpeg", ".bmp", ".ttf", ".wav", ".ogg"}
 
 
@@ -78,9 +79,9 @@ def native_package_dependencies(asset_root: Path, platform: str, context: dict) 
 
     findings = []
     variants_by_target = {}
-    allowed_targets = {"windows-x86_64", "linux-x86_64", "android-arm64-v8a", "android-x86_64"}
+    allowed_targets = {"windows-x86_64", "linux-x86_64", "android-arm64-v8a", "android-x86_64", "ios-arm64"}
     targets = (["android-" + abi for abi in native_android.android_settings(context)["abis"]]
-               if platform == "android" else [platform + "-x86_64"])
+               if platform == "android" else ["ios-arm64" if platform == "ios" else platform + "-x86_64"])
     try:
         package_directories = sorted((path for path in packages_root.iterdir() if path.is_dir()),
                                      key=lambda path: path.name.casefold())
@@ -153,21 +154,23 @@ def native_package_dependencies(asset_root: Path, platform: str, context: dict) 
                         "Use directories for includeDirectories and files for the other native package fields.")
                     continue
                 suffix = path.name.lower()
-                valid_library = (suffix.endswith(".lib") if target.startswith("windows-") else
+                valid_library = (suffix.endswith(".a") if target.startswith("ios-") else
+                                 suffix.endswith(".lib") if target.startswith("windows-") else
                                  suffix.endswith(".a") or (suffix.endswith(".so") if target.startswith("android-")
                                  else re.search(r"\.so(?:\.\d+)*$", suffix) is not None))
                 if field == "libraries" and not valid_library:
                     add_finding("invalid-native-package-library",
                         f"Library format does not match {target}: assets/packages/{package_name}/{relative}.",
-                        "Use .lib for Windows and .a or .so for Linux/Android.")
+                        "Use .lib for Windows, .a or .so for Linux/Android, and static .a for iOS.")
                     continue
                 if field == "runtimeFiles" and not (
+                        False if target.startswith("ios-") else
                         suffix.endswith(".dll") if target.startswith("windows-") else
                         suffix.endswith(".so") if target.startswith("android-") else
                         re.search(r"\.so(?:\.\d+)*$", suffix)):
                     add_finding("invalid-native-package-runtime",
                         f"Runtime library format does not match {target}: assets/packages/{package_name}/{relative}.",
-                        "Use .dll for Windows and .so for Linux/Android runtime libraries.")
+                        "Use .dll for Windows or .so for Linux/Android; iOS runtime files are unsupported.")
                     continue
                 if field == "sources" and path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx"}:
                     add_finding("invalid-native-package-source",
@@ -237,7 +240,7 @@ def native_package_dependencies(asset_root: Path, platform: str, context: dict) 
             continue
         if not isinstance(native_variants, dict) or set(native_variants) - allowed_targets:
             add_finding("invalid-native-package-manifest", f"Package nativeVariants contains unsupported target names: {package_name}.",
-                        "Supported targets: windows-x86_64, linux-x86_64, android-arm64-v8a, android-x86_64.")
+                        "Supported targets: windows-x86_64, linux-x86_64, android-arm64-v8a, android-x86_64, ios-arm64.")
             continue
         selected = {}
         if (native or native_variants) and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", package_name):
@@ -364,7 +367,7 @@ def inspect_project(project_file: Path, platform: str) -> tuple[dict, dict]:
     findings.extend(package_findings)
     if platform == "android":
         findings.extend(android_package_license_findings(package_dependencies))
-    case_sensitive = platform in {"linux", "android"}
+    case_sensitive = platform in {"linux", "android", "ios"}
     references = set()
     if case_sensitive:
         for relative in settings["sources"]:
@@ -452,6 +455,15 @@ def inspect_project(project_file: Path, platform: str) -> tuple[dict, dict]:
         except portable.ExportError as error:
             findings.append(portable.finding("reject", "invalid-android-settings", str(error),
                                              "Correct export.native.android before generating the Android project."))
+    if platform == "ios":
+        try:
+            native_ios.ios_settings({"project": project})
+        except portable.ExportError as error:
+            findings.append(portable.finding("reject", "invalid-ios-settings", str(error),
+                                             "Set export.native.ios.bundleIdentifier and valid iOS settings."))
+        findings.append(portable.finding("warning", "experimental-ios-output",
+            "iOS output is experimental; Xtool integration, device execution and distribution are unverified.",
+            "Validate the arm64 C++/SDL build, signing and TestFlight before distribution."))
     report = {
         "format": "lamapon.native-output-inspection", "version": 1,
         "platform": platform, "runtime": "portable-sdl", "verified": False,
@@ -492,6 +504,8 @@ def build_project_description(platform: str, context: dict) -> dict:
                    "packageDependencies": package_dependencies}
     if platform == "android":
         description["android"] = native_android.android_settings(context)
+    if platform == "ios":
+        description["ios"] = native_ios.ios_settings(context)
     return description
 
 
@@ -516,9 +530,15 @@ def generate_build_project(output: Path, platform: str, report: dict, context: d
              f"set(LAMAPON_PROJECT_ROOT {cmake_literal(root)} CACHE PATH \"Existing game project\")",
              'set(LAMAPON_SDL_SOURCE_DIRECTORY "" CACHE PATH "Existing SDL 3.4+ source directory")',
              'set(LAMAPON_SDL_LICENSE_FILE "" CACHE FILEPATH "SDL license for redistribution")',
-             f'if(NOT CMAKE_SYSTEM_NAME STREQUAL "{dict(windows="Windows", linux="Linux", android="Android")[platform]}")',
+             f'if(NOT CMAKE_SYSTEM_NAME STREQUAL "{dict(windows="Windows", linux="Linux", android="Android", ios="iOS")[platform]}")',
              f'  message(FATAL_ERROR "This build project targets {platform}; choose the matching toolchain")', "endif()",
              'include("${LAMAPON_ENGINE_ROOT}/cmake/LamaPonNative.cmake")']
+    if platform == "ios":
+        ios = native_ios.ios_settings(context)
+        lines.insert(1, "set(CMAKE_OSX_DEPLOYMENT_TARGET " + cmake_literal(ios["minimumVersion"]) + " CACHE STRING \"Minimum iOS version\" FORCE)")
+        lines.extend(['set(LAMAPON_IOS_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist")',
+                      'if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")',
+                      '  message(FATAL_ERROR "Experimental iOS output requires arm64")', 'endif()'])
     if platform == "linux":
         lines.extend(['if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")',
                       '  message(FATAL_ERROR "This Linux output targets x86_64")', "endif()"])
@@ -569,7 +589,7 @@ def generate_build_project(output: Path, platform: str, report: dict, context: d
         lines += ["if(NOT package_variant_found)",
                   '  message(FATAL_ERROR "Unsupported Android ABI for this package configuration")', "endif()"]
     else:
-        for entry in package_dependencies.get(platform + "-x86_64", []):
+        for entry in package_dependencies.get("ios-arm64" if platform == "ios" else platform + "-x86_64", []):
             for field, variable in (("includeDirectories", "package_include_directories"),
                                     ("sources", "package_sources"),
                                     ("libraries", "package_libraries"), ("defines", "package_defines"),
@@ -597,6 +617,7 @@ def generate_build_project(output: Path, platform: str, report: dict, context: d
               '  ANDROID_PACKAGE_LIBS_DIRECTORY "${LAMAPON_ANDROID_PACKAGE_LIBS_DIRECTORY}"', ")", ""]
     actions = context["actions"]
     android_files = native_android.project_files(context, portable.ENGINE_ROOT, target, name) if platform == "android" else {}
+    ios_files = {"Info.plist": native_ios.info_plist(ios, target, name)} if platform == "ios" else {}
     output.mkdir(parents=True, exist_ok=True)
     (output / "CMakeLists.txt").write_text("\n".join(lines), encoding="utf-8")
     (output / "lamapon-input-actions.json").write_text(json.dumps(
@@ -609,6 +630,8 @@ def generate_build_project(output: Path, platform: str, report: dict, context: d
         "Build with existing tools and an authorized output directory:\n"
         "python -B <engine>/tools/build_native.py --project-directory . --build-directory <build> "
         "--sdl-source-directory <existing SDL sources>\n"
+        "Experimental iOS: build with an iOS-capable CMake toolchain, arm64 and the configured minimum OS version. "
+        "The generic build_native.py driver does not yet build iOS. Xtool integration and distribution are unverified.\n"
         "Android also requires --android-sdk, --java-home and --gradle-home; Gradle dependencies are offline "
         "unless --allow-downloads is explicitly supplied. No SDK is installed by this command.\n"
         "native-build-result.json records artifact checks separately from execution. Test the game on its target OS.\n"
@@ -629,7 +652,7 @@ def generate_build_project(output: Path, platform: str, report: dict, context: d
         "Android additionally requires the NDK CMake toolchain, ABI and API; see android/README.txt for Gradle APK configuration.\n",
         encoding="utf-8",
     )
-    for relative, text in android_files.items():
+    for relative, text in (android_files | ios_files).items():
         path = output / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")

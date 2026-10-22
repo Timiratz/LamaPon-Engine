@@ -90,10 +90,19 @@ SDL_AppResult SDL_AppInit(void** appstate, const int argc, char** argv)
 #endif
         if (game->frameLimit < 0) throw std::invalid_argument("--frames must be nonnegative");
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) Fail("SDL initialization failed");
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(LAMAPON_IOS_RUNTIME)
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#if defined(__ANDROID__)
         if (assetRoot.empty()) assetRoot = "assets";
+#else
+        if (assetRoot.empty())
+        {
+            const char* base = SDL_GetBasePath();
+            if (!base) Fail("Cannot locate bundled game files");
+            assetRoot = LamaPon::PathFromUtf8(base) / "assets";
+        }
+#endif
 #else
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);

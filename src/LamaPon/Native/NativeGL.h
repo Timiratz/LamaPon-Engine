@@ -1,6 +1,8 @@
 #pragma once
 #include <SDL3/SDL.h>
-#if defined(__ANDROID__)
+#if defined(LAMAPON_IOS_RUNTIME)
+#include <OpenGLES/ES3/gl.h>
+#elif defined(__ANDROID__)
 #include <GLES3/gl3.h>
 #else
 #ifndef GL_GLEXT_PROTOTYPES

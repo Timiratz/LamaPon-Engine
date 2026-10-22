@@ -158,8 +158,8 @@ namespace LamaPon
         const std::filesystem::path& projectFile, const std::filesystem::path& output,
         const WebExportTools& tools, const std::string& platform)
     {
-        if (platform != "linux" && platform != "android")
-            throw std::invalid_argument("Native build project target must be linux or android");
+        if (platform != "linux" && platform != "android" && platform != "ios")
+            throw std::invalid_argument("Native build project target must be linux, android or ios");
         StartProcess(engineRoot, projectFile, output, tools, platform);
     }
 

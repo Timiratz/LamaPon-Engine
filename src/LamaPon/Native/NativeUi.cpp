@@ -38,7 +38,7 @@ namespace LamaPon::Native
 
         GLuint Shader(const GLenum type, const char* body)
         {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(LAMAPON_IOS_RUNTIME)
             const std::string source = std::string("#version 300 es\nprecision mediump float;\n") + body;
 #else
             const std::string source = std::string("#version 330 core\n") + body;

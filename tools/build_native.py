@@ -30,6 +30,8 @@ def load_project(directory: Path) -> dict:
     if not isinstance(description, dict) or description.get("format") != "lamapon.native-build-project" \
             or type(description.get("version")) is not int or description["version"] != 2:
         raise ExportError("Regenerate the native build project with the current exporter")
+    if description.get("platform") == "ios":
+        raise ExportError("Experimental iOS metadata is generated, but this driver has no verified iOS/Xtool build path")
     if description.get("platform") not in {"windows", "linux", "android"} \
             or not isinstance(description.get("target"), str) \
             or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.+-]*", description["target"]):

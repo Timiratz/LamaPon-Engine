@@ -1853,7 +1853,7 @@ void main()
             GLenum type,
             const char* source) noexcept
         {
-#if defined(LAMAPON_NATIVE_RUNTIME) && !defined(__ANDROID__)
+#if defined(LAMAPON_NATIVE_RUNTIME) && !defined(__ANDROID__) && !defined(LAMAPON_IOS_RUNTIME)
             // GLES 3の共通ShaderをデスクトップGLSL 3.30へ接続する。
             std::string desktopSource(source);
             const auto version = desktopSource.find("#version 300 es");

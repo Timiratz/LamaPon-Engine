@@ -102,7 +102,7 @@ Path(a.result).write_text(json.dumps({'ok':True,'message':'html generated','html
 )PY";
         const LamaPon::WebExportTools tools{argv[1], {}};
         LamaPon::WebExportJob job;
-        for (const auto platform : {"linux", "android"})
+        for (const auto platform : {"linux", "android", "ios"})
         {
             const auto output = root / LamaPon::PathFromUtf8(platform) / L"output 日本語 & paths";
             job.StartNativeBuildProject(engine, project, output, tools, platform);

@@ -18,13 +18,15 @@ namespace
         case LamaPon::GameExportTarget::LinuxBuildProject: return L"LamaPonLinuxBuild";
         case LamaPon::GameExportTarget::AndroidBuildProject: return L"LamaPonAndroidBuild";
         case LamaPon::GameExportTarget::AndroidApk: return L"LamaPonAndroidApk";
+        case LamaPon::GameExportTarget::IosBuildProject: return L"LamaPonIosBuild";
         }
         throw std::invalid_argument("Unknown game export target");
     }
     bool IsNativeBuildProject(const LamaPon::GameExportTarget target)
     {
         return target == LamaPon::GameExportTarget::LinuxBuildProject
-            || target == LamaPon::GameExportTarget::AndroidBuildProject;
+            || target == LamaPon::GameExportTarget::AndroidBuildProject
+            || target == LamaPon::GameExportTarget::IosBuildProject;
     }
 }
 
@@ -122,7 +124,8 @@ namespace LamaPon
                 const WebExportTools tools{PathFromUtf8(m_python.data()), {}};
                 m_web.StartNativeBuildProject(context.engineRoot, context.projectFile,
                     OutputDirectory(), tools,
-                    m_target == GameExportTarget::LinuxBuildProject ? "linux" : "android");
+                    m_target == GameExportTarget::LinuxBuildProject ? "linux"
+                    : m_target == GameExportTarget::IosBuildProject ? "ios" : "android");
                 context.setStatus("ネイティブ出力の診断とビルド設定生成を開始しました。", false);
             }
             else
@@ -201,6 +204,8 @@ namespace LamaPon
             SelectTarget(GameExportTarget::AndroidBuildProject);
         if (ImGui::RadioButton("Android（debug APK）", m_target == GameExportTarget::AndroidApk))
             SelectTarget(GameExportTarget::AndroidApk);
+        if (ImGui::RadioButton("iOS（実験・ビルド設定）", m_target == GameExportTarget::IosBuildProject))
+            SelectTarget(GameExportTarget::IosBuildProject);
         ImGui::Spacing();
         ImGui::SetNextItemWidth(550.0f);
         ImGui::InputText("出力先", m_path.data(), m_path.size());
@@ -263,7 +268,10 @@ namespace LamaPon
         else if (IsNativeBuildProject(m_target))
         {
             ImGui::TextWrapped("Portable対応を検査し、CMake／Gradleのビルド設定を出力します。エンジンとゲームの既存ソースを参照します。");
-            ImGui::TextWrapped("LinuxはLinux環境とSDL3、AndroidはSDK・NDK・JDK・GradleとSDL3が必要です。");
+            if (m_target == GameExportTarget::IosBuildProject)
+                ImGui::TextWrapped("iOS向けの設定を生成します。実機起動・署名・ストア提出は未検証です。export.native.ios.bundleIdentifierを指定してください。");
+            else
+                ImGui::TextWrapped("LinuxはLinux環境とSDL3、AndroidはSDK・NDK・JDK・GradleとSDL3が必要です。");
             ImGui::TextWrapped("新しいフォルダーまたは空のフォルダーを指定してください。詳細設定はプロジェクトのexport.nativeに保存します。");
             ImGui::SetNextItemWidth(510.0f);
             ImGui::InputText("Python実行ファイル", m_python.data(), m_python.size());

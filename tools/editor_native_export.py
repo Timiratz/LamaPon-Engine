@@ -50,7 +50,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--platform", choices=("linux", "android"), required=True)
+    parser.add_argument("--platform", choices=("linux", "android", "ios"), required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--build-apk", action="store_true")
     for name in ("android-sdk", "java-home", "gradle-home", "sdl-source-directory"):
