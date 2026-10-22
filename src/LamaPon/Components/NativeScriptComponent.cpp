@@ -425,6 +425,20 @@ namespace LamaPon
         NotifyInstanceActive(active);
     }
 
+    void NativeScriptComponent::OnRender2D(
+        const SpriteDrawContext& sprites)
+    {
+        if (m_instance != nullptr
+            && m_descriptor != nullptr
+            && !HasCallbackFailure(m_lastError)
+            && m_descriptor->render2D != nullptr)
+        {
+            static_cast<void>(InvokeScriptCallback(
+                m_lastError, m_scriptType, "OnRender2D",
+                [&] { m_descriptor->render2D(m_instance, &sprites); }));
+        }
+    }
+
     void NativeScriptComponent::NotifyInstanceActive(
         const bool active) noexcept
     {

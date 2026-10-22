@@ -27,6 +27,7 @@ namespace LamaPon
     class DataAsset;
     class NativeScriptComponent;
     class GraphicsDevice;
+    class SpriteDrawContext;
     struct CollisionEvent;
 
     namespace Detail
@@ -92,6 +93,12 @@ namespace LamaPon
         // プロジェクトで指定した固定刻みで物理操作などを更新する。
         virtual void FixedUpdate(float)
         {
+        }
+
+        // 2D描画中にメッシュや画像を送信する(sprites: 現在の2D描画窓口)。
+        virtual void OnRender2D(const SpriteDrawContext& sprites)
+        {
+            static_cast<void>(sprites);
         }
 
         // 通常コライダーの接触開始時に呼ばれる。
@@ -1296,6 +1303,18 @@ namespace LamaPon
                     fixedDeltaTime);
             }
 
+            // 2D描画窓口を具体型へ渡します(instance: 描画対象, sprites: 現在の2D描画窓口)。
+            static void Render2D(
+                void* instance,
+                const SpriteDrawContext* sprites)
+            {
+                if (sprites != nullptr)
+                {
+                    static_cast<Script*>(instance)->OnRender2D(
+                        *sprites);
+                }
+            }
+
             // 空でない接触開始を具体型へ渡す(instance: 対象スクリプト, event: 通知中に借用する接触)。
             static void CollisionEnter(
                 void* instance,
@@ -1403,7 +1422,8 @@ namespace LamaPon
                 &Bridge::TriggerEnter,
                 &Bridge::TriggerStay,
                 &Bridge::TriggerExit,
-                &Bridge::AsScript
+                &Bridge::AsScript,
+                &Bridge::Render2D
             };
         }
     }

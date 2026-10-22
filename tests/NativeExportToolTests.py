@@ -1308,6 +1308,7 @@ LAMAPON_SCRIPT_NAMED(Probe, "Test.NativeStartup", "Probe");
         methods = (
             "StartCoroutine", "SetWindowSize", "LoadDataAsset",
             "SignInWithDiscord", "Network", "SaveNumber", "CreateGameObject",
+            "OnRender2D",
         )
         source = (
             '#include "LamaPon/LamaPon.h"\n'

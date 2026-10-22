@@ -1,0 +1,14 @@
+{
+  "name": "sample-editor-tools",
+  "displayName": "Editor Tools Sample",
+  "description": "LamaPon EditorのC ABI拡張サンプルです。",
+  "author": "LamaPon Community",
+  "version": "0.1.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Restart",
+  "target": "Engine",
+  "editorExtension": {
+    "abiVersion": 1,
+    "runtimeLibrary": "runtime/SampleEditorExtension.dll"
+  }
+}

@@ -31,8 +31,8 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | [コード一覧](code-reference.md) | 使える機能を宣言・引数・サンプル付きで一覧 |
 | [コメント棚卸し](comment-audit.md) | コメント規約、説明不足・短縮候補、改修時に残す契約 |
 | [データアセット](data-assets.md) | GameObjectに依存しないデータをエディターで編集して読む |
-| [パッケージ](packages.md) | 公式パッケージのワンクリック導入・更新・削除 |
-| [エディター拡張](editor-extensions.md) | パネル、拡張メニュー、ライフサイクルの登録API |
+| [パッケージ](packages.md) | 公式パッケージのワンクリック導入・更新・削除、Cubismなどの任意SDK拡張 |
+| [エディター拡張](editor-extensions.md) | 外部DLLのC ABI、SDKサンプル、Game Moduleの2D描画API |
 
 ## 機能別ガイド
 

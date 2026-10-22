@@ -47,6 +47,10 @@ install(FILES cmake/LamaPonWeb.cmake cmake/LamaPonNative.cmake DESTINATION cmake
     DESTINATION tools)
 install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable src/LamaPon/Native
     DESTINATION src/LamaPon)
+install(FILES src/LamaPon/Editor/EditorExtensionApi.h
+    DESTINATION include/LamaPon/Editor)
+install(DIRECTORY examples/editor-extension-sample
+    DESTINATION examples)
 install(FILES third_party/cgltf/cgltf.h third_party/cgltf/LICENSE.txt DESTINATION third_party/cgltf)
 install(FILES third_party/nlohmann/LICENSE.MIT DESTINATION third_party/nlohmann)
 install(FILES third_party/stb/stb_vorbis.c third_party/stb/LICENSE.txt DESTINATION third_party/stb)
