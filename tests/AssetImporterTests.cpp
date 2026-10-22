@@ -1,6 +1,8 @@
 #include "LamaPon/Assets/AssetDatabase.h"
 #include "LamaPon/Assets/AssetImporter.h"
 
+#include <Windows.h>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -158,6 +160,53 @@ int main()
             "Importing a folder into itself should fail.");
         Require(!std::filesystem::exists(target / L"textures"),
             "A failed folder import was not rolled back.");
+
+        // 入力そのものがリンクでも対象を取り込まないことを確認します。
+        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+        const auto linkedFileSource =
+            temporary.Path() / L"linked-source.bin";
+        const auto fileLinkTarget = sourceA / L"linked-source.bin";
+        WriteFile(fileLinkTarget, "linked file");
+        if (CreateSymbolicLinkW(
+                linkedFileSource.c_str(),
+                fileLinkTarget.c_str(),
+                AllowUnprivilegedCreate) != FALSE)
+        {
+            const auto linkedFileResult =
+                LamaPon::AssetImporter::Import(
+                    { linkedFileSource },
+                    assetRoot,
+                    L"textures");
+            Require(
+                linkedFileResult.failures.empty()
+                    && linkedFileResult.files.empty()
+                    && linkedFileResult.skippedLinkCount == 1
+                    && !std::filesystem::exists(
+                        target / L"linked-source.bin"),
+                "A top-level file link was imported.");
+        }
+
+        const auto linkedDirectorySource =
+            temporary.Path() / L"linked-pack";
+        if (CreateSymbolicLinkW(
+                linkedDirectorySource.c_str(),
+                sourcePack.c_str(),
+                SYMBOLIC_LINK_FLAG_DIRECTORY
+                    | AllowUnprivilegedCreate) != FALSE)
+        {
+            const auto linkedDirectoryResult =
+                LamaPon::AssetImporter::Import(
+                    { linkedDirectorySource },
+                    assetRoot,
+                    L"textures");
+            Require(
+                linkedDirectoryResult.failures.empty()
+                    && linkedDirectoryResult.files.empty()
+                    && linkedDirectoryResult.skippedLinkCount == 1
+                    && !std::filesystem::exists(
+                        target / L"linked-pack"),
+                "A top-level directory link was imported.");
+        }
 
         std::cout << "Asset importer tests passed.\n";
         return 0;

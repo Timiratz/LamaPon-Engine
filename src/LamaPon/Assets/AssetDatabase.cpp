@@ -202,7 +202,9 @@ namespace LamaPon
                 iteratorError.clear();
                 continue;
             }
-            if (!iterator->is_regular_file(
+            if (iterator->is_symlink(iteratorError)
+                || iteratorError
+                || !iterator->is_regular_file(
                     iteratorError)
                 || iteratorError
                 || IsMetaFile(iterator->path())

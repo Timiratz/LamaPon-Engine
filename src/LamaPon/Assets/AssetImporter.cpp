@@ -316,6 +316,11 @@ namespace LamaPon
                 result.files.size();
             try
             {
+                if (std::filesystem::is_symlink(requestedSource))
+                {
+                    ++result.skippedLinkCount;
+                    continue;
+                }
                 // 正規化した入力の絶対パス
                 const auto source =
                     std::filesystem::weakly_canonical(requestedSource);
@@ -323,11 +328,6 @@ namespace LamaPon
                 {
                     throw std::runtime_error(
                         "The dropped file or folder was not found.");
-                }
-                if (std::filesystem::is_symlink(source))
-                {
-                    ++result.skippedLinkCount;
-                    continue;
                 }
                 if (std::filesystem::is_regular_file(source)
                     && IsMetadataFile(source))

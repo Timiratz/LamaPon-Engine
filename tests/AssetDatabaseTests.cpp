@@ -2,6 +2,8 @@
 #include "LamaPon/Animation/AnimatorController.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 
+#include <Windows.h>
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -333,6 +335,36 @@ int main()
                     std::filesystem::path{ "textures" }
                         / "ok.bin") == nullptr,
                 "An asset with an unreadable .meta is skipped.");
+        }
+
+        // AssetDatabaseが外部リンクを資産として登録しないことを確認します。
+        // シンボリックリンク対象の独立アセットルート
+        const auto linkedAssetRoot = root / "symlink-assets";
+        // ルート外から参照するテストファイル
+        const auto linkedTarget = root / "symlink-target.bin";
+        // 対象ファイルを指すリンク
+        const auto linkedAsset = linkedAssetRoot / "linked.bin";
+        WriteFile(linkedTarget, "external asset");
+        std::filesystem::create_directories(linkedAssetRoot);
+        // Windows 10以降で非管理者にもリンク作成を許可します。
+        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+        if (CreateSymbolicLinkW(
+                linkedAsset.c_str(),
+                linkedTarget.c_str(),
+                AllowUnprivilegedCreate) != FALSE)
+        {
+            // リンクを含むアセットルートの索引
+            LamaPon::AssetDatabase linkedDatabase;
+            linkedDatabase.SetAssetRoot(linkedAssetRoot);
+            // リンク除外後の走査結果
+            const auto linkedScan = linkedDatabase.Refresh(true);
+            Require(
+                linkedScan.assetCount == 0
+                    && linkedScan.createdMetaCount == 0
+                    && !std::filesystem::exists(
+                        LamaPon::AssetDatabase::MetaPathFor(
+                            linkedAsset)),
+                "A linked file was indexed or received a .meta file.");
         }
 
         std::filesystem::remove_all(root);
