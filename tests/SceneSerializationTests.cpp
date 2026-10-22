@@ -2924,6 +2924,33 @@ int RunTest(const std::string_view suite)
                 Require(
                     after.load() == 256,
                     "ParallelFor must keep working after an exception.");
+
+                constexpr int RepeatedJobCount = 64;
+                std::array<std::atomic<int>, 2> repeatedJobVisits{};
+                for (int jobIndex = 0;
+                    jobIndex < RepeatedJobCount;
+                    ++jobIndex)
+                {
+                    jobs.ParallelFor(
+                        repeatedJobVisits.size(),
+                        1,
+                        [&repeatedJobVisits](
+                            const std::size_t begin,
+                            const std::size_t end)
+                        {
+                            for (std::size_t index = begin;
+                                index < end;
+                                ++index)
+                            {
+                                repeatedJobVisits[index].fetch_add(1);
+                            }
+                        });
+                }
+                Require(
+                    repeatedJobVisits[0].load() == RepeatedJobCount
+                        && repeatedJobVisits[1].load()
+                            == RepeatedJobCount,
+                    "ParallelFor lost work between consecutive jobs.");
             }
 
             // イベントバス：購読・発行・引数・解除・再入・UIButtonのクリックイベント名の保存往復
