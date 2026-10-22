@@ -141,11 +141,10 @@
 - スキンの保存復元では、Rendererが生成できる格子サイズの範囲を保ち、上限外データを拒否します。
 - 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
 - ビルド中、変更範囲外の `third_party/stb/stb_vorbis.c` からMSVC警告が出ました。ビルド自体は両構成で成功しています。
-- `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。Input テストは一時ファイルや一時フォルダーを使いません。
-- `LamaPonSpriteSkin2DTests.exe` を Debug と Release で直接実行し、両方成功しました。
+- `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。`LamaPonSpriteSkin2DTests.exe` も両構成で成功しました。
 - `LamaPonAudioOggProbe.exe` を Debug と Release で直接実行し、既存OGG fixtureの読み込み、ストリーム作成、ループ、メーター、波形、低音補正の確認が成功しました。このprobeはテスト出力ファイルを作りません。
-- OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することを確認します。
-- Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。
+- OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することをコードで確認しました。
+- x64 Visual Studio Developer Command PromptからDebug／Release各86件のCTestを実行し、全件成功しました。実行コマンドには `--parallel 1` を指定しました。
+- CTestプリセット既定の4並列では `ScenePhysicsAndNavigation` と `SceneManagerTransitions` が同時に長時間CPUを使い続けました。個別実行と直列実行では両方成功し、全86件の直列実行も成功しました。停滞の原因は特定していません。
+- Debug／ReleaseのWindows構成は `NativeAudio.cpp` とPortable実装を含みません。`tests/native/NativeAudioTests` の構成・実行と、Portableソースの専用ビルドは未確認です。専用の検証用ビルド領域は作成していません。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
-- CTestは未実行です。作業時に適用された `AGENTS.md` 指示がテスト用一時フォルダー・ファイル作成前の明示許可を求めており、確認待ちです。ビルド成功を実行時テストの成功とは扱いません。
-- `tests/native/NativeAudioTests` は専用のネイティブテスト構成を必要とし、その構成と実行が作る一時物についても許可待ちです。
