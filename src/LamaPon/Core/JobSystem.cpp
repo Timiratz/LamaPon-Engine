@@ -147,8 +147,7 @@ namespace LamaPon
             std::max<std::size_t>(grainSize, 1);
         // 今回のジョブの区間数
         const auto chunkCount =
-            (count + effectiveGrain - 1)
-            / effectiveGrain;
+            1 + (count - 1) / effectiveGrain;
 
         // ネスト時・分割の意味がない小ささなら逐次実行します。
         if (t_insideParallelFor

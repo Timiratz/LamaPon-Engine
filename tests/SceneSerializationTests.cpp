@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -2790,6 +2791,31 @@ int RunTest(const std::string_view suite)
                 Require(
                     allOnce,
                     "ParallelFor must visit every index exactly once.");
+
+                // 最大要素数でも正しく分割する
+                // 最大要素数で幅が一致した区間の数。
+                std::atomic<unsigned> maximumRangeChunks{};
+                // size_tで表現できる最大要素数。
+                const auto maximumCount =
+                    std::numeric_limits<std::size_t>::max();
+                // 最大要素数を3分割する区間幅。
+                const auto maximumGrain = maximumCount / 3;
+                // 要素を走査せず受け取った区間幅を数える(begin: 含む開始位置, end: 含まない終端位置)。
+                jobs.ParallelFor(
+                    maximumCount,
+                    maximumGrain,
+                    [&maximumRangeChunks, maximumGrain](
+                        const std::size_t begin,
+                        const std::size_t end)
+                    {
+                        if (end - begin == maximumGrain)
+                        {
+                            maximumRangeChunks.fetch_add(1);
+                        }
+                    });
+                Require(
+                    maximumRangeChunks.load() == 3,
+                    "ParallelFor must count maximum ranges without overflow.");
 
                 // ネスト呼び出しは逐次実行で完了する
                 std::atomic<int> nested{ 0 };
