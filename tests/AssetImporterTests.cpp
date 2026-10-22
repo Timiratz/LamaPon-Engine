@@ -208,6 +208,42 @@ int main()
                 "A top-level directory link was imported.");
         }
 
+        // ルート内の別フォルダーを指す保存先リンクも拒否することを確認します。
+        // 保存先リンクの参照先にする実ディレクトリ
+        const auto linkedDestinationTarget =
+            assetRoot / L"linked-target";
+        // 実ディレクトリを指す保存先リンク
+        const auto linkedDestination =
+            assetRoot / L"linked-destination";
+        std::filesystem::create_directories(
+            linkedDestinationTarget);
+        if (CreateSymbolicLinkW(
+                linkedDestination.c_str(),
+                linkedDestinationTarget.c_str(),
+                SYMBOLIC_LINK_FLAG_DIRECTORY
+                    | AllowUnprivilegedCreate) != FALSE)
+        {
+            // リンク先の保存要求が無効と判定されたか
+            bool destinationLinkRejected = false;
+            try
+            {
+                static_cast<void>(
+                    LamaPon::AssetImporter::Import(
+                        { sourceA / L"same.png" },
+                        assetRoot,
+                        L"linked-destination"));
+            }
+            catch (const std::invalid_argument&)
+            {
+                destinationLinkRejected = true;
+            }
+            Require(
+                destinationLinkRejected
+                    && !std::filesystem::exists(
+                        linkedDestinationTarget / L"same.png"),
+                "A symbolic link used as the import destination was accepted.");
+        }
+
         std::cout << "Asset importer tests passed.\n";
         return 0;
     }
