@@ -96,6 +96,7 @@
 
 変更した既存ファイル:
 
+- `CHANGELOG.md`
 - `src/LamaPon/Assets/AssetDatabase.cpp`
 - `src/LamaPon/Assets/AssetImporter.cpp`
 - `src/LamaPon/Audio/AudioSystem.cpp`
