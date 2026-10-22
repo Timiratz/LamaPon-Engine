@@ -88,29 +88,42 @@ namespace LamaPon
                 }
                 seenGeneration = m_generation;
             }
-            while (RunChunk())
+            while (RunChunk(seenGeneration))
             {
             }
         }
     }
 
-    bool JobSystem::RunChunk()
+    bool JobSystem::RunChunk(const std::uint64_t generation)
     {
-        // このスレッドが引き受ける区間
-        const auto chunkIndex =
-            m_nextChunk.fetch_add(1);
-        // 区間の開始添字
-        const auto begin = chunkIndex * m_grainSize;
-        if (begin >= m_count)
+        const std::function<void(std::size_t, std::size_t)>* body{};
+        std::size_t count{};
+        std::size_t grainSize{};
+        std::size_t chunkIndex{};
         {
-            return false;
+            std::scoped_lock lock(m_mutex);
+            if (generation != m_generation || m_body == nullptr)
+            {
+                return false;
+            }
+            const auto chunkCount =
+                1 + (m_count - 1) / m_grainSize;
+            chunkIndex = m_nextChunk;
+            if (chunkIndex >= chunkCount)
+            {
+                return false;
+            }
+            m_nextChunk = chunkIndex + 1;
+            body = m_body;
+            count = m_count;
+            grainSize = m_grainSize;
         }
-        // 区間の終端添字、範囲に含めない
+        const auto begin = chunkIndex * grainSize;
         const auto end =
-            std::min(begin + m_grainSize, m_count);
+            begin + std::min(grainSize, count - begin);
         try
         {
-            (*m_body)(begin, end);
+            (*body)(begin, end);
         }
         catch (...)
         {
@@ -122,14 +135,16 @@ namespace LamaPon
                     std::current_exception();
             }
         }
+        const auto remainingChunks =
+            m_pendingChunks.fetch_sub(1) - 1;
         // 起こし損ねを避けるため、完了通知は待機側と同じmutexの保持中に行う。
-        if (m_pendingChunks.fetch_sub(1) == 1)
+        if (remainingChunks == 0)
         {
             // 完了通知と待機開始の排他
             std::scoped_lock lock(m_mutex);
             m_workDone.notify_all();
         }
-        return true;
+        return remainingChunks != 0;
     }
 
     void JobSystem::ParallelFor(
@@ -147,8 +162,7 @@ namespace LamaPon
             std::max<std::size_t>(grainSize, 1);
         // 今回のジョブの区間数
         const auto chunkCount =
-            (count + effectiveGrain - 1)
-            / effectiveGrain;
+            1 + (count - 1) / effectiveGrain;
 
         // ネスト時・分割の意味がない小ささなら逐次実行します。
         if (t_insideParallelFor
@@ -159,6 +173,7 @@ namespace LamaPon
             return;
         }
 
+        std::uint64_t generation{};
         {
             // ジョブ状態を公開する間の保護
             std::scoped_lock lock(m_mutex);
@@ -168,14 +183,14 @@ namespace LamaPon
             m_firstException = nullptr;
             m_pendingChunks.store(chunkCount);
             // 前ジョブのワーカーが離脱するまで区間枯渇を維持し、他の状態を整えた最後に再開する。
-            m_nextChunk.store(0);
-            ++m_generation;
+            m_nextChunk = 0;
+            generation = ++m_generation;
         }
         m_workAvailable.notify_all();
 
         // 呼び出しスレッドも区間実行へ参加します。
         t_insideParallelFor = true;
-        while (RunChunk())
+        while (RunChunk(generation))
         {
         }
         t_insideParallelFor = false;

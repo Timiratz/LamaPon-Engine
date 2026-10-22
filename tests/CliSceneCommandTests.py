@@ -150,6 +150,45 @@ class SceneCommandTests(unittest.TestCase):
         self.assertEqual(self.scene.read_bytes(), before)
         self.assertFalse((self.root.parent / "outside.scene").exists())
 
+    # self: CLI検証ケース
+    # 数値引数の末尾文字、非有限値、範囲外のsimulationを拒否することを検査します。
+    def test_render_rejects_invalid_numeric_arguments(self):
+        # 末尾に文字が付いた解像度で返るCLI error
+        report = self.cli(
+            "render", "--project", self.root, "--scene", "scenes/main.scene",
+            "--out", self.root / "invalid.png", "--width", "256px", code=1)
+        self.assertIn("--width", report["error"])
+
+        # 負数を指定したframe数で返るCLI error
+        report = self.cli(
+            "render", "--project", self.root, "--scene", "scenes/main.scene",
+            "--out", self.root / "negative.png", "--frames", "-1", code=1)
+        self.assertIn("--frames", report["error"])
+
+        # NaNを指定したsimulation秒数で返るCLI error
+        report = self.cli(
+            "render", "--project", self.root, "--scene", "scenes/main.scene",
+            "--out", self.root / "nan.png", "--simulate", "nan", code=1)
+        self.assertIn("--simulate", report["error"])
+
+        # 表現可能なsimulation frameを超える値で返るCLI error
+        report = self.cli(
+            "render", "--project", self.root, "--scene", "scenes/main.scene",
+            "--out", self.root / "oversized.png", "--simulate", "1e20", code=1)
+        self.assertIn("supported frame count", report["error"])
+
+        # NaNを指定したinput時刻で返るCLI error
+        report = self.cli(
+            "render", "--project", self.root, "--scene", "scenes/main.scene",
+            "--out", self.root / "input-nan.png", "--input", "Move@nan", code=1)
+        self.assertIn("--input", report["error"])
+
+        self.assertFalse((self.root / "invalid.png").exists())
+        self.assertFalse((self.root / "negative.png").exists())
+        self.assertFalse((self.root / "nan.png").exists())
+        self.assertFalse((self.root / "oversized.png").exists())
+        self.assertFalse((self.root / "input-nan.png").exists())
+
     # self: 検証ケース
     # renderの--inputが、project独自のActionを実行中のComponentへ届けることを検査します。
     def test_render_input_reaches_project_actions(self):

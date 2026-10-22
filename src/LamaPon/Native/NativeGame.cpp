@@ -12,6 +12,7 @@
 #include <cmath>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -75,7 +76,16 @@ SDL_AppResult SDL_AppInit(void** appstate, const int argc, char** argv)
         {
             const std::string_view argument(argv[index]);
             if (argument == "--probe") { game->probe = true; game->frameLimit = 8; }
-            else if (argument == "--frames" && index + 1 < argc) game->frameLimit = std::stoi(argv[++index]);
+            else if (argument == "--frames" && index + 1 < argc)
+            {
+                // frameText: --framesに渡された数値文字列。
+                const std::string frameText(argv[++index]);
+                // consumed: 数値変換で消費した文字数。
+                std::size_t consumed{};
+                game->frameLimit = std::stoi(frameText, &consumed);
+                if (consumed != frameText.size())
+                    throw std::invalid_argument("--frames requires a complete integer");
+            }
             else if (argument == "--asset-root" && index + 1 < argc) assetRoot = LamaPon::PathFromUtf8(argv[++index]);
             else if (argument == "--data-dir" && index + 1 < argc) dataRoot = LamaPon::PathFromUtf8(argv[++index]);
             else if (argument == "--cache-dir" && index + 1 < argc) cacheRoot = LamaPon::PathFromUtf8(argv[++index]);

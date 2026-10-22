@@ -294,13 +294,22 @@ namespace LamaPon
                 "The asset import folder must be relative.");
         }
 
+        // シンボリックリンクを検査する正規化前のコピー先
+        const auto requestedDestinationDirectory =
+            normalizedRoot / targetDirectory;
+        if (std::filesystem::is_symlink(
+                requestedDestinationDirectory))
+        {
+            throw std::invalid_argument(
+                "The asset import destination is invalid.");
+        }
+
         // ルート内のコピー先フォルダー
         const auto destinationDirectory =
             std::filesystem::weakly_canonical(
-                normalizedRoot / targetDirectory);
+                requestedDestinationDirectory);
         if (!IsPathWithin(normalizedRoot, destinationDirectory)
-            || !std::filesystem::is_directory(destinationDirectory)
-            || std::filesystem::is_symlink(destinationDirectory))
+            || !std::filesystem::is_directory(destinationDirectory))
         {
             throw std::invalid_argument(
                 "The asset import destination is invalid.");
@@ -316,6 +325,11 @@ namespace LamaPon
                 result.files.size();
             try
             {
+                if (std::filesystem::is_symlink(requestedSource))
+                {
+                    ++result.skippedLinkCount;
+                    continue;
+                }
                 // 正規化した入力の絶対パス
                 const auto source =
                     std::filesystem::weakly_canonical(requestedSource);
@@ -323,11 +337,6 @@ namespace LamaPon
                 {
                     throw std::runtime_error(
                         "The dropped file or folder was not found.");
-                }
-                if (std::filesystem::is_symlink(source))
-                {
-                    ++result.skippedLinkCount;
-                    continue;
                 }
                 if (std::filesystem::is_regular_file(source)
                     && IsMetadataFile(source))

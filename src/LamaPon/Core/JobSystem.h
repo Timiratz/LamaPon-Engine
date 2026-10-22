@@ -46,8 +46,8 @@ namespace LamaPon
 
         // 新しいジョブを待ち、残り区間を処理します。
         void WorkerLoop();
-        // 区間を1つ処理し、残っていなければfalseを返します。
-        bool RunChunk();
+        // 指定した世代の区間を1つ処理します。
+        bool RunChunk(std::uint64_t generation);
 
         // 所有するワーカースレッド
         std::vector<std::thread> m_workers;
@@ -71,7 +71,7 @@ namespace LamaPon
         // 新しいジョブを識別する世代
         std::uint64_t m_generation{};
         // 次に引き受ける区間番号
-        std::atomic<std::size_t> m_nextChunk{};
+        std::size_t m_nextChunk{};
         // 未完了の区間数
         std::atomic<std::size_t> m_pendingChunks{};
         // 呼び出し元へ再送出する例外
