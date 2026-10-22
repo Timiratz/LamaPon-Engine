@@ -7,7 +7,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 ## 使い方
 
 1. エディターの「**拡張機能**」→「**パッケージを探す...**」でタブを
-  開きます（開くと自動で公式パッケージの一覧を取得します）。
+  開きます（開くと自動でパッケージ一覧を取得します）。
 2. 「ゲームに追加」（スクリプト・Prefab・素材など）か
   「エンジンの機能を追加」（描画機能など）を選びます。
   左の一覧からパッケージを選び、右の説明と
@@ -43,14 +43,14 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 `Restart`、`RestartAndRebuild`です。省略した既存パッケージと不明な値は、互換性を
 保つため`Immediate`として扱います。
 
-## 公式パッケージ
+## パッケージ一覧
 
 | パッケージ | 内容 |
 |---|---|
 | **Scene Transition Showcase**（`scene-transition-showcase`） | ワイプ、アイリス、タイル、シェーダーの模様など16種類の編集可能な遷移プリセット（データアセット）。エンジンは覆う絵を描かないため、覆いはパッケージのSpriteとシェーダーが描きます。[使い方](../packages/src/scene-transition-showcase/README.md) |
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
 | **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
-| **Live2D Cubism Runtime**（`live2d-cubism`） | Cubism Coreでmodel3 JSONとMOC3を読み込み、2D描画とパラメータ操作を行うC++ Game Module拡張。「拡張機能」→「Live2Dをはじめる...」からSDKの検査・導入と最初のモデル追加を案内します。SDK本体は同梱せず、利用者が公式SDKを取得します。[手順と制限](../packages/src/live2d-cubism/README.md) |
+| **Live2D Cubism Runtime**（`live2d-cubism`） | ゲームに追加するC++ Game Module拡張です。利用者が取得したCubism SDKを使ってmodel3 JSONとMOC3を読み込み、2D描画とパラメータ操作を行います。SDK本体は同梱しません。[手順と制限](../packages/src/live2d-cubism/README.md) |
 | **DirectX 12 Renderer**（`directx12-renderer`） | DirectX 12 Experimental描画バックエンド。導入後、Project Settingsの「グラフィック」で`DirectX 12 Experimental`を選び、エディターまたはゲームを再起動すると有効になります |
 | **Ollama AI (Local LLM)**（`ollama-ai`） | このPCで動く[Ollama](https://ollama.com/)のローカルモデルと、ゲームの中で会話するScriptと設定アセット。接続先はこのPCに固定で、Ollama Cloud・APIキー・サインインは使いません。Windows専用です。[使い方](../packages/src/ollama-ai/README.md) |
 
@@ -68,7 +68,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 
 ## オフラインのとき
 
-- 公式一覧と配布 ZIP はリポジトリの `packages/` で管理します。
+- パッケージ一覧と配布 ZIP はリポジトリの `packages/` で管理します。
   リポジトリは公開済みなので、エディターから一覧と ZIP をそのまま取得できます
   （一覧は `main` ブランチの `packages/index.json` を読みます）。
 - 一覧の取得と新規インストールにはインターネット接続が必要です。
@@ -84,7 +84,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 
 一覧とZipは同じリポジトリから配るので、リポジトリそのものへ書き込める人に対する
 防御にはなりません。`packages/`の変更はレビューを通してから`main`へ入れてください。
-公式パッケージのZipを作り直したら、`python3 packages/src/build_package.py <名前> --update-index`
+一覧に掲載するパッケージのZipを作り直したら、`python3 packages/src/build_package.py <名前> --update-index`
 で`index.json`の`sizeBytes`と`sha256`を更新します（`tests/PackageIndexTests.py`が突き合わせます）。
 
 ## 自分でパッケージを作る
@@ -234,7 +234,7 @@ assets/packages/my-sdk/
 ときもコンパイルできるようにしてください。SDKを置いたあとに再ビルド
 すると、マクロが定義されて有効になります。
 
-公式パッケージの`discord-presence-sdk`がこの形です。実物を見たい
+一覧に掲載されている`discord-presence-sdk`がこの形です。実物を見たい
 ときは`packages/src/discord-presence-sdk/`を読んでください。
 
 ### 書けないこと
@@ -274,9 +274,9 @@ DLLと同じ名前は同梱できません。複数のパッケージが同じ�
 - 一覧形式で公開したい場合は、ダイアログに表示されるJSONを自分の
   配布場所（GitHub等）の`index.json`へ追加します。JSONにはZipの`sha256`が
   入っています。Zipを作り直したら、この値も必ず差し替えてください。
-  **公式パッケージ一覧とは別管理**なので、自分のペースで公開・更新できます。
+  **パッケージ一覧とは別管理**なので、自分のペースで公開・更新できます。
 
-導入したパッケージのうち公式一覧に無いもの（自作・受け取り物）は、パッケージタブの「このプロジェクトのパッケージ（公式一覧外）」にまとめて表示され、そこから削除もできます。
+導入したパッケージのうち一覧に無いもの（自作・受け取り物）は、パッケージタブの「このプロジェクトのパッケージ」にまとめて表示され、そこから削除もできます。
 
 ## Easingを直接使う
 
@@ -293,7 +293,7 @@ position = start + (goal - start) * k;
 
 ## よくあるつまずき
 
-- **一覧が空** — 公式パッケージの公開前はこの状態が正常です。
+- **一覧が空** — パッケージが一覧に公開される前はこの状態が正常です。
   `sha256`の無いエントリも一覧に表示しません。
 - **「SHA-256 check」で失敗する** — ダウンロードしたZipが一覧の`sha256`と
   一致しません。時間をおいて再試行し、続く場合は配布元へ報告してください。
