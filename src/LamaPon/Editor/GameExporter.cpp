@@ -1182,8 +1182,11 @@ namespace
         }
     }
 
-    // フォルダー階層を含むZIPを非表示で作成し、終了コードとサイズを検証します(folder: ZIPへ含めるフォルダー, zipPath: 出力するZIPパス)。
-    void RunSystemTar(
+    std::wstring QuoteWindowsProcessArgument(
+        std::wstring_view argument);
+
+    // Windows PowerShellでフォルダー階層を含むZIPを作成し、終了コードとサイズを検証します(folder: ZIPへ含めるフォルダー, zipPath: 出力するZIPパス)。
+    void RunPowerShellZip(
         const std::filesystem::path& folder,
         const std::filesystem::path& zipPath)
     {
@@ -1200,24 +1203,49 @@ namespace
             throw std::runtime_error(
                 "Could not locate the Windows system directory.");
         }
-        // システムのtar実行ファイル
-        const auto tarPath =
+        // Windows PowerShell実行ファイル
+        const auto powerShellPath =
             std::filesystem::path(systemDirectory)
-            / L"tar.exe";
-        if (!std::filesystem::is_regular_file(tarPath))
+            / L"WindowsPowerShell"
+            / L"v1.0"
+            / L"powershell.exe";
+        if (!std::filesystem::is_regular_file(powerShellPath))
         {
             throw ExportError(
-                "tar.exe was not found (required for zip export, bundled with Windows 10 and later)",
-                tarPath);
+                "Windows PowerShell was not found (required for zip export)",
+                powerShellPath);
         }
 
-
-        // tarまたはsigntoolの起動引数
+        // PowerShell用の文字列リテラル
+        const auto quotePowerShellLiteral = [](const std::wstring& value)
+        {
+            std::wstring literal{ L'\'' };
+            for (const wchar_t character : value)
+            {
+                if (character == L'\'')
+                {
+                    literal.push_back(L'\'');
+                }
+                literal.push_back(character);
+            }
+            literal.push_back(L'\'');
+            return literal;
+        };
+        // ZIP作成コマンド
+        const std::wstring script =
+            L"$ErrorActionPreference = 'Stop'; try { "
+            L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+            L"[System.IO.Compression.ZipFile]::CreateFromDirectory("
+            + quotePowerShellLiteral(folder.wstring())
+            + L", "
+            + quotePowerShellLiteral(zipPath.wstring())
+            + L", [System.IO.Compression.CompressionLevel]::Optimal, $true); "
+            L"exit 0 } catch { exit 1 }";
+        // PowerShell起動引数
         std::wstring commandLine =
-            L"\"" + tarPath.wstring() + L"\" -a -c -f \""
-            + zipPath.wstring() + L"\" -C \""
-            + folder.parent_path().wstring() + L"\" \""
-            + folder.filename().wstring() + L"\"";
+            QuoteWindowsProcessArgument(powerShellPath.wstring())
+            + L" -NoLogo -NoProfile -NonInteractive -Command "
+            + QuoteWindowsProcessArgument(script);
 
         // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
@@ -1225,7 +1253,7 @@ namespace
         // 起動したプロセスのハンドル
         PROCESS_INFORMATION process{};
         if (CreateProcessW(
-                tarPath.c_str(),
+                powerShellPath.c_str(),
                 commandLine.data(),
                 nullptr,
                 nullptr,
@@ -1237,8 +1265,8 @@ namespace
                 &process) == FALSE)
         {
             throw ExportError(
-                "Could not start tar.exe",
-                tarPath);
+                "Could not start Windows PowerShell",
+                powerShellPath);
         }
         if (WaitForSingleObject(process.hProcess, INFINITE) != WAIT_OBJECT_0)
         {
@@ -1247,7 +1275,7 @@ namespace
             CloseHandle(process.hProcess);
             std::filesystem::remove(zipPath, removeError);
             throw ExportError(
-                "Could not wait for tar.exe (Win32 error "
+                "Could not wait for Windows PowerShell (Win32 error "
                     + std::to_string(waitError) + ")",
                 zipPath);
         }
@@ -1260,7 +1288,7 @@ namespace
             CloseHandle(process.hProcess);
             std::filesystem::remove(zipPath, removeError);
             throw ExportError(
-                "Could not read tar.exe exit code (Win32 error "
+                "Could not read Windows PowerShell exit code (Win32 error "
                     + std::to_string(exitCodeError) + ")",
                 zipPath);
         }
@@ -1270,7 +1298,7 @@ namespace
         {
             std::filesystem::remove(zipPath, removeError);
             throw ExportError(
-                "Zip archive creation failed (tar.exe exit code "
+                "Zip archive creation failed (PowerShell exit code "
                     + std::to_string(exitCode) + ")",
                 zipPath);
         }
@@ -1290,8 +1318,8 @@ namespace
         }
     }
 
-    // Windowsの引数用に引用符と末尾のバックスラッシュをエスケープします(argument: 引用する引数)。
-    std::wstring QuoteSigningArgument(
+    // Windowsプロセス引数用に引用符と末尾のバックスラッシュをエスケープします(argument: 引用する引数)。
+    std::wstring QuoteWindowsProcessArgument(
         const std::wstring_view argument)
     {
         // 引用符で囲った起動引数
@@ -1331,15 +1359,15 @@ namespace
         // 署名ツールの正規化した絶対パス
         const auto signTool = std::filesystem::absolute(
             signing.signToolPath).lexically_normal();
-        // tarまたはsigntoolの起動引数
+        // 署名ツールの起動引数
         std::wstring commandLine =
-            QuoteSigningArgument(signTool.wstring());
+            QuoteWindowsProcessArgument(signTool.wstring());
         // 署名ツールへ渡す引数
         for (const auto& argument : arguments)
         {
-            commandLine += L" " + QuoteSigningArgument(argument);
+            commandLine += L" " + QuoteWindowsProcessArgument(argument);
         }
-        commandLine += L" " + QuoteSigningArgument(binary.wstring());
+        commandLine += L" " + QuoteWindowsProcessArgument(binary.wstring());
 
         // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
@@ -1584,7 +1612,7 @@ namespace
                 }
             }
 
-            RunSystemTar(archiveFolder, localZip);
+            RunPowerShellZip(archiveFolder, localZip);
             PublishZipArchive(localZip, zipPath);
         }
         catch (...)
