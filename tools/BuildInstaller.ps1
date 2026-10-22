@@ -35,7 +35,7 @@ if (-not (Select-String -LiteralPath (Join-Path $buildRoot 'CMakeCache.txt') -Pa
     throw '配布用インストーラーはReleaseビルドから作成してください。'
 }
 # fileName: 配布に必要な成果物。
-foreach ($fileName in @('LamaPonEditor.exe', 'LamaPonHub.exe', 'LamaPonCli.exe', 'LamaPonGame.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib')) {
+foreach ($fileName in @('LamaPonEditor.exe', 'LamaPonHub.exe', 'LamaPonCli.exe', 'LamaPonGame.exe', 'LamaPonGameLauncher.exe', 'LamaPonRuntime.dll', 'LamaPonRuntime.lib')) {
     if (-not (Test-Path -LiteralPath (Join-Path $buildRoot $fileName))) { throw "ビルド成果物が不足しています: $fileName" }
 }
 # 不要な古いファイルを再配布しないため、新しい出力先を要求する。
@@ -52,7 +52,7 @@ $buildInfo = Get-Content -LiteralPath (Join-Path $payloadRoot 'build-info.json')
 $version = [string]$buildInfo.engineVersion
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'build-info.jsonの版数が不正です。' }
 # requiredPath: 起動と自動ビルドの必須ファイル。
-foreach ($requiredPath in @('vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'tools\ProjectGameModule\CMakeLists.txt', 'src\LamaPon\LamaPon.h', 'docs\installation.md')) {
+foreach ($requiredPath in @('vcruntime140.dll', 'msvcp140.dll', 'xaudio2_9redist.dll', 'tools\SetupBuildEnvironment.ps1', 'tools\SetupWebSupport.ps1', 'tools\StartAutoBuild.ps1', 'tools\RebuildAndInstallEditor.ps1', 'tools\ProjectGameModule\CMakeLists.txt', 'src\LamaPon\LamaPon.h', 'docs\installation.md')) {
     if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $requiredPath))) { throw "配布ファイルが不足しています: $requiredPath" }
 }
 & $Compiler /Qp "/DPayloadDir=$payloadRoot" "/DOutputDir=$outputRoot" "/DAppVersion=$version" (Join-Path $PSScriptRoot 'installer\LamaPon.iss')

@@ -68,6 +68,7 @@ namespace LamaPon
             m_error.clear();
             m_success.clear();
             m_completedOutput.clear();
+            m_webSupportReady = WebSupportReady();
             try
             {
                 // 読込または入力したWeb出力ツール
@@ -165,13 +166,26 @@ namespace LamaPon
         {
             if (m_web.Succeeded())
             {
-                m_completedOutput = !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath().parent_path()
-                    : IsNativeBuildProject(m_target)
-                    ? m_web.BuildProjectDirectory() : m_web.HtmlPath().parent_path();
-                m_success = m_web.Message() + "\n" + PathToUtf8(m_target == GameExportTarget::AndroidApk
-                    || !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath() : IsNativeBuildProject(m_target)
-                    ? m_web.BuildProjectDirectory() : m_web.HtmlPath());
-                context.setStatus(m_success, false);
+                if (m_web.IsWebSupportSetup())
+                {
+                    m_webSupportReady = WebSupportReady();
+                    m_python[0] = m_emsdk[0] = '\0';
+                    try { SaveWebExportTools({}); }
+                    catch (const std::exception& error) { m_error = error.what(); }
+                    m_success = m_web.Message();
+                    m_completedOutput.clear();
+                    context.setStatus(m_success, false);
+                }
+                else
+                {
+                    m_completedOutput = !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath().parent_path()
+                        : IsNativeBuildProject(m_target)
+                        ? m_web.BuildProjectDirectory() : m_web.HtmlPath().parent_path();
+                    m_success = m_web.Message() + "\n" + PathToUtf8(m_target == GameExportTarget::AndroidApk
+                        || !m_web.NativeArtifactPath().empty() ? m_web.NativeArtifactPath() : IsNativeBuildProject(m_target)
+                        ? m_web.BuildProjectDirectory() : m_web.HtmlPath());
+                    context.setStatus(m_success, false);
+                }
             }
             else
             {
@@ -223,9 +237,11 @@ namespace LamaPon
         ImGui::Text("起動シーン: %s", PathToUtf8(context.settings.startupScene).c_str());
         if (m_target == GameExportTarget::Web)
         {
-            ImGui::TextWrapped("ブラウザーで遊べるHTMLを出力します。通常のプロジェクトはゲーム本体とアセットをHTMLにまとめます。");
-            ImGui::TextWrapped("Web未対応の機能は出力時に理由を表示します。描画・音声・入力は出力後にブラウザーで確認してください。");
-            if (ImGui::CollapsingHeader("Webビルド環境"))
+            ImGui::TextWrapped("ブラウザーで遊べるHTMLを出力します。出力先を選んでエクスポートしてください。");
+            if (m_webSupportReady)
+                ImGui::TextColored(ImVec4{0.4f,0.85f,0.5f,1}, "Web出力サポート: 準備完了");
+            else ImGui::TextWrapped("初回だけWeb出力サポートの準備が必要です。下のボタンで自動的に準備できます。");
+            if (ImGui::CollapsingHeader("詳細設定（通常は変更不要）"))
             {
                 ImGui::TextWrapped("Emscripten SDK、Python 3.11以降、CMakeが必要です。空欄は環境から自動検出します。この設定はPC内に保存します。");
                 ImGui::SetNextItemWidth(510.0f);
@@ -243,7 +259,8 @@ namespace LamaPon
                 }
                 ImGui::SetNextItemWidth(510.0f);
                 ImGui::InputText("Python実行ファイル", m_python.data(), m_python.size());
-                ImGui::TextWrapped("SDKを指定すると、同梱Pythonも検索します。設定変更後はエクスポートで再確認できます。");
+                ImGui::TextWrapped("Pythonは通常は空欄で構いません。SDK同梱・PATH・pyランチャー・通常のインストール先を自動検索し、3.11以降を確認します。");
+                if (ImGui::Button("Web出力サポートを確認・修復")) m_confirmWebSupport = true;
             }
         }
         else if (m_target == GameExportTarget::AndroidApk)
@@ -322,6 +339,8 @@ namespace LamaPon
             ImGui::TextWrapped("%s", m_error.c_str());
             ImGui::PopStyleColor();
             ImGui::EndChild();
+            if (m_target == GameExportTarget::Web && !busy
+                && ImGui::Button("Web出力サポートを確認する")) m_confirmWebSupport = true;
         }
         if (!m_success.empty()) ImGui::TextWrapped("%s", m_success.c_str());
         if (m_target != GameExportTarget::Windows && !m_web.LogPath().empty()
@@ -331,13 +350,47 @@ namespace LamaPon
             ShellExecuteW(nullptr, L"open", m_completedOutput.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         ImGui::Spacing();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button(m_target == GameExportTarget::AndroidApk ? "debug APKをビルド"
+        const bool prepareWeb = m_target == GameExportTarget::Web && !m_webSupportReady;
+        if (ImGui::Button(prepareWeb ? "Web出力サポートを準備" : m_target == GameExportTarget::AndroidApk ? "debug APKをビルド"
             : m_target == GameExportTarget::LinuxBuildProject && m_buildLinuxWithWsl ? "Linuxゲームをビルド"
-            : IsNativeBuildProject(m_target) ? "ビルド設定を生成" : "エクスポート", ImVec2{160.0f, 0.0f})) Start(context);
+            : IsNativeBuildProject(m_target) ? "ビルド設定を生成" : "エクスポート", ImVec2{prepareWeb ? 230.0f : 160.0f, 0.0f}))
+        {
+            if (prepareWeb) m_confirmWebSupport = true;
+            else Start(context);
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
         // 閉じてもジョブはDialogが所有し、毎フレーム結果を回収します。
         if (ImGui::Button(busy ? "閉じて続行" : "閉じる")) ImGui::CloseCurrentPopup();
+        if (m_confirmWebSupport)
+        {
+            ImGui::OpenPopup("Web出力サポートの準備");
+            m_confirmWebSupport = false;
+        }
+        if (ImGui::BeginPopupModal("Web出力サポートの準備", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+600.0f);
+            ImGui::TextWrapped("Web出力に必要なツールを確認し、不足分だけ公式配布元からダウンロードします。");
+            ImGui::TextWrapped("取得するもの: Webコンパイラー（Emscripten 6.0.9）、Python、CMake、Ninja。既に使えるツールは再利用します。");
+            ImGui::TextWrapped("初回は数百MB～約1GBのダウンロード、最大約3GBの空き容量が必要です。通信状況により数分以上かかります。");
+            ImGui::TextWrapped("保存先: %s", PathToUtf8(WebSupportRoot()).c_str());
+            ImGui::TextWrapped("このエンジン用に管理します。WindowsのPATHは変更しません。取得したZIPは展開成功後に削除します。各ツールの配布元の利用条件に従って導入します。");
+            if (ImGui::Button("確認して準備する"))
+            {
+                try
+                {
+                    m_error.clear(); m_success.clear();
+                    m_web.StartWebSupport(context.engineRoot, context.projectFile);
+                    context.setStatus("Web出力サポートを準備しています。", false);
+                }
+                catch (const std::exception& error) { m_error = error.what(); }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("キャンセル")) ImGui::CloseCurrentPopup();
+            ImGui::PopTextWrapPos();
+            ImGui::EndPopup();
+        }
         ImGui::PopTextWrapPos();
         ImGui::EndPopup();
     }

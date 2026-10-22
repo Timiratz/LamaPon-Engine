@@ -609,7 +609,7 @@ int WINAPI wWinMain(
             std::move(engineRoot),
             LAMAPON_BUILD_CONFIGURATION,
             safeMode,
-            unattended ? &screenshot : nullptr);
+            (unattended || !screenshot.show.empty()) ? &screenshot : nullptr);
 
         // Editorの終了コード
         int exitCode{};

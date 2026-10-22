@@ -2522,6 +2522,7 @@ namespace LamaPon
         {
             return;
         }
+        if (paused) ReleaseGameMouseLock();
         m_paused = paused;
         // 停止・再開時にステップ要求を持ち越しません。
         m_stepRequested = false;
@@ -2547,6 +2548,7 @@ namespace LamaPon
     // 再生前のシーンと表示状態を復元し、遷移・音声・時計を編集状態へ戻します。
     void EditorLayer::StopPlaying()
     {
+        ReleaseGameMouseLock();
         try
         {
             // 停止時に初期化する通信連携

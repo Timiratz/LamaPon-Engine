@@ -501,6 +501,7 @@ namespace LamaPon
     // パッケージ処理を待ち、設定保存と拡張終了後にImGuiを破棄します。
     EditorLayer::~EditorLayer()
     {
+        ReleaseGameMouseLock();
         // 借用サービスを参照するパッケージ処理を、編集状態の破棄前に終了させます。
         JoinPackageWorker();
 
@@ -522,6 +523,7 @@ namespace LamaPon
         }
 
         // 拡張機能の終了処理はImGuiコンテキストが有効なうちに行います。
+        m_externalEditorExtensions.Shutdown();
         m_editorExtensions.Shutdown();
 
         if (m_editorGuiRenderer)
@@ -552,6 +554,12 @@ namespace LamaPon
         const WPARAM wParam,
         const LPARAM lParam) const
     {
+        if ((message == WM_ACTIVATEAPP && !wParam)
+            || message == WM_KILLFOCUS
+            || (message == WM_KEYDOWN && wParam == VK_ESCAPE)
+            || (message == WM_SIZE && wParam == SIZE_MINIMIZED))
+            ReleaseGameMouseLock();
+
         if (message == WM_DROPFILES)
         {
             // 解放が必要なドロップ情報
@@ -641,11 +649,12 @@ namespace LamaPon
         }
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
+        LoadExternalEditorExtensions();
 
         ProcessPendingAssetImports();
 
         // レイアウトができた最初のフレームで撮影用UIを開きます。
-        if (!m_screenshotRequest.imagePath.empty())
+        if (!m_screenshotRequest.imagePath.empty() || !m_screenshotRequest.show.empty())
         {
             ++m_screenshotFrame;
             if (m_screenshotFrame == 1)
@@ -955,6 +964,18 @@ namespace LamaPon
             });
         }
         runtimeState["objects"] = std::move(objects);
+        auto animationTracks=nlohmann::json::array();
+        for(std::size_t i=0;i<m_animationTimelineTracks.size();++i)
+        {
+            const auto& track=m_animationTimelineTracks[i];
+            animationTracks.push_back({{"targetId",track.target},{"clip",PathToUtf8(track.path)},
+                {"keyCount",i==m_animationTimelineTrack?m_animationTimelineKeyframes.size():track.keys.size()},
+                {"dirty",i==m_animationTimelineTrack?m_animationTimelineDirty:track.dirty}});
+        }
+        runtimeState["animationPreview"]={{"open",m_animationTimelineOpen},
+            {"playing",m_animationTimelinePreviewPlaying},{"time",m_animationTimelineTime},
+            {"speed",m_animationTimelinePreviewSpeed},{"targetId",m_animationTimelineTargetId},
+            {"tracks",std::move(animationTracks)}};
 
         // 追加読込したシーンの一覧
         auto loadedScenes = nlohmann::json::array();
@@ -1772,6 +1793,14 @@ namespace LamaPon
     {
         // 撮影前に開くUIの指定
         std::string show = m_screenshotRequest.show;
+        if(show.starts_with("animation:"))
+        {
+            if(const auto* target=m_scene.FindGameObjectByName(show.substr(10)))
+            {
+                m_selectedObjectId=target->Id();OpenAnimationTimeline();
+            }
+            return;
+        }
         if (show == "export-windows" || show == "export-web")
         {
             OpenGameExportDialog();
@@ -1953,6 +1982,7 @@ namespace LamaPon
     // 更新と編集画面を描画し、GameModuleのビルド中は入力とUI操作を止めます。
     void EditorLayer::Draw()
     {
+        m_gameMouseLockVisible = false;
         UpdateGameModuleBuild();
         UpdateExternalSceneFile();
         UpdateExternalProjectSettings();
@@ -2026,6 +2056,7 @@ namespace LamaPon
         ImGui::EndDisabled();
 
         DrawGameModuleBuildOverlay();
+        UpdateGameMouseLock();
     }
 
     // ビルド中に操作を覆う画面へ回転表示と経過時間を描画します。
@@ -2220,6 +2251,7 @@ namespace LamaPon
     // Camera描画先を先に更新し、有効な選択ビューと各プレビュー画像を描画します。
     void EditorLayer::RenderSceneViews()
     {
+        RenderAnimationTimelinePreview();
         // Scene Viewの背景色
         constexpr float sceneClearColor[]{ 0.055f, 0.070f, 0.095f, 1.0f };
         // Game Viewの背景色
@@ -2228,7 +2260,7 @@ namespace LamaPon
         // ビュー内で使うCamera画像を、ビュー本体より先に更新します。
         m_scene.RenderTargetTextures();
 
-        if (m_activeViewport == ViewportMode::Scene
+        if (m_sceneViewportVisible
             && m_sceneRenderTarget.IsValid())
         {
 
@@ -2339,7 +2371,7 @@ namespace LamaPon
                     m_cameraPreviewRenderTarget);
             }
         }
-        else if (m_activeViewport == ViewportMode::Game
+        if (m_gameViewportVisible
             && m_gameRenderTarget.IsValid())
         {
             // Game ViewのGPU計測区間
@@ -3833,18 +3865,14 @@ namespace LamaPon
             ToggleFullscreen();
         }
 
-        if (inputOutput.KeyCtrl
-            && inputOutput.KeyShift
-            && ImGui::IsKeyPressed(ImGuiKey_S, false))
+        if (inputOutput.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
         {
-            SaveSceneAs();
-        }
-        else if (inputOutput.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
-        {
-            SaveScene();
+            if (m_animationTimelineOpen) SaveAnimationTimeline();
+            else if (inputOutput.KeyShift) SaveSceneAs();
+            else SaveScene();
         }
 
-        if (!m_playing && inputOutput.KeyCtrl && !inputOutput.WantTextInput)
+        if (!m_playing && !m_animationTimelineOpen && inputOutput.KeyCtrl && !inputOutput.WantTextInput)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
             {
@@ -3990,7 +4018,10 @@ namespace LamaPon
                 "ヒエラルキー",
                 leftId);
             ImGui::DockBuilderDockWindow(
-                "ビューポート",
+                "シーン",
+                centerId);
+            ImGui::DockBuilderDockWindow(
+                "ゲーム",
                 centerId);
             // アセット・コンソールと補助パネルは下部ノードを共有します。
             ImGui::DockBuilderDockWindow(
@@ -8481,6 +8512,7 @@ namespace LamaPon
             return;
         }
 
+        if (m_animationTimelineOpen) RestoreAnimationTimelinePose();
         try
         {
             m_scene.SaveToFile(m_scenePath);
@@ -8496,6 +8528,7 @@ namespace LamaPon
         {
             SetStatus(exception.what(), true);
         }
+        if (m_animationTimelineOpen) PreviewAnimationTimeline();
     }
 
     // ファイル選択後に未保存確認をせずシーンを開き、履歴と保存基準を初期化します。
@@ -8635,6 +8668,7 @@ namespace LamaPon
             return;
         }
 
+        if (m_animationTimelineOpen) RestoreAnimationTimelinePose();
         try
         {
             // 名前を指定した保存先
@@ -8661,6 +8695,7 @@ namespace LamaPon
         {
             SetStatus(exception.what(), true);
         }
+        if (m_animationTimelineOpen) PreviewAnimationTimeline();
     }
 
     // 主選択階層をassets内へPrefabとして保存し、元対象のPrefab参照と履歴を更新します。

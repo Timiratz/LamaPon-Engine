@@ -18,6 +18,16 @@ def main():
     directory = arguments.data_dir.resolve(strict=True)
     if not game.is_file() or not directory.is_dir() or any(directory.iterdir()):
         parser.error("--game must be a file and --data-dir must be an existing empty directory")
+    invalid = subprocess.run(
+        [str(game), "--probe", "--frames", "3px", "--cache-dir",
+         str(directory / "unused-cache"), "--data-dir", str(directory)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45,
+    )
+    invalid_log = invalid.stdout + invalid.stderr
+    if invalid.returncode == 0 or "--frames requires a complete integer" not in invalid_log:
+        raise RuntimeError("Native game accepted an invalid frame limit:\n" + invalid_log)
+    if any(directory.iterdir()):
+        raise RuntimeError("Invalid native arguments changed the save directory")
     for expected in (1, 2):
         result = subprocess.run(
             [str(game), "--probe", "--data-dir", str(directory)],

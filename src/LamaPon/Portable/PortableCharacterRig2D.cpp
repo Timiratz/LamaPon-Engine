@@ -1326,6 +1326,8 @@ namespace LamaPon
             || m_bones.empty()
             || columns < 1
             || rows < 1
+            || columns > 64
+            || rows > 64
             || weights.size()
                 != static_cast<std::size_t>(columns + 1) * static_cast<std::size_t>(rows + 1)
             || !IsInvertible(FromFloat4x4(spriteBindPose)))

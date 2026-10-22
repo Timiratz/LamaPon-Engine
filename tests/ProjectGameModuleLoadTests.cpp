@@ -51,9 +51,10 @@ int main(const int argumentCount, const char* const* argumentValues)
         }
         // 必須コンポーネントとDataAsset型の登録を確認する
         if (host.ModuleName() != "LamaPon Project Game Module"
-            || host.RegisteredComponents().size() != 6
+            || host.RegisteredComponents().size() != 7
             || host.FindComponent("Test.ExternalScript") == nullptr
             || host.FindComponent("Game.BeginnerScript") == nullptr
+            || host.FindComponent("Game.RenderProbeScript") == nullptr
             || host.FindComponent("SceneTransition.Controller") == nullptr
             || host.FindComponent("SceneTransition.Overlay") == nullptr
             || host.FindDataAssetType("SceneTransition.Preset") == nullptr
@@ -111,6 +112,25 @@ int main(const int argumentCount, const char* const* argumentValues)
         {
             throw std::runtime_error(
                 "The beginner Script lifecycle was not invoked.");
+        }
+
+        // 描画callbackの登録と2Dフレーム呼び出しを検証する。
+        auto& renderObject = scene.CreateGameObject("Render Probe Test");
+        auto& renderScript = renderObject.AddComponent<
+            LamaPon::NativeScriptComponent>("Game.RenderProbeScript");
+        scene.Update(0.0f);
+        // 描画callbackを呼び出すクリア色
+        const float renderClearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(renderClearColor);
+        scene.Render2D();
+        graphics.EndFrame();
+        // JSONとして保存された描画callback回数
+        const auto renderProperties = nlohmann::json::parse(
+            renderScript.SerializedProperties());
+        if (renderProperties.value("renders", 0) != 1)
+        {
+            throw std::runtime_error(
+                "The external Script 2D render callback was not invoked.");
         }
 
         // Scene Transitionパッケージのルート

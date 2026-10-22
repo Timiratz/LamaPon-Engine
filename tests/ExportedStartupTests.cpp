@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -21,8 +22,9 @@ namespace
     }
 
     // executableを独立起動し、ローカル起動検証の終了状態を確認します。
-    // RunExportedGame(executable: 起動する配布ゲーム)
-    void RunExportedGame(const std::filesystem::path& executable)
+    // RunExportedGame(executable: 起動する配布ゲーム, expectedExit: 期待コード, alternateExit: 許容するOS差)
+    void RunExportedGame(const std::filesystem::path& executable,
+        const DWORD expectedExit = 0, const std::optional<DWORD> alternateExit = std::nullopt)
     {
         // 親プロセスのRuntimeに依存しない起動を確認
         // 配布ゲーム起動コマンド
@@ -37,7 +39,7 @@ namespace
         PROCESS_INFORMATION process{};
         Require(CreateProcessW(executable.c_str(), command.data(),
             nullptr, nullptr, FALSE, 0, nullptr,
-            executable.parent_path().c_str(), &startup, &process) != FALSE,
+            executable.parent_path().parent_path().c_str(), &startup, &process) != FALSE,
             "Could not start exported game.");
         CloseHandle(process.hThread);
         // 起動検証プロセスの完了状態
@@ -53,7 +55,10 @@ namespace
         DWORD exitCode = 1;
         GetExitCodeProcess(process.hProcess, &exitCode);
         CloseHandle(process.hProcess);
-        Require(wait == WAIT_OBJECT_0 && exitCode == 0,
+        if (exitCode != expectedExit && (!alternateExit || exitCode != *alternateExit))
+            std::cerr << "Actual exit: " << exitCode << ", expected: " << expectedExit << '\n';
+        Require(wait == WAIT_OBJECT_0
+                && (exitCode == expectedExit || (alternateExit && exitCode == *alternateExit)),
             "Exported game startup failed; inspect LamaPonGame.log in test-output/exported-startup.");
     }
 }
@@ -93,11 +98,15 @@ int main()
         }
         // ゲームモジュール同梱の出力設定
         LamaPon::GameExportOptions options{
-            runtime, assets, root / "with-module", settings,
+            runtime, assets, root / L"with-module-日本語-☃", settings,
             runtime / "LamaPonGameModule.dll" };
         // モジュール同梱パッケージの出力結果
         auto result = LamaPon::ExportGamePackage(options);
-        Require(std::filesystem::last_write_time(result.outputDirectory / "LamaPonRuntime.dll")
+        const auto dataName = L"Startup Regression_Data";
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "The export root must contain only the launcher and Data directory.");
+        Require(std::filesystem::last_write_time(result.outputDirectory / dataName / "LamaPonRuntime.dll")
                 == std::filesystem::last_write_time(runtime / "LamaPonRuntime.dll"),
             "Archive-key embedding must preserve runtime build time.");
         // name: 配布物へ同梱する各依存ライセンス
@@ -106,11 +115,111 @@ int main()
         {
             // 配布元からの相対ライセンスパス
             const auto relative = std::filesystem::path("licenses") / (std::string(name) + ".txt");
-            Require(std::filesystem::file_size(result.outputDirectory / relative)
+            Require(std::filesystem::file_size(result.outputDirectory / dataName / relative)
                 == std::filesystem::file_size(runtime / relative),
                 "Exported license text is missing or truncated.");
         }
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
+
+        // ランチャーがローダー失敗を無人で診断できることを確認します。
+        // 検証対象のゲーム本体
+        const auto game = result.outputDirectory / dataName / "LamaPonGame.exe";
+        // 復旧用のゲーム本体
+        const auto savedGame = game.wstring() + L".saved";
+        std::filesystem::rename(game, savedGame);
+        try
+        {
+            // 不正なexe形式を再現
+            std::ofstream(game, std::ios::binary) << "Invalid executable";
+            RunExportedGame(result.executablePath, ERROR_BAD_EXE_FORMAT, ERROR_EXE_MACHINE_TYPE_MISMATCH);
+            // ランチャーによる診断ログ
+            std::ifstream failure(result.outputDirectory / dataName / "StartupFailure.log",
+                std::ios::binary);
+            // UTF-8診断の全文
+            const std::string text{ std::istreambuf_iterator<char>(failure),
+                std::istreambuf_iterator<char>() };
+            Require(text.find("0x000000C1") != std::string::npos
+                    || text.find("0x000000D8") != std::string::npos,
+                "Launcher must record the Win32 loader error in hexadecimal.");
+            Require(text.find("with-module-日本語-☃") != std::string::npos,
+                "Launcher report must preserve Unicode paths as UTF-8.");
+            Require(text.find("ゲームを起動できませんでした") != std::string::npos,
+                "Launcher report must identify process creation failures.");
+        }
+        catch (...)
+        {
+            std::filesystem::remove(game);
+            std::filesystem::rename(savedGame, game);
+            throw;
+        }
+        std::filesystem::remove(game);
+        std::filesystem::rename(savedGame, game);
+
+        // 本体のエントリ到達前のDLL失敗を確認します。
+        // 配布先のエンジンDLL
+        const auto runtimeDll = result.outputDirectory / dataName / "LamaPonRuntime.dll";
+        // 復旧用のエンジンDLL
+        const auto savedRuntimeDll = runtimeDll.wstring() + L".saved";
+        std::filesystem::rename(runtimeDll, savedRuntimeDll);
+        try
+        {
+            // 不正なDLL形式を再現
+            std::ofstream(runtimeDll, std::ios::binary) << "Invalid runtime DLL";
+            RunExportedGame(result.executablePath, 0xC000007Bu, 0xC000012Fu);
+            // ローダー異常終了の診断ログ
+            std::ifstream failure(result.outputDirectory / dataName / "StartupFailure.log",
+                std::ios::binary);
+            // 診断の全文
+            const std::string text{ std::istreambuf_iterator<char>(failure),
+                std::istreambuf_iterator<char>() };
+            Require(text.find("0xC000007B") != std::string::npos
+                    || text.find("0xC000012F") != std::string::npos,
+                "Launcher must preserve NTSTATUS loader failure codes before runtime startup.");
+        }
+        catch (...)
+        {
+            std::filesystem::remove(runtimeDll);
+            std::filesystem::rename(savedRuntimeDll, runtimeDll);
+            throw;
+        }
+        std::filesystem::remove(runtimeDll);
+        std::filesystem::rename(savedRuntimeDll, runtimeDll);
+
+        // 起動後の例外終了もランチャーが記録することを確認します。
+        // 配布先のゲーム設定
+        const auto configuration = result.outputDirectory / dataName / "LamaPonGame.json";
+        // 復旧用のゲーム設定
+        const auto savedConfiguration = configuration.wstring() + L".saved";
+        std::filesystem::rename(configuration, savedConfiguration);
+        try
+        {
+            // JSON読み込みの例外を再現
+            std::ofstream(configuration, std::ios::binary) << "{ invalid json";
+            RunExportedGame(result.executablePath, 1);
+            // 非ゼロ終了の診断ログ
+            std::ifstream failure(result.outputDirectory / dataName / "StartupFailure.log",
+                std::ios::binary);
+            // 診断の全文
+            const std::string text{ std::istreambuf_iterator<char>(failure),
+                std::istreambuf_iterator<char>() };
+            Require(text.find("0x00000001") != std::string::npos
+                    && text.find("ゲームが正常に終了しませんでした") != std::string::npos,
+                "Launcher must report nonzero child exit codes separately from creation failures.");
+            Require(std::filesystem::is_regular_file(
+                    result.outputDirectory / dataName / "LamaPonGame.log"),
+                "Runtime startup exceptions must be recorded next to the game executable.");
+        }
+        catch (...)
+        {
+            std::filesystem::remove(configuration);
+            std::filesystem::rename(savedConfiguration, configuration);
+            throw;
+        }
+        std::filesystem::remove(configuration);
+        std::filesystem::rename(savedConfiguration, configuration);
 
         // モジュールなしの起動にも対応
         std::ofstream(assets / settings.startupScene, std::ios::trunc)
@@ -119,9 +228,12 @@ int main()
         options.outputDirectory = root / "without-module";
         // モジュールを含まない出力結果
         result = LamaPon::ExportGamePackage(options);
-        Require(!std::filesystem::exists(result.outputDirectory / "LamaPonGameModule.dll"),
+        Require(!std::filesystem::exists(result.outputDirectory / dataName / "LamaPonGameModule.dll"),
             "A project without a module must not acquire the sample module.");
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
 
         // DirectX 12 ExperimentalでシーンのText/Imageを描画
         std::ofstream(assets / settings.startupScene, std::ios::trunc)
@@ -143,9 +255,12 @@ int main()
         result = LamaPon::ExportGamePackage(options);
         // 配布先ゲームのRuntimeログ
         const auto runtimeLog =
-            result.executablePath.parent_path() / "LamaPon.log";
+            result.outputDirectory / dataName / "LamaPon.log";
         std::filesystem::remove(runtimeLog);
         RunExportedGame(result.executablePath);
+        Require(std::distance(std::filesystem::directory_iterator(result.outputDirectory),
+                    std::filesystem::directory_iterator{}) == 2,
+            "Game startup must keep logs and crash records inside Data.");
         // 起動後のRuntimeログファイル
         std::ifstream runtimeLogFile(runtimeLog, std::ios::binary);
         // Runtimeログ全体

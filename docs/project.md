@@ -312,14 +312,31 @@ VSyncを切ると、スワップチェーンのティアリング許可（`DXGI_
 ```text
 LamaPonGame/
 ├─ <ゲーム名>.exe
-├─ LamaPonRuntime.dll
-├─ LamaPonGameModule.dll
-├─ xaudio2_9redist.dll
-├─ vcruntime140.dll などVC++ランタイム
-├─ LamaPonGame.json
-├─ assets.tpak
-└─ shader-cache/
+└─ <ゲーム名>_Data/
+   ├─ LamaPonGame.exe
+   ├─ LamaPonRuntime.dll
+   ├─ LamaPonGameModule.dll
+   ├─ xaudio2_9redist.dll
+   ├─ vcruntime140.dll などVC++ランタイム
+   ├─ LamaPonGame.json
+   ├─ integrity.dat
+   ├─ assets.tpak
+   ├─ shader-cache/
+   ├─ licenses/
+   └─ THIRD_PARTY_NOTICES.md
 ```
+
+配布ルートの`<ゲーム名>.exe`から起動します。`<ゲーム名>_Data`はexeと一緒に配布してください。
+ログとクラッシュ記録もDataフォルダー内に作成されます。exeの名前を変更するときは、Dataフォルダーの名前も対応させてください。
+
+起動exeは、ゲーム本体を起動できない場合や本体が非ゼロのコードで終了した場合に、
+Windowsのエラー説明、10進数と16進数のコード、診断ファイルの保存先を表示します。
+`<ゲーム名>_Data/StartupFailure.log`には、発生時刻（UTC）、起動exeとゲーム本体の絶対パス、
+失敗した段階とコードをUTF-8で保存します。同じ保存先では直近の失敗で上書きします。
+Dataに書き込めない場合は、ユーザーの`%LOCALAPPDATA%/LamaPon/StartupReports/<ゲーム名>/StartupFailure.log`へ保存します。
+両方に保存できない場合は、表示されたエラー画面を記録してください。
+`--validate-startup`による無人検証ではダイアログを表示せず、診断と終了コードを返します。
+ランチャー自体がWindowsやセキュリティ製品により実行を阻止された場合には、この診断処理も実行されません。
 
 `assets.tpak`（アセット一式）と`shader-cache`（事前コンパイル済みシェーダー）は
 **書き出しごとに作る鍵で暗号化**され、その鍵は同梱の`LamaPonRuntime.dll`へ

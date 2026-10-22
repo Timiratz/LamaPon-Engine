@@ -292,95 +292,57 @@ namespace
 
 namespace LamaPon
 {
-    // タブを登録してから選択中のビューを描画し、ビュー切替時にギズモ操作を履歴へ確定します。
+    // シーンとゲームを独立したドッキング可能なウィンドウとして描画します。
     void EditorLayer::DrawViewport()
     {
-        ImGui::SetNextWindowSize(
-            ImVec2{ 720.0f, 640.0f },
-            ImGuiCond_FirstUseEver);
-
-        // ビューポートのウィンドウ設定
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse
             | ImGuiWindowFlags_NoScrollbar
             | ImGuiWindowFlags_NoScrollWithMouse;
 
-        ImGui::Begin("ビューポート", nullptr, flags);
         m_activeViewport = ViewportMode::None;
         m_sceneViewportHovered = false;
-
-        // シーンタブが選択中か
-        bool drawSceneViewport = false;
-        // ゲームタブが選択中か
-        bool drawGameViewport = false;
-
-        ImGui::PushStyleColor(
-            ImGuiCol_Tab,
-            ImVec4{ 0.10f, 0.22f, 0.36f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabHovered,
-            ImVec4{ 0.18f, 0.42f, 0.68f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabSelected,
-            ImVec4{ 0.16f, 0.38f, 0.64f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabDimmed,
-            ImVec4{ 0.10f, 0.22f, 0.36f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_TabDimmedSelected,
-            ImVec4{ 0.16f, 0.38f, 0.64f, 1.0f });
-        ImGui::PushStyleColor(
-            ImGuiCol_Text,
-            ImVec4{ 0.92f, 0.95f, 1.0f, 1.0f });
-
-        if (ImGui::BeginTabBar("ViewportTabs"))
-        {
-            if (ImGui::BeginTabItem("シーン"))
-            {
-                drawSceneViewport = true;
-                ImGui::EndTabItem();
-            }
-
-            if (ImGui::BeginTabItem("ゲーム", nullptr,
-                    m_uiFocusGameView ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
-            {
-                drawGameViewport = true;
-                m_uiFocusGameView = false;
-                ImGui::EndTabItem();
-            }
-
-            ImGui::EndTabBar();
-        }
-        ImGui::PopStyleColor(6);
-        if (!drawGameViewport || m_playing)
-        {
-            FinishUIRectEdit();
-        }
-
-        // タブ見出しの登録後に共通の描画リストへ画像とオーバーレイを追加します。
-        if (drawSceneViewport)
+        m_viewCubeHovered = false;
+        ImGui::SetNextWindowSize(ImVec2{ 720.0f, 640.0f }, ImGuiCond_FirstUseEver);
+        m_sceneViewportVisible = ImGui::Begin("シーン", nullptr, flags);
+        if (m_sceneViewportVisible)
         {
             m_activeViewport = ViewportMode::Scene;
             DrawSceneViewport();
         }
-        else if (drawGameViewport)
-        {
-            m_activeViewport = ViewportMode::Game;
-            DrawGameViewport();
-        }
+        ImGui::End();
 
-        if (!drawSceneViewport)
+        if (!m_sceneViewportVisible)
         {
             m_sceneNavigationMouseButton = -1;
+            if (m_gizmoWasUsing)
+            {
+                RecordHistory();
+                m_gizmoWasUsing = false;
+            }
         }
 
-        if (m_activeViewport != ViewportMode::Scene && m_gizmoWasUsing)
+        ImGui::SetNextWindowSize(ImVec2{ 720.0f, 640.0f }, ImGuiCond_FirstUseEver);
+        if (m_uiFocusGameView)
         {
-            RecordHistory();
-            m_gizmoWasUsing = false;
+            ImGui::SetNextWindowFocus();
+            m_uiFocusGameView = false;
         }
-
+        m_gameViewportVisible = ImGui::Begin("ゲーム", nullptr, flags);
+        if (m_gameViewportVisible)
+        {
+            if (!m_sceneViewportVisible || ImGui::IsWindowFocused())
+            {
+                m_activeViewport = ViewportMode::Game;
+            }
+            DrawGameViewport();
+        }
         ImGui::End();
+
+        if (!m_gameViewportVisible || m_playing)
+        {
+            FinishUIRectEdit();
+        }
     }
 
     // シーン画像と操作UIを描画し、カメラ・ギズモ・タイル編集・選択入力を処理します。
@@ -1271,6 +1233,42 @@ namespace LamaPon
     }
 
     // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
+    void EditorLayer::ReleaseGameMouseLock() const
+    {
+        if (!m_gameMouseLocked) return;
+        RECT current{};
+        // 別の機能が設定した制限を解除しないよう、所有する矩形だけを戻します。
+        if (GetClipCursor(&current) && EqualRect(&current, &m_gameMouseClip))
+            ClipCursor(nullptr);
+        m_gameMouseLocked = false;
+    }
+
+    void EditorLayer::UpdateGameMouseLock()
+    {
+        DWORD process{};
+        GetWindowThreadProcessId(GetForegroundWindow(), &process);
+        if (!m_gameMouseLockVisible || !m_playing || m_paused
+            || m_gameModuleBuildProcess != nullptr
+            || process != GetCurrentProcessId()
+            || ImGui::IsKeyDown(ImGuiKey_Escape)
+            || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)
+            || ImGui::IsAnyItemActive())
+        {
+            ReleaseGameMouseLock();
+            return;
+        }
+        if (!m_gameMouseLocked) return;
+        // 毎フレーム更新するため、ドッキング・解像度・DPI変更にも追従します。
+        if (m_gameMouseBounds.right <= m_gameMouseBounds.left
+            || m_gameMouseBounds.bottom <= m_gameMouseBounds.top
+            || !ClipCursor(&m_gameMouseBounds))
+        {
+            ReleaseGameMouseLock();
+            return;
+        }
+        m_gameMouseClip = m_gameMouseBounds;
+    }
+
     void EditorLayer::DrawGameViewport()
     {
         // ゲーム画像の表示可能サイズ
@@ -1379,6 +1377,22 @@ namespace LamaPon
         // マウスがゲーム画像内か
         const bool valid =
             ImGui::IsItemHovered();
+        m_gameMouseLockVisible = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        POINT origin{};
+        // ImGuiの複数ウィンドウが無効な場合だけ、クライアント座標から変換します。
+        if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+            ClientToScreen(m_window, &origin);
+        m_gameMouseBounds = {
+            static_cast<LONG>(std::ceil(imageMinimum.x)) + origin.x,
+            static_cast<LONG>(std::ceil(imageMinimum.y)) + origin.y,
+            static_cast<LONG>(std::floor(imageMinimum.x + displaySize.x)) + origin.x,
+            static_cast<LONG>(std::floor(imageMinimum.y + displaySize.y)) + origin.y
+        };
+        if (m_playing && !m_paused && valid
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+            && !ImGui::IsKeyDown(ImGuiKey_Escape))
+            m_gameMouseLocked = true;
+
         {
             // 表示から描画へのX座標倍率
             const float scaleX =

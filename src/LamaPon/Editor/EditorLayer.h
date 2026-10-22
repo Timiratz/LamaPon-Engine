@@ -4,6 +4,7 @@
 #include "LamaPon/Editor/ServiceDiagnosticsPanel.h"
 
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
+#include "LamaPon/Editor/EditorExtensionModuleManager.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
 #include "LamaPon/Core/ApplicationLayer.h"
@@ -229,6 +230,8 @@ namespace LamaPon
         void DrawDockSpace();
         // 標準パネルとパッケージ管理を登録して解析拡張を追加します。
         void RegisterBuiltInEditorExtensions();
+        // 安全モードでない場合にEngineパッケージの外部Editor拡張を読み込みます。
+        void LoadExternalEditorExtensions();
         // 解析パネルを生成し、描画・記録同期・終了処理を登録します。
         void RegisterAnalysisExtension();
         // プロジェクト内の解析記録先を返し、資産の基準パスが無ければ空を返します(name: 記録用途のサブフォルダー名)。
@@ -479,6 +482,9 @@ namespace LamaPon
         [[nodiscard]] std::string InspectorFloatFormat() const;
         // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
         void DrawGameViewport();
+        // ゲーム画像のクリックでカーソルを制限し、Escや他の項目への移動で解除します。
+        void UpdateGameMouseLock();
+        void ReleaseGameMouseLock() const;
         // ゲーム画像上でUI矩形を選択し、移動・リサイズします。
         void DrawUIRectEditor(const DirectX::XMFLOAT2& origin,
             const DirectX::XMFLOAT2& displaySize, bool hovered);
@@ -686,6 +692,18 @@ namespace LamaPon
             bool restoreTransform);
         // 編集キーから現在時刻の変換を求め、対象の位置・回転・拡縮に適用します。
         void PreviewAnimationTimeline();
+        void GatherAnimationTimelineTracks();
+        void StoreAnimationTimelineTrack();
+        void SelectAnimationTimelineTrack(std::size_t index);
+        void RestoreAnimationTimelinePose();
+        void DrawAnimationTimelineTracks();
+        void RenderAnimationTimelinePreview();
+        void DrawAnimationPreviewTools(const DirectX::XMFLOAT2& position, const DirectX::XMFLOAT2& size);
+        void PushAnimationTimelineUndo();
+        void UndoAnimationTimeline(bool redo=false);
+        void RecordAnimationTimelinePose();
+        void CopyAnimationTimelineKey();
+        void PasteAnimationTimelineKey();
         // 同じMaterialを参照するメッシュとモデルを再読込します(materialAsset: 更新したMaterial参照)。
         void ReloadSharedMaterial(
             const std::filesystem::path& materialAsset);
@@ -706,6 +724,10 @@ namespace LamaPon
         void ReloadScene();
         // 配布一覧と導入状態を表示し、エンジン互換性を確認して操作を提供します(open: パネルの表示状態)。
         void DrawPackagesPanel(bool& open);
+        // SDK導入と最初のモデル表示を案内するLive2Dウィザードを表示します。
+        void DrawLive2DSetupWizard();
+        // Live2Dセットアップウィザードを開きます。
+        void OpenLive2DSetupWizard();
         // 作成用入力と前回結果を初期化してダイアログ表示を要求します。
         void OpenPackageBuildDialog();
         // 配布情報を入力してZIPを作り、配布一覧用のJSONを表示します。
@@ -1221,6 +1243,28 @@ namespace LamaPon
         // 導入済みの名前とバージョン
         std::unordered_map<std::string, std::string>
             m_installedPackageVersions;
+        // Live2Dウィザードを開く要求
+        bool m_live2DSetupOpen{};
+        // Live2Dウィザードのポップアップを開く要求
+        bool m_live2DSetupPopupRequested{};
+        // 選択したCubism SDKの展開先
+        std::filesystem::path m_live2DSdkSource;
+        // 選択済みCubism SDKの検査結果
+        bool m_live2DSdkSourceValid{};
+        // プロジェクト内に導入済みのCoreを検査したか
+        bool m_live2DSdkStatusChecked{};
+        // プロジェクト内のCoreが有効か
+        bool m_live2DSdkInstalledValid{};
+        // プロジェクト内Coreの検査結果
+        std::string m_live2DSdkInstalledError;
+        // SDK導入後のGame Module再ビルド待ち
+        bool m_live2DSdkBuildPending{};
+        // SDK導入後のGame Moduleビルド失敗
+        bool m_live2DSdkBuildFailed{};
+        // SDKの検査結果または導入案内
+        std::string m_live2DSetupMessage;
+        // ウィザードで表示するLive2D model3 JSONの相対パス
+        std::string m_live2DImportedModelPath;
         // パッケージ出力の開く要求
         bool m_packageBuildDialogRequested{};
         // パッケージ内部名の編集欄
@@ -1386,6 +1430,10 @@ namespace LamaPon
         float m_gameViewResolutionScale{ 1.0f };
         bool m_uiEditMode{};
         bool m_uiFocusGameView{};
+        bool m_gameMouseLockVisible{};
+        mutable bool m_gameMouseLocked{};
+        RECT m_gameMouseBounds{};
+        mutable RECT m_gameMouseClip{};
         GameObjectId m_uiEditObjectId{};
         int m_uiEditHandle{ -1 };
         bool m_uiEditChanged{};
@@ -1428,6 +1476,9 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_viewportPosition{};
         // シーン画像の表示サイズ
         DirectX::XMFLOAT2 m_viewportSize{};
+        // 各パネルの表示状態。同時表示にも対応します。
+        bool m_sceneViewportVisible{};
+        bool m_gameViewportVisible{};
         // 選択中のビューポート
         ViewportMode m_activeViewport{ ViewportMode::None };
         // カメラ操作を開始したボタン。離すまでドラッグを保持します。
@@ -1594,6 +1645,41 @@ namespace LamaPon
         bool m_animationTimelineOpen{};
         // アニメーションが未保存か
         bool m_animationTimelineDirty{};
+        struct AnimationTimelineTrack
+        {
+            GameObjectId target{};
+            Transform original;
+            std::filesystem::path path;
+            std::vector<TransformKeyframe> keys;
+            std::array<char,128> name{};
+            float duration{1.f};
+            bool loop{}, dirty{};
+        };
+        std::vector<AnimationTimelineTrack> m_animationTimelineTracks;
+        std::size_t m_animationTimelineTrack{};
+        bool m_animationTimelinePreviewPlaying{};
+        bool m_animationTimelinePreviewLoop{true};
+        float m_animationTimelinePreviewSpeed{1.f};
+        float m_animationTimelinePreviewZoom{1.f};
+        RenderTarget m_animationTimelineRenderTarget;
+        DirectX::XMFLOAT3 m_animationTimelinePreviewCenter{};
+        struct AnimationTimelineSnapshot
+        {
+            std::vector<AnimationTimelineTrack> tracks;
+            std::size_t track{}, key{};
+            float time{};
+        };
+        std::vector<AnimationTimelineSnapshot> m_animationTimelineUndo, m_animationTimelineRedo;
+        std::unordered_map<std::string,std::string> m_animationTimelineSaved;
+        std::optional<TransformAnimationSample> m_animationTimelineClipboard;
+        int m_animationTimelineTool{};
+        int m_animationTimelineFps{60};
+        bool m_animationTimelineAutoKey{true}, m_animationTimelineLocal{true}, m_animationTimelineSnap{true};
+        bool m_animationTimelineGizmoUsing{}, m_animationTimelineNumericEditing{};
+        int m_animationTimelineDraggingTrack{-1};
+        std::size_t m_animationTimelineDraggingKey{};
+        bool m_animationTimelineDragUndo{};
+        DirectX::XMFLOAT2 m_animationTimelinePan{};
         // 編集中の制御グラフのパス
         std::filesystem::path
             m_animatorGraphControllerPath;
@@ -1646,6 +1732,10 @@ namespace LamaPon
         std::string m_skyboxValidationError;
         // エディター拡張の登録一覧
         EditorExtensionRegistry m_editorExtensions;
+        // Engineパッケージからロードした外部Editor拡張
+        EditorExtensionModuleManager m_externalEditorExtensions;
+        // 外部Editor拡張の初回走査が完了したか
+        bool m_externalEditorExtensionsLoaded{};
         // コンソールへフォーカスする要求
         bool m_focusConsoleRequested{};
         // ToolbarからInspectorへPopup表示を依頼するフラグ

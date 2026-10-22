@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace
@@ -99,6 +100,28 @@ int main()
             input.WasReleased("Move")
                 && !input.IsDown("Move"),
             "Action release transition was not detected.");
+
+        // 非有限値を0へ正規化してアクションを更新する試験入力
+        LamaPon::InputSnapshot nonFiniteSnapshot;
+        nonFiniteSnapshot.Set(
+            LamaPon::InputControl::KeyboardA,
+            std::numeric_limits<float>::quiet_NaN());
+        nonFiniteSnapshot.Set(
+            LamaPon::InputControl::GamePadLeftX,
+            std::numeric_limits<float>::infinity());
+        Require(
+            nonFiniteSnapshot.Get(
+                LamaPon::InputControl::KeyboardA) == 0.0f
+                && nonFiniteSnapshot.Get(
+                    LamaPon::InputControl::GamePadLeftX)
+                    == 0.0f,
+            "Non-finite input values were not cleared.");
+        input.UpdateFromSnapshot(nonFiniteSnapshot);
+        Require(
+            std::isfinite(input.Value("Move"))
+                && input.Value("Move") == 0.0f
+                && !input.IsDown("Move"),
+            "Non-finite input values reached action state.");
 
         input.SetPointerOverride(
             LamaPon::InputPointerState{

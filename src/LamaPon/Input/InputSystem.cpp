@@ -318,7 +318,9 @@ namespace LamaPon
         const InputControl control,
         const float value)
     {
-        values[control] = std::clamp(value, -1.0f, 1.0f);
+        values[control] = std::isfinite(value)
+            ? std::clamp(value, -1.0f, 1.0f)
+            : 0.0f;
     }
 
     float InputSnapshot::Get(

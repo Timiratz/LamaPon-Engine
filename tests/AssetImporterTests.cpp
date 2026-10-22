@@ -1,6 +1,8 @@
 #include "LamaPon/Assets/AssetDatabase.h"
 #include "LamaPon/Assets/AssetImporter.h"
 
+#include <Windows.h>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -158,6 +160,95 @@ int main()
             "Importing a folder into itself should fail.");
         Require(!std::filesystem::exists(target / L"textures"),
             "A failed folder import was not rolled back.");
+
+        // 入力そのものがリンクでも対象を取り込まないことを確認します。
+        // 非管理者で作成するリンクの許可フラグ
+        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+        // 取り込み対象として渡すファイルリンクのパス
+        const auto linkedFileSource =
+            temporary.Path() / L"linked-source.bin";
+        // ファイルリンクが参照する通常ファイル
+        const auto fileLinkTarget = sourceA / L"linked-source.bin";
+        WriteFile(fileLinkTarget, "linked file");
+        if (CreateSymbolicLinkW(
+                linkedFileSource.c_str(),
+                fileLinkTarget.c_str(),
+                AllowUnprivilegedCreate) != FALSE)
+        {
+            // ファイルリンク入力の除外結果
+            const auto linkedFileResult =
+                LamaPon::AssetImporter::Import(
+                    { linkedFileSource },
+                    assetRoot,
+                    L"textures");
+            Require(
+                linkedFileResult.failures.empty()
+                    && linkedFileResult.files.empty()
+                    && linkedFileResult.skippedLinkCount == 1
+                    && !std::filesystem::exists(
+                        target / L"linked-source.bin"),
+                "A top-level file link was imported.");
+        }
+
+        // 取り込み対象として渡すフォルダーリンクのパス
+        const auto linkedDirectorySource =
+            temporary.Path() / L"linked-pack";
+        if (CreateSymbolicLinkW(
+                linkedDirectorySource.c_str(),
+                sourcePack.c_str(),
+                SYMBOLIC_LINK_FLAG_DIRECTORY
+                    | AllowUnprivilegedCreate) != FALSE)
+        {
+            // フォルダーリンク入力の除外結果
+            const auto linkedDirectoryResult =
+                LamaPon::AssetImporter::Import(
+                    { linkedDirectorySource },
+                    assetRoot,
+                    L"textures");
+            Require(
+                linkedDirectoryResult.failures.empty()
+                    && linkedDirectoryResult.files.empty()
+                    && linkedDirectoryResult.skippedLinkCount == 1
+                    && !std::filesystem::exists(
+                        target / L"linked-pack"),
+                "A top-level directory link was imported.");
+        }
+
+        // ルート内の別フォルダーを指す保存先リンクも拒否することを確認します。
+        // 保存先リンクの参照先にする実ディレクトリ
+        const auto linkedDestinationTarget =
+            assetRoot / L"linked-target";
+        // 実ディレクトリを指す保存先リンク
+        const auto linkedDestination =
+            assetRoot / L"linked-destination";
+        std::filesystem::create_directories(
+            linkedDestinationTarget);
+        if (CreateSymbolicLinkW(
+                linkedDestination.c_str(),
+                linkedDestinationTarget.c_str(),
+                SYMBOLIC_LINK_FLAG_DIRECTORY
+                    | AllowUnprivilegedCreate) != FALSE)
+        {
+            // リンク先の保存要求が無効と判定されたか
+            bool destinationLinkRejected = false;
+            try
+            {
+                static_cast<void>(
+                    LamaPon::AssetImporter::Import(
+                        { sourceA / L"same.png" },
+                        assetRoot,
+                        L"linked-destination"));
+            }
+            catch (const std::invalid_argument&)
+            {
+                destinationLinkRejected = true;
+            }
+            Require(
+                destinationLinkRejected
+                    && !std::filesystem::exists(
+                        linkedDestinationTarget / L"same.png"),
+                "A symbolic link used as the import destination was accepted.");
+        }
 
         std::cout << "Asset importer tests passed.\n";
         return 0;

@@ -581,8 +581,11 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/ServiceDiagnosticsPanel.h
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
+    src/LamaPon/Editor/EditorExtensionApi.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
     src/LamaPon/Editor/EditorExtensionRegistry.h
+    src/LamaPon/Editor/EditorExtensionModuleManager.cpp
+    src/LamaPon/Editor/EditorExtensionModuleManager.h
     src/LamaPon/Editor/EditorGuiRenderer.cpp
     src/LamaPon/Editor/EditorGuiRenderer.h
     src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
@@ -615,6 +618,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerShared.h
     src/LamaPon/Editor/EditorLayerViewport.cpp
     src/LamaPon/Editor/EditorLayerPackages.cpp
+    src/LamaPon/Editor/Live2DCubismSetup.cpp
+    src/LamaPon/Editor/Live2DCubismSetup.h
     src/LamaPon/Editor/ExeIconTool.cpp
     src/LamaPon/Editor/ExeIconTool.h
     src/LamaPon/Editor/BgmLoopPanel.cpp
@@ -890,6 +895,21 @@ target_compile_options(LamaPonHub
 lamapon_enable_release_symbols(LamaPonHub)
 add_dependencies(LamaPonHub LamaPonEditorApp)
 
+# 配布ルートの起動exeは、Data内のVC++ DLLがなくても起動できるよう静的CRTを使います。
+add_executable(LamaPonGameLauncher WIN32
+    samples/Game/Launcher.cpp
+    ${LAMAPON_WINDOWS_RESOURCES}
+)
+set_target_properties(LamaPonGameLauncher PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+target_link_libraries(LamaPonGameLauncher PRIVATE shell32)
+target_compile_options(LamaPonGameLauncher PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+)
+add_dependencies(LamaPonEditor LamaPonGameLauncher)
+
 add_executable(LamaPonGame WIN32
     samples/Game/Main.cpp
     ${LAMAPON_WINDOWS_RESOURCES}
@@ -1038,30 +1058,34 @@ add_custom_target(LamaPonGamePackage
     COMMAND ${CMAKE_COMMAND} -E rm -rf
         "${LAMAPON_GAME_EXPORT_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        "${LAMAPON_GAME_EXPORT_DIR}"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:LamaPonGame>"
+        "$<TARGET_FILE:LamaPonGameLauncher>"
         "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame.exe"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:LamaPonGame>"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGame.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:LamaPonRuntime>"
-        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonRuntime.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonRuntime.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:LamaPonGameModule>"
-        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGameModule.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGameModule.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${LAMAPON_XAUDIO2_REDIST_DLL}"
-        "${LAMAPON_GAME_EXPORT_DIR}/xaudio2_9redist.dll"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/xaudio2_9redist.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "${LAMAPON_GAME_EXPORT_DIR}/assets"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_BINARY_DIR}/generated/build-info.json"
-        "${LAMAPON_GAME_EXPORT_DIR}/build-info.json"
+        "${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/build-info.json"
     COMMAND ${CMAKE_COMMAND}
         "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/.lamapon/project.json"
-        "-DOUTPUT=${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame.json"
+        "-DOUTPUT=${LAMAPON_GAME_EXPORT_DIR}/LamaPonGame_Data/LamaPonGame.json"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteGameSettings.cmake"
     DEPENDS
+        LamaPonGameLauncher
         LamaPonGame
         LamaPonGameModule
         LamaPonRuntime
@@ -1131,12 +1155,45 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
     add_test(NAME EditorWebExport
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
+    add_test(NAME WebSupportSetup
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebSupportSetupTests.ps1"
+            -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/test-output")
     add_test(NAME NativeOutputTools
         COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "Native*ToolTests.py")
     # 配布一覧とZip内容を検査します。
     add_test(NAME PackageIndex
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
+    add_library(LamaPonEditorExtensionSample SHARED
+        examples/editor-extension-sample/SampleEditorExtension.cpp
+    )
+    target_include_directories(LamaPonEditorExtensionSample PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_compile_features(LamaPonEditorExtensionSample PRIVATE cxx_std_20)
+    target_compile_options(LamaPonEditorExtensionSample PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_executable(LamaPonLive2DPackageStubTests
+        tests/Live2DPackageStubTests.cpp
+        packages/src/live2d-cubism/src/Live2DModel.cpp
+        tools/ProjectGameModule/ScriptRegistry.cpp
+    )
+    target_include_directories(LamaPonLive2DPackageStubTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/src/live2d-cubism/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann"
+    )
+    target_link_libraries(LamaPonLive2DPackageStubTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonLive2DPackageStubTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME Live2DPackageWithoutCubismCore
+        COMMAND LamaPonLive2DPackageStubTests)
     # 書き出し保護の自己診断ツールに対する既知攻撃の判定を固定します。
     add_test(NAME ExportSecurityAttack
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ExportSecurityAttackTests.py")
@@ -1924,6 +1981,30 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "packages;native"
     )
 
+    add_executable(LamaPonLive2DCubismSetupTests
+        tests/Live2DCubismSetupTests.cpp
+    )
+    target_link_libraries(
+        LamaPonLive2DCubismSetupTests
+        PRIVATE
+            LamaPonEditor
+    )
+    target_compile_options(
+        LamaPonLive2DCubismSetupTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME Live2DCubismSetup
+        COMMAND LamaPonLive2DCubismSetupTests
+            "${CMAKE_BINARY_DIR}/test-output/live2d-cubism-setup"
+    )
+    set_tests_properties(
+        Live2DCubismSetup
+        PROPERTIES LABELS "packages;live2d"
+    )
+
     add_executable(LamaPonDiscordPresenceTests
         tests/DiscordPresenceTests.cpp
     )
@@ -2500,6 +2581,7 @@ install(
         LamaPonHub
         LamaPonGame
         LamaPonCli
+        LamaPonGameLauncher
     RUNTIME DESTINATION "."
     LIBRARY DESTINATION "."
     ARCHIVE DESTINATION "."

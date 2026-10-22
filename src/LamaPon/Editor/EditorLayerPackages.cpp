@@ -6,18 +6,27 @@
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Core/VersionCompare.h"
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Editor/Live2DCubismSetup.h"
+#include "LamaPon/Components/NativeScriptComponent.h"
 #include "LamaPon/Graphics/GraphicsBackendPackage.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Scene/Scene.h"
+#include "LamaPon/Scripting/GameModuleHost.h"
 
 #include <imgui.h>
 
-
 #include <commdlg.h>
+#include <shellapi.h>
+#include <shlobj.h>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -27,6 +36,83 @@ namespace LamaPon
 {
     namespace
     {
+
+        // 最初に指定フォルダーを選択します(dialog: Windowsフォルダーダイアログ, initialPath: 初期選択パス文字列)。
+        int CALLBACK BrowseForFolderInitialCallback(
+            const HWND dialog,
+            const UINT message,
+            const LPARAM,
+            const LPARAM userData)
+        {
+            if (message == BFFM_INITIALIZED && userData != 0)
+            {
+                SendMessageW(
+                    dialog,
+                    BFFM_SETSELECTIONW,
+                    TRUE,
+                    userData);
+            }
+            return 0;
+        }
+
+        // SDKの展開先フォルダーを選び、キャンセル時は空を返します(owner: ダイアログの所有ウィンドウ)。
+        std::optional<std::filesystem::path> BrowseForCubismSdkFolder(
+            const HWND owner)
+        {
+            std::array<wchar_t, MAX_PATH> displayName{};
+            BROWSEINFOW browse{};
+            browse.hwndOwner = owner;
+            browse.pszDisplayName = displayName.data();
+            browse.lpszTitle =
+                L"Cubism SDK for Nativeの展開先を選択";
+            browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+            browse.lpfn = BrowseForFolderInitialCallback;
+            const PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
+            if (item == nullptr)
+            {
+                return std::nullopt;
+            }
+
+            std::array<wchar_t, MAX_PATH> selectedPath{};
+            const bool pathRead = SHGetPathFromIDListW(
+                item,
+                selectedPath.data()) != FALSE;
+            CoTaskMemFree(item);
+            if (!pathRead)
+            {
+                throw std::runtime_error(
+                    "選択したSDKフォルダーのパスを読み取れませんでした。");
+            }
+            return std::filesystem::path(selectedPath.data());
+        }
+
+        // Cubismモデルのmodel3 JSONを選び、キャンセル時は空を返します(owner: ダイアログの所有ウィンドウ)。
+        std::optional<std::filesystem::path> BrowseForModel3Json(
+            const HWND owner)
+        {
+            std::array<wchar_t, 32768> selectedPath{};
+            constexpr wchar_t filter[] =
+                L"Live2Dモデル (*.model3.json)\0*.model3.json\0"
+                L"すべてのファイル (*.*)\0*.*\0\0";
+            OPENFILENAMEW dialog{};
+            dialog.lStructSize = sizeof(dialog);
+            dialog.hwndOwner = owner;
+            dialog.lpstrFilter = filter;
+            dialog.nFilterIndex = 1;
+            dialog.lpstrFile = selectedPath.data();
+            dialog.nMaxFile =
+                static_cast<DWORD>(selectedPath.size());
+            dialog.lpstrTitle = L"Live2Dモデルを選択";
+            dialog.Flags = OFN_EXPLORER
+                | OFN_FILEMUSTEXIST
+                | OFN_PATHMUSTEXIST
+                | OFN_NOCHANGEDIR;
+            if (!GetOpenFileNameW(&dialog))
+            {
+                return std::nullopt;
+            }
+            return std::filesystem::path(selectedPath.data());
+        }
 
         // パッケージ内に拡張子が小文字cppの通常ファイルがあるか調べます(packageDirectory: 調べるパッケージのパス)。
         bool PackageContainsScripts(
@@ -678,6 +764,409 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // パッケージ管理からLive2D導入の入口を開き、必要なら配布一覧を取得します。
+    void EditorLayer::OpenLive2DSetupWizard()
+    {
+        m_live2DSetupOpen = true;
+        m_live2DSetupPopupRequested = true;
+        m_live2DSetupMessage.clear();
+        if (m_packageListState == PackageListState::NotLoaded
+            && !m_packageBusy)
+        {
+            StartPackageIndexFetch();
+        }
+    }
+
+    // 拡張・公式SDK・モデル素材を順に導入し、モデルScriptをシーンへ追加します。
+    void EditorLayer::DrawLive2DSetupWizard()
+    {
+        if (!m_live2DSetupOpen)
+        {
+            return;
+        }
+
+        constexpr const char* popupName =
+            "Live2Dをはじめる##Live2DSetup";
+        if (m_live2DSetupPopupRequested)
+        {
+            ImGui::OpenPopup(popupName);
+            m_live2DSetupPopupRequested = false;
+        }
+
+        ImGui::SetNextWindowSize(
+            ImVec2{ 730.0f, 670.0f },
+            ImGuiCond_Appearing);
+        if (!ImGui::BeginPopupModal(
+                popupName,
+                nullptr,
+                ImGuiWindowFlags_NoCollapse))
+        {
+            return;
+        }
+
+        ImGui::BeginChild(
+            "Live2DSetupContents",
+            ImVec2{ 0.0f, -ImGui::GetFrameHeightWithSpacing() },
+            false,
+            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        ImGui::TextWrapped(
+            "Live2D拡張、公式Cubism Core、モデル素材を順に準備します。"
+            "画面の案内に沿って進めてください。");
+        ImGui::Separator();
+
+        const auto assetRoot = m_graphics.Assets().AssetRoot();
+        const auto packageRoot = PackageInstallDirectory(
+            assetRoot,
+            "live2d-cubism");
+        const bool extensionInstalled = std::filesystem::is_regular_file(
+            packageRoot / L"package.json");
+
+        ImGui::SeparatorText("1. Live2D拡張");
+        ImGui::TextWrapped(
+            "モデル読み込みと2D描画を行う拡張を、このゲームへ追加します。");
+        if (!extensionInstalled)
+        {
+            const auto package = std::ranges::find_if(
+                m_packages,
+                [](const PackageInfo& candidate)
+                {
+                    return candidate.name == "live2d-cubism"
+                        && candidate.target == PackageTarget::Project;
+                });
+            if (package != m_packages.end())
+            {
+                ImGui::BeginDisabled(
+                    m_packageBusy || m_playing);
+                if (ImGui::Button(
+                    "Live2D拡張をインストール",
+                    ImVec2{ 235.0f, 0.0f }))
+                {
+                    StartPackageInstall(*package);
+                }
+                ImGui::EndDisabled();
+            }
+            else if (m_packageListState == PackageListState::Failed)
+            {
+                ImGui::TextColored(
+                    ImVec4{ 1.0f, 0.65f, 0.30f, 1.0f },
+                    "公式パッケージ一覧を取得できませんでした。");
+                ImGui::BeginDisabled(m_packageBusy || m_playing);
+                if (ImGui::Button("一覧を再読み込み"))
+                {
+                    StartPackageIndexFetch();
+                }
+                ImGui::EndDisabled();
+            }
+            else
+            {
+                ImGui::TextDisabled(
+                    m_packageBusy
+                        ? "Live2D拡張を含むパッケージ一覧を取得中です..."
+                        : "公式パッケージ一覧を読み込んでいます...");
+            }
+        }
+        else
+        {
+            ImGui::TextColored(
+                ImVec4{ 0.45f, 0.80f, 0.55f, 1.0f },
+                "Live2D拡張はこのゲームへ導入済みです。");
+        }
+
+        ImGui::SeparatorText("2. 公式Cubism SDK");
+        ImGui::TextWrapped(
+            "Cubism CoreはLive2D公式SDKから取得します。SDKの利用条件を確認し、"
+            "公式サイトからNative版をダウンロードして展開してください。"
+            "SDK/Coreはこのパッケージに同梱しません。");
+        if (ImGui::Button(
+            "Live2D公式 SDK ダウンロードページを開く"))
+        {
+            const HINSTANCE result = ShellExecuteW(
+                m_window,
+                L"open",
+                L"https://www.live2d.com/sdk/download/native/",
+                nullptr,
+                nullptr,
+                SW_SHOWNORMAL);
+            if (reinterpret_cast<std::intptr_t>(result) <= 32)
+            {
+                m_live2DSetupMessage =
+                    "ブラウザーを開けませんでした。公式サイトのURLをコピーして開いてください。";
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("URLをコピー"))
+        {
+            ImGui::SetClipboardText(
+                "https://www.live2d.com/sdk/download/native/");
+            m_live2DSetupMessage =
+                "公式ダウンロードページのURLをコピーしました。";
+        }
+
+        ImGui::SeparatorText("3. SDKの検査と導入");
+        ImGui::TextWrapped(
+            "展開先の上位フォルダーを選択してください。LamaPonがCoreの"
+            "ヘッダー、Windows x64 DLL、MSVC /MDライブラリ、対応APIを検査します。");
+        ImGui::BeginDisabled(!extensionInstalled || m_packageBusy || m_playing);
+        if (ImGui::Button("Cubism SDKの展開先を選ぶ..."))
+        {
+            try
+            {
+                if (const auto selected =
+                    BrowseForCubismSdkFolder(m_window))
+                {
+                    m_live2DSdkSource = *selected;
+                    const auto inspection =
+                        InspectLive2DCubismSdk(m_live2DSdkSource);
+                    m_live2DSdkSourceValid = inspection.IsValid();
+                    m_live2DSetupMessage = inspection.IsValid()
+                        ? "SDKを検査しました。プロジェクトへの導入を続けられます。"
+                        : inspection.error;
+                }
+            }
+            catch (const std::exception& exception)
+            {
+                m_live2DSdkSourceValid = false;
+                m_live2DSetupMessage = exception.what();
+            }
+        }
+        ImGui::EndDisabled();
+
+        if (!m_live2DSdkSource.empty())
+        {
+            ImGui::TextWrapped(
+                "選択先: %s",
+                PathToUtf8(m_live2DSdkSource).c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(
+                m_live2DSdkSourceValid
+                    ? ImVec4{ 0.45f, 0.80f, 0.55f, 1.0f }
+                    : ImVec4{ 1.0f, 0.55f, 0.35f, 1.0f },
+                m_live2DSdkSourceValid ? "検査OK" : "要確認");
+        }
+
+        const bool sdkBusy = m_packageBusy
+            || m_playing
+            || m_gameModuleBuildProcess != nullptr;
+        ImGui::BeginDisabled(
+            !extensionInstalled
+            || !m_live2DSdkSourceValid
+            || sdkBusy);
+        if (ImGui::Button(
+            "検査済みSDKをこのプロジェクトへ導入",
+            ImVec2{ 285.0f, 0.0f }))
+        {
+            try
+            {
+                const auto inspection =
+                    InspectLive2DCubismSdk(m_live2DSdkSource);
+                if (!inspection.IsValid())
+                {
+                    m_live2DSdkSourceValid = false;
+                    m_live2DSetupMessage = inspection.error;
+                }
+                else
+                {
+                    InstallLive2DCubismSdk(
+                        inspection,
+                        packageRoot);
+                    m_live2DSdkStatusChecked = true;
+                    m_live2DSdkInstalledValid = true;
+                    m_live2DSdkInstalledError.clear();
+                    m_live2DSdkBuildPending = true;
+                    m_live2DSdkBuildFailed = false;
+                    m_live2DSetupMessage =
+                        "Cubism Coreを導入しました。Game Moduleを再ビルドしています。";
+                    RefreshAssets();
+                    if (!BuildGameModule())
+                    {
+                        m_live2DSdkBuildFailed = true;
+                    }
+                }
+            }
+            catch (const std::exception& exception)
+            {
+                m_live2DSetupMessage = exception.what();
+            }
+        }
+        ImGui::EndDisabled();
+
+        if (extensionInstalled && !m_live2DSdkStatusChecked)
+        {
+            const auto installedInspection = InspectLive2DCubismSdk(
+                packageRoot / L"sdk");
+            m_live2DSdkInstalledValid = installedInspection.IsValid();
+            m_live2DSdkInstalledError = installedInspection.error;
+            m_live2DSdkStatusChecked = true;
+        }
+        if (extensionInstalled && m_live2DSdkStatusChecked)
+        {
+            if (m_live2DSdkInstalledValid)
+            {
+                ImGui::TextColored(
+                    ImVec4{ 0.45f, 0.80f, 0.55f, 1.0f },
+                    "Cubism Coreはプロジェクトへ導入済みです。");
+            }
+            else
+            {
+                ImGui::TextDisabled(
+                    "プロジェクト内のCoreは未導入です。"
+                    "上のSDKフォルダー選択から進めてください。");
+                if (!m_live2DSdkInstalledError.empty())
+                {
+                    ImGui::TextWrapped(
+                        "検査結果: %s",
+                        m_live2DSdkInstalledError.c_str());
+                }
+            }
+        }
+
+        ImGui::SeparatorText("4. Game Moduleのビルド");
+        if (m_gameModuleBuildProcess != nullptr)
+        {
+            ImGui::TextDisabled(
+                "Game Moduleをビルドしています。完了するとモデルを追加できます。");
+        }
+        else if (m_live2DSdkInstalledValid)
+        {
+            auto* const module = GameModuleHost::Current();
+            const bool live2DRegistered = module != nullptr
+                && module->FindComponent("Game.Live2DModel") != nullptr;
+            if (m_live2DSdkBuildFailed)
+            {
+                ImGui::TextColored(
+                    ImVec4{ 1.0f, 0.55f, 0.35f, 1.0f },
+                    "Game Moduleのビルドに失敗しました。ログを確認して再試行してください。");
+                ImGui::BeginDisabled(m_playing || m_packageBusy);
+                if (ImGui::Button("Game Moduleを再ビルド"))
+                {
+                    m_live2DSdkBuildPending = true;
+                    m_live2DSdkBuildFailed = false;
+                    if (!BuildGameModule())
+                    {
+                        m_live2DSdkBuildFailed = true;
+                    }
+                }
+                ImGui::EndDisabled();
+                if (!m_gameModuleBuildLogPath.empty())
+                {
+                    ImGui::TextWrapped(
+                        "ログ: %s",
+                        PathToUtf8(m_gameModuleBuildLogPath).c_str());
+                }
+            }
+            else if (live2DRegistered && !m_live2DSdkBuildPending)
+            {
+                ImGui::TextColored(
+                    ImVec4{ 0.45f, 0.80f, 0.55f, 1.0f },
+                    "Live2D Scriptのビルドと読み込みが完了しています。");
+            }
+            else
+            {
+                ImGui::TextWrapped(
+                    "SDKを導入した後にGame Moduleをビルドしてください。"
+                    "成功するとモデルをシーンへ追加できます。");
+                ImGui::BeginDisabled(m_playing);
+                if (ImGui::Button("Game Moduleをビルド"))
+                {
+                    static_cast<void>(BuildGameModule());
+                }
+                ImGui::EndDisabled();
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled(
+                "Cubism Coreを導入すると、Game Moduleを自動で再ビルドします。");
+        }
+
+        ImGui::SeparatorText("5. 最初のLive2Dモデル");
+        ImGui::TextWrapped(
+            "model3 JSONを選ぶと、同じフォルダーのモデル素材を"
+            "assets/Live2Dへコピーし、現在のシーンにLive2Dモデルを追加します。");
+        auto* const module = GameModuleHost::Current();
+        const bool live2DReady = extensionInstalled
+            && m_live2DSdkInstalledValid
+            && !m_live2DSdkBuildPending
+            && !m_live2DSdkBuildFailed
+            && module != nullptr
+            && module->FindComponent("Game.Live2DModel") != nullptr;
+        ImGui::BeginDisabled(
+            !live2DReady || m_playing || m_packageBusy
+            || m_gameModuleBuildProcess != nullptr);
+        if (ImGui::Button(
+            "model3.jsonを選んでシーンへ追加...",
+            ImVec2{ 285.0f, 0.0f }))
+        {
+            try
+            {
+                if (const auto selected = BrowseForModel3Json(m_window))
+                {
+                    const auto relativeModel = ImportLive2DModel(
+                        *selected,
+                        assetRoot);
+                    RefreshAssets();
+                    // 論理画面の中央に表示する設定JSON
+                    const nlohmann::json properties{
+                        { "modelPath", PathToUtf8(relativeModel) },
+                        { "positionX", m_projectWindowSize[0] * 0.5f },
+                        { "positionY", m_projectWindowSize[1] * 0.5f },
+                        { "pixelsPerUnit", 0.0f }
+                    };
+                    auto& gameObject = m_scene.CreateGameObject(
+                        "Live2Dモデル");
+                    gameObject.AddComponent<NativeScriptComponent>(
+                        "Game.Live2DModel",
+                        properties.dump());
+                    m_selectedObjectId = gameObject.Id();
+                    m_selectedAsset.clear();
+                    RecordHistory();
+                    m_live2DImportedModelPath =
+                        PathToUtf8(relativeModel);
+                    m_live2DSetupMessage =
+                        "モデルをシーンへ追加しました。再生して表示を確認してください。";
+                    SetStatus(
+                        "Live2Dモデルをシーンへ追加しました。再生して表示を確認してください");
+                }
+            }
+            catch (const std::exception& exception)
+            {
+                m_live2DSetupMessage = exception.what();
+            }
+        }
+        ImGui::EndDisabled();
+
+        if (!live2DReady && m_live2DSdkInstalledValid
+            && m_gameModuleBuildProcess == nullptr)
+        {
+            ImGui::TextDisabled(
+                "Live2D Scriptが読み込まれていません。Game Moduleをビルドしてください。");
+        }
+        if (!m_live2DImportedModelPath.empty())
+        {
+            ImGui::TextWrapped(
+                "追加したモデル: %s",
+                m_live2DImportedModelPath.c_str());
+        }
+
+        if (!m_live2DSetupMessage.empty())
+        {
+            ImGui::Spacing();
+            ImGui::TextWrapped(
+                "%s",
+                m_live2DSetupMessage.c_str());
+        }
+
+        ImGui::EndChild();
+        ImGui::Separator();
+        if (ImGui::Button("閉じる"))
+        {
+            m_live2DSetupOpen = false;
+            m_live2DSdkStatusChecked = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // 配布一覧と導入状態を表示し、エンジン互換性を確認して操作を提供します(open: パネルの表示状態)。
     void EditorLayer::DrawPackagesPanel(bool& open)
     {
@@ -698,6 +1187,8 @@ namespace LamaPon
             return;
         }
 
+        DrawLive2DSetupWizard();
+
         // 初回表示で自動的に一覧を取得します。
         if (m_packageListState
                 == PackageListState::NotLoaded
@@ -712,6 +1203,11 @@ namespace LamaPon
             StartPackageIndexFetch();
         }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Live2Dをはじめる..."))
+        {
+            OpenLive2DSetupWizard();
+        }
         ImGui::SameLine();
         if (m_packageBusy)
         {

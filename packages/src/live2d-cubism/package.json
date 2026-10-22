@@ -1,0 +1,17 @@
+{
+  "name": "live2d-cubism",
+  "displayName": "Live2D Cubism Runtime",
+  "description": "公式Cubism Coreを使ってLive2Dモデルを読み込み、2D描画とパラメータ操作を行うプロジェクト拡張です。Cubism SDK本体は含みません。",
+  "author": "LamaPon Community",
+  "version": "0.1.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Immediate",
+  "target": "Project",
+  "userDataDirectories": [ "sdk" ],
+  "native": {
+    "includeDirectories": [ "sdk/Core/include" ],
+    "libraries": [ "sdk/Core/lib/windows/x86_64/Live2DCubismCore_MD.lib" ],
+    "runtimeFiles": [ "sdk/Core/dll/windows/x86_64/Live2DCubismCore.dll" ],
+    "defines": [ "LAMAPON_LIVE2D_CUBISM_ENABLED" ]
+  }
+}

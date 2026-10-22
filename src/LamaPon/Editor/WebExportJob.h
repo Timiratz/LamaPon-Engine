@@ -29,6 +29,8 @@ namespace LamaPon
     [[nodiscard]] WebExportTools LoadWebExportTools();
     // ツール設定を作業ファイルへ書いて保存先を置換する(tools: 保存するツールの配置情報)。
     void SaveWebExportTools(const WebExportTools& tools);
+    [[nodiscard]] std::filesystem::path WebSupportRoot();
+    [[nodiscard]] bool WebSupportReady() noexcept;
 
     // SceneやUIを参照せず子processと結果を所有し、終了時はjobを閉じてコンパイラの子孫も終了させる。
     class WebExportJob final
@@ -47,6 +49,10 @@ namespace LamaPon
         void Start(const std::filesystem::path& engineRoot,
             const std::filesystem::path& projectFile,
             const std::filesystem::path& output, const WebExportTools& tools);
+        // UIで取得・保存先・容量を確認した後だけ呼び出す。Python未導入でも起動できる。
+        void StartWebSupport(const std::filesystem::path& engineRoot,
+            const std::filesystem::path& projectFile);
+        [[nodiscard]] bool IsWebSupportSetup() const noexcept { return m_nativePlatform == "web-support"; }
         // Linux／Android向けの診断とビルド設定生成を同じprocess管理で開始する。
         void StartNativeBuildProject(const std::filesystem::path& engineRoot,
             const std::filesystem::path& projectFile,

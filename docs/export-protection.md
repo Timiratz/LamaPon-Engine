@@ -8,13 +8,17 @@ DLL、`assets.tpak`の保護はWindows出力が対象です。**エンジン本�
 ## 配布物に入るもの
 
 ```
-MyGame.exe              ゲーム本体（LamaPonGame.exeをコピーして改名。gameIcon指定時はアイコンも置換）
-LamaPonRuntime.dll      エンジン。この配布物専用の鍵が焼き込まれています
-LamaPonGameModule.dll   あなたのC++スクリプト
-assets.tpak             アセット一式（暗号化）
-shader-cache/           事前コンパイル済みシェーダー（暗号化）
-LamaPonGame.json        起動時の設定（平文）
+MyGame.exe              Data内のゲームを起動するexe（gameIcon指定時はアイコンも置換）
+MyGame_Data/            以下のファイルをまとめたフォルダー
+  LamaPonGame.exe       ゲーム本体
+  LamaPonRuntime.dll      エンジン。この配布物専用の鍵が焼き込まれています
+  LamaPonGameModule.dll   あなたのC++スクリプト
+  assets.tpak             アセット一式（暗号化）
+  shader-cache/           事前コンパイル済みシェーダー（暗号化）
+  LamaPonGame.json        起動時の設定（平文）
 ```
+
+起動exeと`MyGame_Data`フォルダーは一緒に配布してください。ログとクラッシュ記録もData内へ保存されます。
 
 `assets`フォルダーは配布物へ入りません。シーン、テクスチャ、モデル、
 マテリアル、音声はすべて`assets.tpak`の中です。

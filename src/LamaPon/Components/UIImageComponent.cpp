@@ -13,21 +13,6 @@
 #include <cstdint>
 #include <utility>
 
-namespace
-{
-    // RGBへアルファを乗算した描画色を返します(color: アルファ乗算前のRGBA色)。
-    DirectX::XMFLOAT4 Premultiply(
-        const DirectX::XMFLOAT4& color) noexcept
-    {
-        return {
-            color.x * color.w,
-            color.y * color.w,
-            color.z * color.w,
-            color.w
-        };
-    }
-}
-
 namespace LamaPon
 {
     UIImageComponent::UIImageComponent(
@@ -131,8 +116,8 @@ namespace LamaPon
             return;
         }
 
-        // アルファ乗算済みの描画色
-        const auto color = Premultiply(m_color);
+        // 標準スプライトパスは非乗算アルファ合成なので、色を事前乗算しません。
+        const auto color = m_color;
         // 選択した画像の保持ビュー
         GraphicsViewHandle view;
         if (m_texture)

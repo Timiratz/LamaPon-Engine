@@ -8,10 +8,11 @@ namespace LamaPon
     class GameObject;
     class GraphicsDevice;
     class Script;
+    class SpriteDrawContext;
     struct CollisionEvent;
 
     // RuntimeとDLLの一致必須版
-    inline constexpr std::uint32_t GameModuleApiVersion = 80;
+    inline constexpr std::uint32_t GameModuleApiVersion = 81;
 
     // DLL側でスクリプトを生成する(owner: 存続が必要な所有物体, graphics: 借用する描画サービス, propertiesJson: 初期設定JSON)。
     using NativeScriptCreateFunction = void* (*)(
@@ -39,6 +40,10 @@ namespace LamaPon
     using NativeScriptSetActiveFunction = void (*)(
         void* instance,
         bool active);
+    // 2D描画中に描画窓口を渡します(instance: 更新対象, sprites: 現在の2D描画窓口)。
+    using NativeScriptRender2DFunction = void (*)(
+        void* instance,
+        const SpriteDrawContext* sprites);
 
     struct NativeScriptTypeDescriptor final
     {
@@ -79,6 +84,8 @@ namespace LamaPon
         // 未登録の型はGetScriptで基底・自作インターフェースを取得できない。
         // 具体型から基底への任意変換
         NativeScriptAsScriptFunction asScript{};
+        // 2D描画時の任意通知
+        NativeScriptRender2DFunction render2D{};
     };
 
     // 値の所有と読み書きはDataAssetに任せ、DLLには型の定義だけを持たせる。

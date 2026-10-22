@@ -32,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -43,6 +44,56 @@ namespace
     void Progress(const std::string& message)
     {
         std::cerr << message << std::endl;
+    }
+    // ParseCliNumber(value: CLI token, option: CLI option): numeric token全体を指定型へ解析します。
+    template<typename Number, typename Character>
+    [[nodiscard]] Number ParseCliNumber(
+        const std::basic_string<Character>& value,
+        const std::string_view option)
+    {
+        // consumed: 数値変換で消費したtoken文字数。
+        std::size_t consumed{};
+        // parsed: 数値変換結果。
+        Number parsed{};
+        if constexpr (std::is_same_v<Number, int>)
+        {
+            parsed = std::stoi(value, &consumed);
+        }
+        else if constexpr (std::is_same_v<Number, unsigned long>)
+        {
+            if (!value.empty() && value.front() == static_cast<Character>('-'))
+            {
+                throw std::invalid_argument(
+                    std::string{ option }
+                    + " requires a non-negative integer.");
+            }
+            parsed = std::stoul(value, &consumed);
+        }
+        else if constexpr (std::is_same_v<Number, float>)
+        {
+            parsed = std::stof(value, &consumed);
+        }
+        else if constexpr (std::is_same_v<Number, double>)
+        {
+            parsed = std::stod(value, &consumed);
+        }
+        else if constexpr (std::is_same_v<Number, unsigned long long>)
+        {
+            parsed = std::stoull(value, &consumed);
+        }
+        else
+        {
+            static_assert(
+                std::is_same_v<Number, void>,
+                "Unsupported CLI numeric type.");
+        }
+        if (consumed != value.size())
+        {
+            throw std::invalid_argument(
+                std::string{ option }
+                + " requires a complete numeric value.");
+        }
+        return parsed;
     }
     // job startはrequest/stateをJSON保存し、専用worker processを起動します。
     // JobFileVersion: job JSON形式の互換version。
@@ -3392,7 +3443,10 @@ namespace
                     try
                     {
                         // index: array positionとして変換したselector値。
-                        const auto index = std::stoull(selector);
+                        const auto index = ParseCliNumber<
+                            unsigned long long>(
+                                selector,
+                                "array selector");
                         // numeric indexがarray範囲内か確認します。
                         if (index >= current->size())
                         {
@@ -5114,6 +5168,60 @@ namespace
     // RunRender(options: render settings): sceneを描画しimage・log・problem reportを出力します。
     [[nodiscard]] int RunRender(const RenderOptions& options)
     {
+        if (!std::isfinite(options.simulateSeconds))
+        {
+            throw std::invalid_argument(
+                "--simulate must be finite.");
+        }
+        const double maximumStepCount =
+            static_cast<double>(
+                std::numeric_limits<std::uint32_t>::max());
+        // requestedSteps: 秒数から換算した安全性確認前のupdate回数。
+        const double requestedSteps =
+            std::max(options.simulateSeconds, 0.0) * 60.0;
+        if (!std::isfinite(requestedSteps)
+            || requestedSteps > maximumStepCount)
+        {
+            throw std::invalid_argument(
+                "--simulate exceeds the supported frame count.");
+        }
+        const bool hasNonFiniteInput = std::ranges::any_of(
+            options.inputEvents,
+            [](const RenderOptions::InputEvent& event)
+            {
+                return !std::isfinite(event.at)
+                    || !std::isfinite(event.duration)
+                    || !std::isfinite(event.value);
+            });
+        if (hasNonFiniteInput)
+        {
+            throw std::invalid_argument(
+                "--input values must be finite.");
+        }
+        const bool hasUnsupportedInputRange = std::ranges::any_of(
+            options.inputEvents,
+            [maximumStepCount, autoExtend = options.simulateSeconds <= 0.0](
+                const RenderOptions::InputEvent& event)
+            {
+                const double eventEnd = event.at
+                    + std::max(event.duration, 1.0 / 60.0);
+                if (!std::isfinite(eventEnd))
+                {
+                    return true;
+                }
+                if (!autoExtend)
+                {
+                    return false;
+                }
+                const double eventFrames = (eventEnd + 0.25) * 60.0;
+                return !std::isfinite(eventFrames)
+                    || eventFrames > maximumStepCount;
+            });
+        if (hasUnsupportedInputRange)
+        {
+            throw std::invalid_argument(
+                "--input interval exceeds the supported frame count.");
+        }
         // projectRoot: render対象projectのcanonical root。
         const auto projectRoot =
             std::filesystem::weakly_canonical(
@@ -5179,6 +5287,9 @@ namespace
         graphicsSettings.vSyncEnabled = false;
         graphics.SetGraphicsSettings(graphicsSettings);
         graphics.SetAsyncShaderCompilationEnabled(false);
+        // --inputはproject settingsのActionで解決するため、Scriptが読む
+        // Actionも同じ定義にします（未設定だと既定Actionしか反応しません）。
+        graphics.Input().SetActions(settings.inputActions);
         LamaPon::SetActivePhysicsSettings(settings.physics);
         // gameModule: projectのNativeScript DLLを管理するhost。
         LamaPon::GameModuleHost gameModule;
@@ -5334,15 +5445,22 @@ namespace
         // step: simulate update一回分の秒数。
         const float step = 1.0f / 60.0f;
         // steps: simulateSecondsから算出したupdate回数。
-        auto steps = static_cast<std::uint32_t>(
-            std::max(options.simulateSeconds, 0.0) * 60.0);
+        auto steps = static_cast<std::uint32_t>(requestedSteps);
         // simulate未指定なら入力終了後までsimulationを延長します。
         if (!resolvedInputs.empty()
             && options.simulateSeconds <= 0.0)
         {
             // needed: input終了後の余韻を含めた最低update回数。
+            const double requestedInputSteps =
+                (inputEnd + 0.25) * 60.0;
+            if (!std::isfinite(requestedInputSteps)
+                || requestedInputSteps > maximumStepCount)
+            {
+                throw std::invalid_argument(
+                    "--input interval exceeds the supported frame count.");
+            }
             const auto needed = static_cast<std::uint32_t>(
-                (inputEnd + 0.25) * 60.0);
+                requestedInputSteps);
             steps = std::max(steps, needed);
         }
         // ScriptのStartを実行できるよう最低1回updateします。
@@ -6927,7 +7045,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--width")
                 {
                     // value: --widthのparsed numeric value。
-                    const auto value = std::stoi(next());
+                    const auto value = ParseCliNumber<int>(
+                        next(),
+                        "--width");
                     // option値が許可範囲内か検証します。
                     if (value <= 0)
                     {
@@ -6942,7 +7062,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--height")
                 {
                     // value: --heightのparsed numeric value。
-                    const auto value = std::stoi(next());
+                    const auto value = ParseCliNumber<int>(
+                        next(),
+                        "--height");
                     // option値が許可範囲内か検証します。
                     if (value <= 0)
                     {
@@ -6957,7 +7079,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--fps")
                 {
                     // value: --fpsのparsed numeric value。
-                    const auto value = std::stoi(next());
+                    const auto value = ParseCliNumber<int>(
+                        next(),
+                        "--fps");
                     // option値が許可範囲内か検証します。
                     if (value <= 0)
                     {
@@ -6972,7 +7096,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--fixed-delta")
                 {
                     // value: --fixed-deltaのparsed numeric value。
-                    const auto value = std::stof(next());
+                    const auto value = ParseCliNumber<float>(
+                        next(),
+                        "--fixed-delta");
                     // option値が許可範囲内か検証します。
                     if (!std::isfinite(value) || value <= 0.0f)
                     {
@@ -7001,7 +7127,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--render-every")
                 {
                     // value: --render-everyのparsed numeric value。
-                    const auto value = std::stoul(next());
+                    const auto value = ParseCliNumber<unsigned long>(
+                        next(),
+                        "--render-every");
                     // option値が許可範囲内か検証します。
                     if (value == 0 || value > 100'000)
                     {
@@ -7982,27 +8110,27 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 {
                     options.width = static_cast<
                         std::uint32_t>(
-                        std::stoul(next()));
+                        ParseCliNumber<unsigned long>(next(), "--width"));
                 }
                 // --height optionを取り込みます。
                 else if (argument == L"--height")
                 {
                     options.height = static_cast<
                         std::uint32_t>(
-                        std::stoul(next()));
+                        ParseCliNumber<unsigned long>(next(), "--height"));
                 }
                 // --frames optionを取り込みます。
                 else if (argument == L"--frames")
                 {
                     options.frames = static_cast<
                         std::uint32_t>(
-                        std::stoul(next()));
+                        ParseCliNumber<unsigned long>(next(), "--frames"));
                 }
                 // --simulate optionを取り込みます。
                 else if (argument == L"--simulate")
                 {
                     options.simulateSeconds =
-                        std::stod(next());
+                        ParseCliNumber<double>(next(), "--simulate");
                 }
                 // --input optionを取り込みます。
                 else if (argument == L"--input")
@@ -8061,8 +8189,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                         // command条件を満たす場合の処理へ進みます。
                         if (equals != std::string::npos)
                         {
-                            event.value = std::stod(
-                                name.substr(equals + 1));
+                            event.value = ParseCliNumber<double>(
+                                name.substr(equals + 1),
+                                "--input direction");
                             name = name.substr(0, equals);
                         }
                         event.action = std::move(name);
@@ -8073,11 +8202,14 @@ int wmain(const int argumentCount, wchar_t** arguments)
                         // command条件を満たす場合の処理へ進みます。
                         if (colon != std::string::npos)
                         {
-                            event.duration = std::stod(
-                                timing.substr(colon + 1));
+                            event.duration = ParseCliNumber<double>(
+                                timing.substr(colon + 1),
+                                "--input duration");
                             timing = timing.substr(0, colon);
                         }
-                        event.at = std::stod(timing);
+                        event.at = ParseCliNumber<double>(
+                            timing,
+                            "--input time");
                         options.inputEvents.push_back(
                             std::move(event));
                     }

@@ -370,6 +370,7 @@ $runtimeFiles = @(
     "LamaPonEditor.exe",
     "LamaPonHub.exe",
     "LamaPonGame.exe",
+    "LamaPonGameLauncher.exe",
     "LamaPonCli.exe"
 )
 # 各ビルド成果物をインストール先と照合する。

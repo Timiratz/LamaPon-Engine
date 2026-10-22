@@ -505,6 +505,14 @@ namespace LamaPon
 
         if (extension == L".ogg")
         {
+            if (stream->m_sourceBytes.size()
+                > static_cast<std::size_t>(
+                    std::numeric_limits<int>::max()))
+            {
+                throw std::runtime_error(
+                    "OGG audio file has an unsupported size: "
+                    + PathToUtf8(path));
+            }
             // Vorbisの復号エラー番号
             int error{};
             // 借用するVorbisデコーダー
