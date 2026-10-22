@@ -157,6 +157,34 @@ namespace LamaPon::Native
             voices.emplace(handle, std::move(voice));
             return handle;
         }
+
+        // 音声のループ指定を登録前に設定して再生する(path: 再生パス, loop: ループ再生, volume: 音量0～1, pan: 左右定位-1～1, spatial: 3D定位を使うか, x: 音源X位置, y: 音源Y位置, z: 音源Z位置, minimumDistance: 減衰開始距離, maximumDistance: 減衰上限距離)。
+        std::uint32_t PlayClip(std::string_view path, const bool loop, const float volume,
+            const float pan, const bool spatial, const float x, const float y, const float z,
+            const float minimumDistance, const float maximumDistance) noexcept
+        {
+            try
+            {
+                // 登録前に全再生設定を確定する音声。
+                Voice voice;
+                voice.samples = LoadClip(std::string(path));
+                voice.loop = loop;
+                voice.volume = Clamp(volume, 0, 1);
+                voice.pan = Clamp(pan, -1, 1);
+                voice.spatial = spatial;
+                voice.position = {x, y, z};
+                voice.minimumDistance = Clamp(minimumDistance, 0.001f, 100000);
+                voice.maximumDistance = std::max(
+                    voice.minimumDistance + 0.001f,
+                    Clamp(maximumDistance, 0.001f, 100000));
+                return AddVoice(std::move(voice));
+            }
+            catch (...)
+            {
+                SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Cannot read audio asset");
+                return 0;
+            }
+        }
     }
 
     void ShutdownAudio() noexcept
@@ -232,22 +260,12 @@ namespace LamaPon::Web
     AudioHandle WebAudioRuntime::PlayLoop(std::string_view path, float volume, float pan, bool spatial,
         float x, float y, float z, float minimum, float maximum) noexcept
     {
-        try
-        {
-            Voice voice;
-            voice.samples = LoadClip(std::string(path)); voice.loop = true;
-            voice.volume = Clamp(volume, 0, 1); voice.pan = Clamp(pan, -1, 1); voice.spatial = spatial;
-            voice.position = {x, y, z}; voice.minimumDistance = Clamp(minimum, 0.001f, 100000);
-            voice.maximumDistance = std::max(voice.minimumDistance + 0.001f, Clamp(maximum, 0.001f, 100000));
-            return AddVoice(std::move(voice));
-        }
-        catch (...) { SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Cannot read audio asset"); return 0; }
+        return PlayClip(path, true, volume, pan, spatial, x, y, z, minimum, maximum);
     }
     void WebAudioRuntime::PlayWav(std::string_view path, float volume, bool loop, float pan, bool spatial,
         float x, float y, float z, float minimum, float maximum) noexcept
     {
-        const auto handle = PlayLoop(path, volume, pan, spatial, x, y, z, minimum, maximum);
-        if (handle && !loop) { std::scoped_lock lock(voiceMutex); if (voices.contains(handle)) voices.at(handle).loop = false; }
+        static_cast<void>(PlayClip(path, loop, volume, pan, spatial, x, y, z, minimum, maximum));
     }
     void WebAudioRuntime::SetVolume(AudioHandle handle, float volume) noexcept
     { std::scoped_lock lock(voiceMutex); if (voices.contains(handle)) voices.at(handle).volume = Clamp(volume, 0, 1); }

@@ -50,6 +50,20 @@
 - `chunkCount` と共有状態の置き場所は変えていません。新しいジョブ状態やAPIを増やす必要がないためです。
 - 最大 `size_t` を3分割する回帰確認を `SceneSerializationTests.cpp` に追加しました。要素範囲を実際に走査せず、区間幅だけを数えます。
 
+### ネイティブ音声のワンショット再生
+
+**コード上の事実**
+
+- `WebAudioRuntime::PlayWav` は、従来 `PlayLoop` でループ音声として登録した後、別のロック取得で `loop` を引数値へ変更していました。
+- `AddVoice` が音声コールバックと共有する `voices` へ登録するため、登録後の切り替え前にコールバックが実行される可能性があります。
+- 既存の `NativeAudioTests` はワンショット再生が最後までに停止することを確認しますが、登録直後のスレッド競合を決定的に再現するテストではありません。
+
+**修正と設計判断**
+
+- `NativeAudio.cpp` に匿名名前空間の `PlayClip` を追加し、ループ設定を含む全再生値を `AddVoice` 前に確定します。
+- `PlayLoop` と `PlayWav` は同じ内部処理を使い、ループ指定をそれぞれの登録時に渡します。公開APIと `Voice` の共有場所は変えていません。
+- `PlayClip` は内部でのみ使うため、匿名名前空間に置いて外部公開していません。音声の読み込みや設定の責務は既存の音声ランタイムに残しています。
+
 ## ファイル一覧
 
 変更した既存ファイル:
@@ -57,6 +71,7 @@
 - `src/LamaPon/Assets/AssetDatabase.cpp`
 - `src/LamaPon/Assets/AssetImporter.cpp`
 - `src/LamaPon/Core/JobSystem.cpp`
+- `src/LamaPon/Native/NativeAudio.cpp`
 - `tests/AssetDatabaseTests.cpp`
 - `tests/AssetImporterTests.cpp`
 - `tests/SceneSerializationTests.cpp`
@@ -72,9 +87,12 @@
 - アセット走査では、通常ファイルと `.meta` の既存処理を維持し、リンクだけを索引対象から除きます。
 - インポートでは、リンク入力とリンク保存先を除外・拒否し、通常ファイルや通常フォルダーのコピー経路は維持します。
 - 並列処理では通常サイズの区間数は変わらず、加算オーバーフローが起きる範囲の計算を修正します。
+- ネイティブ音声では、ワンショット・ループの区別を共有状態へ登録する前に確定します。
 - 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Scene と AssetImporter のテストターゲットも両構成でコンパイル済みです。
+- Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
 - CTestは未実行です。リポジトリの `AGENTS.md` がテスト用一時フォルダー・ファイルの作成前に明示許可を求めており、確認待ちです。ビルド成功を実行時テストの成功とは扱いません。
+- `tests/native/NativeAudioTests` は専用のネイティブテスト構成を必要とし、その構成と実行が作る一時物についても許可待ちです。
 
 ## PRとレビュー状態
 
