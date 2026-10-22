@@ -162,9 +162,12 @@ int main()
             "A failed folder import was not rolled back.");
 
         // 入力そのものがリンクでも対象を取り込まないことを確認します。
+        // 非管理者で作成するリンクの許可フラグ
         constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+        // 取り込み対象として渡すファイルリンクのパス
         const auto linkedFileSource =
             temporary.Path() / L"linked-source.bin";
+        // ファイルリンクが参照する通常ファイル
         const auto fileLinkTarget = sourceA / L"linked-source.bin";
         WriteFile(fileLinkTarget, "linked file");
         if (CreateSymbolicLinkW(
@@ -172,6 +175,7 @@ int main()
                 fileLinkTarget.c_str(),
                 AllowUnprivilegedCreate) != FALSE)
         {
+            // ファイルリンク入力の除外結果
             const auto linkedFileResult =
                 LamaPon::AssetImporter::Import(
                     { linkedFileSource },
@@ -186,6 +190,7 @@ int main()
                 "A top-level file link was imported.");
         }
 
+        // 取り込み対象として渡すフォルダーリンクのパス
         const auto linkedDirectorySource =
             temporary.Path() / L"linked-pack";
         if (CreateSymbolicLinkW(
@@ -194,6 +199,7 @@ int main()
                 SYMBOLIC_LINK_FLAG_DIRECTORY
                     | AllowUnprivilegedCreate) != FALSE)
         {
+            // フォルダーリンク入力の除外結果
             const auto linkedDirectoryResult =
                 LamaPon::AssetImporter::Import(
                     { linkedDirectorySource },

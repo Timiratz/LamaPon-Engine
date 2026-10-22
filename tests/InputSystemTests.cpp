@@ -101,6 +101,7 @@ int main()
                 && !input.IsDown("Move"),
             "Action release transition was not detected.");
 
+        // 非有限値を0へ正規化してアクションを更新する試験入力
         LamaPon::InputSnapshot nonFiniteSnapshot;
         nonFiniteSnapshot.Set(
             LamaPon::InputControl::KeyboardA,
