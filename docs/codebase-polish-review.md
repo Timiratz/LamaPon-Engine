@@ -92,6 +92,20 @@
 - ストリーム所有バイト列の型や読み込みAPIは変更していません。後続のループ先頭デコーダーも同じサイズを使うため、作成時の検査が両方の変換を保護します。
 - 2GB超の入力を用意せず、分岐位置と変換の順序をコードで確認します。
 
+### 2Dスプライトスキンの保存バインド
+
+**コード上の事実**
+
+- Windows版とPortable版のSprite Rendererは格子の列数・行数をそれぞれ1〜64へ制限します。
+- Scene読み込みは保存された `boundColumns` と `boundRows` を `RestoreBinding` へ渡します。
+- 復元関数は正数だけを確認してから `columns + 1` と `rows + 1` を計算するため、上限外の保存値を受け入れ、最大整数では符号付き整数オーバーフローを起こし得ます。
+
+**修正と設計判断**
+
+- Windows版とPortable版の `RestoreBinding` で列数・行数とも1〜64を検証し、Rendererの既存契約とそろえました。上限外の保存値は復元失敗として扱います。
+- どちらも公開APIと既存の状態配置を保ち、保存形式は変更していません。
+- `SpriteSkin2DTests.cpp` に65×1の格子と対応する重み数を渡す回帰ケースを加え、復元が拒否されることを確認します。
+
 ## ファイル一覧
 
 変更した既存ファイル:
@@ -100,12 +114,15 @@
 - `src/LamaPon/Assets/AssetDatabase.cpp`
 - `src/LamaPon/Assets/AssetImporter.cpp`
 - `src/LamaPon/Audio/AudioSystem.cpp`
+- `src/LamaPon/Components/SpriteSkin2DComponent.cpp`
 - `src/LamaPon/Core/JobSystem.cpp`
 - `src/LamaPon/Input/InputSystem.cpp`
 - `src/LamaPon/Native/NativeAudio.cpp`
+- `src/LamaPon/Portable/PortableCharacterRig2D.cpp`
 - `tests/AssetDatabaseTests.cpp`
 - `tests/AssetImporterTests.cpp`
 - `tests/InputSystemTests.cpp`
+- `tests/SpriteSkin2DTests.cpp`
 - `tests/SceneSerializationTests.cpp`
 
 新規ファイル:
@@ -121,9 +138,11 @@
 - 並列処理では通常サイズの区間数は変わらず、加算オーバーフローが起きる範囲の計算を修正します。
 - ネイティブ音声では、ワンショット・ループの区別を共有状態へ登録する前に確定します。
 - OGGストリームでは、デコーダーのサイズ引数へ変換する前に表現範囲を検査します。
+- スキンの保存復元では、Rendererが生成できる格子サイズの範囲を保ち、上限外データを拒否します。
 - 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
 - ビルド中、変更範囲外の `third_party/stb/stb_vorbis.c` からMSVC警告が出ました。ビルド自体は両構成で成功しています。
 - `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。Input テストは一時ファイルや一時フォルダーを使いません。
+- `LamaPonSpriteSkin2DTests.exe` を Debug と Release で直接実行し、両方成功しました。
 - `LamaPonAudioOggProbe.exe` を Debug と Release で直接実行し、既存OGG fixtureの読み込み、ストリーム作成、ループ、メーター、波形、低音補正の確認が成功しました。このprobeはテスト出力ファイルを作りません。
 - OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することを確認します。
 - Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。

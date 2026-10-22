@@ -326,6 +326,22 @@ namespace
     // ボーンの削除や格子の変更があっても安全に描けることを検証します(graphics: シーン用の描画装置)。
     void TestInvalidStates(LamaPon::GraphicsDevice& graphics)
     {
+        // 格子上限を超える復元を試すスキン
+        LamaPon::SpriteSkin2DComponent oversizedSkin({ 1 });
+        // 保存姿勢として使う単位行列
+        DirectX::XMFLOAT4X4 identityPose{};
+        DirectX::XMStoreFloat4x4(
+            &identityPose,
+            DirectX::XMMatrixIdentity());
+        Require(
+            !oversizedSkin.RestoreBinding(
+                { identityPose },
+                identityPose,
+                std::vector<LamaPon::SpriteSkinWeight>(132),
+                65,
+                1),
+            "A skin binding above the mesh grid limit was accepted.");
+
         // 検証用のシーン
         LamaPon::Scene scene(graphics);
         // Sprite Rendererのない物体
