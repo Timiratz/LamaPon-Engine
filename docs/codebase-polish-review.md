@@ -2,7 +2,7 @@
 
 ## 対応の範囲
 
-`Animation`、`Assets`、`Audio`、`Components`、`Core`、`Editor`、`Graphics`、`Hub`、`Input`、`Native`、`Online`、`Physics`、`Portable`、`Reactive`、`Resources`、`Scene`、`Scripting`、`Web` の18モジュールとツール群を対象に、ファイル操作、リンク、非同期処理、整数境界、非有限浮動小数点値、未完了マーカーを横断検索し、関連コードと既存テストを確認しました。`tools/` と `tests/` のPython 29ファイル、PowerShell 9ファイルは構文解析しました。確認できた明確な不具合だけを修正しています。既存API、クラス構成、差分外の命名は変更していません。
+`Animation`、`Assets`、`Audio`、`Components`、`Core`、`Editor`、`Graphics`、`Hub`、`Input`、`Native`、`Online`、`Physics`、`Portable`、`Reactive`、`Resources`、`Scene`、`Scripting`、`Web` の18モジュールとツール群を対象に、ファイル操作、リンク、非同期処理、整数境界、非有限浮動小数点値、未完了マーカーを横断検索し、関連コードと既存テストを確認しました。現在の `git ls-files` から、`src/LamaPon/`、`tools/`、`packages/src/`、`samples/`、`cmake/`、`tests/` にある対象ソースは709ファイルです。`third_party/` とアセット類は除外しています。`tools/` と `tests/` のPython 31ファイル、PowerShell 10ファイルは構文解析しました。確認できた明確な不具合だけを修正しています。既存API、クラス構成、差分外の命名は変更していません。
 
 このメモでは、コード上で確認できる事実と、修正を選んだ理由を分けて記します。
 
@@ -112,6 +112,24 @@
 - どちらも公開APIと既存の状態配置を保ち、保存形式は変更していません。
 - `SpriteSkin2DTests.cpp` に65×1の格子と対応する重み数を渡す回帰ケースを加え、復元が拒否されることを確認します。
 
+### CLI数値引数とsimulation範囲
+
+**コード上の事実**
+
+- `std::stoi`、`std::stoul`、`std::stof`、`std::stod`、`std::stoull` は、変換した文字数を確認しないと数値の後ろに文字が残っていても値を返します。
+- `LamaPonCli` の幅やフレーム数などで `256px` や `-1` が受け入れられ、simulation秒数や入力イベントの有限性・`uint32_t` のフレーム範囲は整数変換前に確認されていませんでした。
+- Native版は `--frames` に `std::stoi` を使っていましたが、変換した文字数を確認していませんでした。
+
+**修正と設計判断**
+
+- `tools/LamaPonCli/Main.cpp` の匿名名前空間へ `ParseCliNumber` を置き、数値変換後の消費文字数をCLI token全体と照合します。これはCLI内部でのみ使うため、公開APIにはしていません。
+- `consumed` は変換器が読んだ文字数、`parsed` はその変換結果です。別変数にするのは、標準変換器が値を戻り値、消費位置を出力引数で返すためです。
+- `RunRender` の `requestedSteps` は整数化前のdouble値で、有限性と `uint32_t` 上限を検査します。後段の `steps` は安全を確認した更新回数です。`inputEnd` は解決済みイベントの終了時刻の最大値で、`--simulate` 未指定時の自動延長に使います。
+- 検査をproject読み込み・描画装置初期化より前に置き、不正入力で重い処理や画像出力を始めません。処理は既存のCLI入口へ追加し、クラスやモジュールは分割していません。
+- `src/LamaPon/Native/NativeGame.cpp` の `frameText` は `--frames` の元文字列、`consumed` は `std::stoi` の消費文字数です。既存の `Game::frameLimit` の所有者や更新時点は変えず、値を確定する入力箇所だけで全体消費を確認します。
+- `tests/CliSceneCommandTests.py` は末尾文字、負のフレーム数、NaN、表現範囲外simulation、NaN入力時刻を確認します。`tests/RunNativeTests.py` は不正値を渡した際の診断を確認し、指定された空の保存先が変化しないことも確認します。
+- Native回帰ケースは、フレーム引数の後にデスクトップ版で拒否される `--cache-dir` を置きます。従来のprefix解析なら別のエラーへ進むため、対象の解析ミスを区別でき、SDL初期化や保存処理は始まりません。
+
 ## ファイル一覧
 
 変更した既存ファイル:
@@ -124,12 +142,16 @@
 - `src/LamaPon/Core/JobSystem.cpp`
 - `src/LamaPon/Input/InputSystem.cpp`
 - `src/LamaPon/Native/NativeAudio.cpp`
+- `src/LamaPon/Native/NativeGame.cpp`
 - `src/LamaPon/Portable/PortableCharacterRig2D.cpp`
+- `tests/CliSceneCommandTests.py`
+- `tests/RunNativeTests.py`
 - `tests/AssetDatabaseTests.cpp`
 - `tests/AssetImporterTests.cpp`
 - `tests/InputSystemTests.cpp`
 - `tests/SpriteSkin2DTests.cpp`
 - `tests/SceneSerializationTests.cpp`
+- `tools/LamaPonCli/Main.cpp`
 
 新規ファイル:
 
@@ -145,13 +167,13 @@
 - ネイティブ音声では、ワンショット・ループの区別を共有状態へ登録する前に確定します。
 - OGGストリームでは、デコーダーのサイズ引数へ変換する前に表現範囲を検査します。
 - スキンの保存復元では、Rendererが生成できる格子サイズの範囲を保ち、上限外データを拒否します。
-- 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
+- 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。
 - ビルド中、変更範囲外の `third_party/stb/stb_vorbis.c` からMSVC警告が出ました。ビルド自体は両構成で成功しています。
 - `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。`LamaPonSpriteSkin2DTests.exe` も両構成で成功しました。
 - `LamaPonAudioOggProbe.exe` を Debug と Release で直接実行し、既存OGG fixtureの読み込み、ストリーム作成、ループ、メーター、波形、低音補正の確認が成功しました。このprobeはテスト出力ファイルを作りません。
 - OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することをコードで確認しました。
-- x64 Visual Studio Developer Command PromptからDebug／Release各86件のCTestを実行し、全件成功しました。実行コマンドには `--parallel 1` を指定しました。
+- x64 Visual Studio Developer Command PromptからDebug／Release各86件のCTestを実行し、最新の全体ビルド後に両方とも86/86件成功しました。実行コマンドには `--parallel 1` を指定しました。
 - CTestプリセット既定の4並列では `ScenePhysicsAndNavigation` と `SceneManagerTransitions` が同時に長時間CPUを使い続けました。個別実行と直列実行では両方成功し、全86件の直列実行も成功しました。停滞の原因は特定していません。
 - MSVCの構文のみを確認する `/Zs` で `NativeAudio.cpp`、`NativeAudioTests.cpp`、Native runtime定義での `PortableCharacterRig2D.cpp` を確認し、成功しました。この確認はオブジェクトやテスト出力を作りません。`NativeAudio.cpp` では同梱 `stb_vorbis.c` の警告が出ました。
-- Windows Debug／Release構成は `NativeAudio.cpp` とPortable実装を含みません。NativeAudioTestsのリンク・実行と、Emscripten定義でのPortableソースのビルドは未確認です。専用の検証用ビルド領域は作成していません。
-- Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
+- Windows Debug／Release構成は `NativeGame.cpp`、`NativeAudio.cpp` とPortable実装を含みません。CIと同じSDL 3.4.18アーカイブをSHA-256で照合し、承認済みの検証領域でNativeSmoke、NativeSaveTests、NativeAudioTestsをReleaseビルドしました。`RunNativeTests.py` は不正な `--frames`、Nativeシーン、SDL入力・描画復旧、保存再起動を確認して成功し、NativeSaveTestsとNativeAudioTestsも成功しました。失敗系テストが出す保存・音声アセット拒否の診断ログは期待されたものです。ビルド時に未変更のcgltf、PortableRuntime、WebRenderer3DからMSVC警告が出ました。検証用ファイルの削除を試みましたが、端末の実行ポリシーに拒否されたため、`out/build/codebase-polish-native` が残っています。
+- Emscripten定義でのPortableソースのビルドは未確認です。Python 31ファイルとPowerShell 10ファイルの構文解析は成功しました。
