@@ -2,7 +2,7 @@
 
 ## 対応の範囲
 
-18モジュールとツール群を対象に、ファイル操作、リンク、非同期処理、整数境界、未完了マーカーを横断検索し、関連コードと既存テストを確認しました。確認できた明確な不具合だけを修正しています。既存API、クラス構成、差分外の命名は変更していません。
+`Animation`、`Assets`、`Audio`、`Components`、`Core`、`Editor`、`Graphics`、`Hub`、`Input`、`Native`、`Online`、`Physics`、`Portable`、`Reactive`、`Resources`、`Scene`、`Scripting`、`Web` の18モジュールとツール群を対象に、ファイル操作、リンク、非同期処理、整数境界、非有限浮動小数点値、未完了マーカーを横断検索し、関連コードと既存テストを確認しました。`tools/` と `tests/` のPython 29ファイル、PowerShell 9ファイルは構文解析しました。確認できた明確な不具合だけを修正しています。既存API、クラス構成、差分外の命名は変更していません。
 
 このメモでは、コード上で確認できる事実と、修正を選んだ理由を分けて記します。
 
@@ -123,6 +123,7 @@
 - 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
 - ビルド中、変更範囲外の `third_party/stb/stb_vorbis.c` からMSVC警告が出ました。ビルド自体は両構成で成功しています。
 - `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。Input テストは一時ファイルや一時フォルダーを使いません。
+- `LamaPonAudioOggProbe.exe` を Debug と Release で直接実行し、既存OGG fixtureの読み込み、ストリーム作成、ループ、メーター、波形、低音補正の確認が成功しました。このprobeはテスト出力ファイルを作りません。
 - OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することを確認します。
 - Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
