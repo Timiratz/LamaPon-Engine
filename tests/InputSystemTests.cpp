@@ -101,7 +101,6 @@ int main()
                 && !input.IsDown("Move"),
             "Action release transition was not detected.");
 
-        // NaNと無限大を含む入力snapshot
         LamaPon::InputSnapshot nonFiniteSnapshot;
         nonFiniteSnapshot.Set(
             LamaPon::InputControl::KeyboardA,

@@ -78,12 +78,27 @@
 - 状態の保存先と更新タイミングは従来どおり `InputSnapshot` 内です。API、アクション計算、公開範囲は変更していません。
 - NaN と正の無限大がスナップショットおよびアクション状態へ残らないことを `InputSystemTests.cpp` で確認します。
 
+### OGGストリームの入力サイズ
+
+**コード上の事実**
+
+- OGG一括デコードは `stb_vorbis_decode_memory` に渡す前に、入力バイト数が `int` の上限を超えないことを確認します。
+- ストリーム作成経路は同じVorbisライブラリの `stb_vorbis_open_memory` に入力サイズを `int` へ変換して渡していましたが、変換前の上限確認がありませんでした。
+- `AssetManager::ReadFileBytes` にこの入力サイズを制限する処理はありません。
+
+**修正と設計判断**
+
+- `AudioSystem::CreateStream` のOGG分岐に、一括デコードと同じ `int` 上限確認を追加しました。対象はデコーダー呼び出し前で、上限超過時は既存のエラー形式で失敗します。
+- ストリーム所有バイト列の型や読み込みAPIは変更していません。後続のループ先頭デコーダーも同じサイズを使うため、作成時の検査が両方の変換を保護します。
+- 2GB超の入力を用意せず、分岐位置と変換の順序をコードで確認します。
+
 ## ファイル一覧
 
 変更した既存ファイル:
 
 - `src/LamaPon/Assets/AssetDatabase.cpp`
 - `src/LamaPon/Assets/AssetImporter.cpp`
+- `src/LamaPon/Audio/AudioSystem.cpp`
 - `src/LamaPon/Core/JobSystem.cpp`
 - `src/LamaPon/Input/InputSystem.cpp`
 - `src/LamaPon/Native/NativeAudio.cpp`
@@ -104,9 +119,12 @@
 - インポートでは、リンク入力とリンク保存先を除外・拒否し、通常ファイルや通常フォルダーのコピー経路は維持します。
 - 並列処理では通常サイズの区間数は変わらず、加算オーバーフローが起きる範囲の計算を修正します。
 - ネイティブ音声では、ワンショット・ループの区別を共有状態へ登録する前に確定します。
+- OGGストリームでは、デコーダーのサイズ引数へ変換する前に表現範囲を検査します。
 - 最新のコード状態で、Windows Debug と Release の全体ビルドが成功しました。Input、Scene、AssetImporter のテストターゲットも両構成でコンパイル済みです。
+- ビルド中、変更範囲外の `third_party/stb/stb_vorbis.c` からMSVC警告が出ました。ビルド自体は両構成で成功しています。
 - `LamaPonInputTests.exe` を Debug と Release で直接実行し、両方成功しました。Input テストは一時ファイルや一時フォルダーを使いません。
+- OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することを確認します。
 - Debug／Release のWindows構成は成功しましたが、この2構成は `NativeAudio.cpp` を含みません。そのため、今回追加したネイティブ音声処理のコンパイルは未確認です。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
-- CTestは未実行です。リポジトリの `AGENTS.md` がテスト用一時フォルダー・ファイルの作成前に明示許可を求めており、確認待ちです。ビルド成功を実行時テストの成功とは扱いません。
+- CTestは未実行です。作業時に適用された `AGENTS.md` 指示がテスト用一時フォルダー・ファイル作成前の明示許可を求めており、確認待ちです。ビルド成功を実行時テストの成功とは扱いません。
 - `tests/native/NativeAudioTests` は専用のネイティブテスト構成を必要とし、その構成と実行が作る一時物についても許可待ちです。
