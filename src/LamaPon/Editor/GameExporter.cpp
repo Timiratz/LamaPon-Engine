@@ -1240,17 +1240,38 @@ namespace
                 "Could not start tar.exe",
                 tarPath);
         }
-        WaitForSingleObject(process.hProcess, INFINITE);
+        if (WaitForSingleObject(process.hProcess, INFINITE) != WAIT_OBJECT_0)
+        {
+            const DWORD waitError = GetLastError();
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            std::filesystem::remove(zipPath, removeError);
+            throw ExportError(
+                "Could not wait for tar.exe (Win32 error "
+                    + std::to_string(waitError) + ")",
+                zipPath);
+        }
         // 外部ツールの終了コード
         DWORD exitCode = 1;
-        GetExitCodeProcess(process.hProcess, &exitCode);
+        if (GetExitCodeProcess(process.hProcess, &exitCode) == FALSE)
+        {
+            const DWORD exitCodeError = GetLastError();
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+            std::filesystem::remove(zipPath, removeError);
+            throw ExportError(
+                "Could not read tar.exe exit code (Win32 error "
+                    + std::to_string(exitCodeError) + ")",
+                zipPath);
+        }
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         if (exitCode != 0)
         {
             std::filesystem::remove(zipPath, removeError);
             throw ExportError(
-                "Zip archive creation failed",
+                "Zip archive creation failed (tar.exe exit code "
+                    + std::to_string(exitCode) + ")",
                 zipPath);
         }
 
