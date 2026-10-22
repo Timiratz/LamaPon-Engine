@@ -146,5 +146,6 @@
 - OGGストリームのサイズ検査については、実データでの境界テストを行わず、デコーダー呼び出し前に検査することをコードで確認しました。
 - x64 Visual Studio Developer Command PromptからDebug／Release各86件のCTestを実行し、全件成功しました。実行コマンドには `--parallel 1` を指定しました。
 - CTestプリセット既定の4並列では `ScenePhysicsAndNavigation` と `SceneManagerTransitions` が同時に長時間CPUを使い続けました。個別実行と直列実行では両方成功し、全86件の直列実行も成功しました。停滞の原因は特定していません。
-- Debug／ReleaseのWindows構成は `NativeAudio.cpp` とPortable実装を含みません。`tests/native/NativeAudioTests` の構成・実行と、Portableソースの専用ビルドは未確認です。専用の検証用ビルド領域は作成していません。
+- MSVCの構文のみを確認する `/Zs` で `NativeAudio.cpp`、`NativeAudioTests.cpp`、Native runtime定義での `PortableCharacterRig2D.cpp` を確認し、成功しました。この確認はオブジェクトやテスト出力を作りません。`NativeAudio.cpp` では同梱 `stb_vorbis.c` の警告が出ました。
+- Windows Debug／Release構成は `NativeAudio.cpp` とPortable実装を含みません。NativeAudioTestsのリンク・実行と、Emscripten定義でのPortableソースのビルドは未確認です。専用の検証用ビルド領域は作成していません。
 - Python 29ファイルとPowerShell 9ファイルの構文解析は成功しました。
