@@ -96,18 +96,27 @@ namespace LamaPon
 
     bool JobSystem::RunChunk()
     {
-        // このスレッドが引き受ける区間
-        const auto chunkIndex =
-            m_nextChunk.fetch_add(1);
-        // 区間の開始添字
-        const auto begin = chunkIndex * m_grainSize;
-        if (begin >= m_count)
+        // 今回のジョブに含まれる区間数
+        const auto chunkCount =
+            1 + (m_count - 1) / m_grainSize;
+        // 次に予約する区間番号
+        auto chunkIndex = m_nextChunk.load();
+        // 区間番号が上限へ達するまで次の区間を予約します。
+        while (chunkIndex < chunkCount
+            && !m_nextChunk.compare_exchange_weak(
+                chunkIndex,
+                chunkIndex + 1))
+        {
+        }
+        if (chunkIndex >= chunkCount)
         {
             return false;
         }
+        // 区間の開始添字
+        const auto begin = chunkIndex * m_grainSize;
         // 区間の終端添字、範囲に含めない
         const auto end =
-            std::min(begin + m_grainSize, m_count);
+            begin + std::min(m_grainSize, m_count - begin);
         try
         {
             (*m_body)(begin, end);

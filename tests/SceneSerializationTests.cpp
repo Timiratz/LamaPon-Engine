@@ -2792,30 +2792,66 @@ int RunTest(const std::string_view suite)
                     allOnce,
                     "ParallelFor must visit every index exactly once.");
 
-                // 最大要素数でも正しく分割する
-                // 最大要素数で幅が一致した区間の数。
-                std::atomic<unsigned> maximumRangeChunks{};
+                // 最大要素数で期待する区間数。
+                constexpr std::size_t MaximumRangeCount = 5;
+                // 最大要素数の各区間が呼ばれた回数。
+                std::array<std::atomic<unsigned>, MaximumRangeCount>
+                    maximumRangeVisits{};
+                // 最大要素数の区間が正しい範囲か。
+                std::atomic<bool> maximumRangesValid{ true };
                 // size_tで表現できる最大要素数。
                 const auto maximumCount =
                     std::numeric_limits<std::size_t>::max();
-                // 最大要素数を3分割する区間幅。
-                const auto maximumGrain = maximumCount / 3;
-                // 要素を走査せず受け取った区間幅を数える(begin: 含む開始位置, end: 含まない終端位置)。
+                // 最大要素数で端数が残る区間幅。
+                const auto maximumGrain = maximumCount / 4;
+                // 最大要素数を端数のある区間へ安全に分割します(begin: 含む開始位置, end: 含まない終端位置)。
                 jobs.ParallelFor(
                     maximumCount,
                     maximumGrain,
-                    [&maximumRangeChunks, maximumGrain](
+                    [&maximumRangeVisits, &maximumRangesValid,
+                        maximumCount, maximumGrain](
                         const std::size_t begin,
                         const std::size_t end)
                     {
-                        if (end - begin == maximumGrain)
+                        if (begin >= end
+                            || begin % maximumGrain != 0)
                         {
-                            maximumRangeChunks.fetch_add(1);
+                            maximumRangesValid.store(false);
+                            return;
                         }
+                        // 今回受け取った区間番号。
+                        const auto rangeIndex =
+                            begin / maximumGrain;
+                        if (rangeIndex >= maximumRangeVisits.size())
+                        {
+                            maximumRangesValid.store(false);
+                            return;
+                        }
+                        // 区間番号に対応する正しい終端添字。
+                        const auto expectedEnd =
+                            rangeIndex + 1 == maximumRangeVisits.size()
+                                ? maximumCount
+                                : begin + maximumGrain;
+                        if (end != expectedEnd)
+                        {
+                            maximumRangesValid.store(false);
+                            return;
+                        }
+                        maximumRangeVisits[rangeIndex].fetch_add(1);
                     });
+                // 全区間が一度ずつ処理されたか。
+                bool maximumRangesVisitedOnce =
+                    maximumRangesValid.load();
+                // 実行された最大要素数の区間。
+                for (const auto& visitCount : maximumRangeVisits)
+                {
+                    maximumRangesVisitedOnce =
+                        maximumRangesVisitedOnce
+                        && visitCount.load() == 1;
+                }
                 Require(
-                    maximumRangeChunks.load() == 3,
-                    "ParallelFor must count maximum ranges without overflow.");
+                    maximumRangesVisitedOnce,
+                    "ParallelFor must safely cover the maximum element range.");
 
                 // ネスト呼び出しは逐次実行で完了する
                 std::atomic<int> nested{ 0 };
