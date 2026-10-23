@@ -490,7 +490,7 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText(
-            "このプロジェクトのパッケージ（公式一覧外）");
+            "このプロジェクトのパッケージ");
         // 公式一覧外のパッケージ名と配置済み版数
         for (const auto& [name, version] : others)
         {
@@ -849,7 +849,7 @@ namespace LamaPon
             {
                 ImGui::TextColored(
                     ImVec4{ 1.0f, 0.65f, 0.30f, 1.0f },
-                    "公式パッケージ一覧を取得できませんでした。");
+                    "パッケージ一覧を取得できませんでした。");
                 ImGui::BeginDisabled(m_packageBusy || m_playing);
                 if (ImGui::Button("一覧を再読み込み"))
                 {
@@ -862,7 +862,7 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     m_packageBusy
                         ? "Live2D拡張を含むパッケージ一覧を取得中です..."
-                        : "公式パッケージ一覧を読み込んでいます...");
+                        : "パッケージ一覧を読み込んでいます...");
             }
         }
         else
@@ -1204,11 +1204,6 @@ namespace LamaPon
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Live2Dをはじめる..."))
-        {
-            OpenLive2DSetupWizard();
-        }
-        ImGui::SameLine();
         if (m_packageBusy)
         {
             ImGui::TextDisabled("通信中...");
@@ -1266,9 +1261,9 @@ namespace LamaPon
             && m_packages.empty())
         {
             ImGui::Spacing();
-            ImGui::SeparatorText("公式パッケージ");
+            ImGui::SeparatorText("パッケージ");
             ImGui::TextWrapped(
-                "公式パッケージはまだ登録されていません。"
+                "パッケージはまだ登録されていません。"
                 "公開までお楽しみに！");
             ImGui::End();
             return;
@@ -1280,7 +1275,7 @@ namespace LamaPon
             return;
         }
 
-        ImGui::SeparatorText("公式パッケージ");
+        ImGui::SeparatorText("パッケージ");
 
         // 追加先の分類を切り替えて最初の一致項目を選びます(target: 選択する追加先の分類)。
         const auto selectFirstOfTarget = [this](
@@ -1334,7 +1329,7 @@ namespace LamaPon
                 }))
         {
             ImGui::TextWrapped(
-                "この分類の公式パッケージはまだありません。");
+                "この分類のパッケージはまだありません。");
         }
         // 配布一覧の項目添字
         for (std::size_t index = 0;
