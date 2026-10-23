@@ -449,7 +449,7 @@ Discordへ実際に表示するには、
 各自でDiscordから入手し、`DiscordPresenceBackend`を実装したアダプターを
 登録します。Discord固有の型はこのアダプターの内側だけに閉じ込めます。
 
-#### いちばん簡単な方法：公式パッケージを入れる
+#### いちばん簡単な方法：パッケージを入れる
 
 アダプターを自分で書かなくても、エディターの**拡張機能**から
 **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`）を

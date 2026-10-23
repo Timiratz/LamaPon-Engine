@@ -147,17 +147,8 @@ namespace LamaPon
                 if (packagePanel->open)
                 {
                     SetStatus(
-                        "公式パッケージの一覧を取得しています");
+                        "パッケージ一覧を取得しています");
                 }
-            }
-            if (ImGui::MenuItem(
-                    "Live2Dをはじめる...",
-                    nullptr,
-                    false,
-                    !m_playing))
-            {
-                packagePanel->open = true;
-                OpenLive2DSetupWizard();
             }
             ImGui::Separator();
             if (ImGui::MenuItem(
