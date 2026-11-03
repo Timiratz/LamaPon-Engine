@@ -1210,12 +1210,27 @@ namespace LamaPon
                 && std::filesystem::is_regular_file(editor))
             {
                 // コードを開く位置指定引数
-                const std::wstring parameters =
-                    BuildScriptEditorArguments(
-                        editor,
-                        resolved,
-                        line,
-                        column);
+                std::wstring parameters;
+                if (IsVisualStudioEditor(editor) && IsCppScriptAsset(asset)
+                    && line == 0)
+                {
+                    const auto solution = UpdateVisualStudioProject(
+                        std::filesystem::absolute(
+                            m_graphics.Assets().AssetRoot()).parent_path(),
+                        m_engineRoot);
+                    if (OpenInRunningVisualStudio(solution, resolved))
+                    {
+                        SetStatus("コードを開きました: " + PathToUtf8(asset));
+                        return;
+                    }
+                    parameters = BuildVisualStudioProjectArguments(
+                        solution, resolved);
+                }
+                else
+                {
+                    parameters = BuildScriptEditorArguments(
+                        editor, resolved, line, column);
+                }
                 result = ShellExecuteW(
                     m_window,
                     L"open",

@@ -650,6 +650,7 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/PackageNativeDependencies.h
     src/LamaPon/Editor/ScriptEditorDetection.cpp
     src/LamaPon/Editor/ScriptEditorDetection.h
+    src/LamaPon/Editor/VisualStudioProject.cpp
     src/LamaPon/Editor/ShaderProperties.cpp
     src/LamaPon/Editor/ShaderProperties.h
     src/LamaPon/Editor/SimpleMaterialShaderGenerator.cpp
@@ -801,6 +802,7 @@ target_link_libraries(LamaPonEditor
         comdlg32
         shell32
         ole32
+        oleaut32
         windowscodecs
 )
 lamapon_enable_release_symbols(LamaPonEditor)
