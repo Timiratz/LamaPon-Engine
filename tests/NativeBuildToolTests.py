@@ -61,9 +61,9 @@ class NativeBuildToolTests(unittest.TestCase):
                         workflow.index(install_packages))
         self.assertLess(workflow.rindex('run_sdkmanager("--licenses")'),
                         workflow.index('test -d "$ANDROID_HOME/platforms/android-36"'))
-        self.assertIn("actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6", workflow)
+        self.assertIn("actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad", workflow)
         self.assertIn('distribution: temurin\n          java-version: "17"', workflow)
-        self.assertIn("gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6", workflow)
+        self.assertIn("gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c", workflow)
         self.assertIn(f'gradle-version: "{minimum_gradle}"', workflow)
         self.assertIn(f'"platforms;android-{BUILD.native_android.ANDROID_COMPILE_SDK_VERSION}"', workflow)
         self.assertIn(f'"build-tools;{BUILD.native_android.ANDROID_BUILD_TOOLS_VERSION}"', workflow)
